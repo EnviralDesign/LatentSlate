@@ -31,6 +31,8 @@ A purpose-built NLA editor that:
 
 ## 🏗️ Architecture Overview
 
+> **Migration note (2026-03-25):** the executable entrypoint now boots through a new Slint shell scaffold. The Dioxus architecture documented below is legacy reference material until the migration is fully completed.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         NLA AI Video Creator                        │
@@ -1050,6 +1052,7 @@ src/
 - **2026-01-04:** Created core data structures (Project, Track, Clip, Asset, Marker)
 - **2026-01-04:** Implemented timeline clip interactions (Move, Resize, Delete, Drag & Drop)
 - **2026-01-04:** Refined resize handles and fixed context menus
+- **2026-03-25:** Started the Slint migration in earnest: added a detailed migration todo doc, switched the executable entrypoint to a Slint shell scaffold, and moved new shell code into dedicated `src/slint_app/` + `src/ui/` modules.
 
 ---
 
@@ -1069,7 +1072,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-01-13*
+*Last updated: 2026-03-25*
 
 
 
