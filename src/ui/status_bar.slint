@@ -1,0 +1,32 @@
+import { HorizontalBox } from "std-widgets.slint";
+
+export component AppStatusBar inherits Rectangle {
+    in property <string> status-text;
+    in property <string> playback-text;
+
+    height: 38px;
+    background: #0b1220;
+
+    HorizontalBox {
+        spacing: 16px;
+        padding: 10px;
+
+        Text {
+            text: root.status-text;
+            color: #cbd5e1;
+            font-size: 12px;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+        }
+
+        Text {
+            text: root.playback-text;
+            color: #38bdf8;
+            font-size: 12px;
+            font-weight: 600;
+        }
+    }
+}

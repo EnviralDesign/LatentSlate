@@ -1,0 +1,63 @@
+import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+export component AppTitleBar inherits Rectangle {
+    in property <string> project-name;
+    in property <string> project-summary;
+    in property <bool> can-save-project;
+
+    callback request-new-project();
+    callback request-open-project();
+    callback request-save-project();
+    callback request-open-queue();
+    callback request-open-preferences();
+
+    height: 56px;
+    background: #0b1220;
+
+    HorizontalBox {
+        spacing: 12px;
+        padding: 12px;
+
+        VerticalBox {
+            spacing: 2px;
+            Text {
+                text: root.project-name;
+                color: #f8fafc;
+                font-size: 18px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.project-summary;
+                color: #94a3b8;
+                font-size: 11px;
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+        }
+
+        Button {
+            text: "New";
+            clicked => { root.request-new-project(); }
+        }
+        Button {
+            text: "Open";
+            clicked => { root.request-open-project(); }
+        }
+        Button {
+            text: "Save";
+            enabled: root.can-save-project;
+            clicked => { root.request-save-project(); }
+        }
+        Button {
+            text: "Queue";
+            clicked => { root.request-open-queue(); }
+        }
+        Button {
+            text: "Prefs";
+            clicked => { root.request-open-preferences(); }
+        }
+    }
+}

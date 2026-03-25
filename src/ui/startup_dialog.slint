@@ -1,0 +1,317 @@
+import { Button, GridBox, HorizontalBox, LineEdit, ScrollView, VerticalBox } from "std-widgets.slint";
+
+component StartupFieldRow inherits VerticalBox {
+    in property <string> label;
+    in property <string> value;
+    in property <string> placeholder;
+    callback edited(string);
+
+    spacing: 6px;
+
+    Text {
+        text: root.label;
+        color: #94a3b8;
+        font-size: 11px;
+        font-weight: 600;
+    }
+
+    editor := LineEdit {
+        height: 40px;
+        text: root.value;
+        placeholder-text: root.placeholder;
+        edited => {
+            root.edited(editor.text);
+        }
+    }
+}
+
+export component StartupDialog inherits Rectangle {
+    in property <bool> can-close;
+    in property <bool> can-create;
+    in property <string> parent-dir;
+    in property <string> startup-name;
+    in property <string> startup-width;
+    in property <string> startup-height;
+    in property <string> startup-fps;
+    in property <string> startup-duration-minutes;
+    in property <string> startup-preview-max-width;
+    in property <string> startup-preview-max-height;
+    in property <string> error-text;
+
+    callback request-close();
+    callback request-browse-parent();
+    callback request-open-project();
+    callback request-create-project();
+    callback startup-name-edited(string);
+    callback startup-width-edited(string);
+    callback startup-height-edited(string);
+    callback startup-fps-edited(string);
+    callback startup-duration-minutes-edited(string);
+    callback startup-preview-max-width-edited(string);
+    callback startup-preview-max-height-edited(string);
+
+    background: #b0000000;
+
+    Rectangle {
+        width: 720px;
+        height: parent.height - 96px;
+        x: (parent.width - self.width) / 2;
+        y: 48px;
+        background: #0f172a;
+        border-color: #334155;
+        border-width: 1px;
+        border-radius: 10px;
+
+        VerticalBox {
+            spacing: 0px;
+
+            Rectangle {
+                height: 72px;
+                background: #0b1220;
+
+                HorizontalBox {
+                    spacing: 12px;
+                    padding: 18px;
+
+                    VerticalBox {
+                        spacing: 4px;
+                        Text {
+                            text: "Project Startup";
+                            color: #f8fafc;
+                            font-size: 18px;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "Create a new project or open an existing one. This is the first real workflow port on the Slint shell.";
+                            color: #94a3b8;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: transparent;
+                    }
+
+                    if (root.can-close) : Button {
+                        height: 38px;
+                        text: "Close";
+                        clicked => { root.request-close(); }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            ScrollView {
+                viewport-width: parent.width;
+                viewport-height: parent.height;
+
+                Rectangle {
+                    background: transparent;
+                    width: parent.width;
+                    height: 560px;
+
+                    VerticalBox {
+                        spacing: 18px;
+                        padding: 20px;
+
+                        Rectangle {
+                            border-color: #243244;
+                            border-width: 1px;
+                            border-radius: 8px;
+                            background: #111827;
+
+                            VerticalBox {
+                                spacing: 10px;
+                                padding: 14px;
+
+                                Text {
+                                    text: "Open Existing Project";
+                                    color: #f8fafc;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "Use this when the project already exists on disk.";
+                                    color: #94a3b8;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                HorizontalBox {
+                                    spacing: 8px;
+                                    alignment: end;
+
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: transparent;
+                                    }
+                                    Button {
+                                        height: 38px;
+                                        text: "Open Existing";
+                                        clicked => { root.request-open-project(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            border-color: #243244;
+                            border-width: 1px;
+                            border-radius: 8px;
+                            background: #111827;
+
+                            VerticalBox {
+                                spacing: 16px;
+                                padding: 14px;
+
+                                Text {
+                                    text: "New Project";
+                                    color: #f8fafc;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                Text {
+                                    text: "Choose the parent folder and project settings, then create a new project directory.";
+                                    color: #94a3b8;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+
+                                HorizontalBox {
+                                    spacing: 8px;
+
+                                    Text {
+                                        text: "Parent Folder";
+                                        color: #e2e8f0;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        background: transparent;
+                                    }
+                                    Button {
+                                        height: 38px;
+                                        text: "Browse";
+                                        clicked => { root.request-browse-parent(); }
+                                    }
+                                }
+
+                                Rectangle {
+                                    height: 40px;
+                                    border-color: #334155;
+                                    border-width: 1px;
+                                    border-radius: 6px;
+                                    background: #0f172a;
+
+                                    Text {
+                                        x: 12px;
+                                        y: (parent.height - self.height) / 2;
+                                        width: parent.width - 24px;
+                                        text: root.parent-dir;
+                                        color: #cbd5e1;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+
+                                StartupFieldRow {
+                                    label: "Project Name";
+                                    value: root.startup-name;
+                                    placeholder: "My New Project";
+                                    edited(value) => { root.startup-name-edited(value); }
+                                }
+
+                                GridBox {
+                                    spacing: 12px;
+
+                                    StartupFieldRow {
+                                        row: 0;
+                                        col: 0;
+                                        label: "Width";
+                                        value: root.startup-width;
+                                        placeholder: "1920";
+                                        edited(value) => { root.startup-width-edited(value); }
+                                    }
+                                    StartupFieldRow {
+                                        row: 0;
+                                        col: 1;
+                                        label: "Height";
+                                        value: root.startup-height;
+                                        placeholder: "1080";
+                                        edited(value) => { root.startup-height-edited(value); }
+                                    }
+                                    StartupFieldRow {
+                                        row: 1;
+                                        col: 0;
+                                        label: "FPS";
+                                        value: root.startup-fps;
+                                        placeholder: "60";
+                                        edited(value) => { root.startup-fps-edited(value); }
+                                    }
+                                    StartupFieldRow {
+                                        row: 1;
+                                        col: 1;
+                                        label: "Duration (Minutes)";
+                                        value: root.startup-duration-minutes;
+                                        placeholder: "1";
+                                        edited(value) => { root.startup-duration-minutes-edited(value); }
+                                    }
+                                    StartupFieldRow {
+                                        row: 2;
+                                        col: 0;
+                                        label: "Preview Max Width";
+                                        value: root.startup-preview-max-width;
+                                        placeholder: "960";
+                                        edited(value) => { root.startup-preview-max-width-edited(value); }
+                                    }
+                                    StartupFieldRow {
+                                        row: 2;
+                                        col: 1;
+                                        label: "Preview Max Height";
+                                        value: root.startup-preview-max-height;
+                                        placeholder: "540";
+                                        edited(value) => { root.startup-preview-max-height-edited(value); }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (root.error-text != "") : Text {
+                            text: root.error-text;
+                            color: #fca5a5;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            Rectangle {
+                height: 58px;
+                background: #0b1220;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    padding: 12px;
+                    alignment: end;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: transparent;
+                    }
+                    Button {
+                        height: 38px;
+                        text: "Create Project";
+                        enabled: root.can-create;
+                        clicked => { root.request-create-project(); }
+                    }
+                }
+            }
+        }
+    }
+}

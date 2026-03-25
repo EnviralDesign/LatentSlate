@@ -1,8 +1,10 @@
 mod controller;
+mod commands;
 mod model;
+mod presenter;
 
-pub use model::AppShellModel;
+pub use model::AppModel;
 
 pub fn run() -> Result<(), slint::PlatformError> {
-    controller::SlintAppController::new(AppShellModel::default())?.run()
+    controller::SlintAppController::new(AppModel::default())?.run()
 }

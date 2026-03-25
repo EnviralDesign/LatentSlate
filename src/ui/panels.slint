@@ -1,0 +1,152 @@
+import { HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+export component AssetsPanelShell inherits Rectangle {
+    in property <string> assets-summary;
+
+    preferred-width: 280px;
+    background: #111827;
+
+    VerticalBox {
+        spacing: 10px;
+        padding: 16px;
+
+        Text {
+            text: "Assets";
+            color: #e2e8f0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.assets-summary;
+            color: #94a3b8;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "The asset browser is the first real panel migration target after the shared app model and command bus land.";
+            color: #64748b;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component PreviewPanelShell inherits Rectangle {
+    in property <string> preview-status;
+
+    vertical-stretch: 3;
+    background: #020617;
+
+    VerticalBox {
+        spacing: 12px;
+        padding: 20px;
+
+        Text {
+            text: "Preview";
+            color: #f8fafc;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.preview-status;
+            color: #94a3b8;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component TimelinePanelShell inherits Rectangle {
+    in property <string> timeline-status;
+
+    vertical-stretch: 2;
+    background: #111827;
+
+    VerticalBox {
+        spacing: 12px;
+        padding: 20px;
+
+        Text {
+            text: "Timeline";
+            color: #f8fafc;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.timeline-status;
+            color: #94a3b8;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component AttributesPanelShell inherits Rectangle {
+    in property <string> attributes-status;
+    in property <string> queue-summary;
+
+    preferred-width: 320px;
+    background: #111827;
+
+    VerticalBox {
+        spacing: 10px;
+        padding: 16px;
+
+        Text {
+            text: "Attributes";
+            color: #e2e8f0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        Text {
+            text: root.attributes-status;
+            color: #94a3b8;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.queue-summary;
+            color: #38bdf8;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component WorkspaceShell inherits HorizontalBox {
+    in property <string> assets-summary;
+    in property <string> preview-status;
+    in property <string> timeline-status;
+    in property <string> attributes-status;
+    in property <string> queue-summary;
+
+    spacing: 0px;
+
+    AssetsPanelShell {
+        assets-summary: root.assets-summary;
+    }
+
+    Rectangle { width: 1px; background: #1e293b; }
+
+    VerticalBox {
+        spacing: 0px;
+        horizontal-stretch: 1;
+
+        PreviewPanelShell {
+            preview-status: root.preview-status;
+        }
+
+        Rectangle { height: 1px; background: #1e293b; }
+
+        TimelinePanelShell {
+            timeline-status: root.timeline-status;
+        }
+    }
+
+    Rectangle { width: 1px; background: #1e293b; }
+
+    AttributesPanelShell {
+        attributes-status: root.attributes-status;
+        queue-summary: root.queue-summary;
+    }
+}

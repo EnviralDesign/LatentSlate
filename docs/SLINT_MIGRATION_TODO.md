@@ -31,11 +31,11 @@ This checklist is the working migration spine for replacing the Dioxus shell wit
 - [x] Create a minimal `build.rs` and external `.slint` window file.
 - [x] Create `src/slint_app/` for shell controller/model code.
 - [x] Create `src/ui/` for Slint module loading and UI markup.
-- [ ] Split the current single `main_window.slint` into smaller shell files once behavior starts landing:
-- [ ] `src/ui/title_bar.slint`
-- [ ] `src/ui/workspace_shell.slint`
-- [ ] `src/ui/status_bar.slint`
-- [ ] `src/ui/panels/` for assets, preview, timeline, attributes
+- [x] Split the shell UI into smaller Slint files:
+- [x] `src/ui/title_bar.slint`
+- [x] `src/ui/panels.slint`
+- [x] `src/ui/status_bar.slint`
+- [x] `src/ui/startup_dialog.slint`
 
 ## Phase 2: Shared App Model
 
@@ -118,6 +118,6 @@ This checklist is the working migration spine for replacing the Dioxus shell wit
 
 ## Immediate Next Slice
 
-- [ ] Replace the placeholder shell model with a real shared `AppModel`.
-- [ ] Land a command bus for top-bar actions.
-- [ ] Port the startup/new-project flow first so the Slint shell can load real projects before deeper panel migration.
+- [x] Replace the placeholder shell model with a real shared `AppModel`.
+- [x] Land a command bus for top-bar actions.
+- [x] Port the startup/new-project flow first so the Slint shell can load real projects before deeper panel migration.

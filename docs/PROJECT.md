@@ -1053,6 +1053,7 @@ src/
 - **2026-01-04:** Implemented timeline clip interactions (Move, Resize, Delete, Drag & Drop)
 - **2026-01-04:** Refined resize handles and fixed context menus
 - **2026-03-25:** Started the Slint migration in earnest: added a detailed migration todo doc, switched the executable entrypoint to a Slint shell scaffold, and moved new shell code into dedicated `src/slint_app/` + `src/ui/` modules.
+- **2026-03-25:** Replaced the placeholder Slint shell model with a shared `AppModel`, split shell UI into modular `.slint` files, and ported the startup/create/open/save project flow into the new Slint path.
 
 ---
 
