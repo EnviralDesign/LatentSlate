@@ -1,4 +1,34 @@
-import { Button, GridBox, HorizontalBox, LineEdit, ScrollView, VerticalBox } from "std-widgets.slint";
+import { Button, GridBox, HorizontalBox, LineEdit, ListView, ScrollView, VerticalBox } from "std-widgets.slint";
+
+/// Padded rail: outer HorizontalBox applies padding; inner Rectangle stretches like the old
+/// DebugFrame so @children fill the content box (otherwise nested layouts can collapse to zero).
+component RailSection inherits Rectangle {
+    in property <length> pad-left;
+    in property <length> pad-top;
+    in property <length> pad-right;
+    in property <length> pad-bottom;
+
+    background: transparent;
+
+    HorizontalBox {
+        width: 100%;
+        height: 100%;
+        spacing: 0px;
+        padding-left: root.pad-left;
+        padding-top: root.pad-top;
+        padding-right: root.pad-right;
+        padding-bottom: root.pad-bottom;
+
+        Rectangle {
+            min-width: 0px;
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            background: transparent;
+
+            @children
+        }
+    }
+}
 
 component StartupFieldRow inherits VerticalBox {
     in property <string> label;
@@ -6,17 +36,27 @@ component StartupFieldRow inherits VerticalBox {
     in property <string> placeholder;
     callback edited(string);
 
+    min-width: 0px;
+    preferred-width: 100%;
+    horizontal-stretch: 1;
     spacing: 6px;
 
     Text {
+        width: 100%;
+        height: 18px;
+        vertical-alignment: center;
+        horizontal-alignment: left;
         text: root.label;
-        color: #94a3b8;
+        color: #8d96a4;
         font-size: 11px;
         font-weight: 600;
     }
 
     editor := LineEdit {
         height: 40px;
+        min-width: 0px;
+        preferred-width: 100%;
+        horizontal-stretch: 1;
         text: root.value;
         placeholder-text: root.placeholder;
         edited => {
@@ -25,9 +65,64 @@ component StartupFieldRow inherits VerticalBox {
     }
 }
 
+component StartupReadonlyValue inherits Rectangle {
+    in property <string> value;
+
+    min-width: 0px;
+    preferred-width: 100%;
+    horizontal-stretch: 1;
+    height: 40px;
+    border-color: #2b3139;
+    border-width: 1px;
+    border-radius: 6px;
+    background: #171b22;
+
+    Text {
+        x: 12px;
+        y: 11px;
+        width: parent.width - 24px;
+        text: root.value;
+        color: #c0c7d2;
+        font-size: 12px;
+        overflow: elide;
+    }
+}
+
+component StartupProjectRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback pressed();
+
+    height: 42px;
+    border-radius: 6px;
+    background: root.selected ? #202733 : #151a20;
+
+    Text {
+        x: 12px;
+        y: 12px;
+        width: parent.width - 24px;
+        text: root.label;
+        color: root.selected ? #f3f5f8 : #c0c7d2;
+        font-size: 12px;
+        overflow: elide;
+    }
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            root.pressed();
+        }
+    }
+}
+
 export component StartupDialog inherits Rectangle {
     in property <bool> can-close;
     in property <bool> can-create;
+    in property <bool> can-open-selected;
+    in property <int> startup-tab;
+    in property <[string]> startup-projects;
+    in property <int> startup-selected-project;
     in property <string> parent-dir;
     in property <string> startup-name;
     in property <string> startup-width;
@@ -40,8 +135,11 @@ export component StartupDialog inherits Rectangle {
 
     callback request-close();
     callback request-browse-parent();
+    callback request-browse-existing-project();
     callback request-open-project();
     callback request-create-project();
+    callback startup-tab-changed(int);
+    callback startup-selected-project-changed(int);
     callback startup-name-edited(string);
     callback startup-width-edited(string);
     callback startup-height-edited(string);
@@ -50,265 +148,457 @@ export component StartupDialog inherits Rectangle {
     callback startup-preview-max-width-edited(string);
     callback startup-preview-max-height-edited(string);
 
-    background: #b0000000;
+    private property <length> content-pad: 20px;
+    private property <length> row-gap: 12px;
+    private property <length> scroll-bottom-pad: 84px;
+
+    background: transparent;
 
     Rectangle {
-        width: 720px;
-        height: parent.height - 96px;
-        x: (parent.width - self.width) / 2;
-        y: 48px;
-        background: #0f172a;
-        border-color: #334155;
+        width: parent.width;
+        height: parent.height;
+        background: #b0000000;
+    }
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            if (root.can-close) {
+                root.request-close();
+            }
+        }
+    }
+
+    card := Rectangle {
+        width: parent.width < 820px ? parent.width - 48px : 772px;
+        height: parent.height < 760px ? parent.height - 40px : 712px;
+        x: round(((parent.width - self.width) / 1px) / 2) * 1px;
+        y: round(((parent.height - self.height) / 1px) / 2) * 1px;
+        background: #14181f;
+        border-color: #2b3139;
         border-width: 1px;
         border-radius: 10px;
+        clip: true;
 
         VerticalBox {
             spacing: 0px;
 
             Rectangle {
-                height: 72px;
-                background: #0b1220;
+                height: 82px;
+                background: #14181f;
 
-                HorizontalBox {
-                    spacing: 12px;
-                    padding: 18px;
+                RailSection {
+                    width: 100%;
+                    height: 100%;
+                    pad-left: root.content-pad;
+                    pad-top: 18px;
+                    pad-right: root.content-pad;
+                    pad-bottom: 16px;
 
-                    VerticalBox {
-                        spacing: 4px;
-                        Text {
-                            text: "Project Startup";
-                            color: #f8fafc;
-                            font-size: 18px;
-                            font-weight: 600;
+                    HorizontalBox {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 12px;
+
+                        VerticalBox {
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            spacing: 4px;
+
+                            Text {
+                                width: 100%;
+                                horizontal-alignment: left;
+                                text: "Project";
+                                color: #f2f4f7;
+                                font-size: 18px;
+                                font-weight: 600;
+                            }
+
+                            Text {
+                                width: 100%;
+                                horizontal-alignment: left;
+                                text: "Open an existing project or create a new one.";
+                                color: #8d96a4;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
                         }
-                        Text {
-                            text: "Create a new project or open an existing one. This is the first real workflow port on the Slint shell.";
-                            color: #94a3b8;
-                            font-size: 12px;
-                            wrap: word-wrap;
+
+                        if (root.can-close) : Button {
+                            height: 36px;
+                            text: "Close";
+                            clicked => { root.request-close(); }
                         }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        background: transparent;
-                    }
-
-                    if (root.can-close) : Button {
-                        height: 38px;
-                        text: "Close";
-                        clicked => { root.request-close(); }
                     }
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: #262c35; }
 
-            ScrollView {
-                viewport-width: parent.width;
-                viewport-height: parent.height;
+            Rectangle {
+                height: 52px;
+                background: #14181f;
 
-                Rectangle {
-                    background: transparent;
-                    width: parent.width;
-                    height: 560px;
+                RailSection {
+                    width: 100%;
+                    height: 100%;
+                    pad-left: root.content-pad;
+                    pad-top: 10px;
+                    pad-right: root.content-pad;
+                    pad-bottom: 10px;
 
-                    VerticalBox {
-                        spacing: 18px;
-                        padding: 20px;
+                    HorizontalBox {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 8px;
 
-                        Rectangle {
-                            border-color: #243244;
-                            border-width: 1px;
-                            border-radius: 8px;
-                            background: #111827;
+                        HorizontalBox {
+                            spacing: 8px;
 
-                            VerticalBox {
-                                spacing: 10px;
-                                padding: 14px;
+                            Button {
+                                width: 76px;
+                                height: 32px;
+                                text: "Open";
+                                primary: root.startup-tab == 0;
+                                clicked => { root.startup-tab-changed(0); }
+                            }
 
-                                Text {
-                                    text: "Open Existing Project";
-                                    color: #f8fafc;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                }
-                                Text {
-                                    text: "Use this when the project already exists on disk.";
-                                    color: #94a3b8;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                                HorizontalBox {
-                                    spacing: 8px;
-                                    alignment: end;
-
-                                    Rectangle {
-                                        horizontal-stretch: 1;
-                                        background: transparent;
-                                    }
-                                    Button {
-                                        height: 38px;
-                                        text: "Open Existing";
-                                        clicked => { root.request-open-project(); }
-                                    }
-                                }
+                            Button {
+                                width: 76px;
+                                height: 32px;
+                                text: "New";
+                                primary: root.startup-tab == 1;
+                                clicked => { root.startup-tab-changed(1); }
                             }
                         }
 
                         Rectangle {
-                            border-color: #243244;
+                            horizontal-stretch: 1;
+                            background: transparent;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #262c35; }
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: #14181f;
+                clip: true;
+
+                if (root.startup-tab == 0) : RailSection {
+                    width: 100%;
+                    height: 100%;
+                    pad-left: root.content-pad;
+                    pad-top: root.content-pad;
+                    pad-right: root.content-pad;
+                    pad-bottom: root.content-pad;
+
+                    VerticalBox {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 16px;
+
+                        Text {
+                            width: 100%;
+                            height: 22px;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            text: "Projects";
+                            color: #f2f4f7;
+                            font-size: 14px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            width: 100%;
+                            horizontal-alignment: left;
+                            text: "Choose a project from " + root.parent-dir + " or browse for another folder.";
+                            color: #8d96a4;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 220px;
+                            min-width: 0px;
+                            horizontal-stretch: 1;
+                            preferred-width: 100%;
+                            border-color: #2b3139;
                             border-width: 1px;
                             border-radius: 8px;
-                            background: #111827;
+                            background: #171b22;
 
-                            VerticalBox {
-                                spacing: 16px;
-                                padding: 14px;
+                            if (root.startup-projects.length > 0) : Rectangle {
+                                x: 4px;
+                                y: 4px;
+                                width: parent.width - 8px;
+                                height: parent.height - 8px;
+                                background: transparent;
+
+                                ListView {
+                                    width: parent.width;
+                                    height: parent.height;
+
+                                    for project[index] in root.startup-projects : StartupProjectRow {
+                                        label: project;
+                                        selected: root.startup-selected-project == index;
+                                        pressed => {
+                                            root.startup-selected-project-changed(index);
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (root.startup-projects.length == 0) : Rectangle {
+                                background: transparent;
 
                                 Text {
+                                    x: 12px;
+                                    y: 18px;
+                                    width: parent.width - 24px;
+                                    horizontal-alignment: left;
+                                    text: "No projects found in the default projects folder yet.";
+                                    color: #8d96a4;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        if (root.error-text != "") : Text {
+                            width: 100%;
+                            horizontal-alignment: left;
+                            text: root.error-text;
+                            color: #e29a9a;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if (root.startup-tab == 1) : RailSection {
+                    width: 100%;
+                    height: 100%;
+                    pad-left: root.content-pad;
+                    pad-top: root.content-pad;
+                    pad-right: root.content-pad;
+                    pad-bottom: root.content-pad;
+
+                    new-project-scroll := ScrollView {
+                        width: 100%;
+                        height: 100%;
+                        viewport-width: self.width;
+                        viewport-height: new-project-content.height;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                        new-project-content := Rectangle {
+                            background: transparent;
+                            width: new-project-scroll.width;
+                            height: form-layout.preferred-height + root.scroll-bottom-pad;
+
+                            form-layout := GridBox {
+                                width: 100%;
+                                padding: 0px;
+                                spacing: root.row-gap;
+
+                                Text {
+                                    row: 0;
+                                    col: 0;
+                                    colspan: 2;
+                                    height: 22px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
                                     text: "New Project";
-                                    color: #f8fafc;
+                                    color: #f2f4f7;
                                     font-size: 14px;
                                     font-weight: 600;
                                 }
+
                                 Text {
+                                    row: 1;
+                                    col: 0;
+                                    colspan: 2;
+                                    horizontal-alignment: left;
                                     text: "Choose the parent folder and project settings, then create a new project directory.";
-                                    color: #94a3b8;
+                                    color: #8d96a4;
                                     font-size: 12px;
                                     wrap: word-wrap;
                                 }
 
-                                HorizontalBox {
-                                    spacing: 8px;
+                                Text {
+                                    row: 2;
+                                    col: 0;
+                                    colspan: 2;
+                                    height: 18px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
+                                    text: "Parent Folder";
+                                    color: #8d96a4;
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                }
 
-                                    Text {
-                                        text: "Parent Folder";
-                                        color: #e2e8f0;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                    }
+                                StartupReadonlyValue {
+                                    row: 3;
+                                    col: 0;
+                                    width: parent.width;
+                                    height: 40px;
+                                    value: root.parent-dir;
+                                }
+
+                                HorizontalBox {
+                                    row: 3;
+                                    col: 1;
+                                    width: parent.width;
+                                    height: 36px;
+                                    spacing: 0px;
+
                                     Rectangle {
                                         horizontal-stretch: 1;
                                         background: transparent;
                                     }
+
                                     Button {
-                                        height: 38px;
+                                        height: 36px;
                                         text: "Browse";
                                         clicked => { root.request-browse-parent(); }
                                     }
                                 }
 
-                                Rectangle {
-                                    height: 40px;
-                                    border-color: #334155;
-                                    border-width: 1px;
-                                    border-radius: 6px;
-                                    background: #0f172a;
-
-                                    Text {
-                                        x: 12px;
-                                        y: (parent.height - self.height) / 2;
-                                        width: parent.width - 24px;
-                                        text: root.parent-dir;
-                                        color: #cbd5e1;
-                                        font-size: 12px;
-                                        wrap: word-wrap;
-                                    }
-                                }
-
                                 StartupFieldRow {
+                                    row: 4;
+                                    col: 0;
+                                    colspan: 2;
+                                    width: parent.width;
                                     label: "Project Name";
                                     value: root.startup-name;
                                     placeholder: "My New Project";
                                     edited(value) => { root.startup-name-edited(value); }
                                 }
 
-                                GridBox {
-                                    spacing: 12px;
+                                StartupFieldRow {
+                                    row: 5;
+                                    col: 0;
+                                    width: parent.width;
+                                    label: "Width";
+                                    value: root.startup-width;
+                                    placeholder: "1920";
+                                    edited(value) => { root.startup-width-edited(value); }
+                                }
 
-                                    StartupFieldRow {
-                                        row: 0;
-                                        col: 0;
-                                        label: "Width";
-                                        value: root.startup-width;
-                                        placeholder: "1920";
-                                        edited(value) => { root.startup-width-edited(value); }
-                                    }
-                                    StartupFieldRow {
-                                        row: 0;
-                                        col: 1;
-                                        label: "Height";
-                                        value: root.startup-height;
-                                        placeholder: "1080";
-                                        edited(value) => { root.startup-height-edited(value); }
-                                    }
-                                    StartupFieldRow {
-                                        row: 1;
-                                        col: 0;
-                                        label: "FPS";
-                                        value: root.startup-fps;
-                                        placeholder: "60";
-                                        edited(value) => { root.startup-fps-edited(value); }
-                                    }
-                                    StartupFieldRow {
-                                        row: 1;
-                                        col: 1;
-                                        label: "Duration (Minutes)";
-                                        value: root.startup-duration-minutes;
-                                        placeholder: "1";
-                                        edited(value) => { root.startup-duration-minutes-edited(value); }
-                                    }
-                                    StartupFieldRow {
-                                        row: 2;
-                                        col: 0;
-                                        label: "Preview Max Width";
-                                        value: root.startup-preview-max-width;
-                                        placeholder: "960";
-                                        edited(value) => { root.startup-preview-max-width-edited(value); }
-                                    }
-                                    StartupFieldRow {
-                                        row: 2;
-                                        col: 1;
-                                        label: "Preview Max Height";
-                                        value: root.startup-preview-max-height;
-                                        placeholder: "540";
-                                        edited(value) => { root.startup-preview-max-height-edited(value); }
-                                    }
+                                StartupFieldRow {
+                                    row: 5;
+                                    col: 1;
+                                    width: parent.width;
+                                    label: "Height";
+                                    value: root.startup-height;
+                                    placeholder: "1080";
+                                    edited(value) => { root.startup-height-edited(value); }
+                                }
+
+                                StartupFieldRow {
+                                    row: 6;
+                                    col: 0;
+                                    width: parent.width;
+                                    label: "FPS";
+                                    value: root.startup-fps;
+                                    placeholder: "60";
+                                    edited(value) => { root.startup-fps-edited(value); }
+                                }
+
+                                StartupFieldRow {
+                                    row: 6;
+                                    col: 1;
+                                    width: parent.width;
+                                    label: "Duration (Minutes)";
+                                    value: root.startup-duration-minutes;
+                                    placeholder: "1";
+                                    edited(value) => { root.startup-duration-minutes-edited(value); }
+                                }
+
+                                StartupFieldRow {
+                                    row: 7;
+                                    col: 0;
+                                    width: parent.width;
+                                    label: "Preview Max Width";
+                                    value: root.startup-preview-max-width;
+                                    placeholder: "960";
+                                    edited(value) => { root.startup-preview-max-width-edited(value); }
+                                }
+
+                                StartupFieldRow {
+                                    row: 7;
+                                    col: 1;
+                                    width: parent.width;
+                                    label: "Preview Max Height";
+                                    value: root.startup-preview-max-height;
+                                    placeholder: "540";
+                                    edited(value) => { root.startup-preview-max-height-edited(value); }
+                                }
+
+                                if (root.error-text != "") : Text {
+                                    row: 8;
+                                    col: 0;
+                                    colspan: 2;
+                                    horizontal-alignment: left;
+                                    text: root.error-text;
+                                    color: #e29a9a;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
                                 }
                             }
-                        }
-
-                        if (root.error-text != "") : Text {
-                            text: root.error-text;
-                            color: #fca5a5;
-                            font-size: 12px;
-                            wrap: word-wrap;
                         }
                     }
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: #262c35; }
 
             Rectangle {
                 height: 58px;
-                background: #0b1220;
+                background: #14181f;
 
-                HorizontalBox {
-                    spacing: 8px;
-                    padding: 12px;
-                    alignment: end;
+                RailSection {
+                    width: 100%;
+                    height: 100%;
+                    pad-left: root.content-pad;
+                    pad-top: 10px;
+                    pad-right: root.content-pad;
+                    pad-bottom: 12px;
 
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        background: transparent;
-                    }
-                    Button {
-                        height: 38px;
-                        text: "Create Project";
-                        enabled: root.can-create;
-                        clicked => { root.request-create-project(); }
+                    HorizontalBox {
+                        width: 100%;
+                        height: 100%;
+                        spacing: 8px;
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            background: transparent;
+                        }
+
+                        if (root.startup-tab == 0) : Button {
+                            height: 36px;
+                            text: "Browse Folder";
+                            clicked => { root.request-browse-existing-project(); }
+                        }
+
+                        if (root.startup-tab == 0) : Button {
+                            height: 36px;
+                            text: "Open Selected";
+                            enabled: root.can-open-selected;
+                            clicked => { root.request-open-project(); }
+                        }
+
+                        if (root.startup-tab == 1) : Button {
+                            height: 36px;
+                            text: "Create Project";
+                            enabled: root.can-create;
+                            clicked => { root.request-create-project(); }
+                        }
                     }
                 }
             }

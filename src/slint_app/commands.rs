@@ -7,16 +7,20 @@ pub enum StartupField {
     DurationMinutes,
     PreviewMaxWidth,
     PreviewMaxHeight,
+    TabIndex,
+    SelectedProject,
 }
 
 #[derive(Debug, Clone)]
 pub enum AppCommand {
-    ShowStartupModal,
+    ShowStartupModalNew,
+    ShowStartupModalOpen,
     HideStartupModal,
     UpdateStartupField { field: StartupField, value: String },
     BrowseStartupParentFolder,
     CreateProjectFromStartup,
     OpenProjectDialog,
+    OpenSelectedStartupProject,
     SaveProject,
     OpenQueue,
     OpenPreferences,

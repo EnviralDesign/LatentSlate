@@ -1054,6 +1054,17 @@ src/
 - **2026-01-04:** Refined resize handles and fixed context menus
 - **2026-03-25:** Started the Slint migration in earnest: added a detailed migration todo doc, switched the executable entrypoint to a Slint shell scaffold, and moved new shell code into dedicated `src/slint_app/` + `src/ui/` modules.
 - **2026-03-25:** Replaced the placeholder Slint shell model with a shared `AppModel`, split shell UI into modular `.slint` files, and ported the startup/create/open/save project flow into the new Slint path.
+- **2026-03-25:** Rebuilt the Slint startup modal layout to use a fixed dialog shell, explicit Open/New tabs, a dedicated scrollable project list, stronger backdrop dimming, and card-local click capture so empty modal space no longer behaves like the backdrop.
+- **2026-03-25:** Resized the New Project tab shell and tightened its spacing so the startup form fits without spilling through the modal footer; tab buttons now size to content instead of stretching across the row.
+- **2026-03-25:** Normalized startup field internals to rely on Slint stretch behavior instead of debug wrapper geometry, removing the temporary outline scaffolding and fixing a width-binding loop during the New Project form cleanup.
+- **2026-03-25:** Rebuilt the New Project tab around a clipped `ScrollView` + `GridBox` form layout so full-width and paired rows share one sizing contract; the startup card/body now clip overflow instead of letting children paint past the modal shell.
+- **2026-03-25:** Switched the startup tab controls to native Slint `Button`s for centered labels, made the backdrop an explicit fullscreen dim layer, and gave the New Project `ScrollView` an explicit viewport height based on the form layout so vertical scrolling can engage.
+- **2026-03-25:** Made the startup modal shell height consistent across tabs, switched the Open/New tabs from toggle-style buttons to active-styled buttons, and forced the New Project scroll content to fill the viewport width so the form no longer collapses into a narrower centered column.
+- **2026-03-25:** Collapsed the startup modal onto a shared content-rail system: header, tabs, body, and footer now reuse the same horizontal padding token, and the New Project form now places the parent-folder label/path/browse controls inside the same `GridBox` contract as the rest of the fields.
+- **2026-03-25:** Tightened the New Project field wrappers to opt into `preferred-width: 100%` and changed the scroll viewport to track an explicit content height with bottom padding so the form fields can stay on the same left rail and remain reachable at smaller window heights.
+- **2026-03-26:** Rewrote `startup_dialog.slint` around reusable `DebugFrame` and `RailSection` components so header, tabs, body, and footer share the same section abstraction; persistent debug rails now live at the wrapper level instead of distorting individual field internals.
+- **2026-03-26:** Added a second diagnostic layer with dimmer, varied child-level debug outlines around the startup modal’s title group, tab group, Open-tab list shell/project rows, New-tab grid text blocks, path/browse row, and each field row so horizontal rail drift can be traced inside the shared outer sections without changing the modal’s layout contract.
+- **2026-03-26:** Changed the child-level `DebugSlot` helper to behave like a full-width row participant (`preferred-width: 100%` + `horizontal-stretch: 1`) and normalized the Open-tab empty-state text inset to the same 12px token used by the path/list rows, reducing diagnostic wrapper-induced rail drift while keeping the debug overlays active.
 
 ---
 
@@ -1073,7 +1084,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-03-25*
+*Last updated: 2026-03-26*
 
 
 

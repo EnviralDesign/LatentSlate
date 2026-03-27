@@ -18,6 +18,10 @@ export component MainWindow inherits Window {
     in property <bool> show-startup-modal;
     in property <bool> startup-can-close;
     in property <bool> startup-can-create;
+    in property <bool> startup-can-open-selected;
+    in property <int> startup-tab;
+    in property <[string]> startup-projects;
+    in property <int> startup-selected-project;
     in property <string> startup-parent-dir;
     in property <string> startup-name;
     in property <string> startup-width;
@@ -35,8 +39,11 @@ export component MainWindow inherits Window {
     callback request-open-preferences();
     callback request-startup-close();
     callback request-startup-browse-parent();
+    callback request-startup-browse-existing-project();
     callback request-startup-open-project();
     callback request-startup-create-project();
+    callback startup-tab-changed(int);
+    callback startup-selected-project-changed(int);
     callback startup-name-edited(string);
     callback startup-width-edited(string);
     callback startup-height-edited(string);
@@ -89,6 +96,10 @@ export component MainWindow inherits Window {
         height: parent.height;
         can-close: root.startup-can-close;
         can-create: root.startup-can-create;
+        can-open-selected: root.startup-can-open-selected;
+        startup-tab: root.startup-tab;
+        startup-projects: root.startup-projects;
+        startup-selected-project: root.startup-selected-project;
         parent-dir: root.startup-parent-dir;
         startup-name: root.startup-name;
         startup-width: root.startup-width;
@@ -100,8 +111,11 @@ export component MainWindow inherits Window {
         error-text: root.startup-error;
         request-close => { root.request-startup-close(); }
         request-browse-parent => { root.request-startup-browse-parent(); }
+        request-browse-existing-project => { root.request-startup-browse-existing-project(); }
         request-open-project => { root.request-startup-open-project(); }
         request-create-project => { root.request-startup-create-project(); }
+        startup-tab-changed(value) => { root.startup-tab-changed(value); }
+        startup-selected-project-changed(value) => { root.startup-selected-project-changed(value); }
         startup-name-edited(value) => { root.startup-name-edited(value); }
         startup-width-edited(value) => { root.startup-width-edited(value); }
         startup-height-edited(value) => { root.startup-height-edited(value); }

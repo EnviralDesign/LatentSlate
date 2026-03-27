@@ -3,6 +3,18 @@ use std::path::{Path, PathBuf};
 use crate::state::{Project, ProjectSettings, SelectionState};
 
 #[derive(Debug, Clone)]
+pub struct ProjectListEntry {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupTab {
+    Open,
+    New,
+}
+
+#[derive(Debug, Clone)]
 pub struct StartupDraft {
     pub name: String,
     pub parent_dir: PathBuf,
@@ -101,16 +113,24 @@ impl StartupDraft {
 pub struct StartupState {
     pub visible: bool,
     pub can_close: bool,
+    pub tab: StartupTab,
     pub draft: StartupDraft,
+    pub available_projects: Vec<ProjectListEntry>,
+    pub selected_project_index: i32,
     pub error_message: String,
 }
 
 impl StartupState {
-    fn for_new_project(can_close: bool) -> Self {
+    fn build(can_close: bool, tab: StartupTab) -> Self {
+        let available_projects = scan_projects(&StartupDraft::default_parent_dir());
+        let selected_project_index = if available_projects.is_empty() { -1 } else { 0 };
         Self {
             visible: true,
             can_close,
+            tab,
             draft: StartupDraft::default_new_project(),
+            available_projects,
+            selected_project_index,
             error_message: String::new(),
         }
     }
@@ -131,7 +151,7 @@ impl Default for AppModel {
         Self {
             project: Project::default(),
             selection: SelectionState::default(),
-            startup: StartupState::for_new_project(false),
+            startup: StartupState::build(false, StartupTab::Open),
             status_message:
                 "Slint shell bootstrapped. Open a project or create a new one to continue."
                     .to_string(),
@@ -142,14 +162,19 @@ impl Default for AppModel {
 }
 
 impl AppModel {
-    pub fn show_startup_modal(&mut self) {
-        self.startup = StartupState::for_new_project(self.has_loaded_project());
+    pub fn show_startup_modal_new(&mut self) {
+        self.startup = StartupState::build(self.has_loaded_project(), StartupTab::New);
         self.status_message = if self.has_loaded_project() {
             "Creating a new project. Current project remains untouched until you confirm."
                 .to_string()
         } else {
             "Create a new project or open an existing one.".to_string()
         };
+    }
+
+    pub fn show_startup_modal_open(&mut self) {
+        self.startup = StartupState::build(self.has_loaded_project(), StartupTab::Open);
+        self.status_message = "Open an existing project or create a new one.".to_string();
     }
 
     pub fn hide_startup_modal(&mut self) {
@@ -195,6 +220,21 @@ impl AppModel {
         self.startup.error_message.clear();
     }
 
+    pub fn update_startup_tab(&mut self, value: String) {
+        self.startup.tab = if value.trim() == "0" {
+            StartupTab::Open
+        } else {
+            StartupTab::New
+        };
+        self.startup.error_message.clear();
+    }
+
+    pub fn update_startup_selected_project(&mut self, value: String) {
+        let index = value.trim().parse::<i32>().unwrap_or(-1);
+        self.startup.selected_project_index = index;
+        self.startup.error_message.clear();
+    }
+
     pub fn set_startup_parent_dir(&mut self, path: PathBuf) {
         self.startup.draft.parent_dir = path;
         self.startup.error_message.clear();
@@ -220,6 +260,19 @@ impl AppModel {
         Ok(())
     }
 
+    pub fn open_selected_startup_project(&mut self) -> Result<(), String> {
+        let index = self.startup.selected_project_index;
+        let Some(entry) = (index >= 0)
+            .then(|| self.startup.available_projects.get(index as usize))
+            .flatten()
+            .cloned()
+        else {
+            return Err("Select a project from the list or use Browse to choose one.".to_string());
+        };
+
+        self.open_project(&entry.path)
+    }
+
     pub fn save_project(&mut self) -> Result<(), String> {
         self.project.save().map_err(io_error_text)?;
         self.status_message = project_saved_message(&self.project);
@@ -228,6 +281,11 @@ impl AppModel {
 
     pub fn startup_can_create(&self) -> bool {
         self.startup.draft.can_create()
+    }
+
+    pub fn startup_can_open_selected(&self) -> bool {
+        self.startup.selected_project_index >= 0
+            && (self.startup.selected_project_index as usize) < self.startup.available_projects.len()
     }
 
     pub fn has_loaded_project(&self) -> bool {
@@ -287,6 +345,22 @@ fn format_duration_minutes(duration_seconds: f64) -> String {
     } else {
         format!("{:.2}", minutes)
     }
+}
+
+fn scan_projects(root: &Path) -> Vec<ProjectListEntry> {
+    let mut projects: Vec<ProjectListEntry> = std::fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join("project.json").exists())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.to_string();
+            Some(ProjectListEntry { name, path })
+        })
+        .collect();
+    projects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    projects
 }
 
 fn io_error_text(error: std::io::Error) -> String {

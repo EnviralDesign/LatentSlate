@@ -50,6 +50,8 @@ impl SlintAppController {
         window.set_show_startup_modal(view.show_startup_modal);
         window.set_startup_can_close(view.startup_can_close);
         window.set_startup_can_create(view.startup_can_create);
+        window.set_startup_can_open_selected(view.startup_can_open_selected);
+        window.set_startup_tab(view.startup_tab);
         window.set_startup_parent_dir(view.startup_parent_dir.clone().into());
         window.set_startup_name(view.startup_name.clone().into());
         window.set_startup_width(view.startup_width.clone().into());
@@ -59,15 +61,17 @@ impl SlintAppController {
         window.set_startup_preview_max_width(view.startup_preview_max_width.clone().into());
         window.set_startup_preview_max_height(view.startup_preview_max_height.clone().into());
         window.set_startup_error(view.startup_error.clone().into());
+        window.set_startup_projects(view.startup_projects.clone());
+        window.set_startup_selected_project(view.startup_selected_project);
     }
 
     fn wire_callbacks(&self) {
         Self::wire_action(&self.window, Rc::clone(&self.model), |window, callback| {
             window.on_request_new_project(callback);
-        }, AppCommand::ShowStartupModal);
+        }, AppCommand::ShowStartupModalNew);
         Self::wire_action(&self.window, Rc::clone(&self.model), |window, callback| {
             window.on_request_open_project(callback);
-        }, AppCommand::OpenProjectDialog);
+        }, AppCommand::ShowStartupModalOpen);
         Self::wire_action(&self.window, Rc::clone(&self.model), |window, callback| {
             window.on_request_save_project(callback);
         }, AppCommand::SaveProject);
@@ -84,8 +88,11 @@ impl SlintAppController {
             window.on_request_startup_browse_parent(callback);
         }, AppCommand::BrowseStartupParentFolder);
         Self::wire_action(&self.window, Rc::clone(&self.model), |window, callback| {
-            window.on_request_startup_open_project(callback);
+            window.on_request_startup_browse_existing_project(callback);
         }, AppCommand::OpenProjectDialog);
+        Self::wire_action(&self.window, Rc::clone(&self.model), |window, callback| {
+            window.on_request_startup_open_project(callback);
+        }, AppCommand::OpenSelectedStartupProject);
         Self::wire_action(&self.window, Rc::clone(&self.model), |window, callback| {
             window.on_request_startup_create_project(callback);
         }, AppCommand::CreateProjectFromStartup);
@@ -108,6 +115,12 @@ impl SlintAppController {
             &self.window,
             Rc::clone(&self.model),
             StartupField::PreviewMaxHeight,
+        );
+        Self::wire_startup_field(&self.window, Rc::clone(&self.model), StartupField::TabIndex);
+        Self::wire_startup_field(
+            &self.window,
+            Rc::clone(&self.model),
+            StartupField::SelectedProject,
         );
     }
 
@@ -202,6 +215,26 @@ impl SlintAppController {
                     );
                 })
             }
+            StartupField::TabIndex => window.on_startup_tab_changed(move |value| {
+                Self::dispatch(
+                    &model,
+                    &weak,
+                    AppCommand::UpdateStartupField {
+                        field: StartupField::TabIndex,
+                        value: value.to_string(),
+                    },
+                );
+            }),
+            StartupField::SelectedProject => window.on_startup_selected_project_changed(move |value| {
+                Self::dispatch(
+                    &model,
+                    &weak,
+                    AppCommand::UpdateStartupField {
+                        field: StartupField::SelectedProject,
+                        value: value.to_string(),
+                    },
+                );
+            }),
         }
     }
 
@@ -219,7 +252,8 @@ impl SlintAppController {
 
     fn handle_command(model: &mut AppModel, command: AppCommand) {
         match command {
-            AppCommand::ShowStartupModal => model.show_startup_modal(),
+            AppCommand::ShowStartupModalNew => model.show_startup_modal_new(),
+            AppCommand::ShowStartupModalOpen => model.show_startup_modal_open(),
             AppCommand::HideStartupModal => model.hide_startup_modal(),
             AppCommand::UpdateStartupField { field, value } => match field {
                 StartupField::Name => model.update_startup_name(value),
@@ -229,6 +263,8 @@ impl SlintAppController {
                 StartupField::DurationMinutes => model.update_startup_duration_minutes(value),
                 StartupField::PreviewMaxWidth => model.update_startup_preview_max_width(value),
                 StartupField::PreviewMaxHeight => model.update_startup_preview_max_height(value),
+                StartupField::TabIndex => model.update_startup_tab(value),
+                StartupField::SelectedProject => model.update_startup_selected_project(value),
             },
             AppCommand::BrowseStartupParentFolder => {
                 let start_dir = model.startup.draft.parent_dir.clone();
@@ -252,6 +288,11 @@ impl SlintAppController {
                         model.startup.visible = true;
                         model.startup.error_message = error;
                     }
+                }
+            }
+            AppCommand::OpenSelectedStartupProject => {
+                if let Err(error) = model.open_selected_startup_project() {
+                    model.startup.error_message = error;
                 }
             }
             AppCommand::SaveProject => {
