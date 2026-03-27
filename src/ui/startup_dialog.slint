@@ -1,4 +1,4 @@
-import { Button, GridBox, HorizontalBox, LineEdit, ListView, ScrollView, VerticalBox } from "std-widgets.slint";
+import { Button, HorizontalBox, LineEdit, ListView, ScrollView, VerticalBox } from "std-widgets.slint";
 
 /// Padded rail: outer HorizontalBox applies padding; inner Rectangle stretches like the old
 /// DebugFrame so @children fill the content box (otherwise nested layouts can collapse to zero).
@@ -93,6 +93,7 @@ component StartupProjectRow inherits Rectangle {
     in property <bool> selected;
     callback pressed();
 
+    width: 100%;
     height: 42px;
     border-radius: 6px;
     background: root.selected ? #202733 : #151a20;
@@ -151,6 +152,8 @@ export component StartupDialog inherits Rectangle {
     private property <length> content-pad: 20px;
     private property <length> row-gap: 12px;
     private property <length> scroll-bottom-pad: 84px;
+    /// Tight vertical padding for Open/New row (centering handles alignment; no need for 10+10).
+    private property <length> tab-bar-vpad: 6px;
 
     background: transparent;
 
@@ -236,19 +239,23 @@ export component StartupDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: #262c35; }
 
+            // Tab row: alignment: center on tab-bar-inner — compact vertical padding (~60% of former 10+10).
             Rectangle {
-                height: 52px;
+                min-height: tab-bar-inner.preferred-height + root.tab-bar-vpad * 2;
+                vertical-stretch: 0;
+                preferred-height: tab-bar-inner.preferred-height + root.tab-bar-vpad * 2;
                 background: #14181f;
 
                 RailSection {
                     width: 100%;
                     height: 100%;
                     pad-left: root.content-pad;
-                    pad-top: 10px;
+                    pad-top: root.tab-bar-vpad;
                     pad-right: root.content-pad;
-                    pad-bottom: 10px;
+                    pad-bottom: root.tab-bar-vpad;
 
-                    HorizontalBox {
+                    tab-bar-inner := HorizontalBox {
+                        alignment: center;
                         width: 100%;
                         height: 100%;
                         spacing: 8px;
@@ -331,23 +338,33 @@ export component StartupDialog inherits Rectangle {
                             border-width: 1px;
                             border-radius: 8px;
                             background: #171b22;
+                            clip: true;
 
                             if (root.startup-projects.length > 0) : Rectangle {
-                                x: 4px;
-                                y: 4px;
-                                width: parent.width - 8px;
-                                height: parent.height - 8px;
+                                x: 8px;
+                                y: 8px;
+                                width: parent.width - 16px;
+                                height: parent.height - 16px;
                                 background: transparent;
+                                clip: true;
 
                                 ListView {
                                     width: parent.width;
                                     height: parent.height;
 
-                                    for project[index] in root.startup-projects : StartupProjectRow {
-                                        label: project;
-                                        selected: root.startup-selected-project == index;
-                                        pressed => {
-                                            root.startup-selected-project-changed(index);
+                                    for project[index] in root.startup-projects : Rectangle {
+                                        width: parent.width;
+                                        height: 42px;
+                                        background: transparent;
+
+                                        StartupProjectRow {
+                                            x: 6px;
+                                            width: parent.width - 12px;
+                                            label: project;
+                                            selected: root.startup-selected-project == index;
+                                            pressed => {
+                                                root.startup-selected-project-changed(index);
+                                            }
                                         }
                                     }
                                 }
@@ -398,17 +415,15 @@ export component StartupDialog inherits Rectangle {
                         new-project-content := Rectangle {
                             background: transparent;
                             width: new-project-scroll.width;
-                            height: form-layout.preferred-height + root.scroll-bottom-pad;
+                            height: new-project-vbox.preferred-height + root.scroll-bottom-pad;
 
-                            form-layout := GridBox {
+                            new-project-vbox := VerticalBox {
                                 width: 100%;
-                                padding: 0px;
                                 spacing: root.row-gap;
+                                min-width: 0px;
+                                horizontal-stretch: 1;
 
                                 Text {
-                                    row: 0;
-                                    col: 0;
-                                    colspan: 2;
                                     height: 22px;
                                     vertical-alignment: center;
                                     horizontal-alignment: left;
@@ -419,9 +434,6 @@ export component StartupDialog inherits Rectangle {
                                 }
 
                                 Text {
-                                    row: 1;
-                                    col: 0;
-                                    colspan: 2;
                                     horizontal-alignment: left;
                                     text: "Choose the parent folder and project settings, then create a new project directory.";
                                     color: #8d96a4;
@@ -430,9 +442,6 @@ export component StartupDialog inherits Rectangle {
                                 }
 
                                 Text {
-                                    row: 2;
-                                    col: 0;
-                                    colspan: 2;
                                     height: 18px;
                                     vertical-alignment: center;
                                     horizontal-alignment: left;
@@ -442,24 +451,14 @@ export component StartupDialog inherits Rectangle {
                                     font-weight: 600;
                                 }
 
-                                StartupReadonlyValue {
-                                    row: 3;
-                                    col: 0;
-                                    width: parent.width;
-                                    height: 40px;
-                                    value: root.parent-dir;
-                                }
-
                                 HorizontalBox {
-                                    row: 3;
-                                    col: 1;
-                                    width: parent.width;
-                                    height: 36px;
-                                    spacing: 0px;
+                                    spacing: 8px;
+                                    min-width: 0px;
 
-                                    Rectangle {
+                                    StartupReadonlyValue {
                                         horizontal-stretch: 1;
-                                        background: transparent;
+                                        min-width: 0px;
+                                        value: root.parent-dir;
                                     }
 
                                     Button {
@@ -470,80 +469,88 @@ export component StartupDialog inherits Rectangle {
                                 }
 
                                 StartupFieldRow {
-                                    row: 4;
-                                    col: 0;
-                                    colspan: 2;
-                                    width: parent.width;
                                     label: "Project Name";
                                     value: root.startup-name;
                                     placeholder: "My New Project";
                                     edited(value) => { root.startup-name-edited(value); }
                                 }
 
-                                StartupFieldRow {
-                                    row: 5;
-                                    col: 0;
-                                    width: parent.width;
-                                    label: "Width";
-                                    value: root.startup-width;
-                                    placeholder: "1920";
-                                    edited(value) => { root.startup-width-edited(value); }
+                                HorizontalBox {
+                                    spacing: root.row-gap;
+                                    min-width: 0px;
+
+                                    StartupFieldRow {
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        horizontal-stretch: 1;
+                                        label: "Width";
+                                        value: root.startup-width;
+                                        placeholder: "1920";
+                                        edited(value) => { root.startup-width-edited(value); }
+                                    }
+
+                                    StartupFieldRow {
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        horizontal-stretch: 1;
+                                        label: "Height";
+                                        value: root.startup-height;
+                                        placeholder: "1080";
+                                        edited(value) => { root.startup-height-edited(value); }
+                                    }
                                 }
 
-                                StartupFieldRow {
-                                    row: 5;
-                                    col: 1;
-                                    width: parent.width;
-                                    label: "Height";
-                                    value: root.startup-height;
-                                    placeholder: "1080";
-                                    edited(value) => { root.startup-height-edited(value); }
+                                HorizontalBox {
+                                    spacing: root.row-gap;
+                                    min-width: 0px;
+
+                                    StartupFieldRow {
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        horizontal-stretch: 1;
+                                        label: "FPS";
+                                        value: root.startup-fps;
+                                        placeholder: "60";
+                                        edited(value) => { root.startup-fps-edited(value); }
+                                    }
+
+                                    StartupFieldRow {
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        horizontal-stretch: 1;
+                                        label: "Duration (Minutes)";
+                                        value: root.startup-duration-minutes;
+                                        placeholder: "1";
+                                        edited(value) => { root.startup-duration-minutes-edited(value); }
+                                    }
                                 }
 
-                                StartupFieldRow {
-                                    row: 6;
-                                    col: 0;
-                                    width: parent.width;
-                                    label: "FPS";
-                                    value: root.startup-fps;
-                                    placeholder: "60";
-                                    edited(value) => { root.startup-fps-edited(value); }
-                                }
+                                HorizontalBox {
+                                    spacing: root.row-gap;
+                                    min-width: 0px;
 
-                                StartupFieldRow {
-                                    row: 6;
-                                    col: 1;
-                                    width: parent.width;
-                                    label: "Duration (Minutes)";
-                                    value: root.startup-duration-minutes;
-                                    placeholder: "1";
-                                    edited(value) => { root.startup-duration-minutes-edited(value); }
-                                }
+                                    StartupFieldRow {
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        horizontal-stretch: 1;
+                                        label: "Preview Max Width";
+                                        value: root.startup-preview-max-width;
+                                        placeholder: "960";
+                                        edited(value) => { root.startup-preview-max-width-edited(value); }
+                                    }
 
-                                StartupFieldRow {
-                                    row: 7;
-                                    col: 0;
-                                    width: parent.width;
-                                    label: "Preview Max Width";
-                                    value: root.startup-preview-max-width;
-                                    placeholder: "960";
-                                    edited(value) => { root.startup-preview-max-width-edited(value); }
-                                }
-
-                                StartupFieldRow {
-                                    row: 7;
-                                    col: 1;
-                                    width: parent.width;
-                                    label: "Preview Max Height";
-                                    value: root.startup-preview-max-height;
-                                    placeholder: "540";
-                                    edited(value) => { root.startup-preview-max-height-edited(value); }
+                                    StartupFieldRow {
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        horizontal-stretch: 1;
+                                        label: "Preview Max Height";
+                                        value: root.startup-preview-max-height;
+                                        placeholder: "540";
+                                        edited(value) => { root.startup-preview-max-height-edited(value); }
+                                    }
                                 }
 
                                 if (root.error-text != "") : Text {
-                                    row: 8;
-                                    col: 0;
-                                    colspan: 2;
                                     horizontal-alignment: left;
                                     text: root.error-text;
                                     color: #e29a9a;
@@ -558,8 +565,11 @@ export component StartupDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: #262c35; }
 
+            // Footer: same as tab row — alignment: center on cross-axis so buttons sit between separators.
             Rectangle {
-                height: 58px;
+                min-height: 58px;
+                vertical-stretch: 0;
+                preferred-height: footer-bar-inner.preferred-height + 22px;
                 background: #14181f;
 
                 RailSection {
@@ -570,7 +580,8 @@ export component StartupDialog inherits Rectangle {
                     pad-right: root.content-pad;
                     pad-bottom: 12px;
 
-                    HorizontalBox {
+                    footer-bar-inner := HorizontalBox {
+                        alignment: center;
                         width: 100%;
                         height: 100%;
                         spacing: 8px;
