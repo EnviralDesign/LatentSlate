@@ -3,7 +3,6 @@ pub mod automation;
 pub mod media;
 pub mod preview;
 pub mod preview_store;
-pub mod preview_gpu;
 pub mod provider_store;
 pub mod generation;
 pub mod comfyui_workflow;

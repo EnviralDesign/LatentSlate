@@ -249,7 +249,7 @@ impl PreviewRenderer {
                 image: plate_fill,
                 placement,
             });
-            // NOTE: Border is now drawn in screen-space by preview_gpu.rs, not as a texture layer.
+            // NOTE: The UI draws the preview border in screen space, not as a texture layer.
             // This ensures the border is always exactly 1 pixel wide regardless of canvas scale.
         }
         let canvas_w_f = canvas_w as f32;

@@ -63,7 +63,7 @@ A purpose-built NLA editor that:
 
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
-| **UI Framework** | [Dioxus 0.7](https://dioxuslabs.com/) | Rust-native, cross-platform, reactive, hot-patching |
+| **UI Framework** | [egui/eframe 0.34](https://www.egui.rs/) | Native immediate-mode desktop UI, no WebView overlay boundary |
 | **Language** | Rust | Safety, performance, excellent FFI |
 | **Video Processing** | FFmpeg (external) | Industry standard, battle-tested |
 | **Async Runtime** | Tokio | De facto Rust async runtime |
@@ -165,10 +165,10 @@ We are skipping intermediate "DOM overlay" solutions to build a production-grade
         - **Transform**: Scale, Rotate, Translate (Project Canvas coordinates).
         - **Composite**: Layering using standard blending modes (Source Over).
     - Outputs a single raw RGBA buffer for the viewport.
-3.  **Display (Frontend/Dioxus)**
-    - A single `<canvas>` element in the Preview Panel.
-    - Rust sends the composited RGBA buffer to the shared UI memory or via efficient binary transfer.
-    - JavaScript draws the buffer using `putImageData` or WebGL texture upload.
+3.  **Display (egui/eframe)**
+    - The egui preview panel uploads the composited RGBA buffer to an egui texture.
+    - Modals, panels, preview, and timeline now share one native window composition path.
+    - This removes the previous WebView/native child-window layering issue where UI overlays could not appear above the preview.
 
 ### 2. Thumbnail Generation
 Visual feedback on the timeline.
@@ -666,7 +666,7 @@ This allows:
 
 | Decision | Rationale | Status |
 |----------|-----------|--------|
-| Use Dioxus Desktop (not Web/Tauri) | Full local experience, single DX language (RSX), simpler architecture | ✅ Decided |
+| Use egui/eframe native desktop UI | Immediate-mode UI, native composition, and no WebView/native preview overlay conflict | ✅ Decided |
 | FFmpeg on PATH for MVP | Simplifies initial development; bundling is later optimization | ✅ Decided |
 | JSON for provider configs | Machine-readable, toolable, familiar | ✅ Decided |
 | Project-local asset folders | Portable, self-contained projects | ✅ Decided |
@@ -680,9 +680,9 @@ This allows:
 | Labels separate from filenames | Enables friendly display names + future "Export Parts" feature | ✅ Decided |
 | Audio scrubbing is essential | Without hearing audio while scrubbing, the tool is unusable for music-synced work | ✅ Decided |
 | UI fluidity is non-negotiable | Hover effects, smooth transitions, polished feel from day one | ✅ Decided |
-| Dioxus 0.7 (latest) | Hot-patching support, better signals, performance improvements | ✅ Decided |
+| Remove Dioxus from the runtime | eframe now owns the desktop UI; Dioxus source modules and dependency were removed | ✅ Decided |
 | Transitions disabled during drag | Instant resize feedback; transitions only for collapse/expand | ✅ Decided |
-| Stable uncontrolled inputs for text/number/textarea | Prevent Dioxus Desktop cursor jumps by avoiding value binding | ✅ Decided |
+| Use native egui input widgets | Removes the Dioxus Desktop cursor-jump workaround path | ✅ Decided |
 | App-local Timeline State (Temp) | Kept state simple in app.rs until data model requirements mature | ✅ Decided |
 | Scroll-synced Track Labels | CSS sticky positioning for rock-solid sync vs JS event listeners | ✅ Decided |
 | Draggable Playhead | Real-time updating during drag for immediate feedback | ✅ Decided |
@@ -809,19 +809,14 @@ v1.0 - Public Release
 ### Code Structure
 ```
 src/
-├── main.rs          # Entry point, window config
-├── app.rs           # Main App component, UI shell, dialogs
-├── constants.rs     # Shared UI constants (colors, sizing, scripts)
-├── components/      # UI components (startup modal, panels, fields)
-│   ├── providers_modal.rs    # Global providers JSON editor
-│   ├── new_project_modal.rs  # Simple new-project redirect modal
-│   └── track_context_menu.rs # Track context menu overlay
-├── timeline/        # TimelinePanel, ruler, tracks, playback controls
-├── hotkeys/         # Hotkey system (Registry, Actions, Context)
-├── core/            # Core logic (preview renderer, GPU surface, media helpers)
+├── main.rs          # Entry point and automation startup
+├── egui_app.rs      # eframe/egui desktop shell, panels, modals, preview, timeline
+├── editor.rs        # Dioxus-free editor model/controller used by UI and automation
+├── constants.rs     # Shared editor constants
+├── core/            # Core logic (preview renderer, automation, media helpers)
 │   ├── automation.rs # Loopback automation API for desktop scenarios
 │   ├── preview/     # Preview renderer/cache/layer/util split
-│   └── preview_gpu/ # WGPU preview surface/shaders/layer helpers
+│   └── media.rs     # Import/probe helpers
 ├── state/
 │   ├── mod.rs       # Module exports
 │   ├── asset.rs     # Asset, AssetKind (file & generative)
@@ -830,6 +825,10 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-19:** Replaced the desktop runtime shell with an egui/eframe implementation (`src/egui_app.rs`) backed by a Dioxus-free editor controller (`src/editor.rs`).
+- **2026-05-19:** Removed Dioxus source modules (`app.rs`, `components/`, `timeline/`, `hotkeys/`) and the old `preview_gpu` child-window path; `Cargo.toml` now uses `eframe` instead of Dioxus.
+- **2026-05-19:** Captured the egui review reference set under `.tmp/desktop-smoke/egui-reference-ready/` with startup, timeline selections, modals, queue, providers, collapsed panels, and preview stats.
+- **2026-05-19:** Added an egui automation repaint heartbeat so loopback API commands are processed even when the immediate-mode UI is otherwise idle.
 - **2026-05-19:** Expanded automation/reference capture to cover selection variants, project/new/generative modals, queue, providers, collapsed panels, preview stats, and tighter app-window capture bounds.
 - **2026-05-19:** Captured the current Dioxus UI reference set under `.tmp/desktop-smoke/dioxus-reference-20260519-173555/` before beginning the egui migration.
 - **2026-05-19:** Added loopback desktop automation mode (`--automation`) with semantic commands for create/open project, import asset, add clip, seek, select, marker, save, and providers modal open/close.

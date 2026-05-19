@@ -1,6 +1,6 @@
 # Desktop Test Harness Plan
 
-This app cannot be exercised like a browser tab because Dioxus Desktop runs in WebView2 and the preview is a separate native `wgpu` child window. The harness needs two layers: fast core checks that do not launch the UI, and desktop smoke scenarios that launch the executable and capture visual evidence.
+This app cannot be exercised like a browser tab. The current egui/eframe shell is native desktop UI, so the harness uses two layers: fast core checks that do not launch the UI, and desktop smoke scenarios that launch the executable and capture visual evidence from the app window.
 
 ## Current Smoke Scripts
 
@@ -32,7 +32,7 @@ Run the narrow native-like automation scenario on the right-most monitor:
 .\scripts\automation-scenario.ps1 -Profile release -Monitor RightMost
 ```
 
-Capture a broader Dioxus reference set before a UI migration:
+Capture a broader reference set during UI migration work:
 
 ```powershell
 .\scripts\automation-scenario.ps1 -Profile release -Monitor RightMost -CaptureReferenceSet
@@ -43,12 +43,14 @@ The scenario writes artifacts under `.tmp/desktop-smoke/`:
 - `automation-*-timeline.png` - app-window-only screenshot after project/import/timeline/selection/save commands.
 - `automation-*-providers.png` - app-window-only screenshot with the Providers modal open.
 - `automation-*-state.json` - final semantic app state returned by the automation API.
-- `dioxus-reference-*/*.png` - startup, timeline, selection variants, modals, queue, providers, collapsed panels, and preview stats reference screenshots.
+- `dioxus-reference-*/*.png` - pre-egui startup, timeline, selection variants, modals, queue, providers, collapsed panels, and preview stats reference screenshots.
+- `egui-reference-*/*.png` - current egui screenshots for the same scenario set.
 
 Latest reference capture:
 
 ```text
 .tmp/desktop-smoke/dioxus-reference-20260519-173555/
+.tmp/desktop-smoke/egui-reference-ready/
 ```
 
 ## Automation API
@@ -87,7 +89,7 @@ Current commands:
 - `set_layout`
 - `close_all_overlays`
 
-This is intentionally not a separate testing model. HTTP requests are converted into semantic editor commands, then consumed on the Dioxus app runtime and applied through the same project/state methods used by visible UI actions. That keeps the harness close to native interaction without relying on pixel clicks.
+This is intentionally not a separate testing model. HTTP requests are converted into semantic editor commands, then consumed by the egui app loop and applied through `EditorState`, the same model/controller used by visible UI actions. That keeps the harness close to native interaction without relying on pixel clicks.
 
 ## Why DLL Staging Exists
 
@@ -110,7 +112,7 @@ They are available in the local vcpkg install, but launching `target\release\nla
 2. Put UI work behind commands.
    - The current `core::automation` module is a first slice: it queues semantic commands from loopback HTTP and the app runtime applies them through existing project/state operations.
    - The next step is to extract these operations into an editor model/controller layer that owns create project, import asset, add clip, select clip, seek, generate, and save.
-   - Dioxus or egui should render the model and dispatch commands; tests should execute the same commands headlessly or through the loopback harness.
+   - egui should render the model and dispatch commands; tests should execute the same commands headlessly or through the loopback harness.
 
 3. Treat screenshot tests as smoke checks, not exact goldens.
    - Use app-window screenshots to confirm startup, modal visibility, and gross layout state.
