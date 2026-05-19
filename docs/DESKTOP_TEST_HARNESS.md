@@ -32,11 +32,24 @@ Run the narrow native-like automation scenario on the right-most monitor:
 .\scripts\automation-scenario.ps1 -Profile release -Monitor RightMost
 ```
 
+Capture a broader Dioxus reference set before a UI migration:
+
+```powershell
+.\scripts\automation-scenario.ps1 -Profile release -Monitor RightMost -CaptureReferenceSet
+```
+
 The scenario writes artifacts under `.tmp/desktop-smoke/`:
 
 - `automation-*-timeline.png` - app-window-only screenshot after project/import/timeline/selection/save commands.
 - `automation-*-providers.png` - app-window-only screenshot with the Providers modal open.
 - `automation-*-state.json` - final semantic app state returned by the automation API.
+- `dioxus-reference-*/*.png` - startup, timeline, selection variants, modals, queue, providers, collapsed panels, and preview stats reference screenshots.
+
+Latest reference capture:
+
+```text
+.tmp/desktop-smoke/dioxus-reference-20260519-173555/
+```
 
 ## Automation API
 
@@ -56,10 +69,23 @@ Current commands:
 - `add_asset_to_timeline`
 - `seek`
 - `select_clip`
+- `select_asset`
+- `select_track`
+- `select_marker`
 - `add_marker`
 - `save_project`
 - `open_providers`
 - `close_providers`
+- `open_project_settings`
+- `close_project_settings`
+- `open_new_project`
+- `close_new_project`
+- `open_queue`
+- `close_queue`
+- `open_generative_video`
+- `close_generative_video`
+- `set_layout`
+- `close_all_overlays`
 
 This is intentionally not a separate testing model. HTTP requests are converted into semantic editor commands, then consumed on the Dioxus app runtime and applied through the same project/state methods used by visible UI actions. That keeps the harness close to native interaction without relying on pixel clicks.
 

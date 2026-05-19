@@ -66,6 +66,9 @@ public static class NlaDesktopSmokeNative
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
 
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out Rect rect, int size);
+
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hwnd);
 
@@ -130,6 +133,18 @@ public static class NlaDesktopSmokeNative
         var builder = new System.Text.StringBuilder(512);
         GetWindowText(hwnd, builder, builder.Capacity);
         return builder.ToString();
+    }
+
+    public static bool GetCaptureRect(IntPtr hwnd, out Rect rect)
+    {
+        const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+        int result = DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out rect, Marshal.SizeOf(typeof(Rect)));
+        if (result == 0 && rect.Right > rect.Left && rect.Bottom > rect.Top)
+        {
+            return true;
+        }
+
+        return GetWindowRect(hwnd, out rect);
     }
 }
 "@
@@ -247,7 +262,7 @@ if ($ffmpegModules) {
 Start-Sleep -Milliseconds 1500
 
 $rect = New-Object NlaDesktopSmokeNative+Rect
-if (![NlaDesktopSmokeNative]::GetWindowRect($windowHandle, [ref]$rect)) {
+if (![NlaDesktopSmokeNative]::GetCaptureRect($windowHandle, [ref]$rect)) {
     if (!$KeepRunning) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
@@ -267,7 +282,7 @@ $targetMonitor = Get-TargetMonitor -Mode $Monitor -Index $MonitorIndex
 if ($targetMonitor) {
     Move-WindowToMonitor -WindowHandle $windowHandle -Screen $targetMonitor -Width $width -Height $height
     Start-Sleep -Milliseconds 500
-    if (![NlaDesktopSmokeNative]::GetWindowRect($windowHandle, [ref]$rect)) {
+    if (![NlaDesktopSmokeNative]::GetCaptureRect($windowHandle, [ref]$rect)) {
         if (!$KeepRunning) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         }

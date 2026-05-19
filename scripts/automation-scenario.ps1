@@ -21,7 +21,11 @@ param(
 
     [string]$ProvidersScreenshotPath = "",
 
-    [string]$StatePath = ""
+    [string]$StatePath = "",
+
+    [switch]$CaptureReferenceSet,
+
+    [string]$ReferenceDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,6 +65,12 @@ if ($ProvidersScreenshotPath.Trim().Length -eq 0) {
 if ($StatePath.Trim().Length -eq 0) {
     $StatePath = Join-Path $artifactDir "automation-$timestamp-state.json"
 }
+if ($ReferenceDir.Trim().Length -eq 0) {
+    $ReferenceDir = Join-Path $artifactDir "dioxus-reference-$timestamp"
+}
+if ($CaptureReferenceSet) {
+    New-Item -ItemType Directory -Path $ReferenceDir -Force | Out-Null
+}
 
 try {
     $probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), $AutomationPort)
@@ -90,6 +100,9 @@ public static class NlaAutomationScenarioNative
 
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out Rect rect, int size);
 
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hwnd);
@@ -155,6 +168,18 @@ public static class NlaAutomationScenarioNative
         var builder = new System.Text.StringBuilder(512);
         GetWindowText(hwnd, builder, builder.Capacity);
         return builder.ToString();
+    }
+
+    public static bool GetCaptureRect(IntPtr hwnd, out Rect rect)
+    {
+        const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+        int result = DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out rect, Marshal.SizeOf(typeof(Rect)));
+        if (result == 0 && rect.Right > rect.Left && rect.Bottom > rect.Top)
+        {
+            return true;
+        }
+
+        return GetWindowRect(hwnd, out rect);
     }
 }
 "@
@@ -240,7 +265,7 @@ function Capture-AppWindow {
     Start-Sleep -Milliseconds 750
 
     $rect = New-Object NlaAutomationScenarioNative+Rect
-    if (![NlaAutomationScenarioNative]::GetWindowRect($WindowHandle, [ref]$rect)) {
+    if (![NlaAutomationScenarioNative]::GetCaptureRect($WindowHandle, [ref]$rect)) {
         throw "Could not read application window bounds."
     }
 
@@ -328,6 +353,20 @@ function Invoke-AutomationState {
     return $response
 }
 
+function Capture-ReferenceImage {
+    param(
+        [IntPtr]$WindowHandle,
+        [string]$Name
+    )
+
+    if (!$CaptureReferenceSet) {
+        return
+    }
+
+    $path = Join-Path $ReferenceDir $Name
+    Capture-AppWindow -WindowHandle $WindowHandle -Path $path
+}
+
 $fixturePath = Join-Path $fixtureDir "automation-fixture-$timestamp.png"
 New-FixtureImage -Path $fixturePath
 Write-Host "Fixture=$fixturePath"
@@ -391,6 +430,7 @@ try {
     }
 
     [void](Invoke-AutomationState -BaseUrl $baseUrl)
+    Capture-ReferenceImage -WindowHandle $windowHandle -Name "00-startup-modal.png"
 
     $projectName = "Automation-$timestamp"
     $create = Invoke-AutomationCommand -BaseUrl $baseUrl -Step "create_project" -Payload @{
@@ -425,20 +465,143 @@ try {
 
     Start-Sleep -Milliseconds 1000
     Capture-AppWindow -WindowHandle $windowHandle -Path $ScreenshotPath
+    Capture-ReferenceImage -WindowHandle $windowHandle -Name "01-timeline-selected-clip.png"
+
+    if ($CaptureReferenceSet) {
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "select_asset" -Payload @{
+            type = "select_asset"
+            index = 0
+        })
+        Start-Sleep -Milliseconds 500
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "02-asset-selection.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "select_marker" -Payload @{
+            type = "select_marker"
+            index = 0
+        })
+        Start-Sleep -Milliseconds 500
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "03-marker-selection.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "select_track" -Payload @{
+            type = "select_track"
+            index = 0
+        })
+        Start-Sleep -Milliseconds 500
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "04-track-selection.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "select_clip" -Payload @{
+            type = "select_clip"
+            clip_id = $add.data.clip_id
+        })
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "open_project_settings" -Payload @{
+            type = "open_project_settings"
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "05-project-settings-modal.png"
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "close_project_settings" -Payload @{
+            type = "close_project_settings"
+        })
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "open_new_project" -Payload @{
+            type = "open_new_project"
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "06-new-project-modal.png"
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "close_new_project" -Payload @{
+            type = "close_new_project"
+        })
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "open_generative_video" -Payload @{
+            type = "open_generative_video"
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "07-generative-video-modal.png"
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "close_generative_video" -Payload @{
+            type = "close_generative_video"
+        })
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "open_queue" -Payload @{
+            type = "open_queue"
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "08-generation-queue-panel.png"
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "close_queue" -Payload @{
+            type = "close_queue"
+        })
+    }
 
     [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "open_providers" -Payload @{
         type = "open_providers"
     })
     Start-Sleep -Milliseconds 1000
     Capture-AppWindow -WindowHandle $windowHandle -Path $ProvidersScreenshotPath
+    Capture-ReferenceImage -WindowHandle $windowHandle -Name "09-providers-modal.png"
     [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "close_providers" -Payload @{
         type = "close_providers"
     })
+
+    if ($CaptureReferenceSet) {
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "close_all_overlays" -Payload @{
+            type = "close_all_overlays"
+        })
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "set_layout_left_collapsed" -Payload @{
+            type = "set_layout"
+            left_collapsed = $true
+            right_collapsed = $false
+            timeline_collapsed = $false
+            preview_stats = $false
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "10-left-panel-collapsed.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "set_layout_right_collapsed" -Payload @{
+            type = "set_layout"
+            left_collapsed = $false
+            right_collapsed = $true
+            timeline_collapsed = $false
+            preview_stats = $false
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "11-right-panel-collapsed.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "set_layout_timeline_collapsed" -Payload @{
+            type = "set_layout"
+            left_collapsed = $false
+            right_collapsed = $false
+            timeline_collapsed = $true
+            preview_stats = $false
+        })
+        Start-Sleep -Milliseconds 750
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "12-timeline-collapsed.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "set_layout_preview_stats" -Payload @{
+            type = "set_layout"
+            left_collapsed = $false
+            right_collapsed = $false
+            timeline_collapsed = $false
+            preview_stats = $true
+            hardware_decode = $true
+        })
+        Start-Sleep -Milliseconds 1000
+        Capture-ReferenceImage -WindowHandle $windowHandle -Name "13-preview-stats-enabled.png"
+
+        [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "reset_layout" -Payload @{
+            type = "set_layout"
+            left_collapsed = $false
+            right_collapsed = $false
+            timeline_collapsed = $false
+            preview_stats = $false
+            hardware_decode = $true
+        })
+    }
 
     $state = Invoke-AutomationState -BaseUrl $baseUrl
     $state | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $StatePath -Encoding UTF8
     Write-Host "State=$StatePath"
     Write-Host "Project=$($create.data.project_path)"
+    if ($CaptureReferenceSet) {
+        Write-Host "ReferenceDir=$ReferenceDir"
+    }
 } finally {
     if ($KeepRunning) {
         if ($process -and !$process.HasExited) {

@@ -75,6 +75,15 @@ fn automation_state_json(
     startup_done: bool,
     selection: &crate::state::SelectionState,
     providers_open: bool,
+    project_settings_open: bool,
+    new_project_open: bool,
+    queue_open: bool,
+    generative_video_open: bool,
+    left_collapsed: bool,
+    right_collapsed: bool,
+    timeline_collapsed: bool,
+    preview_stats: bool,
+    hardware_decode: bool,
 ) -> serde_json::Value {
     serde_json::json!({
         "project": {
@@ -88,7 +97,20 @@ fn automation_state_json(
         },
         "current_time": current_time,
         "startup_done": startup_done,
-        "providers_open": providers_open,
+        "overlays": {
+            "providers_open": providers_open,
+            "project_settings_open": project_settings_open,
+            "new_project_open": new_project_open,
+            "queue_open": queue_open,
+            "generative_video_open": generative_video_open,
+        },
+        "layout": {
+            "left_collapsed": left_collapsed,
+            "right_collapsed": right_collapsed,
+            "timeline_collapsed": timeline_collapsed,
+            "preview_stats": preview_stats,
+            "hardware_decode": hardware_decode,
+        },
         "selection": {
             "clips": selection.clip_ids.clone(),
             "assets": selection.asset_ids.clone(),
@@ -1403,6 +1425,18 @@ pub fn App() -> Element {
         let mut selection = selection.clone();
         let mut show_providers_v2 = show_providers_v2.clone();
         let mut provider_files_v2 = provider_files_v2.clone();
+        let mut show_project_settings_dialog = show_project_settings_dialog.clone();
+        let mut show_new_project_dialog = show_new_project_dialog.clone();
+        let mut queue_open = queue_open.clone();
+        let mut gen_video_modal_open = gen_video_modal_open.clone();
+        let mut left_collapsed = left_collapsed.clone();
+        let mut right_collapsed = right_collapsed.clone();
+        let mut timeline_collapsed = timeline_collapsed.clone();
+        let mut show_preview_stats = show_preview_stats.clone();
+        let mut use_hw_decode = use_hw_decode.clone();
+        let mut show_json_editor = show_json_editor.clone();
+        let mut show_builder_v2 = show_builder_v2.clone();
+        let mut menu_open = menu_open.clone();
         async move {
             if !crate::core::automation::is_enabled() {
                 return;
@@ -1420,6 +1454,15 @@ pub fn App() -> Element {
                                 startup_done(),
                                 &selection_read,
                                 show_providers_v2(),
+                                show_project_settings_dialog(),
+                                show_new_project_dialog(),
+                                queue_open(),
+                                gen_video_modal_open(),
+                                left_collapsed(),
+                                right_collapsed(),
+                                timeline_collapsed(),
+                                show_preview_stats(),
+                                use_hw_decode(),
                             ))
                         }
                         AutomationCommand::CreateProject {
@@ -1631,6 +1674,68 @@ pub fn App() -> Element {
                                 ),
                             }
                         }
+                        AutomationCommand::SelectAsset { asset_id, index } => {
+                            let selected_asset_id = {
+                                let project_read = project.read();
+                                (*asset_id).or_else(|| {
+                                    let index = (*index).unwrap_or(0);
+                                    project_read.assets.get(index).map(|asset| asset.id)
+                                })
+                            };
+                            match selected_asset_id {
+                                Some(asset_id) => {
+                                    let mut selection_write = selection.write();
+                                    selection_write.clear();
+                                    selection_write.asset_ids.push(asset_id);
+                                    AutomationResponse::ok(serde_json::json!({
+                                        "asset_id": asset_id,
+                                    }))
+                                }
+                                None => AutomationResponse::error(
+                                    "No matching asset found for select_asset.",
+                                ),
+                            }
+                        }
+                        AutomationCommand::SelectTrack { track_id, index } => {
+                            let selected_track_id = {
+                                let project_read = project.read();
+                                (*track_id).or_else(|| {
+                                    let index = (*index).unwrap_or(0);
+                                    project_read.tracks.get(index).map(|track| track.id)
+                                })
+                            };
+                            match selected_track_id {
+                                Some(track_id) => {
+                                    selection.write().select_track(track_id);
+                                    AutomationResponse::ok(serde_json::json!({
+                                        "track_id": track_id,
+                                    }))
+                                }
+                                None => AutomationResponse::error(
+                                    "No matching track found for select_track.",
+                                ),
+                            }
+                        }
+                        AutomationCommand::SelectMarker { marker_id, index } => {
+                            let selected_marker_id = {
+                                let project_read = project.read();
+                                (*marker_id).or_else(|| {
+                                    let index = (*index).unwrap_or(0);
+                                    project_read.markers.get(index).map(|marker| marker.id)
+                                })
+                            };
+                            match selected_marker_id {
+                                Some(marker_id) => {
+                                    selection.write().select_marker(marker_id);
+                                    AutomationResponse::ok(serde_json::json!({
+                                        "marker_id": marker_id,
+                                    }))
+                                }
+                                None => AutomationResponse::error(
+                                    "No matching marker found for select_marker.",
+                                ),
+                            }
+                        }
                         AutomationCommand::AddMarker { time } => {
                             let project_read = project.read();
                             let duration = project_read.duration();
@@ -1661,6 +1766,79 @@ pub fn App() -> Element {
                         }
                         AutomationCommand::CloseProviders => {
                             show_providers_v2.set(false);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::OpenProjectSettings => {
+                            if project.read().project_path.is_none() {
+                                AutomationResponse::error(
+                                    "Cannot open project settings without an open project.",
+                                )
+                            } else {
+                                show_project_settings_dialog.set(true);
+                                AutomationResponse::empty_ok()
+                            }
+                        }
+                        AutomationCommand::CloseProjectSettings => {
+                            show_project_settings_dialog.set(false);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::OpenNewProject => {
+                            show_new_project_dialog.set(true);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::CloseNewProject => {
+                            show_new_project_dialog.set(false);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::OpenQueue => {
+                            queue_open.set(true);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::CloseQueue => {
+                            queue_open.set(false);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::OpenGenerativeVideo => {
+                            gen_video_modal_open.set(true);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::CloseGenerativeVideo => {
+                            gen_video_modal_open.set(false);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::SetLayout {
+                            left_collapsed: next_left_collapsed,
+                            right_collapsed: next_right_collapsed,
+                            timeline_collapsed: next_timeline_collapsed,
+                            preview_stats,
+                            hardware_decode,
+                        } => {
+                            if let Some(value) = *next_left_collapsed {
+                                left_collapsed.set(value);
+                            }
+                            if let Some(value) = *next_right_collapsed {
+                                right_collapsed.set(value);
+                            }
+                            if let Some(value) = *next_timeline_collapsed {
+                                timeline_collapsed.set(value);
+                            }
+                            if let Some(value) = *preview_stats {
+                                show_preview_stats.set(value);
+                            }
+                            if let Some(value) = *hardware_decode {
+                                use_hw_decode.set(value);
+                            }
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::CloseAllOverlays => {
+                            show_providers_v2.set(false);
+                            show_project_settings_dialog.set(false);
+                            show_new_project_dialog.set(false);
+                            show_json_editor.set(false);
+                            show_builder_v2.set(false);
+                            queue_open.set(false);
+                            gen_video_modal_open.set(false);
+                            menu_open.set(false);
                             AutomationResponse::empty_ok()
                         }
                     };

@@ -65,6 +65,27 @@ pub enum AutomationCommand {
         #[serde(default)]
         index: Option<usize>,
     },
+    /// Select an asset by ID or asset-list index.
+    SelectAsset {
+        #[serde(default)]
+        asset_id: Option<Uuid>,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Select a track by ID or timeline track index.
+    SelectTrack {
+        #[serde(default)]
+        track_id: Option<Uuid>,
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Select a marker by ID or marker-list index.
+    SelectMarker {
+        #[serde(default)]
+        marker_id: Option<Uuid>,
+        #[serde(default)]
+        index: Option<usize>,
+    },
     /// Add a marker at the provided time or current playhead.
     AddMarker {
         #[serde(default)]
@@ -76,6 +97,37 @@ pub enum AutomationCommand {
     OpenProviders,
     /// Close the global providers modal.
     CloseProviders,
+    /// Open the project settings modal.
+    OpenProjectSettings,
+    /// Close the project settings modal.
+    CloseProjectSettings,
+    /// Open the in-app new project modal.
+    OpenNewProject,
+    /// Close the in-app new project modal.
+    CloseNewProject,
+    /// Open the generation queue panel.
+    OpenQueue,
+    /// Close the generation queue panel.
+    CloseQueue,
+    /// Open the generative video creation modal.
+    OpenGenerativeVideo,
+    /// Close the generative video creation modal.
+    CloseGenerativeVideo,
+    /// Set collapsible layout and preview flags for reference screenshots.
+    SetLayout {
+        #[serde(default)]
+        left_collapsed: Option<bool>,
+        #[serde(default)]
+        right_collapsed: Option<bool>,
+        #[serde(default)]
+        timeline_collapsed: Option<bool>,
+        #[serde(default)]
+        preview_stats: Option<bool>,
+        #[serde(default)]
+        hardware_decode: Option<bool>,
+    },
+    /// Close transient modals, panels, and overlays controlled by automation.
+    CloseAllOverlays,
 }
 
 /// Command envelope passed from the HTTP server to the app runtime.

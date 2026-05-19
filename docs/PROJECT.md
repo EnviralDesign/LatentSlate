@@ -830,6 +830,8 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-19:** Expanded automation/reference capture to cover selection variants, project/new/generative modals, queue, providers, collapsed panels, preview stats, and tighter app-window capture bounds.
+- **2026-05-19:** Captured the current Dioxus UI reference set under `.tmp/desktop-smoke/dioxus-reference-20260519-173555/` before beginning the egui migration.
 - **2026-05-19:** Added loopback desktop automation mode (`--automation`) with semantic commands for create/open project, import asset, add clip, seek, select, marker, save, and providers modal open/close.
 - **2026-05-19:** Added `scripts/automation-scenario.ps1` to drive a project/import/timeline/modal slice on the right-most monitor and save app-window-only screenshots plus state JSON.
 - **2026-05-19:** Added desktop smoke harness documentation plus scripts for FFmpeg runtime DLL staging and launch/screenshot verification.
