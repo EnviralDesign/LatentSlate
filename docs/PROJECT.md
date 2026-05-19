@@ -782,7 +782,7 @@ v1.0 - Public Release
 
 ---
 
-## 📊 Current Status (2026-01-04)
+## 📊 Current Status (2026-05-19)
 
 ### Completed ✅
 | Area | Status | Notes |
@@ -819,15 +819,21 @@ src/
 ├── timeline/        # TimelinePanel, ruler, tracks, playback controls
 ├── hotkeys/         # Hotkey system (Registry, Actions, Context)
 ├── core/            # Core logic (preview renderer, GPU surface, media helpers)
+│   ├── automation.rs # Loopback automation API for desktop scenarios
 │   ├── preview/     # Preview renderer/cache/layer/util split
 │   └── preview_gpu/ # WGPU preview surface/shaders/layer helpers
-└── state/
-    ├── mod.rs       # Module exports
-    ├── asset.rs     # Asset, AssetKind (file & generative)
-    └── project/     # Project, Track, Clip, Marker, save/load split into modules
+├── state/
+│   ├── mod.rs       # Module exports
+│   ├── asset.rs     # Asset, AssetKind (file & generative)
+│   └── project/     # Project, Track, Clip, Marker, save/load split into modules
+└── scripts/         # Runtime DLL staging, desktop smoke, automation harness
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-19:** Added loopback desktop automation mode (`--automation`) with semantic commands for create/open project, import asset, add clip, seek, select, marker, save, and providers modal open/close.
+- **2026-05-19:** Added `scripts/automation-scenario.ps1` to drive a project/import/timeline/modal slice on the right-most monitor and save app-window-only screenshots plus state JSON.
+- **2026-05-19:** Added desktop smoke harness documentation plus scripts for FFmpeg runtime DLL staging and launch/screenshot verification.
+- **2026-05-19:** Diagnosed direct-launch DLL popups as missing staged vcpkg FFmpeg runtime DLLs (`avcodec-61`, `avformat-61`, `avutil-59`, `swresample-5`, `swscale-8`).
 - **2026-01-13:** Added Asset Config controls in the Attributes panel for editing generative video FPS + frame count.
 - **2026-01-13:** Suspended the native preview while the generative video creation modal is open.
 - **2026-01-13:** Generative video assets now require FPS + frame count on creation, and preview playback retimes to fill the declared asset duration.
@@ -1069,7 +1075,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-01-13*
+*Last updated: 2026-05-19*
 
 
 

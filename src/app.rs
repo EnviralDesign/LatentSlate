@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use crate::core::automation::{AutomationCommand, AutomationResponse};
 use crate::core::generation::next_version_label;
 use crate::core::audio::decode::{decode_audio_to_f32, AudioDecodeConfig};
 use crate::core::audio::cache::{cache_matches_source, load_peak_cache, peak_cache_path};
@@ -66,6 +67,35 @@ struct TimelineViewportState {
 enum GenerationFailure {
     Offline(String),
     Error(String),
+}
+
+fn automation_state_json(
+    project: &crate::state::Project,
+    current_time: f64,
+    startup_done: bool,
+    selection: &crate::state::SelectionState,
+    providers_open: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "project": {
+            "name": project.name.clone(),
+            "path": project.project_path.clone(),
+            "settings": project.settings.clone(),
+            "tracks": project.tracks.clone(),
+            "assets": project.assets.clone(),
+            "clips": project.clips.clone(),
+            "markers": project.markers.clone(),
+        },
+        "current_time": current_time,
+        "startup_done": startup_done,
+        "providers_open": providers_open,
+        "selection": {
+            "clips": selection.clip_ids.clone(),
+            "assets": selection.asset_ids.clone(),
+            "tracks": selection.track_ids.clone(),
+            "markers": selection.marker_ids.clone(),
+        }
+    })
 }
 
 pub(crate) fn build_audio_playback_items(
@@ -1355,6 +1385,290 @@ pub fn App() -> Element {
             }
         } else {
             desktop_for_modal_redraw.window.request_redraw();
+        }
+    });
+
+    let audio_engine_for_automation = audio_engine.clone();
+    use_future(move || {
+        let audio_engine = audio_engine_for_automation.clone();
+        let mut project = project.clone();
+        let mut provider_entries = provider_entries.clone();
+        let mut thumbnailer = thumbnailer.clone();
+        let mut previewer = previewer.clone();
+        let mut preview_dirty = preview_dirty.clone();
+        let thumbnail_cache_buster = thumbnail_cache_buster.clone();
+        let mut audio_waveform_cache_buster = audio_waveform_cache_buster.clone();
+        let mut startup_done = startup_done.clone();
+        let mut current_time = current_time.clone();
+        let mut selection = selection.clone();
+        let mut show_providers_v2 = show_providers_v2.clone();
+        let mut provider_files_v2 = provider_files_v2.clone();
+        async move {
+            if !crate::core::automation::is_enabled() {
+                return;
+            }
+
+            loop {
+                while let Some(envelope) = crate::core::automation::try_recv_command() {
+                    let response = match &envelope.command {
+                        AutomationCommand::GetState => {
+                            let project_read = project.read();
+                            let selection_read = selection.read();
+                            AutomationResponse::ok(automation_state_json(
+                                &project_read,
+                                current_time(),
+                                startup_done(),
+                                &selection_read,
+                                show_providers_v2(),
+                            ))
+                        }
+                        AutomationCommand::CreateProject {
+                            parent_dir,
+                            name,
+                            settings,
+                        } => {
+                            let settings = settings.clone().unwrap_or_default();
+                            let project_dir = parent_dir.join(name);
+                            let preview_limits =
+                                (settings.preview_max_width, settings.preview_max_height);
+                            match crate::state::Project::create_in_with_settings(
+                                &project_dir,
+                                name.clone(),
+                                settings,
+                            ) {
+                                Ok(new_project) => match new_project.project_path.clone() {
+                                    Some(project_root) => {
+                                        thumbnailer.set(Arc::new(
+                                            crate::core::thumbnailer::Thumbnailer::new(
+                                                project_root.clone(),
+                                            ),
+                                        ));
+                                        previewer.set(Arc::new(
+                                            crate::core::preview::PreviewRenderer::new_with_limits(
+                                                project_root.clone(),
+                                                PREVIEW_CACHE_BUDGET_BYTES,
+                                                preview_limits.0,
+                                                preview_limits.1,
+                                            ),
+                                        ));
+                                        provider_entries
+                                            .set(load_global_provider_entries_or_empty());
+                                        project.set(new_project);
+                                        current_time.set(0.0);
+                                        selection.write().clear();
+                                        preview_dirty.set(true);
+                                        audio_waveform_cache_buster
+                                            .set(audio_waveform_cache_buster() + 1);
+                                        startup_done.set(true);
+                                        spawn_missing_duration_probes(project);
+                                        AutomationResponse::ok(serde_json::json!({
+                                            "project_path": project_root,
+                                        }))
+                                    }
+                                    None => AutomationResponse::error(
+                                        "Created project has no project path.",
+                                    ),
+                                },
+                                Err(err) => AutomationResponse::error(format!(
+                                    "Failed to create project: {}",
+                                    err
+                                )),
+                            }
+                        }
+                        AutomationCommand::OpenProject { folder } => {
+                            match crate::state::Project::load(&folder) {
+                                Ok(loaded_project) => match loaded_project.project_path.clone() {
+                                    Some(project_root) => {
+                                        let preview_limits = (
+                                            loaded_project.settings.preview_max_width,
+                                            loaded_project.settings.preview_max_height,
+                                        );
+                                        thumbnailer.set(Arc::new(
+                                            crate::core::thumbnailer::Thumbnailer::new(
+                                                project_root.clone(),
+                                            ),
+                                        ));
+                                        previewer.set(Arc::new(
+                                            crate::core::preview::PreviewRenderer::new_with_limits(
+                                                project_root.clone(),
+                                                PREVIEW_CACHE_BUDGET_BYTES,
+                                                preview_limits.0,
+                                                preview_limits.1,
+                                            ),
+                                        ));
+                                        provider_entries
+                                            .set(load_global_provider_entries_or_empty());
+                                        project.set(loaded_project);
+                                        current_time.set(0.0);
+                                        selection.write().clear();
+                                        preview_dirty.set(true);
+                                        audio_waveform_cache_buster
+                                            .set(audio_waveform_cache_buster() + 1);
+                                        startup_done.set(true);
+                                        spawn_missing_duration_probes(project);
+                                        AutomationResponse::ok(serde_json::json!({
+                                            "project_path": project_root,
+                                        }))
+                                    }
+                                    None => AutomationResponse::error(
+                                        "Loaded project has no project path.",
+                                    ),
+                                },
+                                Err(err) => AutomationResponse::error(format!(
+                                    "Failed to open project: {}",
+                                    err
+                                )),
+                            }
+                        }
+                        AutomationCommand::ImportAsset { path } => {
+                            let import_result = {
+                                let mut project_write = project.write();
+                                project_write.import_file(path)
+                            };
+                            match import_result {
+                                Ok(asset_id) => {
+                                    preview_dirty.set(true);
+                                    let asset = project.read().find_asset(asset_id).cloned();
+                                    if let Some(asset) = asset {
+                                        let thumbs = thumbnailer.read().clone();
+                                        let mut thumbnail_cache_buster =
+                                            thumbnail_cache_buster.clone();
+                                        spawn(async move {
+                                            thumbs.generate(&asset, false).await;
+                                            thumbnail_cache_buster
+                                                .set(thumbnail_cache_buster() + 1);
+                                        });
+                                    }
+                                    spawn_asset_duration_probe(project, asset_id);
+                                    AutomationResponse::ok(serde_json::json!({
+                                        "asset_id": asset_id,
+                                    }))
+                                }
+                                Err(err) => AutomationResponse::error(format!(
+                                    "Failed to import asset: {}",
+                                    err
+                                )),
+                            }
+                        }
+                        AutomationCommand::AddAssetToTimeline {
+                            asset_id,
+                            asset_name,
+                            time,
+                        } => {
+                            let selected_asset_id = {
+                                let project_read = project.read();
+                                (*asset_id)
+                                    .or_else(|| {
+                                        asset_name.as_ref().and_then(|name| {
+                                            project_read
+                                                .assets
+                                                .iter()
+                                                .find(|asset| asset.name == *name)
+                                                .map(|asset| asset.id)
+                                        })
+                                    })
+                                    .or_else(|| project_read.assets.first().map(|asset| asset.id))
+                            };
+                            match selected_asset_id {
+                                Some(asset_id) => {
+                                    let time = (*time).unwrap_or_else(|| current_time());
+                                    let duration = resolve_asset_duration_seconds(project, asset_id)
+                                        .unwrap_or(DEFAULT_CLIP_DURATION_SECONDS);
+                                    let clip_id = project
+                                        .write()
+                                        .add_clip_from_asset(asset_id, time, duration);
+                                    match clip_id {
+                                        Some(clip_id) => {
+                                            preview_dirty.set(true);
+                                            AutomationResponse::ok(serde_json::json!({
+                                                "clip_id": clip_id,
+                                                "asset_id": asset_id,
+                                                "time": time,
+                                                "duration": duration,
+                                            }))
+                                        }
+                                        None => AutomationResponse::error(
+                                            "Asset could not be placed on a compatible timeline track.",
+                                        ),
+                                    }
+                                }
+                                None => AutomationResponse::error(
+                                    "No matching asset found for add_asset_to_timeline.",
+                                ),
+                            }
+                        }
+                        AutomationCommand::Seek { time } => {
+                            let project_read = project.read();
+                            let duration = project_read.duration();
+                            let fps = project_read.settings.fps.max(1.0);
+                            drop(project_read);
+                            let snapped = snap_time_to_frame(*time, fps).clamp(0.0, duration);
+                            current_time.set(snapped);
+                            if let Some(engine) = audio_engine.as_ref() {
+                                engine.seek_seconds(snapped);
+                            }
+                            AutomationResponse::ok(serde_json::json!({
+                                "current_time": snapped,
+                            }))
+                        }
+                        AutomationCommand::SelectClip { clip_id, index } => {
+                            let selected_clip_id = {
+                                let project_read = project.read();
+                                (*clip_id).or_else(|| {
+                                    let index = (*index).unwrap_or(0);
+                                    project_read.clips.get(index).map(|clip| clip.id)
+                                })
+                            };
+                            match selected_clip_id {
+                                Some(clip_id) => {
+                                    selection.write().select_clip(clip_id);
+                                    AutomationResponse::ok(serde_json::json!({
+                                        "clip_id": clip_id,
+                                    }))
+                                }
+                                None => AutomationResponse::error(
+                                    "No matching clip found for select_clip.",
+                                ),
+                            }
+                        }
+                        AutomationCommand::AddMarker { time } => {
+                            let project_read = project.read();
+                            let duration = project_read.duration();
+                            let fps = project_read.settings.fps.max(1.0);
+                            drop(project_read);
+                            let time = (*time).unwrap_or_else(|| current_time());
+                            let snapped = snap_time_to_frame(time, fps).clamp(0.0, duration);
+                            let marker = crate::state::Marker::new(snapped);
+                            let marker_id = project.write().add_marker(marker);
+                            selection.write().select_marker(marker_id);
+                            preview_dirty.set(true);
+                            AutomationResponse::ok(serde_json::json!({
+                                "marker_id": marker_id,
+                                "time": snapped,
+                            }))
+                        }
+                        AutomationCommand::SaveProject => match project.read().save() {
+                            Ok(()) => AutomationResponse::empty_ok(),
+                            Err(err) => AutomationResponse::error(format!(
+                                "Failed to save project: {}",
+                                err
+                            )),
+                        },
+                        AutomationCommand::OpenProviders => {
+                            provider_files_v2.set(list_global_provider_files());
+                            show_providers_v2.set(true);
+                            AutomationResponse::empty_ok()
+                        }
+                        AutomationCommand::CloseProviders => {
+                            show_providers_v2.set(false);
+                            AutomationResponse::empty_ok()
+                        }
+                    };
+                    envelope.respond(response);
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
     });
     

@@ -19,6 +19,13 @@ mod utils;
 // ... (imports)
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(config) = crate::core::automation::config_from_args(&args) {
+        if let Err(err) = crate::core::automation::start(config) {
+            eprintln!("[AUTOMATION ERROR] {}", err);
+        }
+    }
+
     // Configure the window
     let config = Config::new()
         .with_window(
@@ -65,8 +72,8 @@ fn main() {
             // Decode URL-encoded characters (e.g., spaces)
             let decoded = percent_encoding::percent_decode_str(raw_path).decode_utf8_lossy();
             let path = std::path::PathBuf::from(decoded.to_string());
-            
-            // NOTE: fs::read loads the entire file into memory. 
+
+            // NOTE: fs::read loads the entire file into memory.
             // This is efficient for small images/thumbnails but NOT for large video files.
             // For video playback, we would need to implement HTTP Range requests and streaming.
             match std::fs::read(&path) {

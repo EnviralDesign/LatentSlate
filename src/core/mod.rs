@@ -1,4 +1,5 @@
 pub mod thumbnailer;
+pub mod automation;
 pub mod media;
 pub mod preview;
 pub mod preview_store;
