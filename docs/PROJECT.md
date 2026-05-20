@@ -820,6 +820,7 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Updated the egui best-practices guide with the latest UI-kit lessons: tokenized control families, field/button/browse behavior rules, modal corner painting rules, faux-backdrop guidance, and a stronger visual QA checklist.
 - **2026-05-20:** Fixed modal corner artifacts globally by giving modal headers top-only radii and modal bodies bottom-only radii, matching the rounded outer frame instead of relying on egui parent clipping.
 - **2026-05-20:** Added reusable faux-blur modal backdrop styling: layered tinted scrim, subtle edge vignette, and tokenized modal drop shadow so dialogs feel separated from the editor without a true offscreen blur pass.
 - **2026-05-20:** Rebuilt modal close buttons as square tokenized controls with a larger hit area, coherent top/right header insets, hover/focus states, and a stroked X icon instead of tiny text.

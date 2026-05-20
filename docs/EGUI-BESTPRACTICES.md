@@ -177,11 +177,50 @@ For huge lists, prefer `show_rows`; the docs show measuring row height via `ui.t
 
 ## Reusable `ui_kit` layout templates
 
-Your current `ui_kit` already centralizes colors, frames, margins, button drawing, modal headers, card frames, and row painting. It also currently embeds important heights inside widget functions: primary buttons are painted at `36.0`, secondary buttons at `32.0`, icon buttons at `24x22`, text fields at `24.0`, and cards use exact allocation plus `UiBuilder::max_rect`.  Make those heights explicit semantic constants or derive them from `ui.spacing().interact_size.y`.
+Your current `ui_kit` centralizes colors, frames, margins, button drawing, modal headers, card frames, row painting, field rows, browse fields, and modal shell styling. Keep pushing fixes down into these primitives. If a visual issue appears in two places, treat it as a kit bug until proven otherwise.
 
 ### Color discipline
 
 Visible UI primitives should use semantic `ui_kit` tokens rather than direct `Color32` literals. Avoid pure black or pure white for field fills, text, strokes, panels, and buttons; use tinted near-black and near-white tokens such as `FIELD_BG`, `FIELD_BG_HOVER`, `FIELD_BG_ACTIVE`, `TEXT`, and `TEXT_ON_ACCENT`. Editable text fields, read-only value fields, and numeric `DragValue` fields should share the same field surface tokens so they read as one control family.
+
+### Metric discipline
+
+Every control family needs semantic size tokens. Do not let individual widgets invent their own heights, radii, padding, text size, or inter-control gaps.
+
+Current control families:
+
+- `FIELD_H`, `TEXT_FIELD_H`, and `VALUE_FIELD_H` define the normal form-field row height. Editable text fields, read-only value boxes, browse path fields, and numeric value fields should all start here.
+- `STANDALONE_BUTTON_H`, `PRIMARY_BUTTON_H`, and `SECONDARY_BUTTON_H` define standalone action buttons. A primary action may change color, not shape, unless a new named button variant is deliberately added.
+- `FIELD_COMPOUND_GAP` defines the gap between a field and its attached action, such as path field + Browse.
+- `CLOSE_BUTTON_SIZE`, `CLOSE_BUTTON_RADIUS`, and modal close insets define the square modal close hit target. Close buttons are icon controls, not tiny text labels.
+
+If a future screen needs compact controls, add a named compact family such as `COMPACT_FIELD_H` or `TOOLBAR_BUTTON_H`. Do not locally shave 2-4 pixels off the standard controls.
+
+### Field family rules
+
+Text fields, read-only value fields, browse path fields, and numeric `DragValue` fields should look like variations of the same field primitive:
+
+- same outer height,
+- same radius,
+- same default fill,
+- same hover/focus border behavior,
+- same text size,
+- same global text alignment token until the product intentionally changes it.
+
+Functional differences should stay inside the component. For example, numeric fields can keep drag-to-adjust and prefix labels, but the surface should not look like a different button family. Path browse fields are field-first controls: the text/path field flexes, the Browse button keeps a fixed width, and the whole compound row uses field height.
+
+First-focus selection is also a field-family behavior. A single-line editable field should select all text on first focus, then allow normal cursor placement on subsequent interaction. Browse path fields and read-only value fields should still show the same focus/edge affordance where they are interactive or selectable.
+
+### Button family rules
+
+Separate button role from button geometry:
+
+- Standalone buttons share height, radius, typography, and horizontal padding.
+- Primary/action buttons use a different skin, not a different size.
+- Field-attached buttons, such as Browse, use field height because they belong to a compound field.
+- Icon buttons and modal close buttons have their own square metrics and should paint actual icons or strokes, not text glyphs pretending to be icons.
+
+This lets the product have reusable variants such as primary, secondary, danger, field-attached, icon, and close without every use site becoming a one-off.
 
 ### 1. Metrics helper
 
@@ -191,8 +230,8 @@ pub struct LayoutMetrics {
     pub gap_y: f32,
     pub row_h: f32,
     pub body_text_h: f32,
-    pub primary_button_h: f32,
-    pub secondary_button_h: f32,
+    pub field_h: f32,
+    pub standalone_button_h: f32,
     pub action_bar_h: f32,
 }
 
@@ -200,20 +239,17 @@ impl LayoutMetrics {
     pub fn from_ui(ui: &egui::Ui) -> Self {
         let spacing = ui.spacing();
         let row_h = spacing.interact_size.y;
-
-        // Keep these synced with kit::primary_button / secondary_button,
-        // or better: expose them from ui_kit as constants.
-        let primary_button_h = 36.0;
-        let secondary_button_h = 32.0;
+        let field_h = kit::FIELD_H;
+        let standalone_button_h = kit::STANDALONE_BUTTON_H;
 
         Self {
             gap_x: spacing.item_spacing.x,
             gap_y: spacing.item_spacing.y,
             row_h,
             body_text_h: ui.text_style_height(&egui::TextStyle::Body),
-            primary_button_h,
-            secondary_button_h,
-            action_bar_h: primary_button_h + spacing.item_spacing.y * 2.0,
+            field_h,
+            standalone_button_h,
+            action_bar_h: standalone_button_h + spacing.item_spacing.y * 2.0,
         }
     }
 }
@@ -351,11 +387,38 @@ Modal / Window
                         └── vertical Strip: scrollable list + pinned button
 ```
 
-In 0.34, `egui::Modal` is now a good fit for real modals: it is centered, has a backdrop, and blocks input behind it. ([Docs.rs][8]) Your branch currently implements modal scrims manually with `kit::modal_scrim` plus `Window`, which works, but `Modal` can remove a lot of that custom layering. 
+In 0.34, `egui::Modal` is now a good fit for real modals: it is centered, has a backdrop, and blocks input behind it. ([Docs.rs][8]) Your branch currently implements modal scrims manually with `kit::modal_scrim` plus `Window`, which works, but `Modal` can remove a lot of that custom layering.
+
+### Modal surface and corner rules
+
+Do not rely on a rounded parent `Frame` to clip child paints. egui generally paints what each child asks it to paint; a square header or body can visually poke through a rounded outer modal frame. Any stacked surface that has rounded outer corners needs its child bands to carry compatible per-corner radii.
+
+For the current modal shell:
+
+- `modal_frame()` owns the outer fill, stroke, radius, and shadow.
+- `modal_header_with_close()` paints the header with top-only radii.
+- `modal_body()` paints the body with bottom-only radii.
+- Floating utility windows that reuse modal header/body helpers inherit the same fix.
+
+Use the same rule for future card sections, popovers, tab containers, and tool palettes. If a child band touches an outer rounded edge, give that child the matching partial radius. If a child band is fully internal, keep it square so stacked sections meet cleanly.
+
+### Modal backdrop rules
+
+There is no CSS-style `backdrop-filter: blur(...)` primitive in egui. A true full-window backdrop blur requires rendering the already-drawn app into an offscreen texture, blurring it, drawing it back, and then drawing the modal. Treat that as a rendering feature, not as ordinary UI layout polish.
+
+The current default should be a faux-blur/depth treatment in `ui_kit`:
+
+- layered tinted scrim,
+- subtle edge vignette,
+- modal drop shadow,
+- no pure black overlay,
+- all values tokenized as modal backdrop/surface constants.
+
+Only blur owned textures directly when the scope is narrow and obvious, such as dimming or blurring the preview texture while a modal is open. Do not build a separate modal-by-modal blur path.
 
 ### Before: fragile modal body pattern
 
-This is the kind of pattern to retire. Your current new-project modal has manual left/right widths, fixed card heights, `allocate_ui_with_layout`, a recent-project list with `max_height(ui.available_height() - 48.0)`, `Layout::bottom_up` for a bottom button, and a left form split by manual `Rect`s.  
+This is the kind of historical pattern to retire. The earlier New Project modal had manual left/right widths, fixed card heights, `allocate_ui_with_layout`, a recent-project list with `max_height(ui.available_height() - 48.0)`, `Layout::bottom_up` for a bottom button, and a left form split by manual `Rect`s.
 
 ```rust
 let card_h = ui.available_height().min(PROJECT_WIZARD_CARD_H).max(360.0);
@@ -673,6 +736,7 @@ The 0.34 `Panel` docs show the new unified `Panel::{left,right,top,bottom}` API,
 | Hardcoded row heights sprinkled everywhere                             | DPI/font/style changes create clipping.                                                                 | Use `ui.spacing().interact_size.y`, `ui.text_style_height`, and centralized constants.                 |
 | Resizable panel with content that does not fill                        | Dragging appears broken or leaves blank/unclaimed space.                                                | Use `ui.take_available_space()`, a scroll area, wrapping text, separator, or text edit. ([Docs.rs][9]) |
 | Manual painter widgets without clipping                                | Paint bleeds outside cells/cards.                                                                       | Allocate a rect, use `ui.painter_at(rect)`, or `StripBuilder::clip(true)`.                             |
+| Square child fills inside rounded frames                               | Header/body/card-section paint can poke through rounded parent corners.                                 | Give edge-touching child bands compatible partial radii.                                               |
 
 ### Debugging checklist
 
@@ -684,9 +748,12 @@ When a layout clips, overflows, or misaligns:
 4. Check whether `auto_shrink(true)` is shrinking a scroll body that should fill.
 5. Check whether a `with_layout` call is taking all available space.
 6. Check whether `add_space` is adding on top of `item_spacing`.
-7. Replace guessed constants like `48.0` with measured/semantic values from `LayoutMetrics`.
-8. For repeated widgets, add `ui.push_id(...)` or `id_salt(...)` where needed; egui docs show `push_id` to avoid ID clashes in repeated UI. ([Docs.rs][5])
-9. For huge lists, switch from drawing all rows to `ScrollArea::show_rows`.
+7. Inspect every visible edge at modal/card/popup corners. If a child band touches a rounded outer edge, it needs compatible partial radii because the parent frame will not automatically hide square child paint.
+8. Compare every repeated control against its family tokens: fields vs standalone buttons vs field-attached buttons vs icon controls. If two controls serve the same family role but differ by 1-4 pixels, fix the shared primitive.
+9. Verify default, hover, focus, active, disabled, and selected states for the shared primitive, not just the instance that exposed the bug.
+10. Replace guessed constants like `48.0` with measured/semantic values from `LayoutMetrics` or exported `ui_kit` constants.
+11. For repeated widgets, add `ui.push_id(...)` or `id_salt(...)` where needed; egui docs show `push_id` to avoid ID clashes in repeated UI. ([Docs.rs][5])
+12. For huge lists, switch from drawing all rows to `ScrollArea::show_rows`.
 
 ---
 
@@ -702,7 +769,7 @@ When a layout clips, overflows, or misaligns:
 * **`ScrollArea::content_margin` was added in 0.34**, which is useful for scrollable modal bodies where you want padding without manually wrapping every row. ([GitHub][1])
 * **`id_source` is renamed to `id_salt`** in scroll areas and other APIs; prefer the new name. ([Docs.rs][4])
 
-The practical migration path for your branch is not to rewrite everything at once. First, add `egui_extras`, introduce `body_with_footer`, and replace the modal/list/footer layouts. Then migrate the app shell from deprecated panel calls to `Panel::show_inside`. Finally, move repeated height constants into `ui_kit` metrics so all forms/cards/action bars share the same spacing vocabulary.
+The practical migration path for your branch is not to rewrite everything at once. `egui_extras`, `body_with_footer`, shared field metrics, browse fields, modal close controls, and modal surface tokens are now established. Next, migrate the app shell from deprecated panel calls to `Panel::show_inside`, build a reusable inspector/form grid on the same token vocabulary, and keep moving any repeated styling defect down into `ui_kit` before polishing individual call sites.
 
 [1]: https://raw.githubusercontent.com/emilk/egui/master/CHANGELOG.md "https://raw.githubusercontent.com/emilk/egui/master/CHANGELOG.md"
 [2]: https://docs.rs/egui/latest/egui/containers/panel/index.html "https://docs.rs/egui/latest/egui/containers/panel/index.html"
