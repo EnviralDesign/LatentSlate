@@ -1,8 +1,8 @@
 //! Product-specific egui primitives for the editor shell.
 
 use eframe::egui::{
-    self, Align, Color32, Context, CornerRadius, FontId, Frame, Layout, Margin, Rect, Response,
-    RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, Align, Color32, Context, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect,
+    Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
 };
 
 pub const APP_BG: Color32 = Color32::from_rgb(8, 9, 10);
@@ -98,12 +98,63 @@ pub fn card_frame() -> Frame {
         .inner_margin(Margin::same(SECTION_PAD))
 }
 
+pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(RADIUS),
+        Color32::from_rgb(20, 21, 24),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(RADIUS),
+        Stroke::new(1.0, BORDER_SOFT),
+        StrokeKind::Inside,
+    );
+
+    let content_rect = rect.shrink(SECTION_PAD as f32);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.set_min_size(content_rect.size());
+    add_contents(&mut child);
+    response
+}
+
 pub fn sunken_frame() -> Frame {
     Frame::new()
         .fill(FIELD_BG)
         .stroke(Stroke::new(1.0, BORDER_SOFT))
         .corner_radius(CornerRadius::same(5))
         .inner_margin(Margin::same(8))
+}
+
+pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> Response {
+    let value = value.into();
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(4), FIELD_BG);
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(4),
+        Stroke::new(1.0, BORDER_SOFT),
+        StrokeKind::Inside,
+    );
+
+    let content_rect = rect.shrink2(Vec2::new(8.0, 0.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.add_sized(
+        content_rect.size(),
+        egui::Label::new(RichText::new(&value).color(TEXT_MUTED).size(12.0)).truncate(),
+    );
+    response.on_hover_text(value)
 }
 
 pub fn modal_scrim(ctx: &Context, id: &'static str) {
@@ -119,16 +170,62 @@ pub fn modal_scrim(ctx: &Context, id: &'static str) {
 }
 
 pub fn modal_header(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
-    Frame::new()
-        .fill(Color32::from_rgb(31, 32, 36))
-        .inner_margin(Margin::symmetric(18, 14))
-        .show(ui, |ui| {
-            ui.label(RichText::new(title).color(TEXT).strong().size(17.0));
-            if let Some(subtitle) = subtitle {
-                ui.add_space(3.0);
-                ui.label(RichText::new(subtitle).color(TEXT_MUTED).size(12.0));
-            }
-        });
+    let _ = modal_header_with_close(ui, title, subtitle, false);
+}
+
+pub fn modal_header_with_close(
+    ui: &mut Ui,
+    title: &str,
+    subtitle: Option<&str>,
+    close_enabled: bool,
+) -> bool {
+    let height = if subtitle.is_some() { 72.0 } else { 56.0 };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 0.0, Color32::from_rgb(31, 32, 36));
+
+    let content_rect = rect.shrink2(Vec2::new(18.0, 12.0));
+    let close_clicked = if close_enabled {
+        let button_size = Vec2::new(24.0, 22.0);
+        let button_rect = Rect::from_min_size(
+            Pos2::new(content_rect.right() - button_size.x, content_rect.top()),
+            button_size,
+        );
+        let mut close_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(button_rect)
+                .layout(Layout::top_down(Align::Center)),
+        );
+        close_button(&mut close_ui).on_hover_text("Close").clicked()
+    } else {
+        false
+    };
+    let title_right = if close_enabled {
+        content_rect.right() - 34.0
+    } else {
+        content_rect.right()
+    };
+    let title_rect = Rect::from_min_max(
+        content_rect.left_top(),
+        Pos2::new(title_right.max(content_rect.left()), content_rect.bottom()),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(title_rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.add_sized(
+        [title_rect.width(), 20.0],
+        egui::Label::new(RichText::new(title).color(TEXT).strong().size(17.0)).truncate(),
+    );
+    if let Some(subtitle) = subtitle {
+        child.add_space(3.0);
+        child.add_sized(
+            [title_rect.width(), 18.0],
+            egui::Label::new(RichText::new(subtitle).color(TEXT_MUTED).size(12.0)).truncate(),
+        );
+    }
+    close_clicked
 }
 
 pub fn modal_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
@@ -162,62 +259,167 @@ pub fn field_label(ui: &mut Ui, label: &str) {
     ui.label(section_label(label));
 }
 
-pub fn primary_button(ui: &mut Ui, label: &str, width: f32) -> Response {
+pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Response {
     ui.add_sized(
-        [width, 36.0],
-        egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
-            .fill(PRIMARY)
-            .stroke(Stroke::new(1.0, Color32::from_rgb(27, 138, 74)))
-            .corner_radius(CornerRadius::same(6)),
+        [width, 24.0],
+        egui::TextEdit::singleline(value)
+            .desired_width(width)
+            .vertical_align(Align::Center)
+            .margin(Margin::symmetric(6, 3)),
+    )
+}
+
+pub fn primary_button(ui: &mut Ui, label: &str, width: f32) -> Response {
+    painted_button(
+        ui,
+        label,
+        Vec2::new(width, 36.0),
+        ButtonSkin {
+            fill: PRIMARY,
+            hover_fill: PRIMARY_HOVER,
+            active_fill: Color32::from_rgb(24, 145, 77),
+            stroke: Color32::from_rgb(27, 138, 74),
+            text: Color32::WHITE,
+            text_size: 12.5,
+            radius: 6,
+        },
     )
 }
 
 pub fn secondary_button(ui: &mut Ui, label: &str, width: f32) -> Response {
-    ui.add_sized(
-        [width, 32.0],
-        egui::Button::new(RichText::new(label).color(TEXT))
-            .fill(Color32::from_rgb(34, 35, 39))
-            .stroke(Stroke::new(1.0, BORDER))
-            .corner_radius(CornerRadius::same(5)),
+    painted_button(
+        ui,
+        label,
+        Vec2::new(width, 32.0),
+        ButtonSkin {
+            fill: Color32::from_rgb(34, 35, 39),
+            hover_fill: Color32::from_rgb(44, 46, 52),
+            active_fill: Color32::from_rgb(27, 72, 52),
+            stroke: BORDER,
+            text: TEXT,
+            text_size: 12.0,
+            radius: 5,
+        },
     )
 }
 
 pub fn danger_button(ui: &mut Ui, label: &str, width: f32) -> Response {
-    ui.add_sized(
-        [width, 32.0],
-        egui::Button::new(RichText::new(label).color(Color32::WHITE))
-            .fill(Color32::from_rgb(112, 28, 32))
-            .stroke(Stroke::new(1.0, DANGER))
-            .corner_radius(CornerRadius::same(5)),
-    )
-}
-
-pub fn quiet_button(ui: &mut Ui, label: &str) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).color(TEXT_MUTED).size(12.0))
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(4)),
+    painted_button(
+        ui,
+        label,
+        Vec2::new(width, 32.0),
+        ButtonSkin {
+            fill: Color32::from_rgb(112, 28, 32),
+            hover_fill: Color32::from_rgb(135, 36, 40),
+            active_fill: Color32::from_rgb(92, 22, 27),
+            stroke: DANGER,
+            text: Color32::WHITE,
+            text_size: 12.0,
+            radius: 5,
+        },
     )
 }
 
 pub fn icon_button(ui: &mut Ui, label: &str) -> Response {
-    ui.add_sized(
-        [24.0, 22.0],
-        egui::Button::new(RichText::new(label).color(TEXT_MUTED).size(11.0))
-            .fill(Color32::from_rgb(27, 28, 32))
-            .stroke(Stroke::new(1.0, BORDER_SOFT))
-            .corner_radius(CornerRadius::same(4)),
+    painted_button(
+        ui,
+        label,
+        Vec2::new(24.0, 22.0),
+        ButtonSkin {
+            fill: Color32::from_rgb(27, 28, 32),
+            hover_fill: Color32::from_rgb(38, 40, 45),
+            active_fill: Color32::from_rgb(27, 72, 52),
+            stroke: BORDER_SOFT,
+            text: TEXT_MUTED,
+            text_size: 11.0,
+            radius: 4,
+        },
+    )
+}
+
+pub fn close_button(ui: &mut Ui) -> Response {
+    painted_button(
+        ui,
+        "X",
+        Vec2::new(24.0, 22.0),
+        ButtonSkin {
+            fill: Color32::TRANSPARENT,
+            hover_fill: Color32::from_rgb(64, 25, 29),
+            active_fill: Color32::from_rgb(101, 31, 37),
+            stroke: Color32::TRANSPARENT,
+            text: Color32::from_rgb(255, 110, 118),
+            text_size: 12.0,
+            radius: 4,
+        },
     )
 }
 
 pub fn media_pill(ui: &mut Ui, label: &str, color: Color32) -> Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).color(color).size(11.0).strong())
-            .fill(Color32::from_rgb(17, 20, 22))
-            .stroke(Stroke::new(1.0, color.gamma_multiply(0.55)))
-            .corner_radius(CornerRadius::same(5)),
+    let width = (label.chars().count() as f32 * 7.0 + 22.0).max(42.0);
+    painted_button(
+        ui,
+        label,
+        Vec2::new(width, 24.0),
+        ButtonSkin {
+            fill: Color32::from_rgb(17, 20, 22),
+            hover_fill: color.gamma_multiply(0.18),
+            active_fill: color.gamma_multiply(0.28),
+            stroke: color.gamma_multiply(0.55),
+            text: color,
+            text_size: 11.0,
+            radius: 5,
+        },
     )
+}
+
+struct ButtonSkin {
+    fill: Color32,
+    hover_fill: Color32,
+    active_fill: Color32,
+    stroke: Color32,
+    text: Color32,
+    text_size: f32,
+    radius: u8,
+}
+
+fn painted_button(ui: &mut Ui, label: &str, size: Vec2, skin: ButtonSkin) -> Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if response.is_pointer_button_down_on() {
+        skin.active_fill
+    } else if response.hovered() || response.has_focus() {
+        skin.hover_fill
+    } else {
+        skin.fill
+    };
+    let stroke = if response.has_focus() {
+        BORDER_FOCUS
+    } else if response.hovered() {
+        skin.stroke.gamma_multiply(1.35)
+    } else {
+        skin.stroke
+    };
+
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(skin.radius), fill);
+    if stroke != Color32::TRANSPARENT {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(skin.radius),
+            Stroke::new(1.0, stroke),
+            StrokeKind::Inside,
+        );
+    }
+    let galley = egui::WidgetText::from(RichText::new(label).color(skin.text).size(skin.text_size))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            (rect.width() - 12.0).max(0.0),
+            FontId::proportional(skin.text_size),
+        );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, skin.text);
+    response
 }
 
 pub fn menu_text(label: &str) -> RichText {

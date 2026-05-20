@@ -18,6 +18,9 @@ use crate::state::{
 };
 use crate::ui_kit as kit;
 
+const PROJECT_WIZARD_SIZE: [f32; 2] = [720.0, 620.0];
+const PROJECT_WIZARD_CARD_H: f32 = 486.0;
+
 pub fn run() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -419,7 +422,10 @@ impl NlaEguiApp {
         let mut preview_dirty = false;
         kit::card_frame().show(ui, |ui| {
             kit::field_label(ui, "Clip");
-            ui.label(kit::value(asset_name));
+            ui.add_sized(
+                [ui.available_width(), 18.0],
+                egui::Label::new(kit::value(asset_name)).truncate(),
+            );
             ui.add_space(12.0);
             if let Some(clip) = self
                 .editor
@@ -428,9 +434,8 @@ impl NlaEguiApp {
                 .iter_mut()
                 .find(|clip| clip.id == clip_id)
             {
-                kit::field_label(ui, "Clip Name");
                 let mut label = clip.label.clone().unwrap_or_default();
-                if ui.text_edit_singleline(&mut label).changed() {
+                if inspector_text_field(ui, "Clip Name", &mut label) {
                     clip.label = if label.trim().is_empty() {
                         None
                     } else {
@@ -441,22 +446,12 @@ impl NlaEguiApp {
                 transform_editor(ui, &mut clip.transform, &mut preview_dirty);
                 ui.add_space(12.0);
                 kit::field_label(ui, "Timing");
-                ui.horizontal(|ui| {
-                    preview_dirty |= ui
-                        .add(
-                            egui::DragValue::new(&mut clip.start_time)
-                                .speed(0.05)
-                                .prefix("Start "),
-                        )
-                        .changed();
-                    preview_dirty |= ui
-                        .add(
-                            egui::DragValue::new(&mut clip.duration)
-                                .speed(0.05)
-                                .prefix("Dur "),
-                        )
-                        .changed();
-                });
+                ui.add_space(6.0);
+                preview_dirty |= inspector_two_drag_f64(
+                    ui,
+                    ("Start", &mut clip.start_time, 0.05),
+                    ("Duration", &mut clip.duration, 0.05),
+                );
             }
         });
         if preview_dirty {
@@ -477,7 +472,7 @@ impl NlaEguiApp {
             let duration = asset.duration_seconds;
             kit::card_frame().show(ui, |ui| {
                 kit::field_label(ui, "Asset");
-                ui.text_edit_singleline(&mut asset.name);
+                kit::singleline_text_field(ui, &mut asset.name, ui.available_width());
                 ui.add_space(8.0);
                 ui.label(kit::caption(kind_label));
                 if let Some(duration) = duration {
@@ -509,16 +504,11 @@ impl NlaEguiApp {
             kit::card_frame().show(ui, |ui| {
                 kit::field_label(ui, "Marker");
                 let mut changed = false;
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut marker.time)
-                            .speed(0.05)
-                            .prefix("Time "),
-                    )
-                    .changed();
-                kit::field_label(ui, "Label");
+                ui.add_space(6.0);
+                changed |= inspector_drag_f64(ui, "Time", &mut marker.time, 0.05, 104.0);
+                ui.add_space(10.0);
                 let mut label = marker.label.clone().unwrap_or_default();
-                if ui.text_edit_singleline(&mut label).changed() {
+                if inspector_text_field(ui, "Label", &mut label) {
                     marker.label = if label.trim().is_empty() {
                         None
                     } else {
@@ -559,10 +549,11 @@ impl NlaEguiApp {
         {
             kit::card_frame().show(ui, |ui| {
                 kit::field_label(ui, "Track");
-                ui.text_edit_singleline(&mut track.name);
+                kit::singleline_text_field(ui, &mut track.name, ui.available_width());
                 ui.label(kit::caption(format!("{:?}", track.track_type)));
                 if track.track_type != TrackType::Marker {
-                    ui.add(egui::Slider::new(&mut track.volume, 0.0..=2.0).text("Volume"));
+                    ui.add_space(10.0);
+                    let _ = inspector_drag_f32(ui, "Volume", &mut track.volume, 0.01, 104.0);
                 }
             });
         }
@@ -660,27 +651,32 @@ impl NlaEguiApp {
     }
 
     fn timeline_panel(&mut self, ctx: &Context) {
-        let height = if self.editor.layout.timeline_collapsed {
-            34.0
-        } else {
-            self.editor.layout.timeline_height
-        };
-        egui::TopBottomPanel::bottom("timeline")
-            .exact_height(height)
-            .frame(kit::timeline_frame())
-            .show(ctx, |ui| {
-                if self.editor.layout.timeline_collapsed {
+        if self.editor.layout.timeline_collapsed {
+            egui::TopBottomPanel::bottom("timeline")
+                .exact_height(34.0)
+                .frame(kit::timeline_frame())
+                .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         if kit::secondary_button(ui, "TIMELINE", 94.0).clicked() {
                             self.editor.layout.timeline_collapsed = false;
                         }
                         ui.label(kit::caption(timecode(self.editor.current_time)));
                     });
-                    return;
-                }
+                });
+            return;
+        }
+
+        let response = egui::TopBottomPanel::bottom("timeline")
+            .resizable(true)
+            .default_height(self.editor.layout.timeline_height)
+            .height_range(150.0..=420.0)
+            .frame(kit::timeline_frame())
+            .show(ctx, |ui| {
+                ui.set_min_height(150.0);
                 self.timeline_header(ui);
                 self.paint_timeline(ui);
             });
+        self.editor.layout.timeline_height = response.response.rect.height().clamp(150.0, 420.0);
     }
 
     fn timeline_header(&mut self, ui: &mut Ui) {
@@ -718,8 +714,11 @@ impl NlaEguiApp {
         let duration = self.editor.project.duration().max(10.0);
         let min_h = ruler_h + self.editor.project.tracks.len() as f32 * row_h + 42.0;
         let total_h = ui.available_height().max(min_h);
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), total_h), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), total_h),
+            Sense::click_and_drag(),
+        );
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         let painter = ui.painter_at(rect);
         let timeline_rect = Rect::from_min_max(
             Pos2::new(rect.left() + label_width, rect.top() + ruler_h),
@@ -897,8 +896,10 @@ impl NlaEguiApp {
             kit::TEXT_DIM,
         );
 
-        if response.clicked() {
-            if let Some(pos) = response.interact_pointer_pos() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if response.dragged() || response.drag_started() {
+                self.scrub_timeline(pos, timeline_rect, duration);
+            } else if response.clicked() {
                 self.handle_timeline_click(pos, timeline_rect, duration, row_h);
             }
         }
@@ -951,6 +952,15 @@ impl NlaEguiApp {
         self.editor.seek(time);
     }
 
+    fn scrub_timeline(&mut self, pos: Pos2, timeline_rect: Rect, duration: f64) {
+        if pos.x < timeline_rect.left() {
+            return;
+        }
+        let time = ((pos.x - timeline_rect.left()) / timeline_rect.width()).clamp(0.0, 1.0) as f64
+            * duration;
+        self.editor.seek(time);
+    }
+
     fn modals(&mut self, ctx: &Context) {
         let startup_open = self.editor.show_startup();
         if startup_open {
@@ -980,7 +990,7 @@ impl NlaEguiApp {
             .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
-            .fixed_size([720.0, 560.0])
+            .fixed_size(PROJECT_WIZARD_SIZE)
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -995,6 +1005,8 @@ impl NlaEguiApp {
 
     fn new_project_modal(&mut self, ctx: &Context, startup: bool) {
         let mut open = true;
+        let close_enabled = !startup && self.editor.project_root().is_some();
+        let mut close_clicked = false;
         kit::modal_scrim(ctx, "new_project");
         egui::Window::new(if startup {
             "Create Project"
@@ -1006,18 +1018,19 @@ impl NlaEguiApp {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .fixed_size([560.0, 430.0])
+        .fixed_size(PROJECT_WIZARD_SIZE)
         .frame(kit::modal_frame())
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            kit::modal_header(
+            close_clicked = kit::modal_header_with_close(
                 ui,
                 "New Project",
                 Some("Choose project settings and save location."),
+                close_enabled,
             );
             kit::modal_body(ui, |ui| self.new_project_modal_contents(ui, startup));
         });
-        if !open {
+        if close_clicked || (!open && close_enabled) {
             self.editor.overlays.new_project = false;
         }
     }
@@ -1025,24 +1038,32 @@ impl NlaEguiApp {
     fn new_project_modal_contents(&mut self, ui: &mut Ui, _startup: bool) {
         ui.columns(2, |columns| {
             columns[0].vertical(|ui| {
-                kit::card_frame().show(ui, |ui| {
-                    kit::field_label(ui, "Create New Project");
+                kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
+                    let footer_h = 100.0;
+                    let form_h = (ui.available_height() - footer_h).max(260.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(form_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            kit::field_label(ui, "Create New Project");
+                            ui.add_space(8.0);
+                            kit::field_label(ui, "Project Name");
+                            kit::singleline_text_field(
+                                ui,
+                                &mut self.new_project_name,
+                                ui.available_width(),
+                            );
+                            ui.add_space(10.0);
+                            settings_fields(ui, &mut self.project_settings);
+                        });
                     ui.add_space(8.0);
-                    kit::field_label(ui, "Project Name");
-                    ui.text_edit_singleline(&mut self.new_project_name);
-                    ui.add_space(10.0);
-                    settings_fields(ui, &mut self.project_settings);
-                    ui.add_space(10.0);
                     kit::field_label(ui, "Save Location");
-                    ui.horizontal(|ui| {
-                        ui.label(kit::caption(path_label(&self.new_project_parent)));
-                        if kit::quiet_button(ui, "Browse").clicked() {
-                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                self.new_project_parent = folder;
-                            }
+                    if location_picker_row(ui, &self.new_project_parent).clicked() {
+                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                            self.new_project_parent = folder;
                         }
-                    });
-                    ui.add_space(14.0);
+                    }
+                    ui.add_space(8.0);
                     if kit::primary_button(ui, "Create Project", ui.available_width()).clicked() {
                         match self.editor.create_project(
                             &self.new_project_parent,
@@ -1058,40 +1079,47 @@ impl NlaEguiApp {
                 });
             });
             columns[1].vertical(|ui| {
-                kit::card_frame().show(ui, |ui| {
+                kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
                     kit::field_label(ui, "Recent Projects");
                     ui.add_space(8.0);
                     let recent = recent_projects(&self.new_project_parent);
-                    if recent.is_empty() {
-                        kit::empty_state(
-                            ui,
-                            "No recent projects",
-                            "Browse to open an existing project folder.",
-                        );
-                    }
-                    for folder in recent {
-                        if kit::secondary_button(
-                            ui,
-                            folder
-                                .file_name()
-                                .and_then(|v| v.to_str())
-                                .unwrap_or("Project"),
-                            ui.available_width(),
-                        )
-                        .clicked()
-                        {
-                            if let Err(err) = self.editor.open_project(folder) {
-                                self.editor.status = err;
+                    let list_height = (ui.available_height() - 48.0).max(120.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(list_height)
+                        .show(ui, |ui| {
+                            if recent.is_empty() {
+                                kit::empty_state(
+                                    ui,
+                                    "No recent projects",
+                                    "Browse to open an existing project folder.",
+                                );
                             }
-                        }
-                    }
+                            for folder in recent {
+                                if kit::secondary_button(
+                                    ui,
+                                    folder
+                                        .file_name()
+                                        .and_then(|v| v.to_str())
+                                        .unwrap_or("Project"),
+                                    ui.available_width(),
+                                )
+                                .clicked()
+                                {
+                                    match self.editor.open_project(folder) {
+                                        Ok(_) => self.editor.overlays.new_project = false,
+                                        Err(err) => self.editor.status = err,
+                                    }
+                                }
+                            }
+                        });
                     ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
                         if kit::secondary_button(ui, "Browse for Project...", ui.available_width())
                             .clicked()
                         {
                             if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                if let Err(err) = self.editor.open_project(folder) {
-                                    self.editor.status = err;
+                                match self.editor.open_project(folder) {
+                                    Ok(_) => self.editor.overlays.new_project = false,
+                                    Err(err) => self.editor.status = err,
                                 }
                             }
                         }
@@ -1103,6 +1131,7 @@ impl NlaEguiApp {
 
     fn project_settings_modal(&mut self, ctx: &Context) {
         let mut open = true;
+        let mut close_clicked = false;
         kit::modal_scrim(ctx, "project_settings");
         egui::Window::new("Project Settings")
             .title_bar(false)
@@ -1110,14 +1139,15 @@ impl NlaEguiApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .fixed_size([520.0, 420.0])
+            .fixed_size([560.0, 520.0])
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                kit::modal_header(
+                close_clicked = kit::modal_header_with_close(
                     ui,
                     "Project Settings",
                     Some("Update resolution, timing, and preview scale."),
+                    true,
                 );
                 kit::modal_body(ui, |ui| {
                     kit::card_frame()
@@ -1136,13 +1166,14 @@ impl NlaEguiApp {
                     });
                 });
             });
-        if !open {
+        if close_clicked || !open {
             self.editor.overlays.project_settings = false;
         }
     }
 
     fn generative_video_modal(&mut self, ctx: &Context) {
         let mut open = true;
+        let mut close_clicked = false;
         kit::modal_scrim(ctx, "generative_video");
         egui::Window::new("New Generative Video")
             .title_bar(false)
@@ -1154,10 +1185,11 @@ impl NlaEguiApp {
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                kit::modal_header(
+                close_clicked = kit::modal_header_with_close(
                     ui,
                     "New Generative Video",
                     Some("Define the target duration for this asset."),
+                    true,
                 );
                 kit::modal_body(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -1194,35 +1226,39 @@ impl NlaEguiApp {
                     });
                 });
             });
-        if !open {
+        if close_clicked || !open {
             self.editor.overlays.generative_video = false;
         }
     }
 
     fn queue_panel(&mut self, ctx: &Context) {
+        let mut close_clicked = false;
         egui::Window::new("Generation Queue")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
             .frame(kit::modal_frame())
             .default_pos([950.0, 70.0])
             .default_size([320.0, 150.0])
             .show(ctx, |ui| {
-                kit::field_label(ui, "Generation Queue");
-                ui.add_space(6.0);
-                if self.editor.generation_queue.is_empty() {
-                    kit::empty_state(ui, "Empty", "No generation jobs yet.");
-                } else {
-                    for job in self.editor.generation_queue.iter() {
-                        ui.label(kit::body(format!("{} - {:?}", job.asset_label, job.status)));
+                close_clicked = kit::modal_header_with_close(ui, "Generation Queue", None, true);
+                kit::modal_body(ui, |ui| {
+                    if self.editor.generation_queue.is_empty() {
+                        kit::empty_state(ui, "Empty", "No generation jobs yet.");
+                    } else {
+                        for job in self.editor.generation_queue.iter() {
+                            ui.label(kit::body(format!("{} - {:?}", job.asset_label, job.status)));
+                        }
                     }
-                }
-                ui.add_space(10.0);
-                if kit::secondary_button(ui, "Close", 90.0).clicked() {
-                    self.editor.overlays.queue = false;
-                }
+                });
             });
+        if close_clicked {
+            self.editor.overlays.queue = false;
+        }
     }
 
     fn providers_modal(&mut self, ctx: &Context) {
         let mut open = true;
+        let mut close_clicked = false;
         kit::modal_scrim(ctx, "providers");
         egui::Window::new("AI Providers (Global)")
             .title_bar(false)
@@ -1233,10 +1269,11 @@ impl NlaEguiApp {
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                kit::modal_header(
+                close_clicked = kit::modal_header_with_close(
                     ui,
                     "AI Providers",
                     Some("Global provider definitions and manifests."),
+                    true,
                 );
                 kit::modal_body(ui, |ui| {
                     ui.label(kit::caption(
@@ -1311,7 +1348,7 @@ impl NlaEguiApp {
                     });
                 });
             });
-        if !open {
+        if close_clicked || !open {
             self.editor.overlays.providers = false;
         }
     }
@@ -1379,9 +1416,16 @@ fn asset_row(ui: &mut Ui, asset: &Asset, selected: bool) -> egui::Response {
                     .size(11.0)
                     .strong(),
             );
+            let text_w = (ui.available_width() - 8.0).max(40.0);
             ui.vertical(|ui| {
-                ui.label(kit::body(&asset.name));
-                ui.label(kit::caption(asset_kind_label(&asset.kind)));
+                ui.add_sized(
+                    [text_w, 17.0],
+                    egui::Label::new(kit::body(&asset.name)).truncate(),
+                );
+                ui.add_sized(
+                    [text_w, 15.0],
+                    egui::Label::new(kit::caption(asset_kind_label(&asset.kind))).truncate(),
+                );
             });
         });
     })
@@ -1457,54 +1501,182 @@ fn provider_file_summary(path: &Path) -> ProviderFileSummary {
     }
 }
 
+fn path_label(path: &Path) -> String {
+    let text = path.display().to_string();
+    let len = text.chars().count();
+    if len > 48 {
+        format!(
+            "...{}",
+            text.chars()
+                .skip(len.saturating_sub(45))
+                .collect::<String>()
+        )
+    } else {
+        text
+    }
+}
+
+fn inspector_text_field(ui: &mut Ui, label: &str, value: &mut String) -> bool {
+    kit::field_label(ui, label);
+    kit::singleline_text_field(ui, value, ui.available_width()).changed()
+}
+
+const INSPECTOR_NUMERIC_H: f32 = 40.0;
+const INSPECTOR_NUMERIC_LABEL_H: f32 = 12.0;
+const INSPECTOR_NUMERIC_INPUT_H: f32 = 24.0;
+const INSPECTOR_NUMERIC_GAP: f32 = 10.0;
+
+fn inspector_numeric_rect(ui: &mut Ui, width: f32) -> Rect {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, INSPECTOR_NUMERIC_H), Sense::hover());
+    rect
+}
+
+fn inspector_numeric_pair_rects(ui: &mut Ui) -> (Rect, Rect) {
+    let available = ui.available_width();
+    let col_w = ((available - INSPECTOR_NUMERIC_GAP) * 0.5).max(72.0);
+    let total_w = col_w * 2.0 + INSPECTOR_NUMERIC_GAP;
+    let (row_rect, _) =
+        ui.allocate_exact_size(Vec2::new(total_w, INSPECTOR_NUMERIC_H), Sense::hover());
+    let left = Rect::from_min_size(row_rect.min, Vec2::new(col_w, INSPECTOR_NUMERIC_H));
+    let right = Rect::from_min_size(
+        Pos2::new(
+            row_rect.left() + col_w + INSPECTOR_NUMERIC_GAP,
+            row_rect.top(),
+        ),
+        Vec2::new(col_w, INSPECTOR_NUMERIC_H),
+    );
+    (left, right)
+}
+
+fn inspector_numeric_field(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    add_control: impl FnOnce(&mut Ui, f32) -> egui::Response,
+) -> bool {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.set_min_size(rect.size());
+    child.spacing_mut().item_spacing.y = 4.0;
+    child.add_sized(
+        [rect.width(), INSPECTOR_NUMERIC_LABEL_H],
+        egui::Label::new(kit::caption(label.to_ascii_uppercase())),
+    );
+    add_control(&mut child, rect.width()).changed()
+}
+
+fn inspector_drag_f32(ui: &mut Ui, label: &str, value: &mut f32, speed: f64, width: f32) -> bool {
+    let rect = inspector_numeric_rect(ui, width);
+    inspector_drag_f32_in_rect(ui, rect, label, value, speed)
+}
+
+fn inspector_drag_f32_in_rect(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    value: &mut f32,
+    speed: f64,
+) -> bool {
+    inspector_numeric_field(ui, rect, label, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_INPUT_H],
+            egui::DragValue::new(value).speed(speed),
+        )
+    })
+}
+
+fn inspector_drag_f64(ui: &mut Ui, label: &str, value: &mut f64, speed: f64, width: f32) -> bool {
+    let rect = inspector_numeric_rect(ui, width);
+    inspector_drag_f64_in_rect(ui, rect, label, value, speed)
+}
+
+fn inspector_drag_f64_in_rect(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    value: &mut f64,
+    speed: f64,
+) -> bool {
+    inspector_numeric_field(ui, rect, label, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_INPUT_H],
+            egui::DragValue::new(value).speed(speed),
+        )
+    })
+}
+
+fn inspector_drag_u32_in_rect(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    value: &mut u32,
+    speed: f64,
+) -> bool {
+    inspector_numeric_field(ui, rect, label, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_INPUT_H],
+            egui::DragValue::new(value).speed(speed),
+        )
+    })
+}
+
+fn inspector_two_drag_f32(
+    ui: &mut Ui,
+    left: (&str, &mut f32, f64),
+    right: (&str, &mut f32, f64),
+) -> bool {
+    let mut changed = false;
+    let (left_rect, right_rect) = inspector_numeric_pair_rects(ui);
+    changed |= inspector_drag_f32_in_rect(ui, left_rect, left.0, left.1, left.2);
+    changed |= inspector_drag_f32_in_rect(ui, right_rect, right.0, right.1, right.2);
+    changed
+}
+
+fn inspector_two_drag_f64(
+    ui: &mut Ui,
+    left: (&str, &mut f64, f64),
+    right: (&str, &mut f64, f64),
+) -> bool {
+    let mut changed = false;
+    let (left_rect, right_rect) = inspector_numeric_pair_rects(ui);
+    changed |= inspector_drag_f64_in_rect(ui, left_rect, left.0, left.1, left.2);
+    changed |= inspector_drag_f64_in_rect(ui, right_rect, right.0, right.1, right.2);
+    changed
+}
+
+fn inspector_two_drag_u32(
+    ui: &mut Ui,
+    left: (&str, &mut u32, f64),
+    right: (&str, &mut u32, f64),
+) -> bool {
+    let mut changed = false;
+    let (left_rect, right_rect) = inspector_numeric_pair_rects(ui);
+    changed |= inspector_drag_u32_in_rect(ui, left_rect, left.0, left.1, left.2);
+    changed |= inspector_drag_u32_in_rect(ui, right_rect, right.0, right.1, right.2);
+    changed
+}
+
 fn transform_editor(ui: &mut Ui, transform: &mut ClipTransform, preview_dirty: &mut bool) {
     kit::field_label(ui, "Transform");
-    egui::Grid::new("transform_grid")
-        .num_columns(2)
-        .spacing([10.0, 8.0])
-        .show(ui, |ui| {
-            *preview_dirty |= ui
-                .add(
-                    egui::DragValue::new(&mut transform.position_x)
-                        .speed(1.0)
-                        .prefix("X "),
-                )
-                .changed();
-            *preview_dirty |= ui
-                .add(
-                    egui::DragValue::new(&mut transform.position_y)
-                        .speed(1.0)
-                        .prefix("Y "),
-                )
-                .changed();
-            ui.end_row();
-            *preview_dirty |= ui
-                .add(
-                    egui::DragValue::new(&mut transform.scale_x)
-                        .speed(0.01)
-                        .prefix("Scale X "),
-                )
-                .changed();
-            *preview_dirty |= ui
-                .add(
-                    egui::DragValue::new(&mut transform.scale_y)
-                        .speed(0.01)
-                        .prefix("Scale Y "),
-                )
-                .changed();
-            ui.end_row();
-            *preview_dirty |= ui
-                .add(
-                    egui::DragValue::new(&mut transform.rotation_deg)
-                        .speed(1.0)
-                        .prefix("Rot "),
-                )
-                .changed();
-            *preview_dirty |= ui
-                .add(egui::Slider::new(&mut transform.opacity, 0.0..=1.0).text("Opacity"))
-                .changed();
-            ui.end_row();
-        });
+    ui.add_space(6.0);
+    *preview_dirty |= inspector_two_drag_f32(
+        ui,
+        ("Position X", &mut transform.position_x, 1.0),
+        ("Position Y", &mut transform.position_y, 1.0),
+    );
+    *preview_dirty |= inspector_two_drag_f32(
+        ui,
+        ("Scale X", &mut transform.scale_x, 0.01),
+        ("Scale Y", &mut transform.scale_y, 0.01),
+    );
+    *preview_dirty |= inspector_two_drag_f32(
+        ui,
+        ("Rotation", &mut transform.rotation_deg, 1.0),
+        ("Opacity", &mut transform.opacity, 0.01),
+    );
 }
 
 fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
@@ -1536,52 +1708,30 @@ fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
         }
     });
     ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut settings.width)
-                .speed(8)
-                .prefix("W "),
-        );
-        ui.add(
-            egui::DragValue::new(&mut settings.height)
-                .speed(8)
-                .prefix("H "),
-        );
-    });
+    let _ = inspector_two_drag_u32(
+        ui,
+        ("Width", &mut settings.width, 8.0),
+        ("Height", &mut settings.height, 8.0),
+    );
     ui.add_space(8.0);
     kit::field_label(ui, "Preview Downsample");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut settings.preview_max_width)
-                .speed(8)
-                .prefix("W "),
-        );
-        ui.add(
-            egui::DragValue::new(&mut settings.preview_max_height)
-                .speed(8)
-                .prefix("H "),
-        );
-    });
+    ui.add_space(6.0);
+    let _ = inspector_two_drag_u32(
+        ui,
+        ("Width", &mut settings.preview_max_width, 8.0),
+        ("Height", &mut settings.preview_max_height, 8.0),
+    );
     ui.add_space(8.0);
     kit::field_label(ui, "Timing");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut settings.fps)
-                .speed(1.0)
-                .prefix("FPS "),
-        );
-        let mut minutes = settings.duration_seconds / 60.0;
-        if ui
-            .add(
-                egui::DragValue::new(&mut minutes)
-                    .speed(0.25)
-                    .prefix("Minutes "),
-            )
-            .changed()
-        {
-            settings.duration_seconds = (minutes * 60.0).max(1.0);
-        }
-    });
+    ui.add_space(6.0);
+    let mut minutes = settings.duration_seconds / 60.0;
+    if inspector_two_drag_f64(
+        ui,
+        ("FPS", &mut settings.fps, 1.0),
+        ("Minutes", &mut minutes, 0.25),
+    ) {
+        settings.duration_seconds = (minutes * 60.0).max(1.0);
+    }
 }
 
 fn recent_projects(parent: &Path) -> Vec<PathBuf> {
@@ -1595,13 +1745,17 @@ fn recent_projects(parent: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn path_label(path: &Path) -> String {
-    let text = path.display().to_string();
-    if text.len() > 48 {
-        format!("...{}", &text[text.len().saturating_sub(45)..])
-    } else {
-        text
-    }
+fn location_picker_row(ui: &mut Ui, path: &Path) -> egui::Response {
+    let button_w = 76.0;
+    let spacing = 8.0;
+    let field_w = (ui.available_width() - button_w - spacing).max(90.0);
+    let mut button_response = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = spacing;
+        kit::readonly_value_box(ui, path.display().to_string(), Vec2::new(field_w, 30.0));
+        button_response = Some(kit::secondary_button(ui, "Browse", button_w));
+    });
+    button_response.expect("location picker row always creates a browse button")
 }
 
 fn timecode(seconds: f64) -> String {

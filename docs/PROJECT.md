@@ -820,6 +820,13 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Applied the shared modal-header close affordance across Project Settings, Generative Video, AI Providers, and Generation Queue; startup remains intentionally non-closeable until a project is opened or created.
+- **2026-05-20:** Fixed reopened New Project modal behavior so selecting a recent project or browsing to a project closes the modal after a successful open.
+- **2026-05-20:** Added a reusable modal-header close affordance and gated the New Project close button so it only appears when an existing project is already open; startup still requires creating or opening a project.
+- **2026-05-20:** Reworked the reusable numeric field row template to allocate exact paired column rectangles, eliminating the subtle right-column vertical offset in project settings and inspector grids.
+- **2026-05-20:** Added a shared vertically centered single-line text-field helper and routed project, asset, track, and inspector text inputs through it for consistent field typography.
+- **2026-05-20:** Moved create-dialog polish into reusable egui templates: shared button painting now provides visible hover/press/focus states, and a read-only value box keeps path/action rows from clipping in the project wizard footer.
+- **2026-05-20:** Tightened the egui polish pass: project wizard cards now share a fixed height, modal headers span the full modal width, inspector fields use stable labeled grids, asset rows truncate long names, timeline scrubbing supports drag, and the timeline panel is vertically resizable.
 - **2026-05-19:** Added the reviewed egui UI/UX rebuild checklist to `docs/EGUI_UI_UX_REBUILD_PLAN.md`, introduced a reusable app UI kit, restyled the shell panels/modals/assets/inspector/timeline/preview/provider surfaces, and captured the final app-window reference set under `.tmp/desktop-smoke/egui-ui-rebuild-final/`.
 - **2026-05-19:** Scrubbed remaining legacy UI framework residue from tracked docs/tooling, removed obsolete status/refactor docs and stale desktop config, and preserved old screenshots under `.tmp/desktop-smoke/legacy-ui-reference-20260519-173555/`.
 - **2026-05-19:** Replaced the desktop runtime shell with an egui/eframe implementation (`src/egui_app.rs`) backed by a shared editor controller (`src/editor.rs`).
@@ -1073,7 +1080,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-05-19*
+*Last updated: 2026-05-20*
 
 
 
