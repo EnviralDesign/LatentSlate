@@ -805,6 +805,7 @@ v1.0 - Public Release
 src/
 ├── main.rs          # Entry point and automation startup
 ├── egui_app.rs      # eframe/egui desktop shell, panels, modals, preview, timeline
+├── ui_kit.rs        # Product-specific egui tokens, frames, buttons, rows, modal helpers
 ├── editor.rs        # Editor model/controller used by UI and automation
 ├── constants.rs     # Shared editor constants
 ├── core/            # Core logic (preview renderer, automation, media helpers)
@@ -819,6 +820,7 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-19:** Added the reviewed egui UI/UX rebuild checklist to `docs/EGUI_UI_UX_REBUILD_PLAN.md`, introduced a reusable app UI kit, restyled the shell panels/modals/assets/inspector/timeline/preview/provider surfaces, and captured the final app-window reference set under `.tmp/desktop-smoke/egui-ui-rebuild-final/`.
 - **2026-05-19:** Scrubbed remaining legacy UI framework residue from tracked docs/tooling, removed obsolete status/refactor docs and stale desktop config, and preserved old screenshots under `.tmp/desktop-smoke/legacy-ui-reference-20260519-173555/`.
 - **2026-05-19:** Replaced the desktop runtime shell with an egui/eframe implementation (`src/egui_app.rs`) backed by a shared editor controller (`src/editor.rs`).
 - **2026-05-19:** Removed the old UI runtime modules, stale desktop config, abandoned child-window preview path, and obsolete implementation-status docs; `Cargo.toml` now uses `eframe`.

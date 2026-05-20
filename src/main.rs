@@ -8,6 +8,7 @@ mod editor;
 mod egui_app;
 mod providers;
 mod state;
+mod ui_kit;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
