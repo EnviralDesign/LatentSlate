@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -14,7 +15,8 @@ use crate::editor::{
     generative_video_duration_label, EditorState,
 };
 use crate::state::{
-    Asset, AssetKind, Clip, ClipTransform, ProjectSettings, ProviderEntry, TrackType,
+    asset_display_name, Asset, AssetKind, Clip, ClipTransform, ProjectSettings, ProviderEntry,
+    TrackType,
 };
 use crate::ui_kit as kit;
 
@@ -80,6 +82,8 @@ pub fn run() -> eframe::Result<()> {
 pub struct NlaEguiApp {
     editor: EditorState,
     preview_texture: Option<TextureHandle>,
+    asset_thumbnails: HashMap<Uuid, AssetThumbnail>,
+    asset_thumbnail_misses: HashSet<Uuid>,
     preview_frame: Option<PreviewFrameInfo>,
     preview_stats: Option<PreviewStats>,
     last_tick: Instant,
@@ -91,6 +95,11 @@ pub struct NlaEguiApp {
     selected_provider_file: Option<PathBuf>,
 }
 
+struct AssetThumbnail {
+    texture: TextureHandle,
+    size: Vec2,
+}
+
 impl NlaEguiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         kit::configure_style(&cc.egui_ctx);
@@ -99,6 +108,8 @@ impl NlaEguiApp {
             project_settings: editor.project.settings.clone(),
             editor,
             preview_texture: None,
+            asset_thumbnails: HashMap::new(),
+            asset_thumbnail_misses: HashSet::new(),
             preview_frame: None,
             preview_stats: None,
             last_tick: Instant::now(),
@@ -115,9 +126,35 @@ impl NlaEguiApp {
             return;
         }
         while let Some(envelope) = crate::core::automation::try_recv_command() {
+            let previous_project_path = self.editor.project.project_path.clone();
             let response = self.editor.apply_automation_command(&envelope.command);
             self.project_settings = self.editor.project.settings.clone();
+            if self.editor.project.project_path != previous_project_path {
+                self.clear_project_runtime_cache();
+            }
             envelope.respond(response);
+        }
+    }
+
+    fn clear_project_runtime_cache(&mut self) {
+        self.preview_texture = None;
+        self.preview_frame = None;
+        self.preview_stats = None;
+        self.asset_thumbnails.clear();
+        self.asset_thumbnail_misses.clear();
+    }
+
+    fn open_project_folder(&mut self, folder: PathBuf) -> bool {
+        match self.editor.open_project(folder) {
+            Ok(_) => {
+                self.project_settings = self.editor.project.settings.clone();
+                self.clear_project_runtime_cache();
+                true
+            }
+            Err(err) => {
+                self.editor.status = err;
+                false
+            }
         }
     }
 
@@ -185,6 +222,33 @@ impl NlaEguiApp {
         self.editor.preview_dirty = false;
     }
 
+    fn asset_thumbnail(&mut self, ctx: &Context, asset: &Asset) -> Option<(egui::TextureId, Vec2)> {
+        if let Some(thumbnail) = self.asset_thumbnails.get(&asset.id) {
+            return Some((thumbnail.texture.id(), thumbnail.size));
+        }
+        if self.asset_thumbnail_misses.contains(&asset.id) {
+            return None;
+        }
+
+        let project_root = self.editor.project.project_path.as_deref()?;
+        for path in asset_thumbnail_candidates(project_root, asset) {
+            if let Some((image, size)) = load_thumbnail_image(&path) {
+                let texture = ctx.load_texture(
+                    format!("asset-thumbnail-{}", asset.id),
+                    image,
+                    TextureOptions::LINEAR,
+                );
+                let texture_id = texture.id();
+                self.asset_thumbnails
+                    .insert(asset.id, AssetThumbnail { texture, size });
+                return Some((texture_id, size));
+            }
+        }
+
+        self.asset_thumbnail_misses.insert(asset.id);
+        None
+    }
+
     fn top_bar(&mut self, ctx: &Context) {
         egui::TopBottomPanel::top("top_bar")
             .exact_height(kit::TOP_BAR_H)
@@ -206,9 +270,7 @@ impl NlaEguiApp {
                                     .initial_dir(initial_dir.as_path())
                                     .remember_last_dir();
                                 if let Some(folder) = kit::pick_folder_dialog(ui, options) {
-                                    if let Err(err) = this.editor.open_project(folder) {
-                                        this.editor.status = err;
-                                    }
+                                    this.open_project_folder(folder);
                                 }
                                 ui.close();
                             }
@@ -342,7 +404,9 @@ impl NlaEguiApp {
             .default_width(self.editor.layout.left_width)
             .width_range(180.0..=420.0)
             .frame(kit::dock_frame())
-            .show(ctx, |ui| self.assets_panel(ui));
+            .show(ctx, |ui| {
+                kit::fixed_panel_body(ui, |ui| self.assets_panel(ui));
+            });
     }
 
     fn assets_panel(&mut self, ui: &mut Ui) {
@@ -350,53 +414,74 @@ impl NlaEguiApp {
             self.editor.layout.left_collapsed = true;
         });
         ui.add_space(8.0);
-        if kit::secondary_button(ui, "Import Files...", ui.available_width()).clicked() {
-            let initial_dir = self
-                .editor
-                .project
-                .project_path
-                .clone()
-                .unwrap_or_else(default_projects_dir);
-            let options = kit::BrowseFileOptions::new()
-                .id_salt("asset_import_file")
-                .initial_dir(initial_dir.as_path())
-                .remember_last_dir()
-                .filters(ASSET_IMPORT_FILTERS);
-            if let Some(path) = kit::pick_file_dialog(ui, options) {
-                match self.editor.import_asset(path) {
-                    Ok(asset_id) => self.editor.selection.asset_ids = vec![asset_id],
-                    Err(err) => self.editor.status = err,
+        let mut create_video = false;
+        let mut create_image = false;
+        let mut create_audio = false;
+        kit::stack_card_panel(ui, ADD_ASSETS_CARD_H, |ui| {
+            kit::field_label(ui, "Add Assets");
+            ui.add_space(6.0);
+            let import_button_w = ui.available_width();
+            if kit::secondary_button(ui, "Import Files...", import_button_w).clicked() {
+                let initial_dir = self
+                    .editor
+                    .project
+                    .project_path
+                    .clone()
+                    .unwrap_or_else(default_projects_dir);
+                let options = kit::BrowseFileOptions::new()
+                    .id_salt("asset_import_file")
+                    .initial_dir(initial_dir.as_path())
+                    .remember_last_dir()
+                    .filters(ASSET_IMPORT_FILTERS);
+                if let Some(path) = kit::pick_file_dialog(ui, options) {
+                    match self.editor.import_asset(path) {
+                        Ok(asset_id) => self.editor.selection.asset_ids = vec![asset_id],
+                        Err(err) => self.editor.status = err,
+                    }
                 }
+            }
+
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::field_label(ui, "New Generative");
+            ui.add_space(6.0);
+            kit::equal_media_pill_row(
+                ui,
+                &[
+                    ("Video", kit::VIDEO),
+                    ("Image", kit::IMAGE),
+                    ("Audio", kit::AUDIO),
+                ],
+                |index| match index {
+                    0 => create_video = true,
+                    1 => create_image = true,
+                    2 => create_audio = true,
+                    _ => {}
+                },
+            );
+        });
+        if create_video {
+            self.editor.overlays.generative_video = true;
+        }
+        if create_image {
+            if let Err(err) = self.editor.create_generative_image() {
+                self.editor.status = err;
+            }
+        }
+        if create_audio {
+            if let Err(err) = self.editor.create_generative_audio() {
+                self.editor.status = err;
             }
         }
 
-        ui.add_space(12.0);
-        kit::card_frame().show(ui, |ui| {
-            kit::field_label(ui, "New Generative");
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                if kit::media_pill(ui, "Video", kit::VIDEO).clicked() {
-                    self.editor.overlays.generative_video = true;
-                }
-                if kit::media_pill(ui, "Image", kit::IMAGE).clicked() {
-                    if let Err(err) = self.editor.create_generative_image() {
-                        self.editor.status = err;
-                    }
-                }
-                if kit::media_pill(ui, "Audio", kit::AUDIO).clicked() {
-                    if let Err(err) = self.editor.create_generative_audio() {
-                        self.editor.status = err;
-                    }
-                }
-            });
-        });
-
-        ui.add_space(14.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.add_space(kit::FORM_ROW_GAP);
+        let mut clear_selection = false;
+        kit::scroll_body(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
             let assets: Vec<Asset> = self.editor.project.assets.clone();
             for asset in assets {
                 let selected = self.editor.selection.asset_ids.contains(&asset.id);
-                let response = asset_row(ui, &asset, selected);
+                let thumbnail = self.asset_thumbnail(ui.ctx(), &asset);
+                let response = asset_row(ui, &asset, selected, thumbnail);
                 if response.clicked() {
                     self.editor.selection.clear();
                     self.editor.selection.asset_ids.push(asset.id);
@@ -411,12 +496,27 @@ impl NlaEguiApp {
                     if ui.button("Delete").clicked() {
                         self.editor.project.remove_asset(asset.id);
                         self.editor.selection.clear();
+                        self.asset_thumbnails.remove(&asset.id);
+                        self.asset_thumbnail_misses.remove(&asset.id);
                         self.editor.preview_dirty = true;
                         ui.close();
                     }
                 });
             }
+            let empty_height = (ui.clip_rect().bottom() - ui.cursor().top()).max(0.0);
+            if empty_height > 0.0 {
+                let (_, response) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), empty_height),
+                    Sense::click(),
+                );
+                if response.clicked() {
+                    clear_selection = true;
+                }
+            }
         });
+        if clear_selection {
+            self.editor.selection.clear();
+        }
     }
 
     fn right_panel(&mut self, ctx: &Context) {
@@ -437,7 +537,9 @@ impl NlaEguiApp {
             .default_width(self.editor.layout.right_width)
             .width_range(200.0..=440.0)
             .frame(kit::dock_frame())
-            .show(ctx, |ui| self.attributes_panel(ui));
+            .show(ctx, |ui| {
+                kit::fixed_panel_body(ui, |ui| self.attributes_panel(ui));
+            });
     }
 
     fn attributes_panel(&mut self, ui: &mut Ui) {
@@ -446,23 +548,26 @@ impl NlaEguiApp {
         });
         ui.add_space(8.0);
 
-        if let Some(clip_id) = self.editor.selected_clip_id() {
-            self.clip_attributes(ui, clip_id);
-        } else if let Some(asset_id) = self.editor.selected_asset_id() {
-            self.asset_attributes(ui, asset_id);
-        } else if let Some(marker_id) = self.editor.selected_marker_id() {
-            self.marker_attributes(ui, marker_id);
-        } else if let Some(track_id) = self.editor.selected_track_id() {
-            self.track_attributes(ui, track_id);
-        } else {
-            kit::sunken_frame().show(ui, |ui| {
-                kit::empty_state(
-                    ui,
-                    "Nothing selected",
-                    "Select a clip, asset, marker, or track.",
-                );
-            });
-        }
+        kit::scroll_body(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+            if let Some(clip_id) = self.editor.selected_clip_id() {
+                self.clip_attributes(ui, clip_id);
+            } else if let Some(asset_id) = self.editor.selected_asset_id() {
+                self.asset_attributes(ui, asset_id);
+            } else if let Some(marker_id) = self.editor.selected_marker_id() {
+                self.marker_attributes(ui, marker_id);
+            } else if let Some(track_id) = self.editor.selected_track_id() {
+                self.track_attributes(ui, track_id);
+            } else {
+                kit::sunken_frame().show(ui, |ui| {
+                    kit::empty_state(
+                        ui,
+                        "Nothing selected",
+                        "Select a clip, asset, marker, or track.",
+                    );
+                });
+            }
+        });
     }
 
     fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid) {
@@ -476,40 +581,40 @@ impl NlaEguiApp {
             .map(|asset| asset.name.clone())
             .unwrap_or_else(|| "Unknown asset".to_string());
         let mut preview_dirty = false;
-        kit::card_frame().show(ui, |ui| {
-            kit::field_label(ui, "Clip");
-            ui.add_sized(
-                [ui.available_width(), 18.0],
-                egui::Label::new(kit::value(asset_name)).truncate(),
-            );
-            ui.add_space(12.0);
-            if let Some(clip) = self
-                .editor
-                .project
-                .clips
-                .iter_mut()
-                .find(|clip| clip.id == clip_id)
-            {
+        if let Some(clip) = self
+            .editor
+            .project
+            .clips
+            .iter_mut()
+            .find(|clip| clip.id == clip_id)
+        {
+            inspector_card(ui, "Clip", |ui| {
+                kit::field_label(ui, "Source Asset");
+                let source_w = ui.available_width();
+                kit::readonly_value_box(ui, asset_name, Vec2::new(source_w, kit::FIELD_H));
+                ui.add_space(kit::FORM_ROW_GAP);
                 let mut label = clip.label.clone().unwrap_or_default();
-                if inspector_text_field(ui, "Clip Name", &mut label) {
+                if inspector_text_field(ui, "Clip Label", &mut label) {
                     clip.label = if label.trim().is_empty() {
                         None
                     } else {
                         Some(label)
                     };
                 }
-                ui.add_space(12.0);
+            });
+            ui.add_space(kit::FORM_ROW_GAP);
+            inspector_card(ui, "Transform", |ui| {
                 transform_editor(ui, &mut clip.transform, &mut preview_dirty);
-                ui.add_space(12.0);
-                kit::field_label(ui, "Timing");
-                ui.add_space(6.0);
+            });
+            ui.add_space(kit::FORM_ROW_GAP);
+            inspector_card(ui, "Timing", |ui| {
                 preview_dirty |= inspector_two_drag_f64(
                     ui,
                     ("Start", &mut clip.start_time, 0.05),
                     ("Duration", &mut clip.duration, 0.05),
                 );
-            }
-        });
+            });
+        }
         if preview_dirty {
             self.editor.preview_dirty = true;
         }
@@ -517,6 +622,16 @@ impl NlaEguiApp {
 
     fn asset_attributes(&mut self, ui: &mut Ui, asset_id: Uuid) {
         let mut add_to_timeline = false;
+        let asset_snapshot = self
+            .editor
+            .project
+            .assets
+            .iter()
+            .find(|asset| asset.id == asset_id)
+            .cloned();
+        let thumbnail = asset_snapshot
+            .as_ref()
+            .and_then(|asset| self.asset_thumbnail(ui.ctx(), asset));
         if let Some(asset) = self
             .editor
             .project
@@ -526,16 +641,38 @@ impl NlaEguiApp {
         {
             let kind_label = asset_kind_label(&asset.kind).to_string();
             let duration = asset.duration_seconds;
-            kit::card_frame().show(ui, |ui| {
-                kit::field_label(ui, "Asset");
-                kit::singleline_text_field(ui, &mut asset.name, ui.available_width());
-                ui.add_space(8.0);
-                ui.label(kit::caption(kind_label));
-                if let Some(duration) = duration {
-                    ui.label(kit::body(format!("Duration: {duration:.2}s")));
+            let source = asset_source_label(asset);
+            let active_version = asset.active_version().map(str::to_string);
+            inspector_card(ui, "Asset", |ui| {
+                let accent = asset_accent(asset);
+                ui.horizontal(|ui| {
+                    let (thumb_rect, _) =
+                        ui.allocate_exact_size(INSPECTOR_THUMBNAIL_SIZE, Sense::hover());
+                    paint_asset_thumbnail(ui, thumb_rect, asset, accent, thumbnail);
+                    ui.add_space(2.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        ui.label(kit::caption("Type"));
+                        ui.label(kit::value(&kind_label));
+                        if let Some(duration) = duration {
+                            ui.label(kit::caption(format_duration(duration)));
+                        }
+                    });
+                });
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::field_label(ui, "Name");
+                let name_w = ui.available_width();
+                kit::singleline_text_field(ui, &mut asset.name, name_w);
+                ui.add_space(kit::FORM_ROW_GAP);
+                if let Some(active_version) = active_version {
+                    inspector_meta_row(ui, "Version", active_version);
                 }
-                ui.add_space(10.0);
-                if kit::secondary_button(ui, "Add to timeline", ui.available_width()).clicked() {
+                if let Some(source) = source {
+                    inspector_meta_row(ui, "Source", source);
+                }
+                ui.add_space(kit::ACTION_GAP);
+                let add_w = ui.available_width();
+                if kit::secondary_button(ui, "Add to timeline", add_w).clicked() {
                     add_to_timeline = true;
                 }
             });
@@ -557,12 +694,11 @@ impl NlaEguiApp {
             .iter_mut()
             .find(|marker| marker.id == marker_id)
         {
-            kit::card_frame().show(ui, |ui| {
-                kit::field_label(ui, "Marker");
+            inspector_card(ui, "Marker", |ui| {
                 let mut changed = false;
-                ui.add_space(6.0);
-                changed |= inspector_drag_f64(ui, "Time", &mut marker.time, 0.05, 104.0);
-                ui.add_space(10.0);
+                let time_w = ui.available_width();
+                changed |= inspector_drag_f64(ui, "Time", &mut marker.time, 0.05, time_w);
+                ui.add_space(kit::FORM_ROW_GAP);
                 let mut label = marker.label.clone().unwrap_or_default();
                 if inspector_text_field(ui, "Label", &mut label) {
                     marker.label = if label.trim().is_empty() {
@@ -571,11 +707,30 @@ impl NlaEguiApp {
                         Some(label)
                     };
                 }
+                ui.add_space(kit::FORM_ROW_GAP);
+                let mut description = marker.description.clone().unwrap_or_default();
+                if inspector_text_field(ui, "Description", &mut description) {
+                    marker.description = if description.trim().is_empty() {
+                        None
+                    } else {
+                        Some(description)
+                    };
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
+                let mut color = marker.color.clone().unwrap_or_default();
+                if inspector_text_field(ui, "Color", &mut color) {
+                    marker.color = if color.trim().is_empty() {
+                        None
+                    } else {
+                        Some(color)
+                    };
+                }
                 if changed {
                     should_sort = true;
                 }
-                ui.add_space(12.0);
-                if kit::danger_button(ui, "Delete Marker", ui.available_width()).clicked() {
+                ui.add_space(kit::ACTION_GAP);
+                let delete_w = ui.available_width();
+                if kit::danger_button(ui, "Delete Marker", delete_w).clicked() {
                     delete_marker = true;
                 }
             });
@@ -603,13 +758,16 @@ impl NlaEguiApp {
             .iter_mut()
             .find(|track| track.id == track_id)
         {
-            kit::card_frame().show(ui, |ui| {
-                kit::field_label(ui, "Track");
-                kit::singleline_text_field(ui, &mut track.name, ui.available_width());
-                ui.label(kit::caption(format!("{:?}", track.track_type)));
+            inspector_card(ui, "Track", |ui| {
+                kit::field_label(ui, "Name");
+                let name_w = ui.available_width();
+                kit::singleline_text_field(ui, &mut track.name, name_w);
+                ui.add_space(kit::FORM_ROW_GAP);
+                inspector_meta_row(ui, "Type", format!("{:?}", track.track_type));
                 if track.track_type != TrackType::Marker {
-                    ui.add_space(10.0);
-                    let _ = inspector_drag_f32(ui, "Volume", &mut track.volume, 0.01, 104.0);
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    let volume_w = ui.available_width();
+                    let _ = inspector_drag_f32(ui, "Volume", &mut track.volume, 0.01, volume_w);
                 }
             });
         }
@@ -1163,9 +1321,8 @@ impl NlaEguiApp {
                             },
                         );
                         if let Some(folder) = selected_project {
-                            match self.editor.open_project(folder) {
-                                Ok(_) => self.editor.overlays.new_project = false,
-                                Err(err) => self.editor.status = err,
+                            if self.open_project_folder(folder) {
+                                self.editor.overlays.new_project = false;
                             }
                         } else if browse_clicked {
                             let initial_dir = self.new_project_parent.clone();
@@ -1174,9 +1331,8 @@ impl NlaEguiApp {
                                 .initial_dir(initial_dir.as_path())
                                 .remember_last_dir();
                             if let Some(folder) = kit::pick_folder_dialog(ui, options) {
-                                match self.editor.open_project(folder) {
-                                    Ok(_) => self.editor.overlays.new_project = false,
-                                    Err(err) => self.editor.status = err,
+                                if self.open_project_folder(folder) {
+                                    self.editor.overlays.new_project = false;
                                 }
                             }
                         }
@@ -1235,6 +1391,7 @@ impl NlaEguiApp {
                 self.project_settings.clone(),
             ) {
                 Ok(_) => {
+                    self.clear_project_runtime_cache();
                     self.editor.overlays.new_project = false;
                 }
                 Err(err) => self.editor.status = err,
@@ -1519,29 +1676,154 @@ fn menu_button(
     ui.menu_button(kit::menu_text(label), |ui| add_contents(ui, app));
 }
 
-fn asset_row(ui: &mut Ui, asset: &Asset, selected: bool) -> egui::Response {
+const ADD_ASSETS_CARD_H: f32 = kit::SECTION_PAD as f32 * 2.0
+    + kit::FIELD_LABEL_H
+    + 6.0
+    + kit::STANDALONE_BUTTON_H
+    + kit::FORM_ROW_GAP
+    + kit::FIELD_LABEL_H
+    + 6.0
+    + kit::MEDIA_PILL_H;
+const ASSET_ROW_H: f32 = 56.0;
+const ASSET_ROW_THUMBNAIL_SIZE: Vec2 = Vec2::new(40.0, 40.0);
+const ASSET_THUMBNAIL_IMAGE_INSET: f32 = 3.0;
+const ASSET_ROW_TEXT_GAP: f32 = 10.0;
+const INSPECTOR_THUMBNAIL_SIZE: Vec2 = Vec2::new(68.0, 50.0);
+
+fn asset_row(
+    ui: &mut Ui,
+    asset: &Asset,
+    selected: bool,
+    thumbnail: Option<(egui::TextureId, Vec2)>,
+) -> egui::Response {
     let accent = asset_accent(asset);
-    kit::draw_accent_row(ui, 42.0, selected, accent, |ui, _rect| {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(asset_icon(asset))
-                    .color(accent)
-                    .size(11.0)
-                    .strong(),
-            );
-            let text_w = (ui.available_width() - 8.0).max(40.0);
-            ui.vertical(|ui| {
-                ui.add_sized(
-                    [text_w, 17.0],
-                    egui::Label::new(kit::body(&asset.name)).truncate(),
-                );
-                ui.add_sized(
-                    [text_w, 15.0],
-                    egui::Label::new(kit::caption(asset_kind_label(&asset.kind))).truncate(),
-                );
-            });
-        });
+    kit::draw_accent_row(ui, ASSET_ROW_H, selected, accent, |ui, content_rect| {
+        let thumb_rect = Rect::from_min_size(
+            Pos2::new(
+                content_rect.left(),
+                content_rect.center().y - ASSET_ROW_THUMBNAIL_SIZE.y * 0.5,
+            ),
+            ASSET_ROW_THUMBNAIL_SIZE,
+        );
+        paint_asset_thumbnail(ui, thumb_rect, asset, accent, thumbnail);
+
+        let text_left = thumb_rect.right() + ASSET_ROW_TEXT_GAP;
+        let text_width = (content_rect.right() - text_left).max(24.0);
+        paint_truncated_row_text_top(
+            ui,
+            Pos2::new(text_left, thumb_rect.top()),
+            kit::value(asset_display_name(asset)),
+            12.0,
+            text_width,
+            kit::TEXT,
+        );
+        paint_truncated_row_text_bottom(
+            ui,
+            Pos2::new(text_left, thumb_rect.bottom()),
+            kit::caption(asset_row_subtitle(asset)),
+            11.0,
+            text_width,
+            kit::TEXT_MUTED,
+        );
     })
+}
+
+fn paint_truncated_row_text_top(
+    ui: &mut Ui,
+    pos: Pos2,
+    text: RichText,
+    font_size: f32,
+    max_width: f32,
+    fallback_color: Color32,
+) -> Vec2 {
+    let font_id = FontId::proportional(font_size);
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        max_width,
+        font_id,
+    );
+    let size = galley.size();
+    ui.painter().galley(pos, galley, fallback_color);
+    size
+}
+
+fn paint_truncated_row_text_bottom(
+    ui: &mut Ui,
+    bottom_left: Pos2,
+    text: RichText,
+    font_size: f32,
+    max_width: f32,
+    fallback_color: Color32,
+) -> Vec2 {
+    let font_id = FontId::proportional(font_size);
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        max_width,
+        font_id,
+    );
+    let size = galley.size();
+    ui.painter().galley(
+        Pos2::new(bottom_left.x, bottom_left.y - size.y),
+        galley,
+        fallback_color,
+    );
+    size
+}
+
+fn paint_asset_thumbnail(
+    ui: &mut Ui,
+    rect: Rect,
+    asset: &Asset,
+    accent: Color32,
+    thumbnail: Option<(egui::TextureId, Vec2)>,
+) {
+    ui.painter()
+        .rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+    ui.painter().rect_stroke(
+        rect,
+        kit::field_radius(),
+        Stroke::new(1.0, kit::BORDER_SOFT),
+        egui::StrokeKind::Inside,
+    );
+
+    if let Some((texture_id, size)) = thumbnail {
+        let image_bounds = rect.shrink(ASSET_THUMBNAIL_IMAGE_INSET);
+        let scale = (image_bounds.width() / size.x)
+            .min(image_bounds.height() / size.y)
+            .max(0.01);
+        let image_rect = Rect::from_center_size(image_bounds.center(), size * scale);
+        ui.painter().image(
+            texture_id,
+            image_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        ui.painter().rect_stroke(
+            rect,
+            kit::field_radius(),
+            Stroke::new(1.0, accent.gamma_multiply(0.7)),
+            egui::StrokeKind::Inside,
+        );
+        return;
+    }
+
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        asset_icon(asset),
+        FontId::proportional(10.5),
+        accent,
+    );
+}
+
+fn asset_row_subtitle(asset: &Asset) -> String {
+    let mut parts = vec![asset_kind_label(&asset.kind).to_string()];
+    if let Some(duration) = asset.duration_seconds {
+        parts.push(format_duration(duration));
+    }
+    parts.join("  ")
 }
 
 fn asset_icon(asset: &Asset) -> &'static str {
@@ -1569,6 +1851,121 @@ fn asset_kind_label(kind: &AssetKind) -> &'static str {
         AssetKind::GenerativeImage { .. } => "Generative Image",
         AssetKind::GenerativeAudio { .. } => "Generative Audio",
     }
+}
+
+fn asset_source_label(asset: &Asset) -> Option<String> {
+    match &asset.kind {
+        AssetKind::Video { path } | AssetKind::Image { path } | AssetKind::Audio { path } => {
+            Some(path_label(path))
+        }
+        AssetKind::GenerativeVideo { folder, .. }
+        | AssetKind::GenerativeImage { folder, .. }
+        | AssetKind::GenerativeAudio { folder, .. } => Some(path_label(folder)),
+    }
+}
+
+fn asset_thumbnail_candidates(project_root: &Path, asset: &Asset) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    match &asset.kind {
+        AssetKind::Image { path } => {
+            candidates.push(project_root.join(path));
+        }
+        AssetKind::GenerativeImage {
+            folder,
+            active_version,
+        } => {
+            if let Some(path) = resolve_generative_file(
+                project_root,
+                folder,
+                active_version.as_deref(),
+                IMAGE_EXTENSIONS,
+            ) {
+                candidates.push(path);
+            }
+        }
+        AssetKind::Video { .. } | AssetKind::GenerativeVideo { .. } => {}
+        AssetKind::Audio { .. } | AssetKind::GenerativeAudio { .. } => return candidates,
+    }
+
+    if asset.is_visual() {
+        if let Some(path) = cached_asset_thumbnail(project_root, asset.id) {
+            candidates.push(path);
+        }
+    }
+    candidates
+}
+
+fn cached_asset_thumbnail(project_root: &Path, asset_id: Uuid) -> Option<PathBuf> {
+    let dir = project_root
+        .join(".cache")
+        .join("thumbnails")
+        .join(asset_id.to_string());
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .metadata()
+                    .map(|metadata| metadata.len() > 1024)
+                    .unwrap_or(false)
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        ["jpg", "jpeg", "png", "webp"]
+                            .iter()
+                            .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                    })
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
+}
+
+fn resolve_generative_file(
+    project_root: &Path,
+    folder: &Path,
+    active_version: Option<&str>,
+    extensions: &[&str],
+) -> Option<PathBuf> {
+    let folder_path = project_root.join(folder);
+    if let Some(version) = active_version {
+        for ext in extensions {
+            let candidate = folder_path.join(format!("{version}.{ext}"));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(folder_path)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        extensions
+                            .iter()
+                            .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                    })
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
+}
+
+fn load_thumbnail_image(path: &Path) -> Option<(ColorImage, Vec2)> {
+    let image = image::open(path).ok()?.thumbnail(96, 96).to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let display_size = Vec2::new(size[0] as f32, size[1] as f32);
+    let color_image = ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+    Some((color_image, display_size))
 }
 
 struct ProviderFileSummary {
@@ -1631,7 +2028,28 @@ fn path_label(path: &Path) -> String {
 
 fn inspector_text_field(ui: &mut Ui, label: &str, value: &mut String) -> bool {
     kit::field_label(ui, label);
-    kit::singleline_text_field(ui, value, ui.available_width()).changed()
+    let width = ui.available_width();
+    kit::singleline_text_field(ui, value, width).changed()
+}
+
+fn inspector_card(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
+    kit::card_frame().show(ui, |ui| {
+        kit::field_label(ui, title);
+        ui.add_space(kit::FORM_ROW_GAP);
+        add_contents(ui);
+    });
+}
+
+fn inspector_meta_row(ui: &mut Ui, label: &str, value: impl Into<String>) {
+    let value = value.into();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = kit::FORM_ROW_GAP;
+        ui.add_sized([62.0, 18.0], egui::Label::new(kit::caption(label)));
+        ui.add_sized(
+            [ui.available_width(), 18.0],
+            egui::Label::new(kit::body(value)).truncate(),
+        );
+    });
 }
 
 const INSPECTOR_NUMERIC_H: f32 = kit::FIELD_H;
@@ -1772,12 +2190,10 @@ fn inspector_two_drag_u32(
 }
 
 fn transform_editor(ui: &mut Ui, transform: &mut ClipTransform, preview_dirty: &mut bool) {
-    kit::field_label(ui, "Transform");
-    ui.add_space(6.0);
     *preview_dirty |= inspector_two_drag_f32(
         ui,
-        ("X", &mut transform.position_x, 1.0),
-        ("Y", &mut transform.position_y, 1.0),
+        ("Pos X", &mut transform.position_x, 1.0),
+        ("Pos Y", &mut transform.position_y, 1.0),
     );
     *preview_dirty |= inspector_two_drag_f32(
         ui,
@@ -1891,4 +2307,16 @@ fn timecode(seconds: f64) -> String {
     let minutes = (seconds / 60.0).floor() as u32;
     let secs = seconds % 60.0;
     format!("{minutes:02}:{secs:05.2}")
+}
+
+fn format_duration(seconds: f64) -> String {
+    let seconds = seconds.max(0.0);
+    if seconds >= 60.0 {
+        let total_seconds = seconds.round() as u32;
+        let minutes = total_seconds / 60;
+        let secs = total_seconds % 60;
+        format!("{minutes}:{secs:02}")
+    } else {
+        format!("{seconds:.1}s")
+    }
 }

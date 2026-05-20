@@ -820,6 +820,15 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Corrected Add Assets card height by rendering it as a manual stack with implicit vertical item spacing disabled; the card height now comes from shared label/button/gap tokens instead of a magic number.
+- **2026-05-20:** Added a reusable exact-rect equal media-pill row so the Add Assets Video/Image/Audio controls compute responsive widths from the available card space instead of overflowing narrow side panels.
+- **2026-05-20:** Fixed resizable side-panel creep by routing Assets and Attributes contents through an exact-size `fixed_panel_body` viewport and moving the Add Assets section to an exact-height card allocation, preventing child content width from feeding back into egui's stored panel size.
+- **2026-05-20:** Updated `AGENTS.md` build workflow so future code/UI handoffs run `cargo check` and then attempt `cargo build --release`, while reporting a locked running executable instead of switching build targets.
+- **2026-05-20:** Removed side-panel width feedback that could make resizable panes creep wider over time, and added an empty-space click target in the Assets list so clicking outside asset rows clears the current selection.
+- **2026-05-20:** Stabilized resizable side-panel content by constraining full-width card children; thumbnail image painting now uses an internal inset so square images do not poke through rounded thumbnail frames.
+- **2026-05-20:** Consolidated the Assets rail creation controls into one `Add Assets` card, grouping file import and generative asset creation above the scrollable project-asset list with normal shared spacing.
+- **2026-05-20:** Refined the left Assets panel: New Generative now fills the panel width with equal-width media buttons, import-to-card spacing uses the shared form gap, asset rows use larger vertically centered thumbnail boxes, and row text is left-aligned with top/bottom anchoring against the thumbnail.
+- **2026-05-20:** Began the main-window polish pass after the project-modal work: asset rows now use thumbnail-aware reusable painting, selected asset/clip/marker/track inspectors use shared cards and field grids, marker metadata is editable in the inspector, and project-open/create paths clear stale preview/thumbnail caches.
 - **2026-05-20:** Updated the egui best-practices guide with the latest UI-kit lessons: tokenized control families, field/button/browse behavior rules, modal corner painting rules, faux-backdrop guidance, and a stronger visual QA checklist.
 - **2026-05-20:** Fixed modal corner artifacts globally by giving modal headers top-only radii and modal bodies bottom-only radii, matching the rounded outer frame instead of relying on egui parent clipping.
 - **2026-05-20:** Added reusable faux-blur modal backdrop styling: layered tinted scrim, subtle edge vignette, and tokenized modal drop shadow so dialogs feel separated from the editor without a true offscreen blur pass.

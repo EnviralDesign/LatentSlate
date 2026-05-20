@@ -88,6 +88,9 @@ pub const FIELD_TEXT_ALIGN: Align = Align::Center;
 pub const FIELD_LABEL_GAP: f32 = 6.0;
 pub const FORM_ROW_GAP: f32 = 8.0;
 pub const ACTION_GAP: f32 = 12.0;
+pub const MEDIA_PILL_H: f32 = 24.0;
+pub const MEDIA_PILL_MIN_W: f32 = 42.0;
+pub const MEDIA_PILL_MIN_GAP: f32 = 4.0;
 
 pub fn configure_style(ctx: &Context) {
     let mut visuals = egui::Visuals::dark();
@@ -158,6 +161,20 @@ pub fn card_frame() -> Frame {
         .inner_margin(Margin::same(SECTION_PAD))
 }
 
+pub fn fixed_panel_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) -> Response {
+    let rect = ui.available_rect_before_wrap();
+    let (allocated_rect, response) = ui.allocate_exact_size(rect.size(), Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(allocated_rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.set_clip_rect(allocated_rect);
+    child.set_min_size(allocated_rect.size());
+    add_contents(&mut child);
+    response
+}
+
 pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
@@ -182,6 +199,13 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
     child.set_min_size(content_rect.size());
     add_contents(&mut child);
     response
+}
+
+pub fn stack_card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
+    card_panel(ui, height, |ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        add_contents(ui);
+    })
 }
 
 /// Lays out a body in the remaining height above an exact bottom footer.
@@ -991,10 +1015,14 @@ pub fn close_button(ui: &mut Ui) -> Response {
 
 pub fn media_pill(ui: &mut Ui, label: &str, color: Color32) -> Response {
     let width = (label.chars().count() as f32 * 7.0 + 22.0).max(42.0);
+    media_pill_sized(ui, label, color, width)
+}
+
+pub fn media_pill_sized(ui: &mut Ui, label: &str, color: Color32, width: f32) -> Response {
     painted_button(
         ui,
         label,
-        Vec2::new(width, 24.0),
+        Vec2::new(width, MEDIA_PILL_H),
         ButtonSkin {
             fill: Color32::from_rgb(17, 20, 22),
             hover_fill: color.gamma_multiply(0.18),
@@ -1005,6 +1033,43 @@ pub fn media_pill(ui: &mut Ui, label: &str, color: Color32) -> Response {
             radius: 5,
         },
     )
+}
+
+pub fn equal_media_pill_row(
+    ui: &mut Ui,
+    items: &[(&str, Color32)],
+    mut on_clicked: impl FnMut(usize),
+) {
+    if items.is_empty() {
+        return;
+    }
+
+    let row_width = ui.available_width().max(0.0);
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_width, MEDIA_PILL_H), Sense::hover());
+    let count = items.len() as f32;
+    let gaps = (items.len().saturating_sub(1)) as f32;
+    let ideal_gap = FORM_ROW_GAP
+        .min(((row_width - MEDIA_PILL_MIN_W * count) / gaps.max(1.0)).max(MEDIA_PILL_MIN_GAP));
+    let gap = if items.len() > 1 { ideal_gap } else { 0.0 };
+    let button_w = ((row_width - gap * gaps) / count).max(0.0);
+
+    let mut x = row_rect.left();
+    for (index, (label, color)) in items.iter().enumerate() {
+        let rect = Rect::from_min_size(
+            Pos2::new(x, row_rect.top()),
+            Vec2::new(button_w, MEDIA_PILL_H),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        child.set_clip_rect(rect);
+        if media_pill_sized(&mut child, label, *color, button_w).clicked() {
+            on_clicked(index);
+        }
+        x += button_w + gap;
+    }
 }
 
 struct ButtonSkin {

@@ -179,6 +179,16 @@ For huge lists, prefer `show_rows`; the docs show measuring row height via `ui.t
 
 Your current `ui_kit` centralizes colors, frames, margins, button drawing, modal headers, card frames, row painting, field rows, browse fields, and modal shell styling. Keep pushing fixes down into these primitives. If a visual issue appears in two places, treat it as a kit bug until proven otherwise.
 
+### Resizable panel containment
+
+Resizable `egui::Panel` stores the rendered panel frame rect as its next size. That means content can accidentally resize a side panel if any descendant measures wider than the current panel. The common failure mode is a slow side-panel creep during mouse movement, because pointer motion triggers repaint and the oversized content rect feeds back into the next frame.
+
+For side panels, route contents through an exact viewport helper such as `fixed_panel_body` before rendering cards, scroll areas, and full-width rows. Inside that fixed body, children can use `ui.available_width()` safely because their desired width no longer expands the parent panel state. Prefer exact-allocation cards/rows inside resizable panels; avoid content-sized `Frame::show` wrappers for full-width panel sections unless they are contained by an exact parent rect.
+
+For fixed-count action rows in narrow panels, allocate one exact row rect first, compute gaps and cell widths from that rect, then render each child into exact sub-rects. Do not let pill/button rows depend on each button's natural minimum width; labels can truncate before the row is allowed to overflow or resize its parent.
+
+When a card height is token-derived, disable implicit vertical `item_spacing.y` inside that card and use explicit token gaps only. Otherwise egui adds default item spacing on top of `add_space(...)`, and a mathematically correct fixed-height card can still overflow by several pixels.
+
 ### Color discipline
 
 Visible UI primitives should use semantic `ui_kit` tokens rather than direct `Color32` literals. Avoid pure black or pure white for field fills, text, strokes, panels, and buttons; use tinted near-black and near-white tokens such as `FIELD_BG`, `FIELD_BG_HOVER`, `FIELD_BG_ACTIVE`, `TEXT`, and `TEXT_ON_ACCENT`. Editable text fields, read-only value fields, and numeric `DragValue` fields should share the same field surface tokens so they read as one control family.
@@ -221,6 +231,14 @@ Separate button role from button geometry:
 - Icon buttons and modal close buttons have their own square metrics and should paint actual icons or strokes, not text glyphs pretending to be icons.
 
 This lets the product have reusable variants such as primary, secondary, danger, field-attached, icon, and close without every use site becoming a one-off.
+
+### List and inspector templates
+
+Main-shell lists and inspectors should use reusable row/card templates, not local one-off layout. Asset rows are a good pattern: one fixed row height token, one thumbnail/icon region, one text column with truncation, and one semantic accent color derived from asset kind. The same row painter should handle selected, hovered, and normal states so every asset-like list can inherit future row improvements.
+
+Inspector panels should be built from section cards with shared field labels, field-height controls, two-column numeric helpers, and small metadata rows. If a clip, asset, marker, or track inspector needs a new control, first ask whether it is a field, value field, numeric drag field, metadata row, action button, or preview thumbnail. Add a named helper only when none of those fits.
+
+Media thumbnails should be treated as a first-class UI primitive. Prefer cached project thumbnails for videos and generated assets, fall back to the source image for stills, and only fall back to text badges when no previewable image exists. Clear thumbnail/preview caches when the project changes so stale textures do not leak across projects.
 
 ### 1. Metrics helper
 

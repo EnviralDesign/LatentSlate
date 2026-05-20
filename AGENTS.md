@@ -7,8 +7,9 @@ description: Best practices and rules for AI developers working on this project
 ## Build & Test Rules
 
 ### Cargo Build
-- **DO NOT** run `cargo build` or `cargo run` — the user will do this manually
-- There are CLI integration issues that prevent the AI from running these commands reliably
+- After `cargo check` succeeds, attempt `cargo build --release` before yielding when Rust source/UI changes should be immediately testable.
+- If `cargo build --release` fails because the app executable is open/locked, do **not** compile to a different target; report that the release build did not succeed because the executable appears to be running.
+- Do not run `cargo run` or `dx serve` unless explicitly requested.
 
 ### Cargo Test
 - **Optional** - run `cargo test` only when explicitly requested
@@ -20,8 +21,9 @@ description: Best practices and rules for AI developers working on this project
 
 1. **Make changes** to source files
 2. **Run `cargo check`** before yielding back to the user
-3. **Run `cargo test`** only when explicitly requested
-4. **Notify the user** that changes are ready for them to build/run
+3. **Attempt `cargo build --release`** for code/UI changes that should be immediately testable
+4. **Run `cargo test`** only when explicitly requested
+5. **Notify the user** that changes are ready, including whether the release build succeeded or was blocked by a locked executable
 
 ## Code Style
 
