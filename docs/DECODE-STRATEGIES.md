@@ -1,6 +1,6 @@
 Fast timeline preview in desktop NLEs – architecture & design
 
-This report reviews how professional non‑linear editors (NLEs) like DaVinci Resolve and Adobe Premiere Pro achieve smooth timeline preview and scrubbing, and what practices can be applied when implementing a Rust desktop NLE using Dioxus (WebView2) and modern Windows APIs. The goal is to understand the architecture of the preview pipeline and identify Rust technologies for decoding, caching and GPU compositing.
+This report reviews how professional non‑linear editors (NLEs) like DaVinci Resolve and Adobe Premiere Pro achieve smooth timeline preview and scrubbing, and what practices can be applied when implementing a Rust desktop NLE using egui/eframe and modern Windows APIs. The goal is to understand the architecture of the preview pipeline and identify Rust technologies for decoding, caching and GPU compositing.
 
 ## Local Implementation Notes (NLA AI Video Creator)
 
@@ -122,9 +122,7 @@ Multiplane overlay (MPO) – Some GPUs provide hardware overlay planes for video
 news.ycombinator.com
 .
 
-Compositing constraints with Dioxus desktop – Dioxus uses the system WebView (WebView2 on Windows) to render its UI. The documentation notes that although apps are rendered in a WebView, browser APIs like WebGL and Canvas are not available, and rendering WebGL/Canvas is more difficult
-dioxuslabs.com
-. Therefore, GPU textures produced by an NLE cannot be displayed directly inside the WebView. The typical solution is to create a native window or control (e.g., via wgpu or skia) for the preview and integrate it with the Dioxus UI using the underlying WRY API or a custom renderer.
+Native UI composition constraints – The current egui/eframe shell keeps editor UI, dialogs, overlays, and preview output in one native window. This removes the separate-surface overlay problem and makes UI ordering predictable, while still leaving room for a future GPU compositor behind the preview texture.
 
 5 Latest‑wins scheduling & scrubbing
 
@@ -155,9 +153,7 @@ docs.rs
 . mini‑moka provides non‑concurrent versions.	caches is simple and flexible; custom eviction callbacks; good for single‑threaded caches (e.g., per‑track frame caches). moka scales across threads and integrates with async tasks; TinyLFU improves hit ratio for varied access patterns.	caches and mini‑moka require manual locking in multi‑threaded use; caches uses boxes/pointers that add overhead; moka’s concurrency overhead may be overkill for small caches. IBM holds a patent on ARC; while open‑source use is typical, commercial use should evaluate patent risk
 docs.rs
 .
-UI integration (Dioxus)	Dioxus renders its desktop UI inside a WebView (WebView2 on Windows). Because browser APIs are not available, rendering WebGL or Canvas inside the WebView is difficult
-dioxuslabs.com
-. The recommended approach is to create a native window or control for the timeline preview (using wgpu or Direct3D) and integrate it with Dioxus via Wry’s window API.	Dioxus provides a React‑like declarative UI with hot‑reload and cross‑platform support. Using Wry, you can create side‑by‑side native surfaces and send messages between them.	Embedding GPU textures inside the WebView is non‑trivial; integration may require additional message passing or custom renderer.
+UI integration (egui/eframe)	egui renders the desktop interface directly through a native eframe window. Preview frames can be uploaded as textures and drawn in the same UI pass as panels, dialogs, overlays, and the timeline.	Immediate-mode rendering keeps UI state explicit and makes automation-friendly model/controller extraction straightforward.	Advanced compositor work still needs careful texture ownership, frame pacing, and cache invalidation to keep scrubbing smooth.
 7 Licensing considerations
 
 FFmpeg – The FFmpeg project is licensed under the LGPL v2.1 or later, but some optional components are covered by the GPL v2
@@ -184,7 +180,7 @@ scalibq.wordpress.com
 Keep YUV (NV12) until compositing	Hardware decoders output NV12; using NV12 textures avoids copies and leverages GPU bandwidth. YUV→RGB conversion can be performed in the pixel shader; Direct3D supports sampling NV12 textures and converting to RGB
 scalibq.wordpress.com
 . This also allows color space corrections in the shader.	Requires writing custom shaders and ensuring color space conversion is accurate. Not all GPU APIs support sampling NV12 directly (OpenGL requires extensions).
-9 Recommendations for a Rust + Dioxus desktop NLE
+9 Recommendations for a Rust + egui desktop NLE
 
 Decoding layer – Use FFmpeg via video‑rs or ffmpeg‑next for broad codec support. For Windows‑first hardware acceleration, consider using the windows crate to access Media Foundation and decode directly into D3D11 textures (NV12). Keep YUV surfaces and avoid copying them to CPU memory. Provide a fallback CPU decode path for unsupported codecs.
 
@@ -194,7 +190,7 @@ docs.rs
 docs.lightact.com
 ). Allow proxy generation for high‑resolution footage.
 
-Compositing & rendering – Build the compositor on wgpu for cross‑platform support. Create pipelines that sample NV12 textures, convert to linear RGB in shaders, apply transforms and composite layers. For UI overlays, use skia‑safe or dioxus-skia (if available) to render onto GPU surfaces and composite them with video using wgpu. To integrate with Dioxus, create a native preview window via Wry and share textures between the Rust backend and the UI.
+Compositing & rendering – Continue using the egui texture path for integrated UI/preview composition, then evolve the preview backend toward a GPU compositor when the model and timeline interactions are stable. A future compositor can sample NV12 textures, convert to linear RGB in shaders, apply transforms, and upload the final frame for egui to present in the preview panel.
 
 Scheduling & responsiveness – Represent the play‑head position as a reactive signal. Use a latest‑wins strategy (similar to RxJS switchMap) to cancel outdated decode/composite jobs
 developersvoice.com
@@ -210,13 +206,12 @@ docs.rs
 
 Further reading – Study the Direct3D 11 video decoding guide for details on device sharing and buffer allocation
 learn.microsoft.com
-. Explore wgpu examples for YUV texture sampling and skia‑safe integration. Keep track of Dioxus/Blitz developments, which plan to add a custom WebGPU‑based renderer
-dioxuslabs.com
+. Explore GPU texture sampling examples for YUV/NV12, Direct3D device sharing, and skia‑safe integration if richer vector/text compositing becomes necessary.
 .
 
 Conclusion
 
-Smooth timeline preview in an NLE is achieved by combining hardware‑accelerated decoding, intelligent caching and GPU‑based compositing. Professional editors like Resolve and Premiere employ decode queues, multi‑layer caches (raw, final, node, proxy), GPU shaders and reactive scheduling to keep the preview responsive. For a Rust and Dioxus based desktop NLE, this translates into using FFmpeg or Media Foundation for decoding, wgpu and skia for rendering, moka or caches for caching, and designing the UI to handle asynchronous jobs and cancellations. With careful attention to licensing and platform constraints, it is possible to build a Windows‑first NLE that offers professional‑grade preview performance.
+Smooth timeline preview in an NLE is achieved by combining hardware‑accelerated decoding, intelligent caching and GPU‑based compositing. Professional editors like Resolve and Premiere employ decode queues, multi‑layer caches (raw, final, node, proxy), GPU shaders and reactive scheduling to keep the preview responsive. For this Rust desktop NLE, that translates into using FFmpeg or Media Foundation for decoding, egui/eframe for the native editor shell, a future GPU compositor for heavy preview work, moka or caches for frame data, and UI code that handles asynchronous jobs and cancellations. With careful attention to licensing and platform constraints, it is possible to build a Windows‑first NLE that offers professional‑grade preview performance.
 
 In summary, professional non‑linear editors employ a multi-stage pipeline of hardware-accelerated decoding, intelligent caching, GPU-based compositing and reactive scheduling to ensure smooth timeline previews. Hardware decoders (DXVA2, NVDEC, QuickSync) feed YUV/NV12 frames directly into GPU textures; multi-level caches (raw, final, node, proxy) and prefetch buffers avoid redundant decoding while render caches handle intensive effects
 docs.blender.org
@@ -233,9 +228,7 @@ scalibq.wordpress.com
 wgpu.rs
 , while caches or moka provide efficient LRU or TinyLFU caches for frame data
 docs.rs
-. Dioxus desktop runs in a WebView, limiting access to browser APIs; thus a native rendering window via Wry or skia-safe should be used for the preview
-dioxuslabs.com
-. Licensing considerations demand using LGPL-only FFmpeg components and disclosing source, while avoiding GPL encoders and being mindful of patented ARC caching strategies
+. The native egui shell keeps preview and UI overlays in the same window, so future compositor work should focus on texture lifetime, frame pacing, and upload efficiency rather than cross-surface layering. Licensing considerations demand using LGPL-only FFmpeg components and disclosing source, while avoiding GPL encoders and being mindful of patented ARC caching strategies
 ffmpeg.org
 docs.rs
 .

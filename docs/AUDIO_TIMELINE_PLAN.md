@@ -9,7 +9,7 @@
 ## Current Codebase Surface Area
 - Audio assets/tracks/clips already exist in state (`src/state/asset.rs`, `src/state/project/*`).
 - Duration probing uses `ffprobe` for audio/video (`src/core/media.rs`).
-- Timeline clip rendering is visual-only; no waveform layer (`src/timeline/clip_element.rs`).
+- Timeline clip rendering is visual-only; no waveform layer in the egui timeline yet.
 - Thumbnail cache is image/video only (`src/core/thumbnailer.rs`).
 - Preview renderer ignores audio (`src/core/preview/renderer.rs`).
 
@@ -22,7 +22,7 @@
   - `playback.rs`: audio output stream + mixer.
   - `waveform.rs`: peak extraction + cache IO.
   - `cache.rs`: cache metadata and invalidation.
-- Keep UI-specific logic in `src/components/` and `src/timeline/`.
+- Keep UI-specific rendering in `src/egui_app.rs` and reusable timeline/audio operations in model/controller modules.
 
 ### Audio Engine Output Format
 - Standardize on `48kHz`, stereo, interleaved `f32`.

@@ -43,13 +43,14 @@ The scenario writes artifacts under `.tmp/desktop-smoke/`:
 - `automation-*-timeline.png` - app-window-only screenshot after project/import/timeline/selection/save commands.
 - `automation-*-providers.png` - app-window-only screenshot with the Providers modal open.
 - `automation-*-state.json` - final semantic app state returned by the automation API.
-- `dioxus-reference-*/*.png` - pre-egui startup, timeline, selection variants, modals, queue, providers, collapsed panels, and preview stats reference screenshots.
-- `egui-reference-*/*.png` - current egui screenshots for the same scenario set.
+- `legacy-ui-reference-*/*.png` - preserved pre-egui startup, timeline, selection variants, modals, queue, providers, collapsed panels, and preview stats reference screenshots.
+- `ui-reference-*/*.png` - newly captured screenshots for the same scenario set.
+- `egui-reference-*/*.png` - earlier egui migration screenshots for the same scenario set.
 
 Latest reference capture:
 
 ```text
-.tmp/desktop-smoke/dioxus-reference-20260519-173555/
+.tmp/desktop-smoke/legacy-ui-reference-20260519-173555/
 .tmp/desktop-smoke/egui-reference-ready/
 ```
 

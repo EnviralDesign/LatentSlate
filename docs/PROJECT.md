@@ -63,7 +63,7 @@ A purpose-built NLA editor that:
 
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
-| **UI Framework** | [egui/eframe 0.34](https://www.egui.rs/) | Native immediate-mode desktop UI, no WebView overlay boundary |
+| **UI Framework** | [egui/eframe 0.34](https://www.egui.rs/) | Native immediate-mode desktop UI with shared preview/dialog composition |
 | **Language** | Rust | Safety, performance, excellent FFI |
 | **Video Processing** | FFmpeg (external) | Industry standard, battle-tested |
 | **Async Runtime** | Tokio | De facto Rust async runtime |
@@ -149,8 +149,8 @@ Provider entries are the pluggable backends that execute generation tasks. Key p
 
 ## 🎥 Rendering & Preview Strategy
 
-### 1. Robust Compositor (Canvas-based)
-We are skipping intermediate "DOM overlay" solutions to build a production-grade compositing engine from the start. This ensures support for pixel-perfect operations, affine transformations (scale, rotate, translate), and complex blending.
+### 1. Robust Compositor (egui texture-based)
+The current preview path renders composited RGBA frames into an egui texture inside the same native UI pass as panels, modals, and timeline controls. This keeps the desktop shell coherent while preserving a path toward a deeper GPU compositor later.
 
 #### Architecture
 1.  **Frame Server (Rust)**
@@ -168,13 +168,13 @@ We are skipping intermediate "DOM overlay" solutions to build a production-grade
 3.  **Display (egui/eframe)**
     - The egui preview panel uploads the composited RGBA buffer to an egui texture.
     - Modals, panels, preview, and timeline now share one native window composition path.
-    - This removes the previous WebView/native child-window layering issue where UI overlays could not appear above the preview.
+    - This removes the previous split-surface layering issue where UI overlays could not appear above the preview.
 
 ### 2. Thumbnail Generation
 Visual feedback on the timeline.
 - **Mechanism**: Background FFmpeg task.
 - **Output**: Cached JPEGs stored in `.project/cache/thumbnails/`.
-- **UI**: CSS `background-image` sprite sheets for performance.
+- **UI**: egui image/paint primitives for timeline feedback.
 
 ---
 
@@ -581,7 +581,6 @@ The desktop application is **open source under MIT**:
 | Dependency | Version | Installation |
 |------------|---------|--------------|
 | Rust | 1.75+ | [rustup.rs](https://rustup.rs) |
-| Dioxus CLI | Latest | `cargo install dioxus-cli` |
 | FFmpeg | 6.0+ | [ffmpeg.org](https://ffmpeg.org/download.html) or `winget install ffmpeg` |
 
 ### Secrets / API Keys
@@ -601,11 +600,11 @@ REPLICATE_API_TOKEN=your_replicate_token_here
 git clone https://github.com/yourusername/nla-ai-videocreator-rust.git
 cd nla-ai-videocreator-rust
 
-# Run in development mode
-dx serve
+# Check in development mode
+cargo check
 
 # Build for release
-dx build --release
+cargo build --release
 ```
 
 ### Project Structure (Proposed)
@@ -613,15 +612,10 @@ dx build --release
 ```
 nla-ai-videocreator-rust/
 ├── Cargo.toml
-├── Dioxus.toml
 ├── src/
-│   ├── main.rs              # App entry point
-│   ├── app.rs               # Root component & state
-│   ├── timeline.rs          # Timeline editor components
-│   ├── components/          # (Future) UI components
-│   │   ├── preview/         # Preview window
-│   │   ├── panels/          # Side panels (assets, attributes)
-│   │   └── common/          # Shared UI components
+│   ├── main.rs              # App entry point and automation startup
+│   ├── egui_app.rs          # eframe/egui desktop shell
+│   ├── editor.rs            # Editor model/controller shared by UI and automation
 │   ├── state/               # App state management
 │   │   ├── mod.rs           # State module root
 │   │   ├── app_state.rs     # Global app state
@@ -666,7 +660,7 @@ This allows:
 
 | Decision | Rationale | Status |
 |----------|-----------|--------|
-| Use egui/eframe native desktop UI | Immediate-mode UI, native composition, and no WebView/native preview overlay conflict | ✅ Decided |
+| Use egui/eframe native desktop UI | Immediate-mode UI, native composition, and a single preview/dialog composition path | ✅ Decided |
 | FFmpeg on PATH for MVP | Simplifies initial development; bundling is later optimization | ✅ Decided |
 | JSON for provider configs | Machine-readable, toolable, familiar | ✅ Decided |
 | Project-local asset folders | Portable, self-contained projects | ✅ Decided |
@@ -680,11 +674,11 @@ This allows:
 | Labels separate from filenames | Enables friendly display names + future "Export Parts" feature | ✅ Decided |
 | Audio scrubbing is essential | Without hearing audio while scrubbing, the tool is unusable for music-synced work | ✅ Decided |
 | UI fluidity is non-negotiable | Hover effects, smooth transitions, polished feel from day one | ✅ Decided |
-| Remove Dioxus from the runtime | eframe now owns the desktop UI; Dioxus source modules and dependency were removed | ✅ Decided |
+| Remove the previous UI runtime | eframe now owns the desktop UI; old source modules, config, and dependency were removed | ✅ Decided |
 | Transitions disabled during drag | Instant resize feedback; transitions only for collapse/expand | ✅ Decided |
-| Use native egui input widgets | Removes the Dioxus Desktop cursor-jump workaround path | ✅ Decided |
-| App-local Timeline State (Temp) | Kept state simple in app.rs until data model requirements mature | ✅ Decided |
-| Scroll-synced Track Labels | CSS sticky positioning for rock-solid sync vs JS event listeners | ✅ Decided |
+| Use native egui input widgets | Keeps input behavior inside the active desktop UI toolkit | ✅ Decided |
+| App-local Timeline State (Temp) | Keep state simple in `editor.rs` until data model requirements mature | ✅ Decided |
+| Hierarchical Track Labels | Fixed left column + scrollable timeline area; no browser event synchronization needed | ✅ Decided |
 | Draggable Playhead | Real-time updating during drag for immediate feedback | ✅ Decided |
 | 1-Second Step Buttons | Frame-stepping felt too slow; 1s steps preferred for navigating | ✅ Decided |
 | Frame-snapped Playhead | All seeking snaps to project fps frame boundaries for accurate positioning | ✅ Decided |
@@ -715,7 +709,7 @@ This allows:
 | Adapter-Agnostic Manifests | Use a versioned manifest per adapter type for provider bindings | ✅ Decided |
 | No Separate Keyframe Track | Images are clips on Video tracks; "keyframes" are just overlapping reference images | ✅ Decided |
 | In-Project Assets Only (MVP) | All assets must be in project folder; external refs are future enhancement | ✅ Decided |
-| Canvas Compositor Strategy | Skip DOM overlay; build robust pixel-buffer compositing for transforms/blending immediately | ✅ Decided |
+| Preview Compositor Strategy | Build robust pixel-buffer compositing for transforms/blending and present through egui textures | ✅ Decided |
 
 ---
 
@@ -811,7 +805,7 @@ v1.0 - Public Release
 src/
 ├── main.rs          # Entry point and automation startup
 ├── egui_app.rs      # eframe/egui desktop shell, panels, modals, preview, timeline
-├── editor.rs        # Dioxus-free editor model/controller used by UI and automation
+├── editor.rs        # Editor model/controller used by UI and automation
 ├── constants.rs     # Shared editor constants
 ├── core/            # Core logic (preview renderer, automation, media helpers)
 │   ├── automation.rs # Loopback automation API for desktop scenarios
@@ -825,12 +819,13 @@ src/
 ```
 
 ### Recent Changes (Session Log)
-- **2026-05-19:** Replaced the desktop runtime shell with an egui/eframe implementation (`src/egui_app.rs`) backed by a Dioxus-free editor controller (`src/editor.rs`).
-- **2026-05-19:** Removed Dioxus source modules (`app.rs`, `components/`, `timeline/`, `hotkeys/`) and the old `preview_gpu` child-window path; `Cargo.toml` now uses `eframe` instead of Dioxus.
+- **2026-05-19:** Scrubbed remaining legacy UI framework residue from tracked docs/tooling, removed obsolete status/refactor docs and stale desktop config, and preserved old screenshots under `.tmp/desktop-smoke/legacy-ui-reference-20260519-173555/`.
+- **2026-05-19:** Replaced the desktop runtime shell with an egui/eframe implementation (`src/egui_app.rs`) backed by a shared editor controller (`src/editor.rs`).
+- **2026-05-19:** Removed the old UI runtime modules, stale desktop config, abandoned child-window preview path, and obsolete implementation-status docs; `Cargo.toml` now uses `eframe`.
 - **2026-05-19:** Captured the egui review reference set under `.tmp/desktop-smoke/egui-reference-ready/` with startup, timeline selections, modals, queue, providers, collapsed panels, and preview stats.
 - **2026-05-19:** Added an egui automation repaint heartbeat so loopback API commands are processed even when the immediate-mode UI is otherwise idle.
 - **2026-05-19:** Expanded automation/reference capture to cover selection variants, project/new/generative modals, queue, providers, collapsed panels, preview stats, and tighter app-window capture bounds.
-- **2026-05-19:** Captured the current Dioxus UI reference set under `.tmp/desktop-smoke/dioxus-reference-20260519-173555/` before beginning the egui migration.
+- **2026-05-19:** Captured the legacy UI reference set under `.tmp/desktop-smoke/legacy-ui-reference-20260519-173555/` before beginning the egui migration.
 - **2026-05-19:** Added loopback desktop automation mode (`--automation`) with semantic commands for create/open project, import asset, add clip, seek, select, marker, save, and providers modal open/close.
 - **2026-05-19:** Added `scripts/automation-scenario.ps1` to drive a project/import/timeline/modal slice on the right-most monitor and save app-window-only screenshots plus state JSON.
 - **2026-05-19:** Added desktop smoke harness documentation plus scripts for FFmpeg runtime DLL staging and launch/screenshot verification.
@@ -915,17 +910,17 @@ src/
 - **2026-01-08:** Expanded provider architecture doc with ComfyUI workflow picker + node binding UI details.
 - **2026-01-08:** Revised provider architecture doc to use selector/tag bindings and a provider builder UI (no node ID reliance).
 - **2026-01-08:** Added end-user provider setup guide `docs/PROVIDER_SETUP_GUIDE.md` covering ComfyUI workflow setup and provider JSON.
-- **2026-01-08:** Extracted Providers modal, New Project modal, and track context menu into `src/components/`.
-- **2026-01-08:** Split Attributes panel UI into `generative_controls` and `provider_inputs` helpers under `src/components/attributes/`.
+- **2026-01-08:** Extracted Providers modal, New Project modal, and track context menu into smaller UI modules.
+- **2026-01-08:** Split Attributes panel UI into `generative_controls` and `provider_inputs` helpers.
 - **2026-01-08:** Fixed native preview Y-flip by inverting V coordinates in the GPU preview shader.
 - **2026-01-08:** Split GPU preview into `src/core/preview_gpu/` (surface, shaders, types, layers) and cleaned up module boundaries.
 - **2026-01-08:** Split preview renderer into `src/core/preview/` (renderer, cache, layers, types, utils) with explicit re-exports.
 - **2026-01-08:** Silenced the unused `Project::save_project_as` warning via an explicit allow annotation.
 - **2026-01-08:** Split project state into `src/state/project/` (project, track, clip, marker, settings, persistence) with `mod.rs` re-exports.
 - **2026-01-08:** Split the timeline module into `src/timeline/` (panel, ruler, playback controls, track label/row, clip element) with `mod.rs` re-exports and shared constants.
-- **2026-01-08:** Completed REFACTOR.md Step 1.11 by relocating remaining helper functions into `core/` and `state/` modules (no helper functions remain in `app.rs` or component files).
-- **2026-01-08:** Extracted Attributes and Assets panels into `src/components/attributes/` and `src/components/assets/`; relocated provider/media/generative helpers into `core/` and `state/`, and moved timeline zoom bounds into the timeline module.
-- **2026-01-08:** Began refactor plan by extracting shared UI constants, startup modal, and panel components into `src/constants.rs` and `src/components/`; moved shared input fields into `components/common/fields.rs`.
+- **2026-01-08:** Relocated helper functions into `core/` and `state/` modules during the earlier UI modularization pass.
+- **2026-01-08:** Split Attributes and Assets panels into smaller modules; relocated provider/media/generative helpers into `core/` and `state/`, and moved timeline zoom bounds into the timeline module.
+- **2026-01-08:** Began the earlier modularization pass by extracting shared UI constants, startup modal, panel modules, and shared input fields.
 - **2026-01-08:** Generative thumbnail cache now clears when no active version exists (prevents stale thumbnails after deleting all versions)
 - **2026-01-08:** Preview cache now invalidates generative asset folders on generate/delete so regenerated versions update immediately
 - **2026-01-08:** Version dropdown now lists newest first; added inline delete confirmation that keeps selection position
@@ -1006,7 +1001,7 @@ src/
 - **2026-01-07:** Preview render loop now emits layer stacks for the GPU path and triggers native redraws when layers update
 - **2026-01-07:** Reworked preview stats labeling to show scan time (excluding decode/still) for clearer left-to-right stage timing
 - **2026-01-07:** Allowed the preview panel to shrink vertically to avoid the native surface overlapping the timeline in short windows
-- **2026-01-07:** Added a small Windows-only native preview offset to compensate for WebView2 client-area inset
+- **2026-01-07:** Added a small Windows-only native preview offset to compensate for the then-current host client-area inset
 - **2026-01-07:** Kept preview header layout stable when stats are hidden and removed preview padding to align the native surface
 - **2026-01-07:** Added a title-bar toggle for preview stats and anchored native preview bounds to a dedicated host rectangle
 - **2026-01-07:** Aligned native preview bounds to the canvas element, moved stats into the preview header, and switched native letterbox bars to black

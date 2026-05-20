@@ -66,7 +66,7 @@ This is a passion project in early stages. Things work, things break, APIs chang
 |---------|--------|
 | Timeline with tracks (video/audio/markers) | ✅ |
 | Drag, resize, and manage clips | ✅ |
-| GPU-accelerated preview with transforms | ✅ |
+| Timeline preview with transforms | ✅ |
 | ComfyUI workflow integration (image gen) | ✅ |
 | Generative assets with version history | ✅ |
 | Provider Builder UI (no JSON editing required) | ✅ |
@@ -115,7 +115,7 @@ For the developers curious about what makes this tick — the preview and compos
 
 ### 🎞️ Preview Pipeline
 
-The challenge: Dioxus runs in a WebView (WebView2 on Windows), but we need GPU-accelerated video compositing. Our solution bypasses WebView limitations entirely.
+The challenge: the editor needs responsive timeline preview, media decoding, and UI overlays in one native desktop window. The current shell uses egui/eframe so dialogs, panels, timeline controls, and preview output are composed in the same UI stack.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -123,16 +123,16 @@ The challenge: Dioxus runs in a WebView (WebView2 on Windows), but we need GPU-a
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │   FFmpeg     │    │    Frame     │    │   wgpu Native    │   │
-│  │   Decode     │── ▶│    Cache     │──▶│   Compositor     │   │
-│  │   Workers    │    │   (LRU)      │    │   Surface        │   │
+│  │   FFmpeg     │    │    Frame     │    │   egui Preview   │   │
+│  │   Decode     │── ▶│    Cache     │──▶│   Texture Path    │   │
+│  │   Workers    │    │   (LRU)      │    │                  │   │
 │  └──────────────┘    └──────────────┘    └──────────────────┘   │
 │         │                   │                     │             │
 │         ▼                   ▼                     ▼             │
 │   • In-process decode   • 8GB budget         • Layer stacking   │
 │   • HW accel (D3D11VA)  • Prefetch window    • Per-clip xforms  │
 │   • Parallel workers    • Latest-wins        • GPU compositing  │
-│   • CPU fallback        • Per-asset keying   • Native surface  │
+│   • CPU fallback        • Per-asset keying   • Native window   │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -143,7 +143,7 @@ The challenge: Dioxus runs in a WebView (WebView2 on Windows), but we need GPU-a
 
 2. **Frame Cache** — LRU cache with an 8GB budget for smooth scrubbing. Prefetch windows (5s ahead, 1s behind) warm the cache when idle. Latest-wins scheduling cancels stale decode jobs when you scrub quickly — only the frames you need get decoded.
 
-3. **wgpu Native Compositor** — A native GPU surface that renders alongside the WebView. Each layer uploads as a texture; shaders handle transforms (position, scale, rotation, opacity) and compositing. This bypasses the DOM entirely for zero-copy GPU rendering.
+3. **egui Preview Texture Path** — Preview frames are rendered into an egui texture inside the native UI. This keeps overlays, modals, and editor controls in the same composition layer while we rebuild the deeper preview compositor.
 
 ### 📊 Diagnostic Tools
 
@@ -162,8 +162,8 @@ We built in visibility for optimization work:
 | Component | Technology |
 |-----------|------------|
 | Language | **Rust** — Fast, safe, no runtime |
-| UI Framework | **Dioxus 0.7** — Reactive, cross-platform, hot-patching |
-| GPU Rendering | **wgpu** — WebGPU-based, cross-platform compositing |
+| UI Framework | **egui/eframe 0.34** — Native immediate-mode desktop UI |
+| Preview Rendering | **egui textures + image processing** — In-window preview path while the compositor evolves |
 | Video Decode | **FFmpeg** (ffmpeg-next) — In-process decode with HW accel |
 | Async | **Tokio** — Background tasks, provider communication |
 

@@ -66,7 +66,7 @@ if ($StatePath.Trim().Length -eq 0) {
     $StatePath = Join-Path $artifactDir "automation-$timestamp-state.json"
 }
 if ($ReferenceDir.Trim().Length -eq 0) {
-    $ReferenceDir = Join-Path $artifactDir "dioxus-reference-$timestamp"
+    $ReferenceDir = Join-Path $artifactDir "ui-reference-$timestamp"
 }
 if ($CaptureReferenceSet) {
     New-Item -ItemType Directory -Path $ReferenceDir -Force | Out-Null

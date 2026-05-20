@@ -3,11 +3,6 @@
 **/*.rs.bk
 Cargo.lock
 
-# Dioxus
-/dist/
-/out/
-/.dioxus/
-
 # Environment & Secrets
 .env
 .env.local
