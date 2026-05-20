@@ -820,6 +820,10 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Matched the project wizard footer gap between Save Location and Create Project to the modal's normal 8px row spacing.
+- **2026-05-20:** Removed the fixed-height scroll block from the project wizard form and bottom-aligned the Save Location/Create Project footer so the primary action stays on the same bottom flow as Browse for Project.
+- **2026-05-20:** Made resolution preset badges derive their green selected state from the current width/height values, and changed the 1:1 preset to set 512x512.
+- **2026-05-20:** Enlarged the project wizard by 40px vertically and changed its content split to roughly 2/3 create-project form and 1/3 recent-projects list so the primary form and Create Project footer have more room.
 - **2026-05-20:** Applied the shared modal-header close affordance across Project Settings, Generative Video, AI Providers, and Generation Queue; startup remains intentionally non-closeable until a project is opened or created.
 - **2026-05-20:** Fixed reopened New Project modal behavior so selecting a recent project or browsing to a project closes the modal after a successful open.
 - **2026-05-20:** Added a reusable modal-header close affordance and gated the New Project close button so it only appears when an existing project is already open; startup still requires creating or opening a project.

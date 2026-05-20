@@ -18,8 +18,8 @@ use crate::state::{
 };
 use crate::ui_kit as kit;
 
-const PROJECT_WIZARD_SIZE: [f32; 2] = [720.0, 620.0];
-const PROJECT_WIZARD_CARD_H: f32 = 486.0;
+const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
+const PROJECT_WIZARD_CARD_H: f32 = 526.0;
 
 pub fn run() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
@@ -1036,75 +1036,102 @@ impl NlaEguiApp {
     }
 
     fn new_project_modal_contents(&mut self, ui: &mut Ui, _startup: bool) {
-        ui.columns(2, |columns| {
-            columns[0].vertical(|ui| {
-                kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
-                    let footer_h = 100.0;
-                    let form_h = (ui.available_height() - footer_h).max(260.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(form_h)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            kit::field_label(ui, "Create New Project");
-                            ui.add_space(8.0);
-                            kit::field_label(ui, "Project Name");
-                            kit::singleline_text_field(
-                                ui,
-                                &mut self.new_project_name,
-                                ui.available_width(),
-                            );
-                            ui.add_space(10.0);
-                            settings_fields(ui, &mut self.project_settings);
-                        });
-                    ui.add_space(8.0);
-                    kit::field_label(ui, "Save Location");
-                    if location_picker_row(ui, &self.new_project_parent).clicked() {
-                        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                            self.new_project_parent = folder;
-                        }
-                    }
-                    ui.add_space(8.0);
-                    if kit::primary_button(ui, "Create Project", ui.available_width()).clicked() {
-                        match self.editor.create_project(
-                            &self.new_project_parent,
-                            self.new_project_name.trim(),
-                            self.project_settings.clone(),
-                        ) {
-                            Ok(_) => {
-                                self.editor.overlays.new_project = false;
-                            }
-                            Err(err) => self.editor.status = err,
-                        }
-                    }
-                });
-            });
-            columns[1].vertical(|ui| {
-                kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
-                    kit::field_label(ui, "Recent Projects");
-                    ui.add_space(8.0);
-                    let recent = recent_projects(&self.new_project_parent);
-                    let list_height = (ui.available_height() - 48.0).max(120.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(list_height)
-                        .show(ui, |ui| {
-                            if recent.is_empty() {
-                                kit::empty_state(
-                                    ui,
-                                    "No recent projects",
-                                    "Browse to open an existing project folder.",
-                                );
-                            }
-                            for folder in recent {
-                                if kit::secondary_button(
-                                    ui,
-                                    folder
-                                        .file_name()
-                                        .and_then(|v| v.to_str())
-                                        .unwrap_or("Project"),
-                                    ui.available_width(),
-                                )
+        let gap = 10.0;
+        let available_w = ui.available_width();
+        let left_w = ((available_w - gap) * 2.0 / 3.0).max(360.0);
+        let right_w = (available_w - gap - left_w).max(180.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.allocate_ui_with_layout(
+                Vec2::new(left_w, PROJECT_WIZARD_CARD_H),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.set_width(left_w);
+                    kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
+                        kit::field_label(ui, "Create New Project");
+                        ui.add_space(8.0);
+                        kit::field_label(ui, "Project Name");
+                        kit::singleline_text_field(
+                            ui,
+                            &mut self.new_project_name,
+                            ui.available_width(),
+                        );
+                        ui.add_space(10.0);
+                        settings_fields(ui, &mut self.project_settings);
+                        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                            if kit::primary_button(ui, "Create Project", ui.available_width())
                                 .clicked()
-                                {
+                            {
+                                match self.editor.create_project(
+                                    &self.new_project_parent,
+                                    self.new_project_name.trim(),
+                                    self.project_settings.clone(),
+                                ) {
+                                    Ok(_) => {
+                                        self.editor.overlays.new_project = false;
+                                    }
+                                    Err(err) => self.editor.status = err,
+                                }
+                            }
+                            ui.add_space(8.0);
+                            if location_picker_row(ui, &self.new_project_parent).clicked() {
+                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                    self.new_project_parent = folder;
+                                }
+                            }
+                            ui.add_space(6.0);
+                            kit::field_label(ui, "Save Location");
+                        });
+                    });
+                },
+            );
+            ui.allocate_ui_with_layout(
+                Vec2::new(right_w, PROJECT_WIZARD_CARD_H),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.set_width(right_w);
+                    kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
+                        kit::field_label(ui, "Recent Projects");
+                        ui.add_space(8.0);
+                        let recent = recent_projects(&self.new_project_parent);
+                        let list_height = (ui.available_height() - 48.0).max(120.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(list_height)
+                            .show(ui, |ui| {
+                                if recent.is_empty() {
+                                    kit::empty_state(
+                                        ui,
+                                        "No recent projects",
+                                        "Browse to open an existing project folder.",
+                                    );
+                                }
+                                for folder in recent {
+                                    if kit::secondary_button(
+                                        ui,
+                                        folder
+                                            .file_name()
+                                            .and_then(|v| v.to_str())
+                                            .unwrap_or("Project"),
+                                        ui.available_width(),
+                                    )
+                                    .clicked()
+                                    {
+                                        match self.editor.open_project(folder) {
+                                            Ok(_) => self.editor.overlays.new_project = false,
+                                            Err(err) => self.editor.status = err,
+                                        }
+                                    }
+                                }
+                            });
+                        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                            if kit::secondary_button(
+                                ui,
+                                "Browse for Project...",
+                                ui.available_width(),
+                            )
+                            .clicked()
+                            {
+                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                                     match self.editor.open_project(folder) {
                                         Ok(_) => self.editor.overlays.new_project = false,
                                         Err(err) => self.editor.status = err,
@@ -1112,20 +1139,9 @@ impl NlaEguiApp {
                                 }
                             }
                         });
-                    ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                        if kit::secondary_button(ui, "Browse for Project...", ui.available_width())
-                            .clicked()
-                        {
-                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                match self.editor.open_project(folder) {
-                                    Ok(_) => self.editor.overlays.new_project = false,
-                                    Err(err) => self.editor.status = err,
-                                }
-                            }
-                        }
                     });
-                });
-            });
+                },
+            );
         });
     }
 
@@ -1682,29 +1698,19 @@ fn transform_editor(ui: &mut Ui, transform: &mut ClipTransform, preview_dirty: &
 fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
     kit::field_label(ui, "Resolution");
     ui.horizontal_wrapped(|ui| {
-        if kit::media_pill(ui, "1080p", kit::PRIMARY_HOVER).clicked() {
-            settings.width = 1920;
-            settings.height = 1080;
-            settings.preview_max_width = 960;
-            settings.preview_max_height = 540;
-        }
-        if kit::media_pill(ui, "4K", kit::TEXT_MUTED).clicked() {
-            settings.width = 3840;
-            settings.height = 2160;
-            settings.preview_max_width = 1280;
-            settings.preview_max_height = 720;
-        }
-        if kit::media_pill(ui, "9:16", kit::TEXT_MUTED).clicked() {
-            settings.width = 1080;
-            settings.height = 1920;
-            settings.preview_max_width = 540;
-            settings.preview_max_height = 960;
-        }
-        if kit::media_pill(ui, "1:1", kit::TEXT_MUTED).clicked() {
-            settings.width = 1080;
-            settings.height = 1080;
-            settings.preview_max_width = 720;
-            settings.preview_max_height = 720;
+        for preset in RESOLUTION_PRESETS {
+            let selected = settings.width == preset.width && settings.height == preset.height;
+            let color = if selected {
+                kit::PRIMARY_HOVER
+            } else {
+                kit::TEXT_MUTED
+            };
+            if kit::media_pill(ui, preset.label, color).clicked() {
+                settings.width = preset.width;
+                settings.height = preset.height;
+                settings.preview_max_width = preset.preview_width;
+                settings.preview_max_height = preset.preview_height;
+            }
         }
     });
     ui.add_space(6.0);
@@ -1733,6 +1739,45 @@ fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
         settings.duration_seconds = (minutes * 60.0).max(1.0);
     }
 }
+
+struct ResolutionPreset {
+    label: &'static str,
+    width: u32,
+    height: u32,
+    preview_width: u32,
+    preview_height: u32,
+}
+
+const RESOLUTION_PRESETS: &[ResolutionPreset] = &[
+    ResolutionPreset {
+        label: "1080p",
+        width: 1920,
+        height: 1080,
+        preview_width: 960,
+        preview_height: 540,
+    },
+    ResolutionPreset {
+        label: "4K",
+        width: 3840,
+        height: 2160,
+        preview_width: 1280,
+        preview_height: 720,
+    },
+    ResolutionPreset {
+        label: "9:16",
+        width: 1080,
+        height: 1920,
+        preview_width: 540,
+        preview_height: 960,
+    },
+    ResolutionPreset {
+        label: "1:1",
+        width: 512,
+        height: 512,
+        preview_width: 512,
+        preview_height: 512,
+    },
+];
 
 fn recent_projects(parent: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(parent)
