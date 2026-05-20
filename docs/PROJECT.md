@@ -820,6 +820,18 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Rebuilt modal close buttons as square tokenized controls with a larger hit area, coherent top/right header insets, hover/focus states, and a stroked X icon instead of tiny text.
+- **2026-05-20:** Forced editable single-line text fields onto the same exact `FIELD_H` allocation and shared field frame tokens as value fields and browse rows, removing egui natural-height drift from Project Name and other text fields.
+- **2026-05-20:** Normalized standalone button metrics in `ui_kit` so primary/action, secondary, and danger buttons share one height, radius, and text-size token family; green actions now differ by color skin rather than shape.
+- **2026-05-20:** Added reusable native file/folder browse helpers with shared field styling, optional extension filters for file dialogs, stable widget IDs, and reset-vs-remember starting-directory behavior; moved project open/save and asset import dialogs onto the shared helpers.
+- **2026-05-20:** Added shared first-focus select-all behavior for single-line text fields and made read-only value fields selectable/focusable with the same field edge highlighting.
+- **2026-05-20:** Aligned numeric `DragValue` fields with text-field surfaces by styling egui button `weak_bg_fill` as well as `bg_fill`, and moved regular text fields onto the same focused green outline path.
+- **2026-05-20:** Softened the shared field surface palette away from near-black, added hover/active field fill tokens plus `TEXT_ON_ACCENT`, and documented the no pure black/white UI primitive rule in the egui best-practices notes.
+- **2026-05-20:** Tightened field compound layout so browse rows reserve exactly one field-height row, use a single field-to-button gap token, and share one global field text-alignment token across editable and read-only fields.
+- **2026-05-20:** Normalized New Project and inspector field styling through shared `ui_kit` tokens: text fields, read-only browse fields, field-height Browse buttons, and inline numeric drag prefixes now use the same field metrics, colors, and radius.
+- **2026-05-20:** Added `egui_extras` and moved the New Project modal columns onto a shared StripBuilder body/footer template, including reusable labeled text-field and browse-value row helpers whose field flexes while the Browse button keeps a fixed width.
+- **2026-05-20:** Refined the New Project footer template so bottom-up layout pins a single fixed footer region, while the Save Location row and Create Project action are laid out top-down inside that region for reliable spacing.
+- **2026-05-20:** Added reusable egui scroll-body-above-footer and bottom-pinned-region layout helpers and moved the New Project create form onto them so the form area flexes while the Save Location/Create Project footer stays bottom-pinned in normal egui flow.
 - **2026-05-20:** Made the project wizard size itself to the available viewport and split the New Project card into a scrollable form region plus a pinned footer so the Save Location row and Create Project button cannot overflow the card.
 - **2026-05-20:** Replaced the project wizard left footer's bottom-up layout with an explicit top-down footer block so the Save Location row and Create Project button have consistent row spacing.
 - **2026-05-20:** Matched the project wizard footer gap between Save Location and Create Project to the modal's normal 8px row spacing.

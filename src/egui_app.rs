@@ -21,6 +21,31 @@ use crate::ui_kit as kit;
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
 const PROJECT_WIZARD_MIN_SIZE: [f32; 2] = [560.0, 500.0];
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mov", "mkv", "webm", "avi", "png", "jpg", "jpeg", "gif", "webp", "wav", "mp3", "flac",
+    "ogg",
+];
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi"];
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
+const ASSET_IMPORT_FILTERS: &[kit::FileExtensionFilter<'static>] = &[
+    kit::FileExtensionFilter {
+        name: "Media",
+        extensions: MEDIA_EXTENSIONS,
+    },
+    kit::FileExtensionFilter {
+        name: "Video",
+        extensions: VIDEO_EXTENSIONS,
+    },
+    kit::FileExtensionFilter {
+        name: "Image",
+        extensions: IMAGE_EXTENSIONS,
+    },
+    kit::FileExtensionFilter {
+        name: "Audio",
+        extensions: AUDIO_EXTENSIONS,
+    },
+];
 
 fn project_wizard_size(ctx: &Context) -> Vec2 {
     let available = ctx.content_rect().size();
@@ -175,7 +200,12 @@ impl NlaEguiApp {
                                 ui.close();
                             }
                             if ui.button("Open Project...").clicked() {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                let initial_dir = default_projects_dir();
+                                let options = kit::BrowsePathOptions::new()
+                                    .id_salt("menu_open_project")
+                                    .initial_dir(initial_dir.as_path())
+                                    .remember_last_dir();
+                                if let Some(folder) = kit::pick_folder_dialog(ui, options) {
                                     if let Err(err) = this.editor.open_project(folder) {
                                         this.editor.status = err;
                                     }
@@ -321,7 +351,18 @@ impl NlaEguiApp {
         });
         ui.add_space(8.0);
         if kit::secondary_button(ui, "Import Files...", ui.available_width()).clicked() {
-            if let Some(path) = rfd::FileDialog::new().pick_file() {
+            let initial_dir = self
+                .editor
+                .project
+                .project_path
+                .clone()
+                .unwrap_or_else(default_projects_dir);
+            let options = kit::BrowseFileOptions::new()
+                .id_salt("asset_import_file")
+                .initial_dir(initial_dir.as_path())
+                .remember_last_dir()
+                .filters(ASSET_IMPORT_FILTERS);
+            if let Some(path) = kit::pick_file_dialog(ui, options) {
                 match self.editor.import_asset(path) {
                     Ok(asset_id) => self.editor.selection.asset_ids = vec![asset_id],
                     Err(err) => self.editor.status = err,
@@ -598,7 +639,7 @@ impl NlaEguiApp {
     }
 
     fn paint_preview(&mut self, ui: &mut Ui, rect: Rect) {
-        ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+        ui.painter().rect_filled(rect, 0.0, kit::APP_BG);
         ui.painter().rect_stroke(
             rect,
             0.0,
@@ -864,7 +905,7 @@ impl NlaEguiApp {
                     egui::Align2::LEFT_TOP,
                     label,
                     FontId::proportional(11.0),
-                    Color32::WHITE,
+                    kit::TEXT_ON_ACCENT,
                 );
             }
         }
@@ -1075,53 +1116,70 @@ impl NlaEguiApp {
                     ui.set_width(right_w);
                     kit::card_panel(ui, card_h, |ui| {
                         kit::field_label(ui, "Recent Projects");
-                        ui.add_space(8.0);
                         let recent = recent_projects(&self.new_project_parent);
-                        let list_height = (ui.available_height() - 48.0).max(120.0);
-                        egui::ScrollArea::vertical()
-                            .max_height(list_height)
-                            .show(ui, |ui| {
-                                if recent.is_empty() {
-                                    kit::empty_state(
-                                        ui,
-                                        "No recent projects",
-                                        "Browse to open an existing project folder.",
-                                    );
-                                }
-                                for folder in recent {
-                                    if kit::secondary_button(
-                                        ui,
-                                        folder
-                                            .file_name()
-                                            .and_then(|v| v.to_str())
-                                            .unwrap_or("Project"),
-                                        ui.available_width(),
-                                    )
-                                    .clicked()
-                                    {
-                                        match self.editor.open_project(folder) {
-                                            Ok(_) => self.editor.overlays.new_project = false,
-                                            Err(err) => self.editor.status = err,
+                        let mut selected_project: Option<PathBuf> = None;
+                        let mut browse_clicked = false;
+                        kit::body_with_footer(
+                            ui,
+                            120.0,
+                            kit::SECONDARY_BUTTON_H,
+                            |ui| {
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                kit::scroll_body(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                                    if recent.is_empty() {
+                                        kit::empty_state(
+                                            ui,
+                                            "No recent projects",
+                                            "Browse to open an existing project folder.",
+                                        );
+                                    }
+                                    for folder in recent {
+                                        if kit::secondary_button(
+                                            ui,
+                                            folder
+                                                .file_name()
+                                                .and_then(|v| v.to_str())
+                                                .unwrap_or("Project"),
+                                            ui.available_width(),
+                                        )
+                                        .clicked()
+                                        {
+                                            selected_project = Some(folder);
                                         }
                                     }
+                                });
+                            },
+                            |ui| {
+                                if kit::secondary_button(
+                                    ui,
+                                    "Browse for Project...",
+                                    ui.available_width(),
+                                )
+                                .clicked()
+                                {
+                                    browse_clicked = true;
                                 }
-                            });
-                        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                            if kit::secondary_button(
-                                ui,
-                                "Browse for Project...",
-                                ui.available_width(),
-                            )
-                            .clicked()
-                            {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                    match self.editor.open_project(folder) {
-                                        Ok(_) => self.editor.overlays.new_project = false,
-                                        Err(err) => self.editor.status = err,
-                                    }
+                            },
+                        );
+                        if let Some(folder) = selected_project {
+                            match self.editor.open_project(folder) {
+                                Ok(_) => self.editor.overlays.new_project = false,
+                                Err(err) => self.editor.status = err,
+                            }
+                        } else if browse_clicked {
+                            let initial_dir = self.new_project_parent.clone();
+                            let options = kit::BrowsePathOptions::new()
+                                .id_salt("new_project_open_existing")
+                                .initial_dir(initial_dir.as_path())
+                                .remember_last_dir();
+                            if let Some(folder) = kit::pick_folder_dialog(ui, options) {
+                                match self.editor.open_project(folder) {
+                                    Ok(_) => self.editor.overlays.new_project = false,
+                                    Err(err) => self.editor.status = err,
                                 }
                             }
-                        });
+                        }
                     });
                 },
             );
@@ -1129,58 +1187,48 @@ impl NlaEguiApp {
     }
 
     fn new_project_create_card(&mut self, ui: &mut Ui) {
-        let content_rect = ui.available_rect_before_wrap();
-        let footer_gap = 12.0;
-        let footer_h = 98.0_f32.min(content_rect.height());
-        let footer_top = content_rect.bottom() - footer_h;
-        let form_bottom = (footer_top - footer_gap).max(content_rect.top());
-        let form_rect = Rect::from_min_max(
-            content_rect.left_top(),
-            Pos2::new(content_rect.right(), form_bottom),
-        );
-        let footer_rect = Rect::from_min_max(
-            Pos2::new(content_rect.left(), footer_top),
-            content_rect.right_bottom(),
-        );
+        let footer_h =
+            kit::labeled_field_height(kit::VALUE_FIELD_H) + kit::ACTION_GAP + kit::PRIMARY_BUTTON_H;
+        let new_project_name = &mut self.new_project_name;
+        let project_settings = &mut self.project_settings;
+        let new_project_parent = &mut self.new_project_parent;
+        let mut create_clicked = false;
 
-        if form_rect.height() > 24.0 {
-            let mut form_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(form_rect)
-                    .layout(Layout::top_down(Align::Min)),
-            );
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .max_height(form_rect.height())
-                .show(&mut form_ui, |ui| {
+        kit::body_with_footer(
+            ui,
+            180.0,
+            footer_h,
+            |ui| {
+                kit::scroll_body(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
                     kit::field_label(ui, "Create New Project");
-                    ui.add_space(8.0);
-                    kit::field_label(ui, "Project Name");
-                    kit::singleline_text_field(
-                        ui,
-                        &mut self.new_project_name,
-                        ui.available_width(),
-                    );
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    kit::labeled_text_field(ui, "Project Name", new_project_name);
                     ui.add_space(10.0);
-                    settings_fields(ui, &mut self.project_settings);
+                    settings_fields(ui, project_settings);
                 });
-        }
-
-        let mut footer_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(footer_rect)
-                .layout(Layout::top_down(Align::Min)),
+            },
+            |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let parent_display = new_project_parent.display().to_string();
+                let options = kit::BrowsePathOptions::new()
+                    .id_salt("new_project_save_location")
+                    .initial_dir(new_project_parent.as_path())
+                    .remember_last_dir();
+                if let Some(folder) =
+                    kit::labeled_browse_folder_field(ui, "Save Location", parent_display, options)
+                {
+                    *new_project_parent = folder;
+                }
+                ui.add_space(kit::ACTION_GAP);
+                let create_w = ui.available_width();
+                if kit::primary_button(ui, "Create Project", create_w).clicked() {
+                    create_clicked = true;
+                }
+            },
         );
-        kit::field_label(&mut footer_ui, "Save Location");
-        footer_ui.add_space(6.0);
-        if location_picker_row(&mut footer_ui, &self.new_project_parent).clicked() {
-            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                self.new_project_parent = folder;
-            }
-        }
-        footer_ui.add_space(12.0);
-        let create_w = footer_ui.available_width();
-        if kit::primary_button(&mut footer_ui, "Create Project", create_w).clicked() {
+
+        if create_clicked {
             match self.editor.create_project(
                 &self.new_project_parent,
                 self.new_project_name.trim(),
@@ -1586,10 +1634,8 @@ fn inspector_text_field(ui: &mut Ui, label: &str, value: &mut String) -> bool {
     kit::singleline_text_field(ui, value, ui.available_width()).changed()
 }
 
-const INSPECTOR_NUMERIC_H: f32 = 40.0;
-const INSPECTOR_NUMERIC_LABEL_H: f32 = 12.0;
-const INSPECTOR_NUMERIC_INPUT_H: f32 = 24.0;
-const INSPECTOR_NUMERIC_GAP: f32 = 10.0;
+const INSPECTOR_NUMERIC_H: f32 = kit::FIELD_H;
+const INSPECTOR_NUMERIC_GAP: f32 = kit::FORM_ROW_GAP;
 
 fn inspector_numeric_rect(ui: &mut Ui, width: f32) -> Rect {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, INSPECTOR_NUMERIC_H), Sense::hover());
@@ -1616,20 +1662,15 @@ fn inspector_numeric_pair_rects(ui: &mut Ui) -> (Rect, Rect) {
 fn inspector_numeric_field(
     ui: &mut Ui,
     rect: Rect,
-    label: &str,
     add_control: impl FnOnce(&mut Ui, f32) -> egui::Response,
 ) -> bool {
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
-            .layout(Layout::top_down(Align::Min)),
+            .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
-    child.spacing_mut().item_spacing.y = 4.0;
-    child.add_sized(
-        [rect.width(), INSPECTOR_NUMERIC_LABEL_H],
-        egui::Label::new(kit::caption(label.to_ascii_uppercase())),
-    );
+    kit::configure_field_widget_style(&mut child, rect.width());
     add_control(&mut child, rect.width()).changed()
 }
 
@@ -1645,10 +1686,12 @@ fn inspector_drag_f32_in_rect(
     value: &mut f32,
     speed: f64,
 ) -> bool {
-    inspector_numeric_field(ui, rect, label, |ui, width| {
+    inspector_numeric_field(ui, rect, |ui, width| {
         ui.add_sized(
-            [width, INSPECTOR_NUMERIC_INPUT_H],
-            egui::DragValue::new(value).speed(speed),
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value)
+                .prefix(kit::field_prefix(label))
+                .speed(speed),
         )
     })
 }
@@ -1665,10 +1708,12 @@ fn inspector_drag_f64_in_rect(
     value: &mut f64,
     speed: f64,
 ) -> bool {
-    inspector_numeric_field(ui, rect, label, |ui, width| {
+    inspector_numeric_field(ui, rect, |ui, width| {
         ui.add_sized(
-            [width, INSPECTOR_NUMERIC_INPUT_H],
-            egui::DragValue::new(value).speed(speed),
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value)
+                .prefix(kit::field_prefix(label))
+                .speed(speed),
         )
     })
 }
@@ -1680,10 +1725,12 @@ fn inspector_drag_u32_in_rect(
     value: &mut u32,
     speed: f64,
 ) -> bool {
-    inspector_numeric_field(ui, rect, label, |ui, width| {
+    inspector_numeric_field(ui, rect, |ui, width| {
         ui.add_sized(
-            [width, INSPECTOR_NUMERIC_INPUT_H],
-            egui::DragValue::new(value).speed(speed),
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value)
+                .prefix(kit::field_prefix(label))
+                .speed(speed),
         )
     })
 }
@@ -1729,17 +1776,17 @@ fn transform_editor(ui: &mut Ui, transform: &mut ClipTransform, preview_dirty: &
     ui.add_space(6.0);
     *preview_dirty |= inspector_two_drag_f32(
         ui,
-        ("Position X", &mut transform.position_x, 1.0),
-        ("Position Y", &mut transform.position_y, 1.0),
+        ("X", &mut transform.position_x, 1.0),
+        ("Y", &mut transform.position_y, 1.0),
     );
     *preview_dirty |= inspector_two_drag_f32(
         ui,
-        ("Scale X", &mut transform.scale_x, 0.01),
-        ("Scale Y", &mut transform.scale_y, 0.01),
+        ("SX", &mut transform.scale_x, 0.01),
+        ("SY", &mut transform.scale_y, 0.01),
     );
     *preview_dirty |= inspector_two_drag_f32(
         ui,
-        ("Rotation", &mut transform.rotation_deg, 1.0),
+        ("Rot", &mut transform.rotation_deg, 1.0),
         ("Opacity", &mut transform.opacity, 0.01),
     );
 }
@@ -1765,16 +1812,16 @@ fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
     ui.add_space(6.0);
     let _ = inspector_two_drag_u32(
         ui,
-        ("Width", &mut settings.width, 8.0),
-        ("Height", &mut settings.height, 8.0),
+        ("W", &mut settings.width, 8.0),
+        ("H", &mut settings.height, 8.0),
     );
     ui.add_space(8.0);
     kit::field_label(ui, "Preview Downsample");
     ui.add_space(6.0);
     let _ = inspector_two_drag_u32(
         ui,
-        ("Width", &mut settings.preview_max_width, 8.0),
-        ("Height", &mut settings.preview_max_height, 8.0),
+        ("W", &mut settings.preview_max_width, 8.0),
+        ("H", &mut settings.preview_max_height, 8.0),
     );
     ui.add_space(8.0);
     kit::field_label(ui, "Timing");
@@ -1783,7 +1830,7 @@ fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
     if inspector_two_drag_f64(
         ui,
         ("FPS", &mut settings.fps, 1.0),
-        ("Minutes", &mut minutes, 0.25),
+        ("Min", &mut minutes, 0.25),
     ) {
         settings.duration_seconds = (minutes * 60.0).max(1.0);
     }
@@ -1837,19 +1884,6 @@ fn recent_projects(parent: &Path) -> Vec<PathBuf> {
         .filter(|path| path.join("project.json").exists())
         .take(8)
         .collect()
-}
-
-fn location_picker_row(ui: &mut Ui, path: &Path) -> egui::Response {
-    let button_w = 76.0;
-    let spacing = 8.0;
-    let field_w = (ui.available_width() - button_w - spacing).max(90.0);
-    let mut button_response = None;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = spacing;
-        kit::readonly_value_box(ui, path.display().to_string(), Vec2::new(field_w, 30.0));
-        button_response = Some(kit::secondary_button(ui, "Browse", button_w));
-    });
-    button_response.expect("location picker row always creates a browse button")
 }
 
 fn timecode(seconds: f64) -> String {
