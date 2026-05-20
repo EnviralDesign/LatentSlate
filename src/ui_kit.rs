@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{
     self, Align, Color32, Context, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect,
-    Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    Response, RichText, Sense, Shadow, Stroke, StrokeKind, Ui, Vec2,
 };
 use egui_extras::{Size, StripBuilder};
 
@@ -37,6 +37,21 @@ pub const STATUS_BAR_H: f32 = 22.0;
 pub const PANEL_PAD: i8 = 10;
 pub const SECTION_PAD: i8 = 12;
 pub const RADIUS: u8 = 7;
+pub const MODAL_RADIUS: u8 = RADIUS;
+pub const MODAL_STROKE: Color32 = Color32::from_rgb(54, 57, 64);
+pub const MODAL_HEADER_FILL: Color32 = Color32::from_rgb(31, 32, 36);
+pub const MODAL_TOP_RADIUS: CornerRadius = CornerRadius {
+    nw: MODAL_RADIUS,
+    ne: MODAL_RADIUS,
+    sw: 0,
+    se: 0,
+};
+pub const MODAL_BOTTOM_RADIUS: CornerRadius = CornerRadius {
+    nw: 0,
+    ne: 0,
+    sw: MODAL_RADIUS,
+    se: MODAL_RADIUS,
+};
 pub const FIELD_H: f32 = 30.0;
 pub const TEXT_FIELD_H: f32 = FIELD_H;
 pub const VALUE_FIELD_H: f32 = FIELD_H;
@@ -56,6 +71,17 @@ pub const CLOSE_BUTTON_ICON_STROKE: f32 = 1.35;
 pub const MODAL_CLOSE_BUTTON_INSET_X: f32 = 12.0;
 pub const MODAL_CLOSE_BUTTON_INSET_Y: f32 = 12.0;
 pub const MODAL_CLOSE_BUTTON_TITLE_GAP: f32 = 12.0;
+pub const MODAL_SCRIM_FILL: Color32 = Color32::from_rgba_unmultiplied_const(7, 9, 13, 184);
+pub const MODAL_SCRIM_SOFT_WASH: Color32 = Color32::from_rgba_unmultiplied_const(24, 31, 38, 34);
+pub const MODAL_SCRIM_VIGNETTE_COLOR: Color32 = Color32::from_rgba_unmultiplied_const(3, 4, 7, 46);
+pub const MODAL_SCRIM_VIGNETTE_BAND: f32 = 150.0;
+pub const MODAL_SCRIM_VIGNETTE_STEPS: usize = 5;
+pub const MODAL_SHADOW: Shadow = Shadow {
+    offset: [0, 18],
+    blur: 52,
+    spread: 8,
+    color: Color32::from_rgba_unmultiplied_const(2, 4, 7, 190),
+};
 pub const BROWSE_BUTTON_W: f32 = 76.0;
 pub const FIELD_COMPOUND_GAP: f32 = 8.0;
 pub const FIELD_TEXT_ALIGN: Align = Align::Center;
@@ -118,9 +144,10 @@ pub fn timeline_frame() -> Frame {
 pub fn modal_frame() -> Frame {
     Frame::new()
         .fill(PANEL_RAISED)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(54, 57, 64)))
-        .corner_radius(CornerRadius::same(RADIUS))
+        .stroke(Stroke::new(1.0, MODAL_STROKE))
+        .corner_radius(CornerRadius::same(MODAL_RADIUS))
         .inner_margin(Margin::same(0))
+        .shadow(MODAL_SHADOW)
 }
 
 pub fn card_frame() -> Frame {
@@ -668,11 +695,65 @@ pub fn modal_scrim(ctx: &Context, id: &'static str) {
         egui::Order::Middle,
         egui::Id::new(format!("modal_scrim_{id}")),
     ));
-    painter.rect_filled(
-        ctx.content_rect(),
-        0.0,
-        Color32::from_rgba_unmultiplied(4, 5, 7, 168),
-    );
+    let rect = ctx.content_rect();
+    painter.rect_filled(rect, 0.0, MODAL_SCRIM_FILL);
+    painter.rect_filled(rect, 0.0, MODAL_SCRIM_SOFT_WASH);
+    paint_modal_vignette(&painter, rect);
+}
+
+fn paint_modal_vignette(painter: &egui::Painter, rect: Rect) {
+    let shortest_side = rect.width().min(rect.height());
+    if shortest_side <= 0.0 {
+        return;
+    }
+
+    let [vignette_r, vignette_g, vignette_b, vignette_a] =
+        MODAL_SCRIM_VIGNETTE_COLOR.to_srgba_unmultiplied();
+    let band = MODAL_SCRIM_VIGNETTE_BAND.min(shortest_side * 0.28);
+    let step = band / MODAL_SCRIM_VIGNETTE_STEPS as f32;
+    for index in 0..MODAL_SCRIM_VIGNETTE_STEPS {
+        let inset = index as f32 * step;
+        let alpha_scale = 1.0 - index as f32 / MODAL_SCRIM_VIGNETTE_STEPS as f32;
+        let alpha = (vignette_a as f32 * alpha_scale * alpha_scale)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        if alpha == 0 {
+            continue;
+        }
+
+        let color = Color32::from_rgba_unmultiplied(vignette_r, vignette_g, vignette_b, alpha);
+        let left = rect.left() + inset;
+        let right = rect.right() - inset;
+        let top = rect.top() + inset;
+        let bottom = rect.bottom() - inset;
+
+        painter.rect_filled(
+            Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, top + step)),
+            0.0,
+            color,
+        );
+        painter.rect_filled(
+            Rect::from_min_max(Pos2::new(left, bottom - step), Pos2::new(right, bottom)),
+            0.0,
+            color,
+        );
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(left, top + step),
+                Pos2::new(left + step, bottom - step),
+            ),
+            0.0,
+            color,
+        );
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(right - step, top + step),
+                Pos2::new(right, bottom - step),
+            ),
+            0.0,
+            color,
+        );
+    }
 }
 
 pub fn modal_header(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
@@ -688,7 +769,7 @@ pub fn modal_header_with_close(
     let height = if subtitle.is_some() { 72.0 } else { 56.0 };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     ui.painter()
-        .rect_filled(rect, 0.0, Color32::from_rgb(31, 32, 36));
+        .rect_filled(rect, MODAL_TOP_RADIUS, MODAL_HEADER_FILL);
 
     let content_rect = rect.shrink2(Vec2::new(18.0, 12.0));
     let close_clicked = if close_enabled {
@@ -739,6 +820,7 @@ pub fn modal_header_with_close(
 pub fn modal_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     Frame::new()
         .fill(PANEL_RAISED)
+        .corner_radius(MODAL_BOTTOM_RADIUS)
         .inner_margin(Margin::symmetric(18, 16))
         .show(ui, add_contents);
 }

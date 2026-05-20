@@ -820,6 +820,8 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Fixed modal corner artifacts globally by giving modal headers top-only radii and modal bodies bottom-only radii, matching the rounded outer frame instead of relying on egui parent clipping.
+- **2026-05-20:** Added reusable faux-blur modal backdrop styling: layered tinted scrim, subtle edge vignette, and tokenized modal drop shadow so dialogs feel separated from the editor without a true offscreen blur pass.
 - **2026-05-20:** Rebuilt modal close buttons as square tokenized controls with a larger hit area, coherent top/right header insets, hover/focus states, and a stroked X icon instead of tiny text.
 - **2026-05-20:** Forced editable single-line text fields onto the same exact `FIELD_H` allocation and shared field frame tokens as value fields and browse rows, removing egui natural-height drift from Project Name and other text fields.
 - **2026-05-20:** Normalized standalone button metrics in `ui_kit` so primary/action, secondary, and danger buttons share one height, radius, and text-size token family; green actions now differ by color skin rather than shape.
