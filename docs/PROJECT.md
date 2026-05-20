@@ -820,6 +820,8 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-20:** Made the project wizard size itself to the available viewport and split the New Project card into a scrollable form region plus a pinned footer so the Save Location row and Create Project button cannot overflow the card.
+- **2026-05-20:** Replaced the project wizard left footer's bottom-up layout with an explicit top-down footer block so the Save Location row and Create Project button have consistent row spacing.
 - **2026-05-20:** Matched the project wizard footer gap between Save Location and Create Project to the modal's normal 8px row spacing.
 - **2026-05-20:** Removed the fixed-height scroll block from the project wizard form and bottom-aligned the Save Location/Create Project footer so the primary action stays on the same bottom flow as Browse for Project.
 - **2026-05-20:** Made resolution preset badges derive their green selected state from the current width/height values, and changed the 1:1 preset to set 512x512.

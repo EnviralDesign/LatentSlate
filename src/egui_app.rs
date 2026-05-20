@@ -20,6 +20,21 @@ use crate::ui_kit as kit;
 
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
+const PROJECT_WIZARD_MIN_SIZE: [f32; 2] = [560.0, 500.0];
+
+fn project_wizard_size(ctx: &Context) -> Vec2 {
+    let available = ctx.content_rect().size();
+    let max_w = (available.x - 24.0).max(320.0);
+    let max_h = (available.y - 24.0).max(360.0);
+    Vec2::new(
+        PROJECT_WIZARD_SIZE[0]
+            .min(max_w)
+            .max(PROJECT_WIZARD_MIN_SIZE[0].min(max_w)),
+        PROJECT_WIZARD_SIZE[1]
+            .min(max_h)
+            .max(PROJECT_WIZARD_MIN_SIZE[1].min(max_h)),
+    )
+}
 
 pub fn run() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
@@ -984,13 +999,14 @@ impl NlaEguiApp {
     }
 
     fn startup_modal(&mut self, ctx: &Context) {
+        let wizard_size = project_wizard_size(ctx);
         kit::modal_scrim(ctx, "startup");
         egui::Window::new("startup")
             .title_bar(false)
             .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
-            .fixed_size(PROJECT_WIZARD_SIZE)
+            .fixed_size(wizard_size)
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -1007,6 +1023,7 @@ impl NlaEguiApp {
         let mut open = true;
         let close_enabled = !startup && self.editor.project_root().is_some();
         let mut close_clicked = false;
+        let wizard_size = project_wizard_size(ctx);
         kit::modal_scrim(ctx, "new_project");
         egui::Window::new(if startup {
             "Create Project"
@@ -1018,7 +1035,7 @@ impl NlaEguiApp {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .fixed_size(PROJECT_WIZARD_SIZE)
+        .fixed_size(wizard_size)
         .frame(kit::modal_frame())
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
@@ -1038,59 +1055,25 @@ impl NlaEguiApp {
     fn new_project_modal_contents(&mut self, ui: &mut Ui, _startup: bool) {
         let gap = 10.0;
         let available_w = ui.available_width();
+        let card_h = ui.available_height().min(PROJECT_WIZARD_CARD_H).max(360.0);
         let left_w = ((available_w - gap) * 2.0 / 3.0).max(360.0);
         let right_w = (available_w - gap - left_w).max(180.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.allocate_ui_with_layout(
-                Vec2::new(left_w, PROJECT_WIZARD_CARD_H),
+                Vec2::new(left_w, card_h),
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.set_width(left_w);
-                    kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
-                        kit::field_label(ui, "Create New Project");
-                        ui.add_space(8.0);
-                        kit::field_label(ui, "Project Name");
-                        kit::singleline_text_field(
-                            ui,
-                            &mut self.new_project_name,
-                            ui.available_width(),
-                        );
-                        ui.add_space(10.0);
-                        settings_fields(ui, &mut self.project_settings);
-                        ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                            if kit::primary_button(ui, "Create Project", ui.available_width())
-                                .clicked()
-                            {
-                                match self.editor.create_project(
-                                    &self.new_project_parent,
-                                    self.new_project_name.trim(),
-                                    self.project_settings.clone(),
-                                ) {
-                                    Ok(_) => {
-                                        self.editor.overlays.new_project = false;
-                                    }
-                                    Err(err) => self.editor.status = err,
-                                }
-                            }
-                            ui.add_space(8.0);
-                            if location_picker_row(ui, &self.new_project_parent).clicked() {
-                                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                                    self.new_project_parent = folder;
-                                }
-                            }
-                            ui.add_space(6.0);
-                            kit::field_label(ui, "Save Location");
-                        });
-                    });
+                    kit::card_panel(ui, card_h, |ui| self.new_project_create_card(ui));
                 },
             );
             ui.allocate_ui_with_layout(
-                Vec2::new(right_w, PROJECT_WIZARD_CARD_H),
+                Vec2::new(right_w, card_h),
                 Layout::top_down(Align::Min),
                 |ui| {
                     ui.set_width(right_w);
-                    kit::card_panel(ui, PROJECT_WIZARD_CARD_H, |ui| {
+                    kit::card_panel(ui, card_h, |ui| {
                         kit::field_label(ui, "Recent Projects");
                         ui.add_space(8.0);
                         let recent = recent_projects(&self.new_project_parent);
@@ -1143,6 +1126,72 @@ impl NlaEguiApp {
                 },
             );
         });
+    }
+
+    fn new_project_create_card(&mut self, ui: &mut Ui) {
+        let content_rect = ui.available_rect_before_wrap();
+        let footer_gap = 12.0;
+        let footer_h = 98.0_f32.min(content_rect.height());
+        let footer_top = content_rect.bottom() - footer_h;
+        let form_bottom = (footer_top - footer_gap).max(content_rect.top());
+        let form_rect = Rect::from_min_max(
+            content_rect.left_top(),
+            Pos2::new(content_rect.right(), form_bottom),
+        );
+        let footer_rect = Rect::from_min_max(
+            Pos2::new(content_rect.left(), footer_top),
+            content_rect.right_bottom(),
+        );
+
+        if form_rect.height() > 24.0 {
+            let mut form_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(form_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(form_rect.height())
+                .show(&mut form_ui, |ui| {
+                    kit::field_label(ui, "Create New Project");
+                    ui.add_space(8.0);
+                    kit::field_label(ui, "Project Name");
+                    kit::singleline_text_field(
+                        ui,
+                        &mut self.new_project_name,
+                        ui.available_width(),
+                    );
+                    ui.add_space(10.0);
+                    settings_fields(ui, &mut self.project_settings);
+                });
+        }
+
+        let mut footer_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(footer_rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        kit::field_label(&mut footer_ui, "Save Location");
+        footer_ui.add_space(6.0);
+        if location_picker_row(&mut footer_ui, &self.new_project_parent).clicked() {
+            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                self.new_project_parent = folder;
+            }
+        }
+        footer_ui.add_space(12.0);
+        let create_w = footer_ui.available_width();
+        if kit::primary_button(&mut footer_ui, "Create Project", create_w).clicked() {
+            match self.editor.create_project(
+                &self.new_project_parent,
+                self.new_project_name.trim(),
+                self.project_settings.clone(),
+            ) {
+                Ok(_) => {
+                    self.editor.overlays.new_project = false;
+                }
+                Err(err) => self.editor.status = err,
+            }
+        }
     }
 
     fn project_settings_modal(&mut self, ctx: &Context) {
