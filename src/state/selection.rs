@@ -34,6 +34,9 @@ impl SelectionState {
     }
 
     /// Remove a clip from selection, if present.
+    #[allow(dead_code)]
+    // Kept for multi-select editing actions; current egui interactions replace
+    // the primary selection directly.
     pub fn remove_clip(&mut self, clip_id: Uuid) {
         self.clip_ids.retain(|id| *id != clip_id);
     }
@@ -67,6 +70,9 @@ impl SelectionState {
     }
 
     /// Remove a marker from selection, if present.
+    #[allow(dead_code)]
+    // Kept for multi-select editing actions; current egui interactions replace
+    // the primary selection directly.
     pub fn remove_marker(&mut self, marker_id: Uuid) {
         self.marker_ids.retain(|id| *id != marker_id);
     }

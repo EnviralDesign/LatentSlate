@@ -143,6 +143,9 @@ impl VideoDecodeWorker {
     }
 
     /// Decode a single frame at the requested timestamp (seconds).
+    #[allow(dead_code)]
+    // Synchronous decode is retained for diagnostic and non-UI callers; the egui
+    // preview path currently uses async decode to keep painting responsive.
     pub fn decode(
         &self,
         path: &Path,
@@ -154,6 +157,9 @@ impl VideoDecodeWorker {
     }
 
     /// Decode a single frame using sequential decode when possible.
+    #[allow(dead_code)]
+    // Synchronous sequential decode is retained for future playback-oriented
+    // preview scheduling.
     pub fn decode_sequential(
         &self,
         path: &Path,
@@ -193,6 +199,8 @@ impl VideoDecodeWorker {
         Some(response)
     }
 
+    #[allow(dead_code)]
+    // Shared by the preserved synchronous decode helpers above.
     fn decode_with_mode(
         &self,
         path: &Path,

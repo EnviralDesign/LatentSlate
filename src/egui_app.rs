@@ -29,10 +29,13 @@ use crate::editor::{
     generative_video_duration_label, EditorState,
 };
 use crate::state::{
-    asset_display_name, Asset, AssetKind, Clip, ClipTransform, Project, ProjectSettings,
-    ProviderEntry, TrackType,
+    asset_display_name, Asset, AssetKind, Clip, ClipTransform, ComfyOutputSelector,
+    ComfyWorkflowRef, InputBinding, InputUi, ManifestInput, NodeSelector, Project, ProjectSettings,
+    ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType, ProviderManifest,
+    ProviderOutputType, TrackType,
 };
 use crate::ui_kit as kit;
+use egui_extras::{Size, StripBuilder};
 
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
@@ -68,6 +71,7 @@ const MEDIA_EXTENSIONS: &[&str] = &[
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi"];
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
+const JSON_EXTENSIONS: &[&str] = &["json"];
 const ASSET_IMPORT_FILTERS: &[kit::FileExtensionFilter<'static>] = &[
     kit::FileExtensionFilter {
         name: "Media",
@@ -86,6 +90,13 @@ const ASSET_IMPORT_FILTERS: &[kit::FileExtensionFilter<'static>] = &[
         extensions: AUDIO_EXTENSIONS,
     },
 ];
+const JSON_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExtensionFilter {
+    name: "JSON",
+    extensions: JSON_EXTENSIONS,
+}];
+const PROVIDERS_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
+const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
+const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
 
 fn project_wizard_size(ctx: &Context) -> Vec2 {
     let available = ctx.content_rect().size();
@@ -98,6 +109,16 @@ fn project_wizard_size(ctx: &Context) -> Vec2 {
         PROJECT_WIZARD_SIZE[1]
             .min(max_h)
             .max(PROJECT_WIZARD_MIN_SIZE[1].min(max_h)),
+    )
+}
+
+fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
+    let available = ctx.content_rect().size();
+    let max_w = (available.x - 24.0).max(min[0].min(available.x));
+    let max_h = (available.y - 24.0).max(min[1].min(available.y));
+    Vec2::new(
+        desired[0].min(max_w).max(min[0].min(max_w)),
+        desired[1].min(max_h).max(min[1].min(max_h)),
     )
 }
 
@@ -130,6 +151,7 @@ pub struct NlaEguiApp {
     audio_sample_cache: Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
     audio_decode_in_flight: Arc<Mutex<HashSet<Uuid>>>,
     audio_decode_failures: Arc<Mutex<HashMap<Uuid, String>>>,
+    audio_decode_warmup_pending: bool,
     timeline_drag: Option<TimelineDrag>,
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
@@ -142,6 +164,11 @@ pub struct NlaEguiApp {
     gen_video_fps: f64,
     gen_video_frames: u32,
     selected_provider_file: Option<PathBuf>,
+    provider_json_editor_path: Option<PathBuf>,
+    provider_json_text: String,
+    provider_json_error: Option<String>,
+    provider_builder_open: bool,
+    provider_builder: ProviderBuilderState,
 }
 
 struct AssetThumbnail {
@@ -219,6 +246,59 @@ struct TimelineMarkerGeom {
     hit_rect: Rect,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderBuilderTab {
+    Inputs,
+    Output,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderBuilderState {
+    source_path: Option<PathBuf>,
+    provider_id: Uuid,
+    provider_name: String,
+    output_type: ProviderOutputType,
+    base_url: String,
+    workflow_path: Option<PathBuf>,
+    manifest_path: Option<PathBuf>,
+    workflow_nodes: Vec<crate::core::comfyui_workflow::ComfyWorkflowNode>,
+    workflow_error: Option<String>,
+    workflow_search: String,
+    selected_node_id: Option<String>,
+    output_key: String,
+    output_tag: String,
+    output_node: Option<ProviderOutputNodeDraft>,
+    inputs: Vec<ProviderBuilderInput>,
+    tab: ProviderBuilderTab,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderOutputNodeDraft {
+    class_type: String,
+    title: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderNodeSelectorDraft {
+    class_type: String,
+    input_key: String,
+    title: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderBuilderInput {
+    name: String,
+    label: String,
+    input_type_key: String,
+    required: bool,
+    default_text: String,
+    enum_options: String,
+    tag: String,
+    multiline: bool,
+    selector: ProviderNodeSelectorDraft,
+}
+
 impl NlaEguiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         kit::configure_style(&cc.egui_ctx);
@@ -244,6 +324,7 @@ impl NlaEguiApp {
             audio_sample_cache: Arc::new(Mutex::new(HashMap::new())),
             audio_decode_in_flight: Arc::new(Mutex::new(HashSet::new())),
             audio_decode_failures: Arc::new(Mutex::new(HashMap::new())),
+            audio_decode_warmup_pending: false,
             timeline_drag: None,
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
@@ -255,6 +336,11 @@ impl NlaEguiApp {
             gen_video_fps: default_generative_video_fps(),
             gen_video_frames: default_generative_video_frames(),
             selected_provider_file: None,
+            provider_json_editor_path: None,
+            provider_json_text: String::new(),
+            provider_json_error: None,
+            provider_builder_open: false,
+            provider_builder: ProviderBuilderState::default(),
         }
     }
 
@@ -268,6 +354,7 @@ impl NlaEguiApp {
             self.project_settings = self.editor.project.settings.clone();
             if self.editor.project.project_path != previous_project_path {
                 self.clear_project_runtime_cache();
+                self.warm_audio_playback_cache();
             }
             envelope.respond(response);
         }
@@ -292,6 +379,7 @@ impl NlaEguiApp {
         if let Ok(mut failures) = self.audio_decode_failures.lock() {
             failures.clear();
         }
+        self.audio_decode_warmup_pending = false;
         if let Some(engine) = &self.audio_engine {
             engine.pause();
             engine.set_items(Vec::new());
@@ -308,6 +396,7 @@ impl NlaEguiApp {
             Ok(_) => {
                 self.project_settings = self.editor.project.settings.clone();
                 self.clear_project_runtime_cache();
+                self.warm_audio_playback_cache();
                 true
             }
             Err(err) => {
@@ -320,6 +409,50 @@ impl NlaEguiApp {
     fn keep_automation_responsive(&self, ctx: &Context) {
         if crate::core::automation::is_enabled() {
             ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    fn warm_audio_playback_cache(&mut self) {
+        let Some(engine) = self.audio_engine.as_ref() else {
+            return;
+        };
+        let Some(project_root) = self.editor.project.project_path.clone() else {
+            return;
+        };
+        let targets = audio_decode_targets_for_project(&self.editor.project, &project_root);
+        if targets.is_empty() {
+            return;
+        }
+        let decode_config = AudioDecodeConfig {
+            target_rate: engine.sample_rate(),
+            target_channels: engine.channels(),
+        };
+        schedule_audio_decode_targets(
+            targets,
+            decode_config,
+            Arc::clone(&self.audio_sample_cache),
+            Arc::clone(&self.audio_decode_in_flight),
+            Arc::clone(&self.audio_decode_failures),
+        );
+        self.audio_decode_warmup_pending = true;
+    }
+
+    fn service_audio_decode_warmup(&mut self, ctx: &Context) {
+        if !self.audio_decode_warmup_pending {
+            return;
+        }
+
+        self.refresh_audio_playback_items();
+        let in_flight = self
+            .audio_decode_in_flight
+            .lock()
+            .ok()
+            .map(|in_flight| !in_flight.is_empty())
+            .unwrap_or(false);
+        if in_flight {
+            ctx.request_repaint_after(Duration::from_millis(80));
+        } else {
+            self.audio_decode_warmup_pending = false;
         }
     }
 
@@ -599,11 +732,11 @@ impl NlaEguiApp {
         tiles
     }
 
-    fn top_bar(&mut self, ctx: &Context) {
-        egui::TopBottomPanel::top("top_bar")
-            .exact_height(kit::TOP_BAR_H)
+    fn top_bar(&mut self, root: &mut Ui) {
+        let response = egui::Panel::top("top_bar")
+            .exact_size(kit::TOP_BAR_H)
             .frame(kit::chrome_frame())
-            .show(ctx, |ui| {
+            .show_inside(root, |ui| {
                 ui.horizontal_centered(|ui| {
                     menu_button(
                         ui,
@@ -717,46 +850,44 @@ impl NlaEguiApp {
                         } else {
                             format!("QUE {}", self.editor.generation_queue.len())
                         };
-                        if ui
-                            .add(
-                                egui::Button::new(queue_text)
-                                    .selected(self.editor.overlays.queue || running),
-                            )
-                            .clicked()
+                        if kit::top_bar_text_button(
+                            ui,
+                            &queue_text,
+                            self.editor.overlays.queue || running,
+                        )
+                        .clicked()
                         {
                             self.editor.overlays.queue = !self.editor.overlays.queue;
                         }
-                        ui.label(
-                            RichText::new(self.editor.project_name())
-                                .color(kit::TEXT_MUTED)
-                                .size(12.0),
-                        );
                     });
                 });
             });
+        kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Bottom);
     }
 
-    fn left_panel(&mut self, ctx: &Context) {
+    fn left_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.left_collapsed {
-            egui::SidePanel::left("assets_collapsed")
-                .exact_width(kit::COLLAPSED_RAIL_W)
+            let response = egui::Panel::left("assets_collapsed")
+                .exact_size(kit::COLLAPSED_RAIL_W)
                 .frame(kit::collapsed_dock_frame())
-                .show(ctx, |ui| {
+                .show_inside(root, |ui| {
                     if kit::collapsed_rail_button(ui, "▶").clicked() {
                         self.editor.layout.left_collapsed = false;
                     }
                 });
+            kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Right);
             return;
         }
 
-        egui::SidePanel::left("assets")
+        let response = egui::Panel::left("assets")
             .resizable(true)
-            .default_width(self.editor.layout.left_width)
-            .width_range(180.0..=420.0)
+            .default_size(self.editor.layout.left_width)
+            .size_range(180.0..=420.0)
             .frame(kit::dock_frame())
-            .show(ctx, |ui| {
+            .show_inside(root, |ui| {
                 kit::fixed_panel_body(ui, |ui| self.assets_panel(ui));
             });
+        kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Right);
     }
 
     fn assets_panel(&mut self, ui: &mut Ui) {
@@ -869,27 +1000,29 @@ impl NlaEguiApp {
         }
     }
 
-    fn right_panel(&mut self, ctx: &Context) {
+    fn right_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.right_collapsed {
-            egui::SidePanel::right("attributes_collapsed")
-                .exact_width(kit::COLLAPSED_RAIL_W)
+            let response = egui::Panel::right("attributes_collapsed")
+                .exact_size(kit::COLLAPSED_RAIL_W)
                 .frame(kit::collapsed_dock_frame())
-                .show(ctx, |ui| {
+                .show_inside(root, |ui| {
                     if kit::collapsed_rail_button(ui, "◀").clicked() {
                         self.editor.layout.right_collapsed = false;
                     }
                 });
+            kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Left);
             return;
         }
 
-        egui::SidePanel::right("attributes")
+        let response = egui::Panel::right("attributes")
             .resizable(true)
-            .default_width(self.editor.layout.right_width)
-            .width_range(200.0..=440.0)
+            .default_size(self.editor.layout.right_width)
+            .size_range(200.0..=440.0)
             .frame(kit::dock_frame())
-            .show(ctx, |ui| {
+            .show_inside(root, |ui| {
                 kit::fixed_panel_body(ui, |ui| self.attributes_panel(ui));
             });
+        kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Left);
     }
 
     fn attributes_panel(&mut self, ui: &mut Ui) {
@@ -1136,10 +1269,10 @@ impl NlaEguiApp {
         }
     }
 
-    fn central_preview(&mut self, ctx: &Context) {
+    fn central_preview(&mut self, root: &mut Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(kit::PANEL_SUNKEN))
-            .show(ctx, |ui| {
+            .show_inside(root, |ui| {
                 let header_h = 30.0;
                 let (header_rect, _) = ui
                     .allocate_exact_size(Vec2::new(ui.available_width(), header_h), Sense::hover());
@@ -1166,7 +1299,7 @@ impl NlaEguiApp {
                 ui.painter().text(
                     header_inner.right_center(),
                     egui::Align2::RIGHT_CENTER,
-                    format!("{} x {} @ {:.0}", s.width, s.height, s.fps),
+                    format!("{} x {}", s.width, s.height),
                     FontId::monospace(11.0),
                     kit::TEXT_DIM,
                 );
@@ -1179,27 +1312,21 @@ impl NlaEguiApp {
     }
 
     fn paint_preview(&mut self, ui: &mut Ui, rect: Rect) {
-        ui.painter().rect_filled(rect, 0.0, kit::APP_BG);
-        ui.painter().rect_stroke(
-            rect,
-            0.0,
-            Stroke::new(1.0, kit::BORDER),
-            egui::StrokeKind::Inside,
-        );
+        let painter = ui.painter().with_clip_rect(rect);
         if let (Some(texture), Some(frame)) = (&self.preview_texture, self.preview_frame) {
             let scale = (rect.width() / frame.width as f32)
                 .min(rect.height() / frame.height as f32)
                 .max(0.01);
             let size = Vec2::new(frame.width as f32 * scale, frame.height as f32 * scale);
             let image_rect = Rect::from_center_size(rect.center(), size);
-            ui.painter().image(
+            painter.image(
                 texture.id(),
                 image_rect,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
         } else {
-            ui.painter().text(
+            painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "No preview frame",
@@ -1246,50 +1373,59 @@ impl NlaEguiApp {
         }
     }
 
-    fn timeline_panel(&mut self, ctx: &Context) {
+    fn timeline_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.timeline_collapsed {
-            egui::TopBottomPanel::bottom("timeline")
-                .exact_height(34.0)
+            let response = egui::Panel::bottom("timeline")
+                .exact_size(TIMELINE_HEADER_H + 12.0)
                 .frame(kit::timeline_frame())
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        if kit::secondary_button(ui, "TIMELINE", 94.0).clicked() {
-                            self.editor.layout.timeline_collapsed = false;
-                        }
-                        ui.label(kit::caption(timecode(self.editor.current_time)));
-                    });
+                .show_inside(root, |ui| {
+                    self.timeline_header(ui, true);
                 });
+            kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
             return;
         }
 
-        let response = egui::TopBottomPanel::bottom("timeline")
+        let response = egui::Panel::bottom("timeline")
             .resizable(true)
-            .default_height(self.editor.layout.timeline_height)
-            .height_range(150.0..=420.0)
+            .default_size(self.editor.layout.timeline_height)
+            .size_range(150.0..=420.0)
             .frame(kit::timeline_frame())
-            .show(ctx, |ui| {
+            .show_inside(root, |ui| {
                 ui.set_min_height(150.0);
-                self.timeline_header(ui);
+                self.timeline_header(ui, false);
                 self.paint_timeline(ui);
             });
         self.editor.layout.timeline_height = response.response.rect.height().clamp(150.0, 420.0);
+        kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
     }
 
-    fn timeline_header(&mut self, ui: &mut Ui) {
+    fn timeline_header(&mut self, ui: &mut Ui, collapsed: bool) {
         let duration = self.editor.project.duration().max(10.0);
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
         let viewport_w = (ui.available_width() - TIMELINE_LABEL_W).max(1.0);
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         self.editor.layout.timeline_zoom =
             self.editor.layout.timeline_zoom.clamp(fit_zoom, max_zoom);
+        let zoom = self.editor.layout.timeline_zoom;
+        let zoom_label = if (zoom - fit_zoom).abs() <= 0.5 {
+            "Fit".to_string()
+        } else if (zoom - max_zoom).abs() <= 0.5 {
+            "Frames".to_string()
+        } else {
+            format!("{zoom:.0}px/s")
+        };
+        let timecode_label = timecode(self.editor.current_time);
 
         let header_w = ui.available_width();
         let (header_rect, _) =
             ui.allocate_exact_size(Vec2::new(header_w, TIMELINE_HEADER_H), Sense::hover());
         let inner_rect = header_rect.shrink2(Vec2::new(TIMELINE_HEADER_PAD_X, 0.0));
-        let right_w = TIMELINE_HEADER_RIGHT_W.min(inner_rect.width() * 0.28);
-        let left_w = TIMELINE_HEADER_LEFT_W
-            .min((inner_rect.width() - right_w - TIMELINE_HEADER_CENTER_GAP).max(0.0));
+        let right_w = timeline_header_right_width(ui, &timecode_label)
+            .min(TIMELINE_HEADER_RIGHT_W)
+            .min(inner_rect.width() * 0.35);
+        let left_w = timeline_header_left_width(ui, collapsed, &zoom_label)
+            .min(TIMELINE_HEADER_LEFT_W)
+            .min((inner_rect.width() - right_w - TIMELINE_HEADER_CENTER_GAP * 2.0).max(0.0));
         let left_rect = Rect::from_min_max(
             inner_rect.left_top(),
             Pos2::new(inner_rect.left() + left_w, inner_rect.bottom()),
@@ -1307,7 +1443,8 @@ impl NlaEguiApp {
         let transport_gap = 4.0;
         let transport_w = TIMELINE_TRANSPORT_BUTTON_COUNT * kit::TIMELINE_TRANSPORT_BUTTON_W
             + (TIMELINE_TRANSPORT_BUTTON_COUNT - 1.0) * transport_gap;
-        let transport_rect = centered_child_rect(center_region, transport_w, TIMELINE_HEADER_H);
+        let transport_rect =
+            centered_child_rect(center_region, transport_w, kit::TIMELINE_TRANSPORT_BUTTON_H);
 
         let mut left_ui = ui.new_child(
             egui::UiBuilder::new()
@@ -1318,37 +1455,31 @@ impl NlaEguiApp {
         left_ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(kit::section_label("Timeline"));
-            ui.add_space(8.0);
-            if kit::timeline_tool_icon_button(ui, "−").clicked() {
-                self.set_timeline_zoom_anchored(
-                    self.editor.layout.timeline_zoom * 0.8,
-                    duration,
-                    viewport_w,
-                );
-            }
-            let zoom = self.editor.layout.timeline_zoom;
-            let zoom_label = if (zoom - fit_zoom).abs() <= 0.5 {
-                "Fit".to_string()
-            } else if (zoom - max_zoom).abs() <= 0.5 {
-                "Frames".to_string()
-            } else {
-                format!("{zoom:.0}px/s")
-            };
-            ui.label(kit::caption(zoom_label));
-            if kit::timeline_tool_icon_button(ui, "+").clicked() {
-                self.set_timeline_zoom_anchored(
-                    self.editor.layout.timeline_zoom * 1.25,
-                    duration,
-                    viewport_w,
-                );
-            }
-            let fit_active = (zoom - fit_zoom).abs() <= 0.5;
-            let frames_active = (zoom - max_zoom).abs() <= 0.5;
-            if kit::timeline_tool_text_button(ui, "Fit", 42.0, fit_active).clicked() {
-                self.set_timeline_zoom_anchored(fit_zoom, duration, viewport_w);
-            }
-            if kit::timeline_tool_text_button(ui, "Frames", 58.0, frames_active).clicked() {
-                self.set_timeline_zoom_anchored(max_zoom, duration, viewport_w);
+            if !collapsed {
+                ui.add_space(8.0);
+                if kit::timeline_tool_icon_button(ui, "−").clicked() {
+                    self.set_timeline_zoom_anchored(
+                        self.editor.layout.timeline_zoom * 0.8,
+                        duration,
+                        viewport_w,
+                    );
+                }
+                ui.label(kit::caption(&zoom_label));
+                if kit::timeline_tool_icon_button(ui, "+").clicked() {
+                    self.set_timeline_zoom_anchored(
+                        self.editor.layout.timeline_zoom * 1.25,
+                        duration,
+                        viewport_w,
+                    );
+                }
+                let fit_active = (zoom - fit_zoom).abs() <= 0.5;
+                let frames_active = (zoom - max_zoom).abs() <= 0.5;
+                if kit::timeline_tool_text_button(ui, "Fit", 42.0, fit_active).clicked() {
+                    self.set_timeline_zoom_anchored(fit_zoom, duration, viewport_w);
+                }
+                if kit::timeline_tool_text_button(ui, "Frames", 58.0, frames_active).clicked() {
+                    self.set_timeline_zoom_anchored(max_zoom, duration, viewport_w);
+                }
             }
         });
 
@@ -1360,20 +1491,30 @@ impl NlaEguiApp {
         transport_ui.set_clip_rect(transport_rect);
         transport_ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = transport_gap;
-            if kit::timeline_transport_button(ui, "⏮", false).clicked() {
+            if kit::timeline_transport_icon_button(ui, kit::TimelineTransportIcon::First, false)
+                .clicked()
+            {
                 self.seek_editor(0.0, false);
             }
-            if kit::timeline_transport_button(ui, "◀", false).clicked() {
+            if kit::timeline_transport_icon_button(ui, kit::TimelineTransportIcon::Previous, false)
+                .clicked()
+            {
                 self.seek_editor(
                     previous_frame_time(self.editor.current_time, self.editor.project.settings.fps),
                     false,
                 );
             }
-            let play_icon = if self.editor.is_playing { "⏸" } else { "▶" };
-            if kit::timeline_transport_button(ui, play_icon, true).clicked() {
+            let play_icon = if self.editor.is_playing {
+                kit::TimelineTransportIcon::Pause
+            } else {
+                kit::TimelineTransportIcon::Play
+            };
+            if kit::timeline_transport_icon_button(ui, play_icon, true).clicked() {
                 self.toggle_playback();
             }
-            if kit::timeline_transport_button(ui, "▶", false).clicked() {
+            if kit::timeline_transport_icon_button(ui, kit::TimelineTransportIcon::Next, false)
+                .clicked()
+            {
                 self.seek_editor(
                     next_frame_time(
                         self.editor.current_time,
@@ -1383,7 +1524,9 @@ impl NlaEguiApp {
                     false,
                 );
             }
-            if kit::timeline_transport_button(ui, "⏭", false).clicked() {
+            if kit::timeline_transport_icon_button(ui, kit::TimelineTransportIcon::Last, false)
+                .clicked()
+            {
                 self.seek_editor(self.editor.project.duration(), false);
             }
         });
@@ -1396,17 +1539,24 @@ impl NlaEguiApp {
         right_ui.set_clip_rect(right_rect);
         right_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if kit::timeline_transport_button(ui, "▼", false).clicked() {
-                self.editor.layout.timeline_collapsed = true;
+            let collapse_icon = if collapsed {
+                kit::TimelineTransportIcon::CaretUp
+            } else {
+                kit::TimelineTransportIcon::CaretDown
+            };
+            if kit::timeline_transport_icon_button(ui, collapse_icon, false).clicked() {
+                self.editor.layout.timeline_collapsed = !collapsed;
             }
             ui.label(
-                RichText::new(timecode(self.editor.current_time))
+                RichText::new(timecode_label)
                     .monospace()
                     .color(kit::TEXT_MUTED)
                     .size(11.0),
             );
         });
-        ui.separator();
+        if !collapsed {
+            ui.separator();
+        }
     }
 
     fn paint_timeline(&mut self, ui: &mut Ui) {
@@ -2462,6 +2612,12 @@ impl NlaEguiApp {
         if self.editor.overlays.providers {
             self.providers_modal(ctx);
         }
+        if self.provider_json_editor_path.is_some() {
+            self.provider_json_editor_modal(ctx);
+        }
+        if self.provider_builder_open {
+            self.provider_builder_modal(ctx);
+        }
     }
 
     fn startup_modal(&mut self, ctx: &Context) {
@@ -2796,13 +2952,15 @@ impl NlaEguiApp {
     fn providers_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
+        let modal_size = modal_size(ctx, PROVIDERS_MODAL_SIZE, [620.0, 460.0]);
         kit::modal_scrim(ctx, "providers");
         egui::Window::new("AI Providers (Global)")
             .title_bar(false)
             .order(egui::Order::Foreground)
             .open(&mut open)
             .collapsible(false)
-            .default_size([700.0, 520.0])
+            .resizable(false)
+            .fixed_size(modal_size)
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -2819,70 +2977,16 @@ impl NlaEguiApp {
                             .to_string(),
                     ));
                     ui.add_space(12.0);
-                    ui.columns(2, |columns| {
-                        columns[0].vertical(|ui| {
-                            kit::card_frame().show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    if kit::secondary_button(ui, "New", 84.0).clicked() {
-                                        self.editor.status =
-                                            "Provider builder will be rebuilt in egui.".to_string();
-                                    }
-                                    if kit::secondary_button(ui, "Reload", 84.0).clicked() {
-                                        self.editor.refresh_providers();
-                                    }
-                                });
-                                ui.add_space(10.0);
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    for path in self.editor.provider_files.iter() {
-                                        let summary = provider_file_summary(path);
-                                        let selected =
-                                            self.selected_provider_file.as_ref() == Some(path);
-                                        let response = provider_row(ui, path, &summary, selected);
-                                        if response.clicked() {
-                                            self.selected_provider_file = Some(path.clone());
-                                        }
-                                    }
-                                });
-                            });
+                    StripBuilder::new(ui)
+                        .clip(true)
+                        .size(Size::exact(300.0))
+                        .size(Size::exact(12.0))
+                        .size(Size::remainder().at_least(260.0))
+                        .horizontal(|mut strip| {
+                            strip.cell(|ui| self.provider_list_card(ui));
+                            strip.empty();
+                            strip.cell(|ui| self.provider_editor_choice_card(ui));
                         });
-                        columns[1].vertical(|ui| {
-                            kit::card_frame().show(ui, |ui| {
-                                if let Some(path) = &self.selected_provider_file {
-                                    ui.label(kit::value(
-                                        path.file_name()
-                                            .and_then(|v| v.to_str())
-                                            .unwrap_or("provider.json"),
-                                    ));
-                                    ui.add_space(8.0);
-                                    match std::fs::read_to_string(path) {
-                                        Ok(text) => {
-                                            kit::sunken_frame().show(ui, |ui| {
-                                                egui::ScrollArea::vertical()
-                                                    .max_height(340.0)
-                                                    .show(ui, |ui| {
-                                                        ui.monospace(text);
-                                                    });
-                                            });
-                                        }
-                                        Err(err) => {
-                                            ui.label(
-                                                RichText::new(format!(
-                                                    "Failed to read provider: {err}"
-                                                ))
-                                                .color(kit::MARKER),
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    kit::empty_state(
-                                        ui,
-                                        "Select a provider",
-                                        "Choose a provider from the list to inspect its JSON.",
-                                    );
-                                }
-                            });
-                        });
-                    });
                 });
             });
         if close_clicked || !open {
@@ -2890,30 +2994,853 @@ impl NlaEguiApp {
         }
     }
 
-    fn status_bar(&mut self, ctx: &Context) {
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(kit::STATUS_BAR_H)
-            .frame(kit::chrome_frame())
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+    fn provider_list_card(&mut self, ui: &mut Ui) {
+        let card_h = ui.available_height();
+        kit::card_panel(ui, card_h, |ui| {
+            let mut top_action = None;
+            kit::equal_secondary_button_row(ui, &["New", "Reload"], |index| {
+                top_action = Some(index);
+            });
+            match top_action {
+                Some(0) => self.open_provider_builder(None),
+                Some(1) => self.refresh_provider_files(),
+                _ => {}
+            }
+
+            ui.add_space(kit::FORM_ROW_GAP);
+            let selected = self.selected_provider_file.clone();
+            let provider_files = self.editor.provider_files.clone();
+            let footer_h = if selected.is_some() {
+                kit::ACTION_GAP + kit::SECONDARY_BUTTON_H
+            } else {
+                0.0
+            };
+            let mut next_selection: Option<PathBuf> = None;
+            let mut delete_clicked = false;
+
+            kit::body_with_footer(
+                ui,
+                120.0,
+                footer_h,
+                |ui| {
+                    kit::scroll_body(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                        if provider_files.is_empty() {
+                            kit::empty_state(
+                                ui,
+                                "No providers yet",
+                                "Create a provider or reload the global provider folder.",
+                            );
+                        }
+                        for path in provider_files.iter() {
+                            let summary = provider_file_summary(path);
+                            let selected = self.selected_provider_file.as_ref() == Some(path);
+                            let response = provider_row(ui, path, &summary, selected);
+                            if response.clicked() {
+                                next_selection = Some(path.clone());
+                            }
+                        }
+                    });
+                },
+                |ui| {
+                    if selected.is_some() {
+                        ui.add_space(kit::ACTION_GAP);
+                        if kit::danger_button(ui, "Delete", ui.available_width()).clicked() {
+                            delete_clicked = true;
+                        }
+                    }
+                },
+            );
+
+            if let Some(path) = next_selection {
+                self.selected_provider_file = Some(path);
+            }
+            if delete_clicked {
+                if let Some(path) = selected {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {
+                            self.editor.status = format!("Deleted provider {}", path_label(&path));
+                            self.selected_provider_file = None;
+                            self.refresh_provider_files();
+                        }
+                        Err(err) => {
+                            self.editor.status =
+                                format!("Failed to delete provider {}: {err}", path_label(&path));
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn provider_editor_choice_card(&mut self, ui: &mut Ui) {
+        let card_h = ui.available_height();
+        kit::card_panel(ui, card_h, |ui| {
+            let Some(path) = self.selected_provider_file.clone() else {
+                kit::empty_state(
+                    ui,
+                    "Select a provider",
+                    "Choose a provider from the list to edit it.",
+                );
+                return;
+            };
+
+            if !path.exists() {
+                kit::empty_state(
+                    ui,
+                    "Provider missing",
+                    "Reload the provider list to refresh this selection.",
+                );
+                return;
+            }
+
+            let summary = provider_file_summary(&path);
+            let mut open_builder = false;
+            let mut open_json = false;
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
                     ui.label(
-                        RichText::new(&self.editor.status)
-                            .small()
-                            .color(kit::TEXT_MUTED),
+                        RichText::new(&summary.name)
+                            .color(kit::TEXT)
+                            .strong()
+                            .size(15.0),
                     );
+                    ui.add_space(4.0);
+                    ui.label(kit::caption("Select an editor:"));
+                    ui.add_space(24.0);
+                    if kit::secondary_button(ui, "Edit in Builder", 250.0).clicked() {
+                        open_builder = true;
+                    }
+                    ui.add_space(8.0);
+                    if kit::secondary_button(ui, "Edit as JSON", 250.0).clicked() {
+                        open_json = true;
+                    }
+                });
+            });
+
+            if open_builder {
+                self.open_provider_builder(Some(path.clone()));
+            }
+            if open_json {
+                self.open_provider_json_editor(path);
+            }
+        });
+    }
+
+    fn provider_json_editor_modal(&mut self, ctx: &Context) {
+        let Some(path) = self.provider_json_editor_path.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut save_clicked = false;
+        let size = modal_size(ctx, PROVIDER_JSON_MODAL_SIZE, [680.0, 520.0]);
+
+        kit::modal_scrim(ctx, "provider_json_editor");
+        egui::Window::new("Edit Provider JSON")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let file_name = path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("provider.json");
+                close_clicked =
+                    kit::modal_header_with_close(ui, "Edit Provider JSON", Some(file_name), true);
+                kit::modal_body(ui, |ui| {
+                    if let Some(error) = &self.provider_json_error {
+                        ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+                        ui.add_space(kit::FORM_ROW_GAP);
+                    }
+
+                    kit::body_with_footer(
+                        ui,
+                        320.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| {
+                            let editor_size = ui.available_size();
+                            kit::sunken_frame().show(ui, |ui| {
+                                ui.set_min_size(editor_size);
+                                let edit = egui::TextEdit::multiline(&mut self.provider_json_text)
+                                    .font(FontId::monospace(12.0))
+                                    .desired_width(f32::INFINITY)
+                                    .lock_focus(true)
+                                    .code_editor()
+                                    .frame(egui::Frame::new().fill(Color32::TRANSPARENT));
+                                ui.add_sized(ui.available_size(), edit);
+                            });
+                        },
+                        |ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if kit::primary_button(ui, "Save JSON", 130.0).clicked() {
+                                    save_clicked = true;
+                                }
+                                if kit::secondary_button(ui, "Cancel", 110.0).clicked() {
+                                    close_clicked = true;
+                                }
+                            });
+                        },
+                    );
+                });
+            });
+
+        if save_clicked {
+            self.save_provider_json_editor(&path);
+        }
+        if close_clicked || !open {
+            self.provider_json_editor_path = None;
+            self.provider_json_error = None;
+        }
+    }
+
+    fn refresh_provider_files(&mut self) {
+        self.editor.refresh_providers();
+        if let Some(selected) = &self.selected_provider_file {
+            if !self
+                .editor
+                .provider_files
+                .iter()
+                .any(|path| path == selected)
+            {
+                self.selected_provider_file = None;
+            }
+        }
+    }
+
+    fn open_provider_json_editor(&mut self, path: PathBuf) {
+        self.provider_json_text =
+            crate::core::provider_store::read_provider_file(&path).unwrap_or_default();
+        self.provider_json_error = if self.provider_json_text.is_empty() {
+            Some(format!("Failed to read provider {}", path.display()))
+        } else {
+            None
+        };
+        self.provider_json_editor_path = Some(path);
+    }
+
+    fn save_provider_json_editor(&mut self, path: &Path) {
+        let entry = match serde_json::from_str::<ProviderEntry>(&self.provider_json_text) {
+            Ok(entry) => entry,
+            Err(err) => {
+                self.provider_json_error = Some(format!("Invalid provider JSON: {err}"));
+                return;
+            }
+        };
+        let pretty = match serde_json::to_string_pretty(&entry) {
+            Ok(pretty) => pretty,
+            Err(err) => {
+                self.provider_json_error = Some(format!("Failed to format provider JSON: {err}"));
+                return;
+            }
+        };
+        if let Err(err) = crate::core::provider_store::write_provider_file(path, &pretty) {
+            self.provider_json_error = Some(format!("Failed to save provider: {err}"));
+            return;
+        }
+
+        self.provider_json_text = pretty;
+        self.provider_json_error = None;
+        self.selected_provider_file = Some(path.to_path_buf());
+        self.refresh_provider_files();
+        self.provider_json_editor_path = None;
+        self.editor.status = format!("Saved provider {}", path_label(path));
+    }
+
+    fn open_provider_builder(&mut self, path: Option<PathBuf>) {
+        let mut state = match path.as_ref() {
+            Some(path) => ProviderBuilderState::from_path(path),
+            None => ProviderBuilderState::from_entry(
+                None,
+                crate::core::provider_store::default_provider_entry(),
+            ),
+        };
+        if state.source_path.is_none() {
+            state.source_path = path;
+        }
+        self.provider_builder = state;
+        self.provider_builder_open = true;
+    }
+
+    fn provider_builder_modal(&mut self, ctx: &Context) {
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut save_clicked = false;
+        let size = modal_size(ctx, PROVIDER_BUILDER_MODAL_SIZE, [780.0, 560.0]);
+
+        kit::modal_scrim(ctx, "provider_builder");
+        egui::Window::new("Provider Builder")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Provider Builder (ComfyUI)",
+                    Some(if self.provider_builder.source_path.is_some() {
+                        "Mode: Edit"
+                    } else {
+                        "Mode: New"
+                    }),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    self.provider_builder_topbar(ui);
+                    self.provider_builder_errors(ui);
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    self.provider_builder_tabs(ui);
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    kit::body_with_footer(
+                        ui,
+                        360.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| self.provider_builder_columns(ui),
+                        |ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if kit::primary_button(ui, "Save Provider", 150.0).clicked() {
+                                    save_clicked = true;
+                                }
+                                if kit::secondary_button(ui, "Cancel", 110.0).clicked() {
+                                    close_clicked = true;
+                                }
+                            });
+                        },
+                    );
+                });
+            });
+
+        if save_clicked {
+            self.save_provider_builder();
+        }
+        if close_clicked || !open {
+            self.provider_builder_open = false;
+            self.provider_builder.error = None;
+            self.provider_builder.workflow_error = None;
+        }
+    }
+
+    fn provider_builder_topbar(&mut self, ui: &mut Ui) {
+        let workflow_display = self
+            .provider_builder
+            .workflow_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "No workflow selected".to_string());
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [(ui.available_width() - 160.0).max(80.0), 18.0],
+                egui::Label::new(kit::caption(workflow_display)).truncate(),
+            );
+            if kit::secondary_button(ui, "Choose Workflow...", 148.0).clicked() {
+                let initial = self
+                    .provider_builder
+                    .workflow_path
+                    .as_ref()
+                    .and_then(|path| path.parent().map(Path::to_path_buf))
+                    .or_else(|| crate::core::paths::resource_dir("workflows"));
+                let mut options = kit::BrowseFileOptions::new()
+                    .id_salt("provider_builder_workflow")
+                    .filters(JSON_FILE_FILTERS)
+                    .remember_last_dir();
+                if let Some(initial) = initial.as_deref() {
+                    options = options.initial_dir(initial);
+                }
+                if let Some(path) = kit::pick_file_dialog(ui, options) {
+                    self.set_provider_builder_workflow(path);
+                }
+            }
+        });
+    }
+
+    fn provider_builder_errors(&mut self, ui: &mut Ui) {
+        if let Some(error) = &self.provider_builder.workflow_error {
+            ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+        }
+        if let Some(error) = &self.provider_builder.error {
+            ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+        }
+    }
+
+    fn provider_builder_tabs(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let inputs_active = self.provider_builder.tab == ProviderBuilderTab::Inputs;
+            if kit::timeline_tool_text_button(ui, "Inputs", 74.0, inputs_active).clicked() {
+                self.provider_builder.tab = ProviderBuilderTab::Inputs;
+            }
+            if kit::timeline_tool_text_button(ui, "Output", 74.0, !inputs_active).clicked() {
+                self.provider_builder.tab = ProviderBuilderTab::Output;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(kit::caption(self.provider_builder.output_status_label()));
+            });
+        });
+    }
+
+    fn provider_builder_columns(&mut self, ui: &mut Ui) {
+        kit::fixed_panel_body(ui, |ui| {
+            StripBuilder::new(ui)
+                .clip(true)
+                .size(Size::exact(280.0))
+                .size(Size::exact(12.0))
+                .size(Size::exact(230.0))
+                .size(Size::exact(12.0))
+                .size(Size::remainder().at_least(260.0))
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| self.provider_builder_node_list(ui));
+                    strip.empty();
+                    strip.cell(|ui| self.provider_builder_node_details(ui));
+                    strip.empty();
+                    strip.cell(|ui| self.provider_builder_settings(ui));
+                });
+        });
+    }
+
+    fn provider_builder_node_list(&mut self, ui: &mut Ui) {
+        kit::card_panel(ui, ui.available_height(), |ui| {
+            kit::singleline_text_field(
+                ui,
+                &mut self.provider_builder.workflow_search,
+                ui.available_width(),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+            let filtered = self.provider_builder.filtered_nodes();
+            kit::scroll_body(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                if filtered.is_empty() {
+                    kit::empty_state(
+                        ui,
+                        if self.provider_builder.workflow_nodes.is_empty() {
+                            "No workflow nodes"
+                        } else {
+                            "No matching nodes"
+                        },
+                        "Choose a workflow or adjust the search.",
+                    );
+                }
+                for node in filtered {
+                    let selected = self
+                        .provider_builder
+                        .selected_node_id
+                        .as_ref()
+                        .is_some_and(|id| id == &node.id);
+                    let response = workflow_node_row(ui, &node, selected);
+                    if response.clicked() {
+                        self.provider_builder.selected_node_id = Some(node.id);
+                    }
+                }
+            });
+        });
+    }
+
+    fn provider_builder_node_details(&mut self, ui: &mut Ui) {
+        kit::card_panel(ui, ui.available_height(), |ui| {
+            let selected_node = self.provider_builder.selected_node();
+            let Some(node) = selected_node else {
+                kit::empty_state(
+                    ui,
+                    "Select a node",
+                    if self.provider_builder.tab == ProviderBuilderTab::Inputs {
+                        "Expose workflow inputs from the selected node."
+                    } else {
+                        "Use the selected node as the output source."
+                    },
+                );
+                return;
+            };
+
+            ui.label(kit::value(
+                node.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+            ));
+            ui.label(kit::caption(format!("Class: {}", node.class_type)));
+            ui.label(kit::caption(format!("Node ID: {}", node.id)));
+            ui.add_space(kit::ACTION_GAP);
+
+            match self.provider_builder.tab {
+                ProviderBuilderTab::Inputs => {
+                    kit::field_label(ui, "Inputs");
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    if node.inputs.is_empty() {
+                        ui.label(kit::caption("No inputs found on this node."));
+                    }
+                    let mut expose_key: Option<String> = None;
+                    for input_key in node.inputs.iter() {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [(ui.available_width() - 76.0).max(60.0), 18.0],
+                                egui::Label::new(kit::body(input_key)).truncate(),
+                            );
+                            if kit::field_button(ui, "Expose", 68.0).clicked() {
+                                expose_key = Some(input_key.clone());
+                            }
+                        });
+                    }
+                    if let Some(input_key) = expose_key {
+                        self.expose_provider_builder_input(&node, &input_key);
+                    }
+                }
+                ProviderBuilderTab::Output => {
+                    kit::field_label(ui, "Output Node");
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    if kit::secondary_button(ui, "Use as Output", ui.available_width()).clicked() {
+                        self.provider_builder.output_node = Some(ProviderOutputNodeDraft {
+                            class_type: node.class_type,
+                            title: node.title,
+                        });
+                        self.provider_builder.error = None;
+                    }
+                }
+            }
+        });
+    }
+
+    fn provider_builder_settings(&mut self, ui: &mut Ui) {
+        kit::scroll_body(ui, |ui| {
+            kit::card_frame().show(ui, |ui| {
+                kit::field_label(ui, "Provider Settings");
+                ui.add_space(kit::FORM_ROW_GAP);
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::remainder().at_least(180.0))
+                    .size(Size::exact(kit::FORM_ROW_GAP))
+                    .size(Size::exact(120.0))
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| {
+                            kit::labeled_text_field(
+                                ui,
+                                "Name",
+                                &mut self.provider_builder.provider_name,
+                            );
+                        });
+                        strip.empty();
+                        strip.cell(|ui| {
+                            provider_output_type_field(
+                                ui,
+                                "Type",
+                                &mut self.provider_builder.output_type,
+                            );
+                        });
+                    });
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
+                ui.add_space(kit::FORM_ROW_GAP);
+
+                let workflow_display = self.provider_builder.workflow_path_display();
+                let workflow_initial = self
+                    .provider_builder
+                    .workflow_path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .or_else(|| {
+                        self.provider_builder
+                            .source_path
+                            .as_deref()
+                            .and_then(Path::parent)
+                    });
+                let mut workflow_options = kit::BrowseFileOptions::new()
+                    .id_salt("provider_builder_workflow_field")
+                    .filters(JSON_FILE_FILTERS)
+                    .remember_last_dir();
+                if let Some(initial) = workflow_initial {
+                    workflow_options = workflow_options.initial_dir(initial);
+                }
+                if let Some(path) = kit::labeled_browse_file_field(
+                    ui,
+                    "Workflow",
+                    workflow_display,
+                    workflow_options,
+                ) {
+                    self.set_provider_builder_workflow(path);
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
+
+                let manifest_display = self.provider_builder.manifest_path_display();
+                let manifest_initial = self
+                    .provider_builder
+                    .manifest_path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .or_else(|| {
+                        self.provider_builder
+                            .workflow_path
+                            .as_deref()
+                            .and_then(Path::parent)
+                    });
+                let mut manifest_options = kit::BrowseFileOptions::new()
+                    .id_salt("provider_builder_manifest_field")
+                    .filters(JSON_FILE_FILTERS)
+                    .remember_last_dir();
+                if let Some(initial) = manifest_initial {
+                    manifest_options = manifest_options.initial_dir(initial);
+                }
+                if let Some(path) = kit::labeled_browse_file_field(
+                    ui,
+                    "Manifest",
+                    manifest_display,
+                    manifest_options,
+                ) {
+                    self.set_provider_builder_manifest(path);
+                }
+            });
+
+            ui.add_space(kit::ACTION_GAP);
+            match self.provider_builder.tab {
+                ProviderBuilderTab::Inputs => self.provider_builder_inputs_editor(ui),
+                ProviderBuilderTab::Output => self.provider_builder_output_editor(ui),
+            }
+        });
+    }
+
+    fn provider_builder_inputs_editor(&mut self, ui: &mut Ui) {
+        kit::card_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                kit::field_label(
+                    ui,
+                    &format!("Exposed Inputs ({})", self.provider_builder.inputs.len()),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::field_button(ui, "Add Input", 86.0).clicked() {
+                        self.provider_builder
+                            .inputs
+                            .push(ProviderBuilderInput::blank());
+                    }
+                });
+            });
+            ui.add_space(kit::FORM_ROW_GAP);
+            if self.provider_builder.inputs.is_empty() {
+                ui.label(kit::caption(
+                    "No inputs exposed. Select a workflow node and expose its inputs.",
+                ));
+                return;
+            }
+
+            let mut action = None;
+            let len = self.provider_builder.inputs.len();
+            for index in 0..len {
+                if index > 0 {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
+                provider_builder_input_editor(
+                    ui,
+                    index,
+                    len,
+                    &mut self.provider_builder.inputs[index],
+                    &mut action,
+                );
+            }
+            if let Some(action) = action {
+                self.apply_provider_input_action(action);
+            }
+        });
+    }
+
+    fn provider_builder_output_editor(&mut self, ui: &mut Ui) {
+        kit::card_frame().show(ui, |ui| {
+            kit::field_label(ui, "Output Configuration");
+            ui.add_space(kit::FORM_ROW_GAP);
+            let output_label = self
+                .provider_builder
+                .output_node
+                .as_ref()
+                .map(|node| {
+                    node.title
+                        .clone()
+                        .unwrap_or_else(|| node.class_type.clone())
+                })
+                .unwrap_or_else(|| "No output node selected".to_string());
+            ui.label(kit::caption(format!("Node: {output_label}")));
+            ui.add_space(kit::FORM_ROW_GAP);
+            StripBuilder::new(ui)
+                .clip(true)
+                .size(Size::remainder().at_least(120.0))
+                .size(Size::exact(kit::FORM_ROW_GAP))
+                .size(Size::remainder().at_least(120.0))
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        kit::labeled_text_field(
+                            ui,
+                            "Output Key",
+                            &mut self.provider_builder.output_key,
+                        );
+                    });
+                    strip.empty();
+                    strip.cell(|ui| {
+                        kit::labeled_text_field(
+                            ui,
+                            "Output Tag",
+                            &mut self.provider_builder.output_tag,
+                        );
+                    });
+                });
+        });
+    }
+
+    fn set_provider_builder_workflow(&mut self, path: PathBuf) {
+        match load_workflow_nodes_resolved(&path) {
+            Ok(nodes) => {
+                self.provider_builder.workflow_path = Some(path);
+                self.provider_builder.workflow_nodes = nodes;
+                self.provider_builder.workflow_error = None;
+                self.provider_builder.selected_node_id = None;
+            }
+            Err(err) => {
+                self.provider_builder.workflow_path = Some(path);
+                self.provider_builder.workflow_nodes.clear();
+                self.provider_builder.workflow_error = Some(err);
+                self.provider_builder.selected_node_id = None;
+            }
+        }
+    }
+
+    fn set_provider_builder_manifest(&mut self, path: PathBuf) {
+        match load_provider_manifest_resolved(&path) {
+            Ok(manifest) => {
+                self.provider_builder.apply_manifest(manifest);
+                self.provider_builder.manifest_path = Some(path);
+                self.provider_builder.error = None;
+                if let Some(workflow_path) = self.provider_builder.workflow_path.clone() {
+                    match load_workflow_nodes_resolved(&workflow_path) {
+                        Ok(nodes) => {
+                            self.provider_builder.workflow_nodes = nodes;
+                            self.provider_builder.workflow_error = None;
+                            self.provider_builder.selected_node_id = None;
+                        }
+                        Err(err) => {
+                            self.provider_builder.workflow_nodes.clear();
+                            self.provider_builder.workflow_error = Some(err);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                self.provider_builder.manifest_path = Some(path);
+                self.provider_builder.error = Some(err);
+            }
+        }
+    }
+
+    fn expose_provider_builder_input(
+        &mut self,
+        node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+        input_key: &str,
+    ) {
+        if self
+            .provider_builder
+            .inputs
+            .iter()
+            .any(|input| input.name == input_key)
+        {
+            self.provider_builder.error = Some("Input already exposed.".to_string());
+            return;
+        }
+        self.provider_builder
+            .inputs
+            .push(ProviderBuilderInput::from_node(node, input_key));
+        self.provider_builder.error = None;
+    }
+
+    fn apply_provider_input_action(&mut self, action: ProviderInputAction) {
+        match action {
+            ProviderInputAction::MoveUp(index) => {
+                if index > 0 && index < self.provider_builder.inputs.len() {
+                    self.provider_builder.inputs.swap(index - 1, index);
+                }
+            }
+            ProviderInputAction::MoveDown(index) => {
+                if index + 1 < self.provider_builder.inputs.len() {
+                    self.provider_builder.inputs.swap(index, index + 1);
+                }
+            }
+            ProviderInputAction::Delete(index) => {
+                if index < self.provider_builder.inputs.len() {
+                    self.provider_builder.inputs.remove(index);
+                }
+            }
+        }
+    }
+
+    fn save_provider_builder(&mut self) {
+        let save = match self.provider_builder.build_save_payload() {
+            Ok(save) => save,
+            Err(err) => {
+                self.provider_builder.error = Some(err);
+                return;
+            }
+        };
+
+        let manifest_json = match serde_json::to_string_pretty(&save.manifest) {
+            Ok(json) => json,
+            Err(err) => {
+                self.provider_builder.error = Some(format!("Failed to serialize manifest: {err}"));
+                return;
+            }
+        };
+        if let Some(parent) = save.manifest_path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                self.provider_builder.error =
+                    Some(format!("Failed to create manifest folder: {err}"));
+                return;
+            }
+        }
+        if let Err(err) = std::fs::write(&save.manifest_path, manifest_json) {
+            self.provider_builder.error = Some(format!("Failed to write manifest: {err}"));
+            return;
+        }
+
+        let provider_json = match serde_json::to_string_pretty(&save.entry) {
+            Ok(json) => json,
+            Err(err) => {
+                self.provider_builder.error = Some(format!("Failed to serialize provider: {err}"));
+                return;
+            }
+        };
+        if let Err(err) =
+            crate::core::provider_store::write_provider_file(&save.provider_path, &provider_json)
+        {
+            self.provider_builder.error = Some(format!("Failed to save provider: {err}"));
+            return;
+        }
+
+        self.provider_builder.source_path = Some(save.provider_path.clone());
+        self.provider_builder.manifest_path = Some(save.manifest_path);
+        self.provider_builder.error = None;
+        self.selected_provider_file = Some(save.provider_path.clone());
+        self.refresh_provider_files();
+        self.provider_builder_open = false;
+        self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
+    }
+
+    fn status_bar(&mut self, root: &mut Ui) {
+        let response = egui::Panel::bottom("status")
+            .exact_size(kit::STATUS_BAR_H)
+            .frame(kit::chrome_frame())
+            .show_inside(root, |ui| {
+                ui.horizontal(|ui| {
+                    let status_text = if self.editor.project.project_path.is_some() {
+                        format!("{} ({})", self.editor.status, self.editor.project_name())
+                    } else {
+                        self.editor.status.clone()
+                    };
+                    ui.label(RichText::new(status_text).small().color(kit::TEXT_MUTED));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
-                            RichText::new(format!(
-                                "{:.0} fps   {}",
-                                self.editor.project.settings.fps,
-                                timecode(self.editor.current_time)
-                            ))
-                            .small()
-                            .color(kit::TEXT_MUTED),
+                            RichText::new(format!("{:.0} fps", self.editor.project.settings.fps))
+                                .small()
+                                .color(kit::TEXT_MUTED),
                         );
                     });
                 });
             });
+        kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
     }
 }
 
@@ -2925,15 +3852,16 @@ impl eframe::App for NlaEguiApp {
         self.tick_playback(&ctx);
         self.update_preview_texture(&ctx);
 
-        self.top_bar(&ctx);
+        self.top_bar(ui);
         // App-wide bars claim root space first; docked editor panels sit above the status bar.
-        self.status_bar(&ctx);
-        self.left_panel(&ctx);
-        self.right_panel(&ctx);
-        self.timeline_panel(&ctx);
-        self.central_preview(&ctx);
+        self.status_bar(ui);
+        self.left_panel(ui);
+        self.right_panel(ui);
+        self.timeline_panel(ui);
+        self.central_preview(ui);
 
         self.modals(&ctx);
+        self.service_audio_decode_warmup(&ctx);
     }
 }
 
@@ -2943,7 +3871,7 @@ fn menu_button(
     add_contents: impl FnOnce(&mut Ui, &mut NlaEguiApp),
     app: &mut NlaEguiApp,
 ) {
-    ui.menu_button(kit::menu_text(label), |ui| add_contents(ui, app));
+    kit::top_bar_menu_button(ui, label, |ui| add_contents(ui, app));
 }
 
 const ADD_ASSETS_CARD_H: f32 = kit::SECTION_PAD as f32 * 2.0
@@ -3010,6 +3938,40 @@ fn centered_child_rect(parent: Rect, width: f32, height: f32) -> Rect {
     let left = (parent.center().x - size.x * 0.5).clamp(parent.left(), parent.right() - size.x);
     let top = (parent.center().y - size.y * 0.5).clamp(parent.top(), parent.bottom() - size.y);
     Rect::from_min_size(Pos2::new(left, top), size)
+}
+
+fn timeline_header_left_width(ui: &Ui, collapsed: bool, zoom_label: &str) -> f32 {
+    let title_w = measured_text_width(ui, "TIMELINE", FontId::proportional(10.5));
+    if collapsed {
+        return title_w + 12.0;
+    }
+
+    title_w
+        + 8.0
+        + kit::TIMELINE_TOOL_ICON_W
+        + 4.0
+        + measured_text_width(ui, zoom_label, FontId::proportional(11.0)).max(26.0)
+        + 4.0
+        + kit::TIMELINE_TOOL_ICON_W
+        + 4.0
+        + 42.0
+        + 4.0
+        + 58.0
+        + 8.0
+}
+
+fn timeline_header_right_width(ui: &Ui, timecode_label: &str) -> f32 {
+    measured_text_width(ui, timecode_label, FontId::monospace(11.0))
+        + 8.0
+        + kit::TIMELINE_TRANSPORT_BUTTON_W
+        + 8.0
+}
+
+fn measured_text_width(ui: &Ui, text: &str, font_id: FontId) -> f32 {
+    egui::WidgetText::from(text.to_string())
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font_id)
+        .size()
+        .x
 }
 
 fn timeline_snapping_enabled(ui: &Ui) -> bool {
@@ -3773,9 +4735,460 @@ fn load_thumbnail_image(path: &Path) -> Option<(ColorImage, Vec2)> {
     Some((color_image, display_size))
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ProviderInputAction {
+    MoveUp(usize),
+    MoveDown(usize),
+    Delete(usize),
+}
+
+struct ProviderBuilderSave {
+    entry: ProviderEntry,
+    manifest: ProviderManifest,
+    provider_path: PathBuf,
+    manifest_path: PathBuf,
+}
+
+impl Default for ProviderBuilderState {
+    fn default() -> Self {
+        Self::from_entry(None, crate::core::provider_store::default_provider_entry())
+    }
+}
+
+impl ProviderBuilderState {
+    fn from_path(path: &Path) -> Self {
+        let Some(json) = crate::core::provider_store::read_provider_file(path) else {
+            let mut state = Self::default();
+            state.source_path = Some(path.to_path_buf());
+            state.error = Some(format!("Failed to read provider {}", path.display()));
+            return state;
+        };
+        match serde_json::from_str::<ProviderEntry>(&json) {
+            Ok(entry) => Self::from_entry(Some(path.to_path_buf()), entry),
+            Err(err) => {
+                let mut state = Self::default();
+                state.source_path = Some(path.to_path_buf());
+                state.error = Some(format!("Failed to parse provider JSON: {err}"));
+                state
+            }
+        }
+    }
+
+    fn from_entry(source_path: Option<PathBuf>, entry: ProviderEntry) -> Self {
+        let (base_url, workflow_path, manifest_path) = match &entry.connection {
+            ProviderConnection::ComfyUi {
+                base_url,
+                workflow_path,
+                manifest_path,
+            } => (
+                base_url.clone(),
+                workflow_path.as_ref().map(PathBuf::from),
+                manifest_path.as_ref().map(PathBuf::from),
+            ),
+            ProviderConnection::CustomHttp { base_url, .. } => (base_url.clone(), None, None),
+        };
+
+        let (workflow_nodes, workflow_error) = workflow_path
+            .as_ref()
+            .map(|path| match load_workflow_nodes_resolved(path) {
+                Ok(nodes) => (nodes, None),
+                Err(err) => (Vec::new(), Some(err)),
+            })
+            .unwrap_or_else(|| (Vec::new(), None));
+
+        let mut state = Self {
+            source_path,
+            provider_id: entry.id,
+            provider_name: entry.name.clone(),
+            output_type: entry.output_type,
+            base_url,
+            workflow_path,
+            manifest_path: manifest_path.clone(),
+            workflow_nodes,
+            workflow_error,
+            workflow_search: String::new(),
+            selected_node_id: None,
+            output_key: default_output_key(entry.output_type).to_string(),
+            output_tag: String::new(),
+            output_node: None,
+            inputs: entry
+                .inputs
+                .iter()
+                .map(ProviderBuilderInput::from_provider_input)
+                .collect(),
+            tab: ProviderBuilderTab::Inputs,
+            error: None,
+        };
+
+        if let Some(path) = manifest_path {
+            match load_provider_manifest_resolved(&path) {
+                Ok(manifest) => state.apply_manifest(manifest),
+                Err(err) => state.error = Some(err),
+            }
+        }
+        if state.workflow_nodes.is_empty() {
+            if let Some(path) = state.workflow_path.as_ref() {
+                match load_workflow_nodes_resolved(path) {
+                    Ok(nodes) => {
+                        state.workflow_nodes = nodes;
+                        state.workflow_error = None;
+                    }
+                    Err(err) => state.workflow_error = Some(err),
+                }
+            }
+        }
+        state
+    }
+
+    fn filtered_nodes(&self) -> Vec<crate::core::comfyui_workflow::ComfyWorkflowNode> {
+        let query = self.workflow_search.trim().to_lowercase();
+        if query.is_empty() {
+            return self.workflow_nodes.clone();
+        }
+        self.workflow_nodes
+            .iter()
+            .filter(|node| {
+                node.id.to_lowercase().contains(&query)
+                    || node.class_type.to_lowercase().contains(&query)
+                    || node
+                        .title
+                        .as_ref()
+                        .is_some_and(|title| title.to_lowercase().contains(&query))
+                    || node
+                        .inputs
+                        .iter()
+                        .any(|input| input.to_lowercase().contains(&query))
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn selected_node(&self) -> Option<crate::core::comfyui_workflow::ComfyWorkflowNode> {
+        let selected_id = self.selected_node_id.as_ref()?;
+        self.workflow_nodes
+            .iter()
+            .find(|node| &node.id == selected_id)
+            .cloned()
+    }
+
+    fn apply_manifest(&mut self, manifest: ProviderManifest) {
+        match manifest {
+            ProviderManifest::ComfyUi {
+                name,
+                output_type,
+                workflow,
+                inputs,
+                output,
+                ..
+            } => {
+                if let Some(name) = name {
+                    self.provider_name = name;
+                }
+                self.output_type = output_type;
+                self.workflow_path = Some(PathBuf::from(workflow.workflow_path));
+                self.output_key = if output.selector.input_key.trim().is_empty() {
+                    default_output_key(output_type).to_string()
+                } else {
+                    output.selector.input_key
+                };
+                self.output_tag = output.selector.tag.unwrap_or_default();
+                self.output_node = Some(ProviderOutputNodeDraft {
+                    class_type: output.selector.class_type,
+                    title: output.selector.title,
+                });
+                self.inputs = inputs
+                    .into_iter()
+                    .map(ProviderBuilderInput::from_manifest_input)
+                    .collect();
+            }
+            ProviderManifest::CustomHttp {
+                name,
+                output_type,
+                inputs,
+                ..
+            } => {
+                if let Some(name) = name {
+                    self.provider_name = name;
+                }
+                self.output_type = output_type;
+                self.inputs = inputs
+                    .into_iter()
+                    .map(ProviderBuilderInput::from_custom_http_input)
+                    .collect();
+                self.error = Some(
+                    "Loaded a Custom HTTP manifest. Saving from this builder writes ComfyUI settings."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    fn output_status_label(&self) -> String {
+        self.output_node
+            .as_ref()
+            .map(|node| {
+                format!(
+                    "Output: {} ({})",
+                    node.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+                    node.class_type
+                )
+            })
+            .unwrap_or_else(|| "Output: Not set".to_string())
+    }
+
+    fn workflow_path_display(&self) -> String {
+        self.workflow_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "Choose a workflow JSON".to_string())
+    }
+
+    fn manifest_path_display(&self) -> String {
+        self.manifest_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| {
+                self.workflow_path
+                    .as_ref()
+                    .map(|path| derive_manifest_path(path).display().to_string())
+                    .unwrap_or_else(|| "Derived from workflow on save".to_string())
+            })
+    }
+
+    fn build_save_payload(&self) -> Result<ProviderBuilderSave, String> {
+        let workflow_path = self
+            .workflow_path
+            .clone()
+            .ok_or_else(|| "Select a workflow first.".to_string())?;
+        let provider_name = self.provider_name.trim();
+        if provider_name.is_empty() {
+            return Err("Provider name is required.".to_string());
+        }
+        let base_url = self.base_url.trim();
+        if base_url.is_empty() {
+            return Err("Base URL is required.".to_string());
+        }
+        let output_node = self
+            .output_node
+            .clone()
+            .ok_or_else(|| "Select an output node.".to_string())?;
+        let output_key = self.output_key.trim();
+        if output_key.is_empty() {
+            return Err("Output key is required.".to_string());
+        }
+
+        let mut manifest_inputs = Vec::new();
+        let mut provider_inputs = Vec::new();
+        for input in &self.inputs {
+            let input_type = parse_provider_input_type(input)?;
+            let default = parse_provider_default_value(&input_type, &input.default_text)?;
+            let tag = input.tag.trim();
+            let selector = NodeSelector {
+                tag: if tag.is_empty() {
+                    None
+                } else {
+                    Some(tag.to_string())
+                },
+                class_type: input.selector.class_type.clone(),
+                input_key: input.selector.input_key.clone(),
+                title: input.selector.title.clone(),
+            };
+            if selector.class_type.trim().is_empty() || selector.input_key.trim().is_empty() {
+                return Err(format!(
+                    "Input '{}' needs a workflow binding. Select a node and expose the input again.",
+                    input.name
+                ));
+            }
+
+            let input_ui = build_provider_input_ui(input);
+            manifest_inputs.push(ManifestInput {
+                name: input.name.clone(),
+                label: input.label.clone(),
+                input_type: input_type.clone(),
+                required: input.required,
+                default: default.clone(),
+                ui: input_ui.clone(),
+                bind: InputBinding {
+                    selector,
+                    transform: None,
+                },
+            });
+            provider_inputs.push(ProviderInputField {
+                name: input.name.clone(),
+                label: input.label.clone(),
+                input_type,
+                required: input.required,
+                default,
+                ui: input_ui,
+            });
+        }
+
+        let output_tag = self.output_tag.trim();
+        let output_selector = NodeSelector {
+            tag: if output_tag.is_empty() {
+                None
+            } else {
+                Some(output_tag.to_string())
+            },
+            class_type: output_node.class_type,
+            input_key: output_key.to_string(),
+            title: output_node.title,
+        };
+
+        let manifest_path = self
+            .manifest_path
+            .clone()
+            .unwrap_or_else(|| derive_manifest_path(&workflow_path));
+        let provider_path = self.source_path.clone().unwrap_or_else(|| {
+            crate::core::provider_store::provider_path_for_entry(&ProviderEntry {
+                id: self.provider_id,
+                name: provider_name.to_string(),
+                output_type: self.output_type,
+                inputs: Vec::new(),
+                connection: ProviderConnection::ComfyUi {
+                    base_url: base_url.to_string(),
+                    workflow_path: Some(workflow_path.display().to_string()),
+                    manifest_path: Some(manifest_path.display().to_string()),
+                },
+            })
+        });
+
+        let workflow_path_string = workflow_path.display().to_string();
+        let manifest_path_string = manifest_path.display().to_string();
+        let manifest = ProviderManifest::ComfyUi {
+            schema_version: 1,
+            name: Some(provider_name.to_string()),
+            output_type: self.output_type,
+            workflow: ComfyWorkflowRef {
+                workflow_path: workflow_path_string.clone(),
+                workflow_hash: None,
+            },
+            inputs: manifest_inputs,
+            output: ComfyOutputSelector {
+                selector: output_selector,
+                index: None,
+            },
+        };
+        let entry = ProviderEntry {
+            id: self.provider_id,
+            name: provider_name.to_string(),
+            output_type: self.output_type,
+            inputs: provider_inputs,
+            connection: ProviderConnection::ComfyUi {
+                base_url: base_url.to_string(),
+                workflow_path: Some(workflow_path_string),
+                manifest_path: Some(manifest_path_string),
+            },
+        };
+
+        Ok(ProviderBuilderSave {
+            entry,
+            manifest,
+            provider_path,
+            manifest_path,
+        })
+    }
+}
+
+impl ProviderBuilderInput {
+    fn blank() -> Self {
+        Self {
+            name: "input".to_string(),
+            label: "Input".to_string(),
+            input_type_key: "text".to_string(),
+            required: false,
+            default_text: String::new(),
+            enum_options: String::new(),
+            tag: String::new(),
+            multiline: false,
+            selector: ProviderNodeSelectorDraft {
+                class_type: String::new(),
+                input_key: String::new(),
+                title: None,
+            },
+        }
+    }
+
+    fn from_node(node: &crate::core::comfyui_workflow::ComfyWorkflowNode, input_key: &str) -> Self {
+        Self {
+            name: input_key.to_string(),
+            label: friendly_provider_label(input_key),
+            input_type_key: "text".to_string(),
+            required: false,
+            default_text: String::new(),
+            enum_options: String::new(),
+            tag: String::new(),
+            multiline: false,
+            selector: ProviderNodeSelectorDraft {
+                class_type: node.class_type.clone(),
+                input_key: input_key.to_string(),
+                title: node.title.clone(),
+            },
+        }
+    }
+
+    fn from_provider_input(input: &ProviderInputField) -> Self {
+        let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
+        Self {
+            name: input.name.clone(),
+            label: input.label.clone(),
+            input_type_key,
+            required: input.required,
+            default_text: default_value_to_text(input.default.as_ref()),
+            enum_options,
+            tag: String::new(),
+            multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
+            selector: ProviderNodeSelectorDraft {
+                class_type: String::new(),
+                input_key: input.name.clone(),
+                title: None,
+            },
+        }
+    }
+
+    fn from_manifest_input(input: ManifestInput) -> Self {
+        let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
+        Self {
+            name: input.name,
+            label: input.label,
+            input_type_key,
+            required: input.required,
+            default_text: default_value_to_text(input.default.as_ref()),
+            enum_options,
+            tag: input.bind.selector.tag.unwrap_or_default(),
+            multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
+            selector: ProviderNodeSelectorDraft {
+                class_type: input.bind.selector.class_type,
+                input_key: input.bind.selector.input_key,
+                title: input.bind.selector.title,
+            },
+        }
+    }
+
+    fn from_custom_http_input(input: crate::state::CustomHttpInput) -> Self {
+        let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
+        Self {
+            name: input.name,
+            label: input.label,
+            input_type_key,
+            required: input.required,
+            default_text: default_value_to_text(input.default.as_ref()),
+            enum_options,
+            tag: String::new(),
+            multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
+            selector: ProviderNodeSelectorDraft {
+                class_type: String::new(),
+                input_key: String::new(),
+                title: None,
+            },
+        }
+    }
+}
+
 struct ProviderFileSummary {
     name: String,
     subtitle: String,
+    output_type: Option<ProviderOutputType>,
 }
 
 fn provider_row(
@@ -3784,12 +5197,33 @@ fn provider_row(
     summary: &ProviderFileSummary,
     selected: bool,
 ) -> egui::Response {
-    kit::draw_accent_row(ui, 52.0, selected, kit::AUDIO, |ui, _rect| {
-        ui.vertical(|ui| {
-            ui.label(kit::value(&summary.name));
-            ui.label(kit::caption(&summary.subtitle));
-        });
+    let accent = summary
+        .output_type
+        .map(provider_output_color)
+        .unwrap_or(kit::AUDIO);
+    kit::draw_accent_row(ui, 52.0, selected, accent, |ui, rect| {
+        paint_text_button_row(ui, rect, &summary.name, &summary.subtitle);
     })
+}
+
+fn paint_text_button_row(ui: &mut Ui, rect: Rect, title: &str, subtitle: &str) {
+    let text_width = rect.width().max(24.0);
+    paint_truncated_row_text_top(
+        ui,
+        Pos2::new(rect.left(), rect.top() + 2.0),
+        kit::value(title),
+        12.0,
+        text_width,
+        kit::TEXT,
+    );
+    paint_truncated_row_text_bottom(
+        ui,
+        Pos2::new(rect.left(), rect.bottom() - 2.0),
+        kit::caption(subtitle),
+        11.0,
+        text_width,
+        kit::TEXT_MUTED,
+    );
 }
 
 fn provider_file_summary(path: &Path) -> ProviderFileSummary {
@@ -3802,17 +5236,365 @@ fn provider_file_summary(path: &Path) -> ProviderFileSummary {
         return ProviderFileSummary {
             name: file_name,
             subtitle: "Unreadable provider file".to_string(),
+            output_type: None,
         };
     };
     let Ok(entry) = serde_json::from_str::<ProviderEntry>(&text) else {
         return ProviderFileSummary {
             name: file_name,
             subtitle: "Invalid provider JSON".to_string(),
+            output_type: None,
         };
     };
     ProviderFileSummary {
         name: entry.name,
-        subtitle: format!("{:?}  {}", entry.output_type, path_label(path)),
+        subtitle: format!(
+            "{}  {}",
+            provider_output_type_label(entry.output_type),
+            path_label(path)
+        ),
+        output_type: Some(entry.output_type),
+    }
+}
+
+fn provider_output_color(output_type: ProviderOutputType) -> Color32 {
+    match output_type {
+        ProviderOutputType::Image => kit::IMAGE,
+        ProviderOutputType::Video => kit::VIDEO,
+        ProviderOutputType::Audio => kit::AUDIO,
+    }
+}
+
+fn provider_output_type_label(output_type: ProviderOutputType) -> &'static str {
+    match output_type {
+        ProviderOutputType::Image => "Image",
+        ProviderOutputType::Video => "Video",
+        ProviderOutputType::Audio => "Audio",
+    }
+}
+
+fn provider_output_type_field(ui: &mut Ui, label: &str, value: &mut ProviderOutputType) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+        kit::field_label(ui, label);
+        let width = ui.available_width();
+        kit::configure_field_widget_style(ui, width);
+        let combo_id = ui.next_auto_id();
+        ui.skip_ahead_auto_ids(1);
+        egui::ComboBox::from_id_salt(combo_id)
+            .width(width)
+            .selected_text(provider_output_type_label(*value))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(value, ProviderOutputType::Image, "Image");
+                ui.selectable_value(value, ProviderOutputType::Video, "Video");
+                ui.selectable_value(value, ProviderOutputType::Audio, "Audio");
+            });
+    });
+}
+
+fn workflow_node_row(
+    ui: &mut Ui,
+    node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+    selected: bool,
+) -> egui::Response {
+    kit::draw_accent_row(ui, 54.0, selected, kit::IMAGE, |ui, rect| {
+        let title = node.title.as_deref().unwrap_or("Untitled");
+        let subtitle = format!("{}  Node {}", node.class_type, node.id);
+        paint_text_button_row(ui, rect, title, &subtitle);
+    })
+}
+
+fn provider_builder_input_editor(
+    ui: &mut Ui,
+    index: usize,
+    len: usize,
+    input: &mut ProviderBuilderInput,
+    action: &mut Option<ProviderInputAction>,
+) {
+    kit::sunken_frame().show(ui, |ui| {
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::remainder().at_least(120.0))
+            .size(Size::exact(kit::FORM_ROW_GAP))
+            .size(Size::remainder().at_least(120.0))
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    kit::labeled_text_field(ui, "Name", &mut input.name);
+                });
+                strip.empty();
+                strip.cell(|ui| {
+                    kit::labeled_text_field(ui, "Label", &mut input.label);
+                });
+            });
+        ui.add_space(kit::FORM_ROW_GAP);
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::exact(124.0))
+            .size(Size::exact(kit::FORM_ROW_GAP))
+            .size(Size::remainder().at_least(120.0))
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    provider_input_type_field(ui, "Type", &mut input.input_type_key);
+                });
+                strip.empty();
+                strip.cell(|ui| {
+                    kit::labeled_text_field(ui, "Default", &mut input.default_text);
+                });
+            });
+        ui.add_space(kit::FORM_ROW_GAP);
+        if input.input_type_key == "enum" {
+            kit::labeled_text_field(ui, "Enum Options", &mut input.enum_options);
+            ui.add_space(kit::FORM_ROW_GAP);
+        }
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::remainder().at_least(130.0))
+            .size(Size::exact(kit::FORM_ROW_GAP))
+            .size(Size::remainder().at_least(130.0))
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    kit::labeled_text_field(ui, "Tag", &mut input.tag);
+                });
+                strip.empty();
+                strip.cell(|ui| {
+                    ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut input.required, "Required");
+                        if input.input_type_key == "text" {
+                            ui.checkbox(&mut input.multiline, "Multiline");
+                        } else {
+                            input.multiline = false;
+                        }
+                    });
+                });
+            });
+        ui.add_space(kit::FORM_ROW_GAP);
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [(ui.available_width() - 178.0).max(80.0), 18.0],
+                egui::Label::new(kit::caption(format!(
+                    "-> {}.{}",
+                    empty_dash(&input.selector.class_type),
+                    empty_dash(&input.selector.input_key)
+                )))
+                .truncate(),
+            );
+            if kit::field_button(ui, "Up", 42.0).clicked() && index > 0 {
+                *action = Some(ProviderInputAction::MoveUp(index));
+            }
+            if kit::field_button(ui, "Down", 52.0).clicked() && index + 1 < len {
+                *action = Some(ProviderInputAction::MoveDown(index));
+            }
+            if kit::danger_button(ui, "Delete", 66.0).clicked() {
+                *action = Some(ProviderInputAction::Delete(index));
+            }
+        });
+    });
+}
+
+fn provider_input_type_field(ui: &mut Ui, label: &str, value: &mut String) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+        kit::field_label(ui, label);
+        let width = ui.available_width();
+        kit::configure_field_widget_style(ui, width);
+        let combo_id = ui.next_auto_id();
+        ui.skip_ahead_auto_ids(1);
+        egui::ComboBox::from_id_salt(combo_id)
+            .width(width)
+            .selected_text(provider_input_type_label(value))
+            .show_ui(ui, |ui| {
+                for (key, label) in [
+                    ("text", "Text"),
+                    ("number", "Number"),
+                    ("integer", "Integer"),
+                    ("boolean", "Boolean"),
+                    ("enum", "Enum"),
+                    ("image", "Image"),
+                    ("video", "Video"),
+                    ("audio", "Audio"),
+                ] {
+                    ui.selectable_value(value, key.to_string(), label);
+                }
+            });
+    });
+}
+
+fn provider_input_type_label(value: &str) -> &'static str {
+    match value {
+        "number" => "Number",
+        "integer" => "Integer",
+        "boolean" => "Boolean",
+        "enum" => "Enum",
+        "image" => "Image",
+        "video" => "Video",
+        "audio" => "Audio",
+        _ => "Text",
+    }
+}
+
+fn provider_input_type_to_key(input_type: &ProviderInputType) -> (String, String) {
+    match input_type {
+        ProviderInputType::Text => ("text".to_string(), String::new()),
+        ProviderInputType::Number => ("number".to_string(), String::new()),
+        ProviderInputType::Integer => ("integer".to_string(), String::new()),
+        ProviderInputType::Boolean => ("boolean".to_string(), String::new()),
+        ProviderInputType::Enum { options } => ("enum".to_string(), options.join(",")),
+        ProviderInputType::Image => ("image".to_string(), String::new()),
+        ProviderInputType::Video => ("video".to_string(), String::new()),
+        ProviderInputType::Audio => ("audio".to_string(), String::new()),
+    }
+}
+
+fn parse_provider_input_type(input: &ProviderBuilderInput) -> Result<ProviderInputType, String> {
+    match input.input_type_key.as_str() {
+        "text" => Ok(ProviderInputType::Text),
+        "number" => Ok(ProviderInputType::Number),
+        "integer" => Ok(ProviderInputType::Integer),
+        "boolean" => Ok(ProviderInputType::Boolean),
+        "image" => Ok(ProviderInputType::Image),
+        "video" => Ok(ProviderInputType::Video),
+        "audio" => Ok(ProviderInputType::Audio),
+        "enum" => {
+            let options: Vec<String> = input
+                .enum_options
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect();
+            if options.is_empty() {
+                Err(format!(
+                    "Enum input '{}' needs at least one option.",
+                    input.name
+                ))
+            } else {
+                Ok(ProviderInputType::Enum { options })
+            }
+        }
+        other => Err(format!("Unknown input type: {other}")),
+    }
+}
+
+fn parse_provider_default_value(
+    input_type: &ProviderInputType,
+    text: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value = match input_type {
+        ProviderInputType::Text => serde_json::Value::String(trimmed.to_string()),
+        ProviderInputType::Number => {
+            let parsed = trimmed
+                .parse::<f64>()
+                .map_err(|_| format!("Invalid number default '{trimmed}'."))?;
+            serde_json::Value::Number(
+                serde_json::Number::from_f64(parsed)
+                    .ok_or_else(|| format!("Invalid number default '{trimmed}'."))?,
+            )
+        }
+        ProviderInputType::Integer => {
+            let parsed = trimmed
+                .parse::<i64>()
+                .map_err(|_| format!("Invalid integer default '{trimmed}'."))?;
+            serde_json::Value::Number(parsed.into())
+        }
+        ProviderInputType::Boolean => {
+            let parsed = trimmed
+                .parse::<bool>()
+                .map_err(|_| format!("Invalid boolean default '{trimmed}'."))?;
+            serde_json::Value::Bool(parsed)
+        }
+        ProviderInputType::Enum { .. } => serde_json::Value::String(trimmed.to_string()),
+        ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
+            return Ok(None)
+        }
+    };
+    Ok(Some(value))
+}
+
+fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<InputUi> {
+    if input.input_type_key == "text" && input.multiline {
+        Some(InputUi {
+            min: None,
+            max: None,
+            step: None,
+            placeholder: None,
+            multiline: true,
+            group: None,
+            advanced: false,
+            unit: None,
+        })
+    } else {
+        None
+    }
+}
+
+fn default_value_to_text(value: Option<&serde_json::Value>) -> String {
+    value
+        .map(|value| match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Number(number) => number.to_string(),
+            serde_json::Value::Bool(flag) => flag.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default()
+}
+
+fn derive_manifest_path(workflow_path: &Path) -> PathBuf {
+    let mut path = workflow_path.to_path_buf();
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workflow");
+    path.set_file_name(format!("{stem}_manifest.json"));
+    path
+}
+
+fn load_workflow_nodes_resolved(
+    path: &Path,
+) -> Result<Vec<crate::core::comfyui_workflow::ComfyWorkflowNode>, String> {
+    let resolved = crate::core::paths::resolve_resource_path(path);
+    crate::core::comfyui_workflow::load_workflow_nodes(&resolved)
+}
+
+fn load_provider_manifest_resolved(path: &Path) -> Result<ProviderManifest, String> {
+    let resolved = crate::core::paths::resolve_resource_path(path);
+    let text = std::fs::read_to_string(&resolved)
+        .map_err(|err| format!("Failed to read manifest {}: {err}", path.display()))?;
+    serde_json::from_str::<ProviderManifest>(&text)
+        .map_err(|err| format!("Failed to parse manifest {}: {err}", path.display()))
+}
+
+fn friendly_provider_label(name: &str) -> String {
+    name.replace('_', " ")
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn default_output_key(output_type: ProviderOutputType) -> &'static str {
+    match output_type {
+        ProviderOutputType::Image => "images",
+        ProviderOutputType::Video => "videos",
+        ProviderOutputType::Audio => "audio",
+    }
+}
+
+fn empty_dash(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "-"
+    } else {
+        value
     }
 }
 
@@ -3883,20 +5665,13 @@ fn inspector_numeric_rect(ui: &mut Ui, width: f32) -> Rect {
 }
 
 fn inspector_numeric_pair_rects(ui: &mut Ui) -> (Rect, Rect) {
-    let available = ui.available_width();
-    let col_w = ((available - INSPECTOR_NUMERIC_GAP) * 0.5).max(72.0);
-    let total_w = col_w * 2.0 + INSPECTOR_NUMERIC_GAP;
-    let (row_rect, _) =
-        ui.allocate_exact_size(Vec2::new(total_w, INSPECTOR_NUMERIC_H), Sense::hover());
-    let left = Rect::from_min_size(row_rect.min, Vec2::new(col_w, INSPECTOR_NUMERIC_H));
-    let right = Rect::from_min_size(
-        Pos2::new(
-            row_rect.left() + col_w + INSPECTOR_NUMERIC_GAP,
-            row_rect.top(),
-        ),
-        Vec2::new(col_w, INSPECTOR_NUMERIC_H),
-    );
-    (left, right)
+    kit::paired_field_rects(
+        ui,
+        kit::FieldPairLayout::default()
+            .gap(INSPECTOR_NUMERIC_GAP)
+            .height(INSPECTOR_NUMERIC_H)
+            .min_column_width(0.0),
+    )
 }
 
 fn inspector_numeric_field(
@@ -3910,6 +5685,7 @@ fn inspector_numeric_field(
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
+    child.set_clip_rect(rect);
     kit::configure_field_widget_style(&mut child, rect.width());
     add_control(&mut child, rect.width()).changed()
 }

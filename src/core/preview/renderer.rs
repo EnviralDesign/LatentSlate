@@ -35,6 +35,9 @@ pub struct PreviewRenderer {
     video_decoder: VideoDecodeWorker,
     frame_cache: Mutex<FrameCache>,
     duration_cache: Mutex<HashMap<PathBuf, Option<f64>>>,
+    #[allow(dead_code)]
+    // Plate textures belong to the preserved GPU-layer preview path. The
+    // current egui compositor draws the plate in UI space.
     plate_cache: Mutex<Option<PlateCache>>,
 }
 
@@ -59,6 +62,8 @@ impl PreviewRenderer {
         }
     }
 
+    #[allow(dead_code)]
+    // Reconnected when provider output folders can invalidate preview caches.
     pub fn invalidate_folder(&self, folder: &Path) {
         if let Ok(mut cache) = self.frame_cache.lock() {
             cache.invalidate_folder(folder);
@@ -160,7 +165,6 @@ impl PreviewRenderer {
                 preview_scale,
             );
         }
-        draw_border(&mut canvas, PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH);
         stats.composite_ms = elapsed_ms(composite_start);
 
         let encode_start = Instant::now();
@@ -182,6 +186,9 @@ impl PreviewRenderer {
     }
 
     /// Render the per-layer stack for GPU compositing.
+    #[allow(dead_code)]
+    // Preserved for the future GPU compositor; the egui path currently consumes
+    // encoded preview frames.
     pub fn render_layers(
         &self,
         project: &Project,
@@ -463,6 +470,9 @@ impl PreviewRenderer {
         layers
     }
 
+    #[allow(dead_code)]
+    // Preview prefetch remains staged until playback/scrub scheduling is
+    // promoted out of the immediate UI pass.
     pub fn prefetch_frames(
         &self,
         project: &Project,
@@ -512,6 +522,8 @@ impl PreviewRenderer {
         }
     }
 
+    #[allow(dead_code)]
+    // Cache bucket visualization is retained for future timeline diagnostics.
     pub fn cached_buckets_for_project(
         &self,
         project: &Project,
@@ -589,6 +601,8 @@ impl PreviewRenderer {
         result
     }
 
+    #[allow(dead_code)]
+    // Used by the staged GPU layer renderer path.
     fn load_clip_frame(
         &self,
         project_root: &Path,
@@ -717,6 +731,8 @@ impl PreviewRenderer {
 }
 
 impl PreviewRenderer {
+    #[allow(dead_code)]
+    // Used by the staged GPU layer renderer path.
     fn plate_images(&self, width: u32, height: u32) -> Option<(Arc<RgbaImage>, Arc<RgbaImage>)> {
         if width == 0 || height == 0 {
             return None;

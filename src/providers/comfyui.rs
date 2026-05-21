@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+// The ComfyUI provider adapter is preserved while the egui refactor reconnects
+// generation workflows. It is intentionally compiled but not driven by the
+// current UI yet.
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

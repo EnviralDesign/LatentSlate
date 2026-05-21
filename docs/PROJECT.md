@@ -476,6 +476,7 @@ workflows/
   - [x] Provider entry data model (output type, input schema, connection info)
   - [x] Global provider config storage under `%LOCALAPPDATA%\NLA-AI-VideoCreator\providers\`
   - [x] Provider configuration UI (JSON editor modal)
+  - [x] Provider builder UI (ComfyUI workflow picker, node browser, exposed inputs, output selector)
   - [x] Dynamic input schema rendering (text, number, boolean, enum)
   - [x] Health check / connection test
   - [x] ComfyUI adapter (first provider)
@@ -820,6 +821,19 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-21:** Removed the baked one-pixel plate border from egui preview frame compositing. The preview texture now presents only rendered canvas pixels; any future preview outline should be drawn in UI space consistently on all four sides.
+- **2026-05-21:** Simplified the Preview body surface by removing the extra stroked intermediary plate around the rendered texture. The preview panel now uses the body fill as the stage and clips the scaled preview canvas directly inside the padded body rect.
+- **2026-05-21:** Normalized top-level shell borders so adjacent app panels no longer double up one-pixel strokes. Chrome, dock, collapsed dock, and timeline frames are now fill/padding surfaces; the app paints explicit single-edge separators for top bar, status bar, side docks, and timeline boundaries.
+- **2026-05-21:** Normalized AI Provider and Provider Builder node tiles onto the same painter-based button-row behavior used by asset rows. Provider rows no longer embed selectable labels, the whole row now exposes one pointing-hand click target, and row text is clipped/truncated inside the tile instead of changing cursor behavior over the text.
+- **2026-05-21:** Hardened scroll-pane containment for modal/provider layouts by making the shared `scroll_body` helper allocate a clipped exact viewport before rendering `ScrollArea` contents. The Provider Builder columns now sit inside a bounded body rect, the right settings/input list no longer paints behind the footer, and egui's default scroll-edge fade gradients are disabled globally for cleaner recessed editor panes.
+- **2026-05-21:** Normalized timeline header transport/collapse controls with the rest of the timeline toolbar. Transport buttons now use the same 20px vertical metric as Fit/Frames and render centered geometric play/pause/step/caret icons instead of font glyphs, eliminating baseline drift and bottom clipping.
+- **2026-05-21:** Consolidated duplicate shell readouts: the top bar no longer repeats the loaded project name beside QUE, the Preview header now shows only preview resolution, the timeline remains the single timecode surface, and the bottom status bar now carries status plus project name on the left and FPS on the right.
+- **2026-05-21:** Moved the app top-bar menu triggers and queue chip onto the shared subtle button substrate used by the timeline transport controls. File/Edit/View/Settings/Help and QUE now stay transparent until hover/open/active states while preserving the existing popup menu contents.
+- **2026-05-21:** Added a reusable field-pair layout primitive for narrow inspector/form rows. Paired fields can now choose whether to enforce a minimum column width; the Attributes inspector opts into shrink-to-fit behavior so field boxes stay inside the card and only the inner label/value text clips when the right pane gets very narrow.
+- **2026-05-21:** Moved timeline playback-audio decode warmup earlier in the project-open path. Opening a project now schedules decode/cache work for timeline audio/video sources immediately and services that background work with short repaint ticks, so the first scrub should not be the operation that pays the initial 1-2 second audio decode cost.
+- **2026-05-21:** Refined the shared timeline header layout so collapsed mode no longer draws a body separator, transport controls are vertically centered in an exact button-height region, and the transport group centers between the left/right control groups that are actually visible in the current expanded/collapsed state.
+- **2026-05-21:** Rebuilt the egui AI Providers flow toward the Dioxus V2 reference: the provider list now uses equal-width New/Reload controls plus a delete footer, provider selection opens an editor-choice hub instead of a cramped JSON preview, Edit as JSON launches a wide dedicated JSON editor with validation, and Edit in Builder launches a wide ComfyUI builder that can pick workflow/manifest JSON, browse workflow nodes, expose inputs, choose an output node, and save provider/manifest files.
+- **2026-05-21:** Cleared the current build warning set: migrated egui shell panels to the 0.34 `Panel::{top,bottom,left,right}.show_inside(...)` API, made the collapsed timeline reuse the expanded timeline header chrome with zoom-only controls hidden, and documented intentionally dormant provider/preview/thumbnail paths with narrow `dead_code` allowances instead of leaving noisy warnings.
 - **2026-05-20:** Refined timeline and pane chrome toward the Dioxus reference: installed Segoe UI/Symbol as the egui font fallback, added reusable subtle timeline toolbar/transport buttons that stay transparent until hover/active states, padded the Preview header metadata, and replaced collapsed side-panel word rails with full-height click targets plus inverse arrow controls.
 - **2026-05-20:** Upgraded marker inspector fields: marker color now uses a reusable field-height swatch with egui's native popup color picker while continuing to persist project colors as hex strings, and marker descriptions now use a reusable configurable multi-line text-field primitive instead of a single-line field.
 - **2026-05-20:** Normalized timeline snapping and item semantics: Alt now bypasses clip, marker, and playhead boundary snapping; ruler scrubbing snaps to clip/marker boundaries by default; marker hit targets now include the visible label/handle area for immediate drag; and video/image accents moved away from selection green while unselected timeline items use neutral fills with subdued type outlines.
@@ -1120,7 +1134,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-05-20*
+*Last updated: 2026-05-21*
 
 
 

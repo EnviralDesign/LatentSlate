@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// Resource lookup helpers are dormant in the egui shell, but provider/workflow
+// loading will need them again once packaged resources are reintroduced.
+
 use std::path::{Path, PathBuf};
 
 fn resource_roots() -> Vec<PathBuf> {

@@ -84,12 +84,16 @@ impl Project {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    // Preserved for the provider UI reconnection path.
     pub fn set_generative_provider_id(&mut self, asset_id: Uuid, provider_id: Option<Uuid>) {
         let _ = self.update_generative_config(asset_id, |config| {
             config.provider_id = provider_id;
         });
     }
 
+    #[allow(dead_code)]
+    // Preserved for the provider UI reconnection path.
     pub fn update_generative_config(
         &mut self,
         asset_id: Uuid,
@@ -181,6 +185,8 @@ impl Project {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    // Preserved for single-asset provider/config save actions.
     pub fn save_generative_config(&self, asset_id: Uuid) -> io::Result<()> {
         let Some(project_root) = self.project_path.as_ref() else {
             return Ok(());

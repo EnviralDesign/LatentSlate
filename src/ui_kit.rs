@@ -100,8 +100,13 @@ pub const MEDIA_PILL_MIN_GAP: f32 = 4.0;
 pub const TIMELINE_TOOL_BUTTON_H: f32 = 20.0;
 pub const TIMELINE_TOOL_ICON_W: f32 = 22.0;
 pub const TIMELINE_TRANSPORT_BUTTON_W: f32 = 26.0;
-pub const TIMELINE_TRANSPORT_BUTTON_H: f32 = 24.0;
+pub const TIMELINE_TRANSPORT_BUTTON_H: f32 = TIMELINE_TOOL_BUTTON_H;
 pub const TIMELINE_TEXT_BUTTON_RADIUS: u8 = 3;
+pub const TOP_BAR_BUTTON_H: f32 = 24.0;
+pub const TOP_BAR_BUTTON_MIN_W: f32 = 34.0;
+pub const TOP_BAR_BUTTON_PAD_X: f32 = 22.0;
+pub const TOP_BAR_BUTTON_RADIUS: u8 = 4;
+pub const TOP_BAR_BUTTON_TEXT_SIZE: f32 = 12.0;
 pub const COLLAPSED_RAIL_W: f32 = 34.0;
 pub const COLLAPSED_RAIL_BUTTON_SIZE: f32 = 24.0;
 
@@ -135,6 +140,8 @@ pub fn configure_style(ctx: &Context) {
         style.spacing.item_spacing = Vec2::new(8.0, 8.0);
         style.spacing.button_padding = Vec2::new(10.0, 5.0);
         style.spacing.menu_margin = Margin::symmetric(8, 8);
+        // Scroll bodies in this editor should feel like clipped panes, not faded web views.
+        style.spacing.scroll.fade.strength = 0.0;
     });
 }
 
@@ -196,29 +203,50 @@ fn install_font(
 pub fn chrome_frame() -> Frame {
     Frame::new()
         .fill(CHROME)
-        .stroke(Stroke::new(1.0, BORDER))
         .inner_margin(Margin::symmetric(8, 4))
 }
 
 pub fn dock_frame() -> Frame {
     Frame::new()
         .fill(PANEL)
-        .stroke(Stroke::new(1.0, BORDER))
         .inner_margin(Margin::same(PANEL_PAD))
 }
 
 pub fn collapsed_dock_frame() -> Frame {
-    Frame::new()
-        .fill(PANEL)
-        .stroke(Stroke::new(1.0, BORDER))
-        .inner_margin(Margin::same(0))
+    Frame::new().fill(PANEL).inner_margin(Margin::same(0))
 }
 
 pub fn timeline_frame() -> Frame {
     Frame::new()
         .fill(Color32::from_rgb(13, 14, 16))
-        .stroke(Stroke::new(1.0, BORDER))
         .inner_margin(Margin::same(6))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PanelEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+pub fn paint_panel_edge(ui: &Ui, rect: Rect, edge: PanelEdge) {
+    let stroke = Stroke::new(1.0, BORDER);
+    let painter = ui.painter();
+    match edge {
+        PanelEdge::Top => {
+            painter.line_segment([rect.left_top(), rect.right_top()], stroke);
+        }
+        PanelEdge::Right => {
+            painter.line_segment([rect.right_top(), rect.right_bottom()], stroke);
+        }
+        PanelEdge::Bottom => {
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
+        }
+        PanelEdge::Left => {
+            painter.line_segment([rect.left_top(), rect.left_bottom()], stroke);
+        }
+    }
 }
 
 pub fn modal_frame() -> Frame {
@@ -304,9 +332,11 @@ pub fn body_with_footer(
 }
 
 pub fn scroll_body(ui: &mut Ui, add_body: impl FnOnce(&mut Ui)) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, add_body);
+    fixed_panel_body(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, add_body);
+    });
 }
 
 /// Controls how a native browse dialog chooses its starting directory.
@@ -511,6 +541,61 @@ pub fn labeled_field_height(control_height: f32) -> f32 {
     FIELD_LABEL_H + FIELD_LABEL_GAP + control_height
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FieldPairLayout {
+    pub gap: f32,
+    pub height: f32,
+    pub min_column_width: f32,
+}
+
+impl Default for FieldPairLayout {
+    fn default() -> Self {
+        Self {
+            gap: FORM_ROW_GAP,
+            height: FIELD_H,
+            min_column_width: 0.0,
+        }
+    }
+}
+
+impl FieldPairLayout {
+    pub fn min_column_width(mut self, width: f32) -> Self {
+        self.min_column_width = width.max(0.0);
+        self
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.gap = gap.max(0.0);
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = height.max(0.0);
+        self
+    }
+}
+
+pub fn paired_field_rects(ui: &mut Ui, options: FieldPairLayout) -> (Rect, Rect) {
+    let available = ui.available_width().max(0.0);
+    let gap = options.gap.min(available);
+    let available_columns = (available - gap).max(0.0);
+    let natural_col_w = available_columns * 0.5;
+    let col_w =
+        if options.min_column_width > 0.0 && available_columns >= options.min_column_width * 2.0 {
+            natural_col_w.max(options.min_column_width)
+        } else {
+            natural_col_w
+        };
+    let total_w = (col_w * 2.0 + gap).min(available);
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(total_w, options.height), Sense::hover());
+    let left = Rect::from_min_size(row_rect.min, Vec2::new(col_w, options.height));
+    let right = Rect::from_min_size(
+        Pos2::new(row_rect.left() + col_w + gap, row_rect.top()),
+        Vec2::new((row_rect.width() - col_w - gap).max(0.0), options.height),
+    );
+    (left, right)
+}
+
 pub fn labeled_text_field(ui: &mut Ui, label: &str, value: &mut String) -> Response {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
@@ -692,6 +777,7 @@ pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> 
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
+    child.set_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
     let field_id = child.next_auto_id();
@@ -739,6 +825,7 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
+    child.set_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
     let field_id = child.next_auto_id();
@@ -1165,7 +1252,7 @@ pub fn icon_button(ui: &mut Ui, label: &str) -> Response {
 }
 
 pub fn timeline_tool_icon_button(ui: &mut Ui, label: &str) -> Response {
-    timeline_subtle_button(
+    subtle_button(
         ui,
         label,
         Vec2::new(TIMELINE_TOOL_ICON_W, TIMELINE_TOOL_BUTTON_H),
@@ -1176,7 +1263,7 @@ pub fn timeline_tool_icon_button(ui: &mut Ui, label: &str) -> Response {
 }
 
 pub fn timeline_tool_text_button(ui: &mut Ui, label: &str, width: f32, active: bool) -> Response {
-    timeline_subtle_button(
+    subtle_button(
         ui,
         label,
         Vec2::new(width, TIMELINE_TOOL_BUTTON_H),
@@ -1186,18 +1273,80 @@ pub fn timeline_tool_text_button(ui: &mut Ui, label: &str, width: f32, active: b
     )
 }
 
-pub fn timeline_transport_button(ui: &mut Ui, label: &str, active: bool) -> Response {
-    timeline_subtle_button(
+#[derive(Clone, Copy, Debug)]
+pub enum TimelineTransportIcon {
+    First,
+    Previous,
+    Play,
+    Pause,
+    Next,
+    Last,
+    CaretUp,
+    CaretDown,
+}
+
+pub fn timeline_transport_icon_button(
+    ui: &mut Ui,
+    icon: TimelineTransportIcon,
+    active: bool,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(TIMELINE_TRANSPORT_BUTTON_W, TIMELINE_TRANSPORT_BUTTON_H),
+        Sense::click(),
+    );
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let skin = subtle_button_skin(active, 11.0, 4);
+    paint_button_background(ui, rect, &response, skin);
+    let icon_color = if active || response.hovered() || response.is_pointer_button_down_on() {
+        TEXT
+    } else {
+        TEXT_MUTED
+    };
+    paint_timeline_transport_icon(ui, rect, icon, icon_color);
+    response
+}
+
+pub fn top_bar_text_button(ui: &mut Ui, label: &str, active: bool) -> Response {
+    let width = top_bar_text_button_width(label);
+    subtle_button(
         ui,
         label,
-        Vec2::new(TIMELINE_TRANSPORT_BUTTON_W, TIMELINE_TRANSPORT_BUTTON_H),
+        Vec2::new(width, TOP_BAR_BUTTON_H),
         active,
-        11.0,
-        4,
+        TOP_BAR_BUTTON_TEXT_SIZE,
+        TOP_BAR_BUTTON_RADIUS,
     )
 }
 
-fn timeline_subtle_button(
+pub fn top_bar_menu_button<R>(
+    ui: &mut Ui,
+    label: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
+    let button_id = ui.make_persistent_id(("top_bar_menu_button", label));
+    let popup_id = button_id.with("popup");
+    let active = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let response = subtle_button_with_id(
+        ui,
+        label,
+        Vec2::new(top_bar_text_button_width(label), TOP_BAR_BUTTON_H),
+        active,
+        TOP_BAR_BUTTON_TEXT_SIZE,
+        TOP_BAR_BUTTON_RADIUS,
+        button_id,
+    );
+    egui::Popup::menu(&response)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(add_contents);
+    response
+}
+
+fn top_bar_text_button_width(label: &str) -> f32 {
+    (label.chars().count() as f32 * 7.0 + TOP_BAR_BUTTON_PAD_X).max(TOP_BAR_BUTTON_MIN_W)
+}
+
+fn subtle_button(
     ui: &mut Ui,
     label: &str,
     size: Vec2,
@@ -1205,6 +1354,33 @@ fn timeline_subtle_button(
     text_size: f32,
     radius: u8,
 ) -> Response {
+    painted_button(
+        ui,
+        label,
+        size,
+        subtle_button_skin(active, text_size, radius),
+    )
+}
+
+fn subtle_button_with_id(
+    ui: &mut Ui,
+    label: &str,
+    size: Vec2,
+    active: bool,
+    text_size: f32,
+    radius: u8,
+    id: egui::Id,
+) -> Response {
+    painted_button_with_id(
+        ui,
+        label,
+        size,
+        subtle_button_skin(active, text_size, radius),
+        id,
+    )
+}
+
+fn subtle_button_skin(active: bool, text_size: f32, radius: u8) -> ButtonSkin {
     let fill = if active {
         Color32::from_rgb(31, 33, 38)
     } else {
@@ -1215,20 +1391,112 @@ fn timeline_subtle_button(
     } else {
         Color32::TRANSPARENT
     };
-    painted_button(
-        ui,
-        label,
-        size,
-        ButtonSkin {
-            fill,
-            hover_fill: Color32::from_rgb(32, 34, 39),
-            active_fill: Color32::from_rgb(35, 39, 43),
-            stroke,
-            text: if active { TEXT } else { TEXT_MUTED },
-            text_size,
-            radius,
-        },
-    )
+    ButtonSkin {
+        fill,
+        hover_fill: Color32::from_rgb(32, 34, 39),
+        active_fill: Color32::from_rgb(35, 39, 43),
+        stroke,
+        text: if active { TEXT } else { TEXT_MUTED },
+        text_size,
+        radius,
+    }
+}
+
+fn paint_timeline_transport_icon(ui: &Ui, rect: Rect, icon: TimelineTransportIcon, color: Color32) {
+    let center = rect.center();
+    match icon {
+        TimelineTransportIcon::First => {
+            paint_transport_bar(ui, Pos2::new(center.x - 5.0, center.y), color);
+            paint_transport_triangle(ui, Pos2::new(center.x + 2.0, center.y), -1.0, color);
+        }
+        TimelineTransportIcon::Previous => {
+            paint_transport_triangle(ui, center, -1.0, color);
+        }
+        TimelineTransportIcon::Play => {
+            paint_transport_triangle(ui, Pos2::new(center.x + 0.75, center.y), 1.0, color);
+        }
+        TimelineTransportIcon::Pause => {
+            let bar_w = 3.0;
+            let bar_h = 10.0;
+            for dx in [-3.0, 3.0] {
+                ui.painter().rect_filled(
+                    Rect::from_center_size(
+                        Pos2::new(center.x + dx, center.y),
+                        Vec2::new(bar_w, bar_h),
+                    ),
+                    0.8,
+                    color,
+                );
+            }
+        }
+        TimelineTransportIcon::Next => {
+            paint_transport_triangle(ui, center, 1.0, color);
+        }
+        TimelineTransportIcon::Last => {
+            paint_transport_triangle(ui, Pos2::new(center.x - 2.0, center.y), 1.0, color);
+            paint_transport_bar(ui, Pos2::new(center.x + 5.0, center.y), color);
+        }
+        TimelineTransportIcon::CaretUp => {
+            paint_transport_caret(ui, center, -1.0, color);
+        }
+        TimelineTransportIcon::CaretDown => {
+            paint_transport_caret(ui, center, 1.0, color);
+        }
+    }
+}
+
+fn paint_transport_triangle(ui: &Ui, center: Pos2, direction: f32, color: Color32) {
+    let w = 7.0;
+    let h = 9.0;
+    let points = if direction >= 0.0 {
+        [
+            Pos2::new(center.x - w * 0.45, center.y - h * 0.5),
+            Pos2::new(center.x - w * 0.45, center.y + h * 0.5),
+            Pos2::new(center.x + w * 0.5, center.y),
+        ]
+    } else {
+        [
+            Pos2::new(center.x + w * 0.45, center.y - h * 0.5),
+            Pos2::new(center.x + w * 0.45, center.y + h * 0.5),
+            Pos2::new(center.x - w * 0.5, center.y),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points.to_vec(),
+        color,
+        Stroke::NONE,
+    ));
+}
+
+fn paint_transport_bar(ui: &Ui, center: Pos2, color: Color32) {
+    ui.painter().rect_filled(
+        Rect::from_center_size(center, Vec2::new(2.0, 10.0)),
+        0.8,
+        color,
+    );
+}
+
+fn paint_transport_caret(ui: &Ui, center: Pos2, direction: f32, color: Color32) {
+    let w = 8.0;
+    let h = 5.0;
+    let points = if direction >= 0.0 {
+        [
+            Pos2::new(center.x - w * 0.5, center.y - h * 0.35),
+            Pos2::new(center.x + w * 0.5, center.y - h * 0.35),
+            Pos2::new(center.x, center.y + h * 0.55),
+        ]
+    } else {
+        [
+            Pos2::new(center.x - w * 0.5, center.y + h * 0.35),
+            Pos2::new(center.x + w * 0.5, center.y + h * 0.35),
+            Pos2::new(center.x, center.y - h * 0.55),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points.to_vec(),
+        color,
+        Stroke::NONE,
+    ));
 }
 
 pub fn close_button(ui: &mut Ui) -> Response {
@@ -1345,6 +1613,39 @@ pub fn equal_media_pill_row(
     }
 }
 
+pub fn equal_secondary_button_row(ui: &mut Ui, labels: &[&str], mut on_clicked: impl FnMut(usize)) {
+    if labels.is_empty() {
+        return;
+    }
+
+    let row_width = ui.available_width().max(0.0);
+    let (row_rect, _) =
+        ui.allocate_exact_size(Vec2::new(row_width, SECONDARY_BUTTON_H), Sense::hover());
+    let count = labels.len() as f32;
+    let gaps = labels.len().saturating_sub(1) as f32;
+    let gap = if labels.len() > 1 { FORM_ROW_GAP } else { 0.0 };
+    let button_w = ((row_width - gap * gaps) / count).max(0.0);
+
+    let mut x = row_rect.left();
+    for (index, label) in labels.iter().enumerate() {
+        let rect = Rect::from_min_size(
+            Pos2::new(x, row_rect.top()),
+            Vec2::new(button_w, SECONDARY_BUTTON_H),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        child.set_clip_rect(rect);
+        if secondary_button(&mut child, label, button_w).clicked() {
+            on_clicked(index);
+        }
+        x += button_w + gap;
+    }
+}
+
+#[derive(Clone, Copy)]
 struct ButtonSkin {
     fill: Color32,
     hover_fill: Color32,
@@ -1406,7 +1707,43 @@ pub fn configure_field_widget_style(ui: &mut Ui, min_width: f32) {
 
 fn painted_button(ui: &mut Ui, label: &str, size: Vec2, skin: ButtonSkin) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    paint_button_at(ui, rect, response, label, skin)
+}
+
+fn painted_button_with_id(
+    ui: &mut Ui,
+    label: &str,
+    size: Vec2,
+    skin: ButtonSkin,
+    id: egui::Id,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let response = ui.interact(rect, id, Sense::click());
+    paint_button_at(ui, rect, response, label, skin)
+}
+
+fn paint_button_at(
+    ui: &mut Ui,
+    rect: Rect,
+    response: Response,
+    label: &str,
+    skin: ButtonSkin,
+) -> Response {
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    paint_button_background(ui, rect, &response, skin);
+    let galley = egui::WidgetText::from(RichText::new(label).color(skin.text).size(skin.text_size))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            (rect.width() - 12.0).max(0.0),
+            FontId::proportional(skin.text_size),
+        );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, skin.text);
+    response
+}
+
+fn paint_button_background(ui: &Ui, rect: Rect, response: &Response, skin: ButtonSkin) {
     let fill = if response.is_pointer_button_down_on() {
         skin.active_fill
     } else if response.hovered() || response.has_focus() {
@@ -1432,20 +1769,6 @@ fn painted_button(ui: &mut Ui, label: &str, size: Vec2, skin: ButtonSkin) -> Res
             StrokeKind::Inside,
         );
     }
-    let galley = egui::WidgetText::from(RichText::new(label).color(skin.text).size(skin.text_size))
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            (rect.width() - 12.0).max(0.0),
-            FontId::proportional(skin.text_size),
-        );
-    ui.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley, skin.text);
-    response
-}
-
-pub fn menu_text(label: &str) -> RichText {
-    RichText::new(label).color(TEXT).size(12.0)
 }
 
 pub fn caption(label: impl Into<String>) -> RichText {
@@ -1561,6 +1884,7 @@ pub fn draw_accent_row(
             .max_rect(content_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
+    child.set_clip_rect(content_rect);
     add_contents(&mut child, content_rect);
-    response
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

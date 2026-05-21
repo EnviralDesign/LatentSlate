@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+// Provider input resolution is intentionally staged while the egui migration
+// rebuilds the generation/attributes surface. Do not delete this without also
+// replacing provider execution and seed handling.
+
 use std::collections::HashMap;
 
 use serde_json::Value;

@@ -94,6 +94,9 @@ impl FrameCache {
         self.compact_lru_if_needed();
     }
 
+    #[allow(dead_code)]
+    // Used by the preserved cache invalidation path when thumbnail/generation
+    // refreshes are reconnected to the egui shell.
     pub(crate) fn invalidate_path(&mut self, path: &Path) {
         let Some(frames) = self.asset_index.remove(path) else {
             return;
@@ -109,6 +112,9 @@ impl FrameCache {
         }
     }
 
+    #[allow(dead_code)]
+    // Folder-wide invalidation is dormant until provider output refreshes are
+    // wired back through the egui editor controller.
     pub(crate) fn invalidate_folder(&mut self, folder: &Path) {
         let paths: Vec<PathBuf> = self
             .asset_index

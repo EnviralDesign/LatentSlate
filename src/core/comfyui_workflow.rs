@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+// Kept for the provider/workflow builder path. The egui shell is not currently
+// invoking workflow introspection, but the parser is still part of the planned
+// provider configuration surface.
+
 use serde_json::Value;
 use std::path::Path;
 

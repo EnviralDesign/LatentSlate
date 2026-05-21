@@ -42,6 +42,9 @@ impl PreviewStore {
         self.frames.back().map(|frame| frame.bytes.clone())
     }
 
+    #[allow(dead_code)]
+    // Retained for automation/debug consumers that need the current preview
+    // without tracking a version id.
     fn get_latest(&self) -> Option<Vec<u8>> {
         self.frames.back().map(|frame| frame.bytes.clone())
     }
@@ -74,6 +77,9 @@ pub fn get_preview_bytes(version: u64) -> Option<Vec<u8>> {
 }
 
 /// Fetch the most recent preview bytes, if any.
+#[allow(dead_code)]
+// Retained for automation/debug consumers that need the current preview without
+// tracking a version id.
 pub fn get_latest_preview_bytes() -> Option<Vec<u8>> {
     let store = preview_store();
     let store = store.read().ok()?;

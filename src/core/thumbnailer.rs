@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+// Project thumbnail generation is a preserved background service from the
+// pre-egui app. The current egui timeline can display cached thumbnails, but
+// the async generation service is not fully reconnected yet.
+
 use crate::state::Asset;
 use image::imageops::FilterType;
 use image::{DynamicImage, GenericImageView, ImageFormat};

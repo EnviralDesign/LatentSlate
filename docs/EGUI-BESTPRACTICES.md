@@ -72,17 +72,19 @@ pub fn body_with_footer(
 }
 ```
 
-Use it for asset panels, inspectors, modal columns, provider lists, and queue panels. Inside the body cell, use a scroll area that fills the cell:
+Use it for asset panels, inspectors, modal columns, provider lists, and queue panels. Inside the body cell, use the shared scroll helper so the parent first allocates an exact viewport and then clips the scroll content:
 
 ```rust
-egui::ScrollArea::vertical()
-    .auto_shrink([false, false])
-    .show(ui, |ui| {
-        // Long form/list content.
-    });
+kit::scroll_body(ui, |ui| {
+    // Long form/list content.
+});
 ```
 
 The important part is `auto_shrink([false, false])`: when content is short, blank space remains **inside** the scroll area, so the scroll viewport still occupies the available body cell. The docs describe the opposite default: `auto_shrink(true)` puts blank space outside the scroll area. ([Docs.rs][4])
+
+The shared helper also routes the scroll area through an exact-rect child UI. A raw `ScrollArea::vertical().show(ui, ...)` in a modal column can still paint text past the visual body if the parent cell was not bounded first. Treat scroll panes as hard clipped viewports before drawing cards, rows, or long form fields inside them.
+
+Egui 0.34 paints scroll-edge fade gradients by default through `style.spacing.scroll.fade`. This app disables those globally because editor panes should read as recessed clipped surfaces, not blurred/faded web panels.
 
 ---
 
@@ -740,6 +742,57 @@ The 0.34 `Panel` docs show the new unified `Panel::{left,right,top,bottom}` API,
 ---
 
 ## Pitfalls and debugging checklist
+
+### Warning hygiene
+
+Keep `cargo check` warning-free. Deprecation warnings should be treated as migration cleanup, not accepted background noise. Dead-code warnings need triage: reconnect the path, remove it if obsolete, or add a narrow `#[allow(dead_code)]` with a comment explaining the dormant subsystem and the condition for reconnecting it. Avoid crate-wide dead-code suppression because it hides real regressions during this refactor.
+
+### Modal editor flows
+
+Do not compress complex editor surfaces into inspector previews. A management modal should list/select entities and then hand off to a purpose-built editor surface when editing needs depth. The AI Providers flow is the current pattern: a compact provider list with equal-width top actions, a selection hub with explicit editor choices, a wide JSON editor for raw structured text, and a wide builder modal for workflow/node/input editing.
+
+- Keep chooser/list modals narrow enough to scan, but make editing modals as wide/tall as their task requires.
+- Use fixed left rails plus remainder editor bodies with `StripBuilder`; do not let text content determine the width of a JSON/code panel.
+- Keep text editors in their own allocated body cell and action buttons in a footer cell so text cursor focus cannot steal clicks from Save/Cancel/Edit controls.
+- Prefer shared file/folder browse fields for workflow and manifest paths, with JSON extension filters and remembered directories where repeated picking is expected.
+- Validate structured text before writing it, then format it with `serde_json::to_string_pretty` so user-edited JSON returns to a stable shape.
+
+### Narrow form degradation
+
+Repeated field grids should keep their outer allocation inside the parent card before protecting inner text. A field overflowing a rounded card is worse than a truncated prefix/value inside a correctly bounded field. Use shared pair/grid helpers with an explicit minimum-column option: set the minimum to zero for inspectors and other resizable sidebars, and reserve nonzero minimums only for modal forms where horizontal scrolling or a wider modal is intentional.
+
+- Allocate row width from `ui.available_width()` and split that exact rect; do not let per-column minimums expand the parent row by accident.
+- Set child UI clip rects for painted/custom fields so text edits, `DragValue` prefixes, and read-only values cannot draw outside their field box.
+- Prefer truncation/hover text for long display values, and keep full editability by allowing focus/selection inside the clipped field.
+
+### Subtle chrome controls
+
+Dense editor chrome should not look like a wall of standalone form buttons. For top-bar menus, timeline transport, view toggles, and compact utility chips, use the shared subtle button substrate: transparent inactive fill, visible hover fill, active/open fill, and tokenized size variants. Keep this separate from primary/secondary form buttons, which are meant to draw attention inside cards and modals.
+
+- Top-bar menu triggers can be custom popup-backed subtle buttons so popup menu contents keep normal menu styling.
+- Timeline controls and app chrome controls may share paint behavior while using different height/text-size/radius constants.
+- Active or open state should be visible even when the pointer is not hovering.
+- Dense icon controls should prefer geometric/icon drawing over raw symbol-font glyphs when vertical precision matters. Glyph bounding boxes and baselines can make play/pause/caret controls look clipped or off-center even when the button rect is correct.
+
+### Button-like rows
+
+Rows that behave like buttons should not contain nested selectable text widgets. Allocate the row once, paint the row fill/stroke/accent, paint truncated text directly into the row rect, and return one click response with a pointing-hand cursor. Use real `Label`/`TextEdit` widgets only when text selection or editing is intended.
+
+### Shell panel borders
+
+Top-level shell panels should not use all-edge `Frame::stroke` borders when they touch other shell panels. That doubles adjacent one-pixel strokes and makes the editor feel over-lined. Shell frames should own fill and padding only; paint explicit one-pixel separators on the single edge that defines the layout boundary:
+
+- top app chrome owns its bottom edge,
+- bottom status chrome owns its top edge,
+- left docks own their right edge,
+- right docks own their left edge,
+- timeline owns its top edge.
+
+Cards, modals, fields, and inner preview/timeline canvases can still use full strokes because they are contained surfaces rather than app-shell dividers.
+
+### Preview surfaces
+
+The Preview panel should have one body surface and one rendered canvas/texture. Avoid adding an extra stroked plate between the panel body and the preview texture unless it communicates a real editable boundary. The preview body fill is the neutral stage; the rendered frame should be clipped to the padded body rect and letterbox naturally against that stage. Do not bake UI borders into the preview image bytes; if the canvas needs an outline later, draw it consistently in UI space on all four sides.
 
 ## Precision Timeline Surfaces
 
