@@ -274,7 +274,7 @@ pub fn fixed_panel_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) -> Resp
             .max_rect(allocated_rect)
             .layout(Layout::top_down(Align::Min)),
     );
-    child.set_clip_rect(allocated_rect);
+    child.shrink_clip_rect(allocated_rect);
     child.set_min_size(allocated_rect.size());
     child.set_width(allocated_rect.width());
     child.set_max_width(allocated_rect.width());
@@ -305,7 +305,7 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
             .layout(Layout::top_down(Align::Min)),
     );
     child.set_min_size(content_rect.size());
-    child.set_clip_rect(content_rect);
+    child.shrink_clip_rect(content_rect);
     child.set_width(content_rect.width());
     child.set_max_width(content_rect.width());
     add_contents(&mut child);
@@ -344,28 +344,36 @@ pub fn scroll_body(ui: &mut Ui, add_body: impl FnOnce(&mut Ui)) {
 }
 
 pub fn clipped_scroll_body(ui: &mut Ui, id_salt: impl Hash, add_body: impl FnOnce(&mut Ui)) {
-    fixed_panel_body(ui, |ui| {
-        let viewport_rect = ui.available_rect_before_wrap();
-        let viewport_width = viewport_rect.width().max(0.0);
-        ui.set_clip_rect(ui.clip_rect().intersect(viewport_rect));
-        ui.set_width(viewport_width);
-        ui.set_min_width(viewport_width);
-        ui.set_max_width(viewport_width);
-        ui.spacing_mut().scroll.fade.strength = 0.0;
+    let available_rect = ui.available_rect_before_wrap();
+    let (viewport_rect, _) = ui.allocate_exact_size(available_rect.size(), Sense::hover());
+    let clip_rect = ui.clip_rect().intersect(viewport_rect);
+    let viewport_width = viewport_rect.width().max(0.0);
+    let viewport_height = viewport_rect.height().max(0.0);
 
-        egui::ScrollArea::vertical()
-            .id_salt(id_salt)
-            .max_width(viewport_width)
-            .auto_shrink([false, false])
-            .show_viewport(ui, |ui, _viewport| {
-                let content_width = ui.max_rect().width().min(viewport_width).max(0.0);
-                ui.set_clip_rect(ui.clip_rect().intersect(viewport_rect));
-                ui.set_width(content_width);
-                ui.set_min_width(content_width);
-                ui.set_max_width(content_width);
-                add_body(ui);
-            });
-    });
+    let mut viewport_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(viewport_rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    viewport_ui.shrink_clip_rect(clip_rect);
+    viewport_ui.set_width(viewport_width);
+    viewport_ui.set_height(viewport_height);
+    viewport_ui.spacing_mut().scroll.fade.strength = 0.0;
+
+    egui::ScrollArea::vertical()
+        .id_salt(id_salt)
+        .max_width(viewport_width)
+        .max_height(viewport_height)
+        .scroll_bar_rect(clip_rect)
+        .auto_shrink([false, false])
+        .show_viewport(&mut viewport_ui, |ui, _viewport| {
+            let content_width = ui.max_rect().width().min(viewport_width).max(0.0);
+            ui.shrink_clip_rect(clip_rect);
+            ui.set_width(content_width);
+            ui.set_min_width(content_width);
+            ui.set_max_width(content_width);
+            add_body(ui);
+        });
 }
 
 /// Controls how a native browse dialog chooses its starting directory.
@@ -649,7 +657,7 @@ pub fn combo_field<R>(
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
-    child.set_clip_rect(rect);
+    child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
     let combo_id = child.make_persistent_id(("combo_field", id_salt));
@@ -858,7 +866,7 @@ pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> 
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
-    child.set_clip_rect(rect);
+    child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
     let field_id = child.next_auto_id();
@@ -906,7 +914,7 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
-    child.set_clip_rect(rect);
+    child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
     let field_id = child.next_auto_id();
@@ -973,7 +981,7 @@ pub fn multiline_text_field(
             .layout(Layout::left_to_right(Align::Min)),
     );
     child.set_min_size(rect.size());
-    child.set_clip_rect(rect);
+    child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
     let field_id = child.next_auto_id();
@@ -1686,7 +1694,7 @@ pub fn equal_media_pill_row(
                 .max_rect(rect)
                 .layout(Layout::top_down(Align::Min)),
         );
-        child.set_clip_rect(rect);
+        child.shrink_clip_rect(rect);
         if media_pill_sized(&mut child, label, *color, button_w).clicked() {
             on_clicked(index);
         }
@@ -1718,7 +1726,7 @@ pub fn equal_secondary_button_row(ui: &mut Ui, labels: &[&str], mut on_clicked: 
                 .max_rect(rect)
                 .layout(Layout::top_down(Align::Min)),
         );
-        child.set_clip_rect(rect);
+        child.shrink_clip_rect(rect);
         if secondary_button(&mut child, label, button_w).clicked() {
             on_clicked(index);
         }
@@ -1967,7 +1975,7 @@ pub fn draw_accent_row(
             .max_rect(content_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    child.set_clip_rect(content_rect);
+    child.shrink_clip_rect(content_rect);
     add_contents(&mut child, content_rect);
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

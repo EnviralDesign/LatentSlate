@@ -1301,7 +1301,7 @@ impl NlaEguiApp {
                     .max_rect(row_rect)
                     .layout(Layout::left_to_right(Align::Center)),
             );
-            row_ui.set_clip_rect(row_rect);
+            row_ui.shrink_clip_rect(row_rect);
             row_ui.spacing_mut().item_spacing.x = kit::FIELD_COMPOUND_GAP;
             StripBuilder::new(&mut row_ui)
                 .clip(true)
@@ -2060,7 +2060,7 @@ impl NlaEguiApp {
                 .max_rect(left_rect)
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        left_ui.set_clip_rect(left_rect);
+        left_ui.shrink_clip_rect(left_rect);
         left_ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(kit::section_label("Timeline"));
@@ -2097,7 +2097,7 @@ impl NlaEguiApp {
                 .max_rect(transport_rect)
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        transport_ui.set_clip_rect(transport_rect);
+        transport_ui.shrink_clip_rect(transport_rect);
         transport_ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = transport_gap;
             if kit::timeline_transport_icon_button(ui, kit::TimelineTransportIcon::First, false)
@@ -2145,7 +2145,7 @@ impl NlaEguiApp {
                 .max_rect(right_rect)
                 .layout(Layout::right_to_left(Align::Center)),
         );
-        right_ui.set_clip_rect(right_rect);
+        right_ui.shrink_clip_rect(right_rect);
         right_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let collapse_icon = if collapsed {
@@ -6855,7 +6855,7 @@ fn inspector_card(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) 
     kit::card_frame().show(ui, |ui| {
         let clip_rect = ui.clip_rect();
         let content_width = ui.available_width().max(0.0);
-        ui.set_clip_rect(clip_rect);
+        ui.shrink_clip_rect(clip_rect);
         ui.set_width(content_width);
         ui.set_max_width(content_width);
         kit::field_label(ui, title);
@@ -6905,7 +6905,7 @@ fn inspector_numeric_field(
             .layout(Layout::left_to_right(Align::Center)),
     );
     child.set_min_size(rect.size());
-    child.set_clip_rect(rect);
+    child.shrink_clip_rect(rect);
     kit::configure_field_widget_style(&mut child, rect.width());
     add_control(&mut child, rect.width()).changed()
 }

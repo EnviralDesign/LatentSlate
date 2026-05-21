@@ -762,7 +762,7 @@ Do not compress complex editor surfaces into inspector previews. A management mo
 Repeated field grids should keep their outer allocation inside the parent card before protecting inner text. A field overflowing a rounded card is worse than a truncated prefix/value inside a correctly bounded field. Use shared pair/grid helpers with an explicit minimum-column option: set the minimum to zero for inspectors and other resizable sidebars, and reserve nonzero minimums only for modal forms where horizontal scrolling or a wider modal is intentional.
 
 - Allocate row width from `ui.available_width()` and split that exact rect; do not let per-column minimums expand the parent row by accident.
-- Set child UI clip rects for painted/custom fields so text edits, `DragValue` prefixes, and read-only values cannot draw outside their field box.
+- Shrink child UI clip rects for painted/custom fields so text edits, `DragValue` prefixes, and read-only values cannot draw outside their field box or the parent scroll viewport. In nested/scrollable UI, use `shrink_clip_rect(rect)` rather than `set_clip_rect(rect)`; `set_clip_rect` can grow past the inherited scroll clip when the field's rect is scrolled partially offscreen.
 - Prefer truncation/hover text for long display values, and keep full editability by allowing focus/selection inside the clipped field.
 
 ### Subtle chrome controls
