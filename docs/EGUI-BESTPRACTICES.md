@@ -86,6 +86,8 @@ The shared helper also routes the scroll area through an exact-rect child UI. A 
 
 Egui 0.34 paints scroll-edge fade gradients by default through `style.spacing.scroll.fade`. The shared app scroll helper disables those fades for editor-pane bodies because inspectors, provider forms, and asset lists should read as recessed clipped surfaces, not blurred/faded web panels.
 
+Large text/code editors need the same treatment as scroll panes. Do not put a multiline `TextEdit` directly inside a `Frame::show` body and size it from `available_size()`, because the text edit can still push or paint into adjacent footer rows. Use a kit helper that first allocates one exact outer rect, paints the field surface, creates a clipped child UI, and then places the multiline editor inside a bounded `ScrollArea` so the footer remains pinned and selection is clipped to the editor viewport.
+
 ---
 
 ## `StripBuilder`: closest supported abstraction to CSS flex/grid
@@ -418,9 +420,14 @@ For the current modal shell:
 - `modal_frame()` owns the outer fill, stroke, radius, and shadow.
 - `modal_header_with_close()` paints the header with top-only radii.
 - `modal_body()` paints the body with bottom-only radii.
+- `modal_scrim()` must be an input-catching layer, not only a painter. If the background is dimmed, background panels must not remain interactive.
 - Floating utility windows that reuse modal header/body helpers inherit the same fix.
 
 Use the same rule for future card sections, popovers, tab containers, and tool palettes. If a child band touches an outer rounded edge, give that child the matching partial radius. If a child band is fully internal, keep it square so stacked sections meet cleanly.
+
+Anchored modal-popovers, such as the Generation Queue, should recompute their position from the current trigger rect every frame. Do not rely on `Window::default_pos` for anchored UI; default positions are remembered and become stale after app resizing or monitor moves. Store the trigger response rect during normal layout, clamp the popover to `ctx.content_rect()`, and use `fixed_pos`.
+
+When a popover needs bespoke sizing, badges, or animated status chrome, prefer a custom `Area` over an egui `Window`. Allocate the exact panel rect, paint the shell yourself, split header/body/footer with explicit rects, and put the body in a clipped scroll viewport. Keep the scrim input-catching and close on scrim clicks so modal-style popovers cannot leave the rest of the app interactive.
 
 ### Modal backdrop rules
 

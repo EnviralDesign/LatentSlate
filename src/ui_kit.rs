@@ -107,6 +107,8 @@ pub const TOP_BAR_BUTTON_MIN_W: f32 = 34.0;
 pub const TOP_BAR_BUTTON_PAD_X: f32 = 22.0;
 pub const TOP_BAR_BUTTON_RADIUS: u8 = 4;
 pub const TOP_BAR_BUTTON_TEXT_SIZE: f32 = 12.0;
+pub const POPOVER_BUTTON_H: f32 = 24.0;
+pub const POPOVER_BUTTON_RADIUS: u8 = 6;
 pub const COLLAPSED_RAIL_W: f32 = 34.0;
 pub const COLLAPSED_RAIL_BUTTON_SIZE: f32 = 24.0;
 
@@ -1011,6 +1013,67 @@ pub fn multiline_text_field_height(rows: usize) -> f32 {
     rows.max(1) as f32 * MULTILINE_FIELD_ROW_H + FIELD_INNER_MARGIN_Y as f32 * 2.0
 }
 
+pub fn code_editor_field(ui: &mut Ui, value: &mut String, id_salt: impl Hash) -> Response {
+    let base_id = ui.make_persistent_id(("code_editor_field", id_salt));
+    let available = ui.available_size();
+    let (rect, response) = ui.allocate_exact_size(available, Sense::hover());
+    let inner_rect = rect.shrink(8.0);
+    let clip_rect = ui.clip_rect().intersect(inner_rect);
+
+    ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
+
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner_rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.set_min_size(inner_rect.size());
+    child.shrink_clip_rect(clip_rect);
+    child.set_width(inner_rect.width());
+    child.set_height(inner_rect.height());
+    child.spacing_mut().scroll.fade.strength = 0.0;
+    configure_field_widget_style(&mut child, inner_rect.width());
+
+    let mut text_response: Option<Response> = None;
+    egui::ScrollArea::vertical()
+        .id_salt(base_id.with("scroll"))
+        .max_width(inner_rect.width())
+        .max_height(inner_rect.height())
+        .scroll_bar_rect(clip_rect)
+        .auto_shrink([false, false])
+        .show_viewport(&mut child, |ui, _viewport| {
+            ui.shrink_clip_rect(clip_rect);
+            ui.set_width(inner_rect.width());
+            ui.set_min_width(inner_rect.width());
+            ui.set_max_width(inner_rect.width());
+            let output = egui::TextEdit::multiline(value)
+                .id(base_id.with("text"))
+                .desired_width(inner_rect.width())
+                .code_editor()
+                .font(FontId::monospace(12.0))
+                .text_color(TEXT)
+                .frame(Frame::new().fill(Color32::TRANSPARENT))
+                .show(ui);
+            text_response = Some(output.response.response);
+        });
+
+    let response = if let Some(text_response) = text_response {
+        response.union(text_response)
+    } else {
+        response
+    };
+    let stroke = if response.has_focus() {
+        Stroke::new(1.0, BORDER_FOCUS)
+    } else if response.hovered() {
+        Stroke::new(1.0, BORDER)
+    } else {
+        Stroke::new(1.0, BORDER_SOFT)
+    };
+    ui.painter()
+        .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
+    response
+}
+
 pub fn color_field(ui: &mut Ui, color: &mut Color32, width: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
     let mut response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1096,15 +1159,21 @@ fn field_stroke(output: &egui::text_edit::TextEditOutput) -> Stroke {
     }
 }
 
-pub fn modal_scrim(ctx: &Context, id: &'static str) {
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Middle,
-        egui::Id::new(format!("modal_scrim_{id}")),
-    ));
+pub fn modal_scrim(ctx: &Context, id: &'static str) -> Response {
     let rect = ctx.content_rect();
-    painter.rect_filled(rect, 0.0, MODAL_SCRIM_FILL);
-    painter.rect_filled(rect, 0.0, MODAL_SCRIM_SOFT_WASH);
-    paint_modal_vignette(&painter, rect);
+    let area = egui::Area::new(egui::Id::new(format!("modal_scrim_{id}")))
+        .order(egui::Order::Middle)
+        .fixed_pos(rect.min);
+
+    area.show(ctx, |ui| {
+        let (local_rect, response) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
+        ui.painter().rect_filled(local_rect, 0.0, MODAL_SCRIM_FILL);
+        ui.painter()
+            .rect_filled(local_rect, 0.0, MODAL_SCRIM_SOFT_WASH);
+        paint_modal_vignette(ui.painter(), local_rect);
+        response
+    })
+    .inner
 }
 
 fn paint_modal_vignette(painter: &egui::Painter, rect: Rect) {
@@ -1395,16 +1464,69 @@ pub fn timeline_transport_icon_button(
     response
 }
 
-pub fn top_bar_text_button(ui: &mut Ui, label: &str, active: bool) -> Response {
-    let width = top_bar_text_button_width(label);
-    subtle_button(
-        ui,
-        label,
-        Vec2::new(width, TOP_BAR_BUTTON_H),
-        active,
-        TOP_BAR_BUTTON_TEXT_SIZE,
-        TOP_BAR_BUTTON_RADIUS,
-    )
+pub fn queue_toggle_button(ui: &mut Ui, count: usize, active: bool, attention: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(TOP_BAR_BUTTON_MIN_W, TOP_BAR_BUTTON_H),
+        Sense::click(),
+    );
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let skin = subtle_button_skin(active, TOP_BAR_BUTTON_TEXT_SIZE, TOP_BAR_BUTTON_RADIUS);
+    paint_button_background(ui, rect, &response, skin);
+
+    let text_color = if active || response.hovered() || response.is_pointer_button_down_on() {
+        TEXT
+    } else {
+        TEXT_MUTED
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "QUE",
+        FontId::proportional(10.0),
+        text_color,
+    );
+
+    if attention {
+        let time = ui.input(|input| input.time);
+        let pulse = ((time * std::f64::consts::TAU / 1.6).sin() as f32 + 1.0) * 0.5;
+        let alpha = (60.0 + pulse * 110.0).round() as u8;
+        ui.painter().rect_stroke(
+            rect.expand(1.0),
+            CornerRadius::same(12),
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
+            StrokeKind::Inside,
+        );
+    }
+
+    if count > 0 {
+        let label = if count > 99 {
+            "99+".to_string()
+        } else {
+            count.to_string()
+        };
+        let badge_w = if count > 99 { 24.0 } else { 16.0 };
+        let badge_rect = Rect::from_min_size(
+            Pos2::new(rect.right() - badge_w + 5.0, rect.top() - 5.0),
+            Vec2::new(badge_w, 16.0),
+        );
+        ui.painter()
+            .rect_filled(badge_rect, CornerRadius::same(8), MARKER);
+        ui.painter().rect_stroke(
+            badge_rect,
+            CornerRadius::same(8),
+            Stroke::new(1.0, APP_BG),
+            StrokeKind::Inside,
+        );
+        ui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            FontId::proportional(9.0),
+            Color32::from_rgb(18, 13, 8),
+        );
+    }
+
+    response
 }
 
 pub fn top_bar_menu_button<R>(
@@ -1433,6 +1555,47 @@ pub fn top_bar_menu_button<R>(
 
 fn top_bar_text_button_width(label: &str) -> f32 {
     (label.chars().count() as f32 * 7.0 + TOP_BAR_BUTTON_PAD_X).max(TOP_BAR_BUTTON_MIN_W)
+}
+
+pub fn popover_button(ui: &mut Ui, label: &str, width: f32, enabled: bool) -> Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, POPOVER_BUTTON_H), sense);
+    let response = if enabled {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    };
+    let hovered = enabled && response.hovered();
+    let pressed = enabled && response.is_pointer_button_down_on();
+    let fill = if pressed {
+        Color32::from_rgb(35, 39, 43)
+    } else if hovered {
+        Color32::from_rgb(34, 36, 41)
+    } else {
+        Color32::from_rgb(24, 25, 29)
+    };
+    let text = if enabled { TEXT } else { TEXT_DIM };
+    let stroke = if hovered { BORDER } else { BORDER_SOFT };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(POPOVER_BUTTON_RADIUS), fill);
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(POPOVER_BUTTON_RADIUS),
+        Stroke::new(1.0, stroke),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(11.0),
+        text,
+    );
+    response
 }
 
 fn subtle_button(

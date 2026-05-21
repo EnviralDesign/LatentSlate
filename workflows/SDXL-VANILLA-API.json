@@ -31,7 +31,7 @@
   },
   "4": {
     "inputs": {
-      "ckpt_name": "juggernautXL_juggXIByRundiffusion.safetensors"
+      "ckpt_name": "sdxl\\juggernautXL_juggXIByRundiffusion.safetensors"
     },
     "class_type": "CheckpointLoaderSimple",
     "_meta": {

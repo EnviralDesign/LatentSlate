@@ -104,6 +104,18 @@ const JSON_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExten
 const PROVIDERS_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
+const QUEUE_PANEL_W: f32 = 320.0;
+const QUEUE_PANEL_MIN_H: f32 = 132.0;
+const QUEUE_PANEL_PAD: f32 = 12.0;
+const QUEUE_PANEL_HEADER_H: f32 = 30.0;
+const QUEUE_PANEL_GAP: f32 = 8.0;
+const QUEUE_PANEL_MARGIN: f32 = 10.0;
+const QUEUE_PANEL_MAX_APP_GAP: f32 = 60.0;
+const QUEUE_EMPTY_BODY_H: f32 = 42.0;
+const QUEUE_JOB_GAP: f32 = 8.0;
+const QUEUE_JOB_CARD_H: f32 = 64.0;
+const QUEUE_JOB_RUNNING_H: f32 = 106.0;
+const QUEUE_JOB_FAILED_H: f32 = 84.0;
 const MAX_GENERATION_BATCH_COUNT: u32 = 50;
 
 fn project_wizard_size(ctx: &Context) -> Vec2 {
@@ -181,6 +193,7 @@ pub struct NlaEguiApp {
     generation_events_tx: mpsc::Sender<GenerationEvent>,
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
     generation_active: Option<Uuid>,
+    queue_button_rect: Option<Rect>,
 }
 
 struct AssetThumbnail {
@@ -399,6 +412,7 @@ impl NlaEguiApp {
             generation_events_tx,
             generation_events_rx,
             generation_active: None,
+            queue_button_rect: None,
         }
     }
 
@@ -900,22 +914,27 @@ impl NlaEguiApp {
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let running =
-                            self.editor.generation_queue.iter().any(|job| {
-                                job.status == crate::state::GenerationJobStatus::Running
-                            });
-                        let queue_text = if self.editor.generation_queue.is_empty() {
-                            "QUE".to_string()
-                        } else {
-                            format!("QUE {}", self.editor.generation_queue.len())
-                        };
-                        if kit::top_bar_text_button(
+                        let active_count = self
+                            .editor
+                            .generation_queue
+                            .iter()
+                            .filter(|job| {
+                                matches!(
+                                    job.status,
+                                    crate::state::GenerationJobStatus::Queued
+                                        | crate::state::GenerationJobStatus::Running
+                                )
+                            })
+                            .count();
+                        let attention = active_count > 0;
+                        let queue_response = kit::queue_toggle_button(
                             ui,
-                            &queue_text,
-                            self.editor.overlays.queue || running,
-                        )
-                        .clicked()
-                        {
+                            active_count,
+                            self.editor.overlays.queue,
+                            attention,
+                        );
+                        self.queue_button_rect = Some(queue_response.rect);
+                        if queue_response.clicked() {
                             self.editor.overlays.queue = !self.editor.overlays.queue;
                         }
                     });
@@ -1586,7 +1605,6 @@ impl NlaEguiApp {
             ) {
                 Ok(status) => {
                     self.editor.status = status;
-                    self.editor.overlays.queue = true;
                 }
                 Err(err) => self.editor.status = err,
             }
@@ -3619,24 +3637,95 @@ impl NlaEguiApp {
 
     fn queue_panel(&mut self, ctx: &Context) {
         let mut close_clicked = false;
-        egui::Window::new("Generation Queue")
-            .title_bar(false)
+        let mut clear_clicked = false;
+        let app_rect = ctx.content_rect();
+        let fallback_anchor = Rect::from_min_size(
+            Pos2::new(app_rect.right() - 72.0, app_rect.top() + 4.0),
+            Vec2::new(62.0, kit::TOP_BAR_BUTTON_H),
+        );
+        let anchor = self.queue_button_rect.unwrap_or(fallback_anchor);
+        let bounds = app_rect.shrink(QUEUE_PANEL_MARGIN);
+        let jobs = self.editor.generation_queue.clone();
+        let has_attention = jobs.iter().any(|job| {
+            matches!(
+                job.status,
+                GenerationJobStatus::Queued | GenerationJobStatus::Running
+            )
+        });
+        let has_clearable = jobs
+            .iter()
+            .any(|job| job.status != GenerationJobStatus::Running);
+        let desired_body_h = queue_list_height(&jobs);
+        let desired_h =
+            QUEUE_PANEL_PAD * 2.0 + QUEUE_PANEL_HEADER_H + QUEUE_PANEL_GAP + desired_body_h;
+        let max_h_by_window = (app_rect.height() - QUEUE_PANEL_MAX_APP_GAP).max(QUEUE_PANEL_MIN_H);
+        let panel_top =
+            (anchor.bottom() + QUEUE_PANEL_GAP).clamp(bounds.top(), bounds.bottom() - 24.0);
+        let max_h_below = (bounds.bottom() - panel_top).max(QUEUE_PANEL_MIN_H);
+        let panel_h = desired_h.clamp(
+            QUEUE_PANEL_MIN_H,
+            max_h_by_window.min(max_h_below).max(QUEUE_PANEL_MIN_H),
+        );
+        let max_x = (bounds.right() - QUEUE_PANEL_W).max(bounds.left());
+        let panel_pos = Pos2::new(
+            (anchor.right() - QUEUE_PANEL_W).clamp(bounds.left(), max_x),
+            panel_top,
+        );
+
+        if kit::modal_scrim(ctx, "queue").clicked() {
+            close_clicked = true;
+        }
+
+        egui::Area::new(egui::Id::new("generation_queue_popover"))
             .order(egui::Order::Foreground)
-            .frame(kit::modal_frame())
-            .default_pos([950.0, 70.0])
-            .default_size([320.0, 150.0])
+            .fixed_pos(panel_pos)
             .show(ctx, |ui| {
-                close_clicked = kit::modal_header_with_close(ui, "Generation Queue", None, true);
-                kit::modal_body(ui, |ui| {
-                    if self.editor.generation_queue.is_empty() {
-                        kit::empty_state(ui, "Empty", "No generation jobs yet.");
-                    } else {
-                        for job in self.editor.generation_queue.iter() {
-                            ui.label(kit::body(format!("{} - {:?}", job.asset_label, job.status)));
-                        }
-                    }
-                });
+                let (panel_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(QUEUE_PANEL_W, panel_h), Sense::hover());
+                paint_queue_panel_shell(ui, panel_rect, has_attention);
+
+                let content_rect = panel_rect.shrink(QUEUE_PANEL_PAD);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(content_rect)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                child.set_min_size(content_rect.size());
+                child.shrink_clip_rect(content_rect);
+                child.set_width(content_rect.width());
+
+                let header_rect = Rect::from_min_size(
+                    content_rect.min,
+                    Vec2::new(content_rect.width(), QUEUE_PANEL_HEADER_H),
+                );
+                let body_rect = Rect::from_min_max(
+                    Pos2::new(content_rect.left(), header_rect.bottom() + QUEUE_PANEL_GAP),
+                    content_rect.right_bottom(),
+                );
+
+                queue_header(
+                    &mut child,
+                    header_rect,
+                    jobs.len(),
+                    has_clearable,
+                    &mut clear_clicked,
+                    &mut close_clicked,
+                );
+                queue_body(&mut child, body_rect, &jobs);
             });
+
+        if clear_clicked {
+            let before = self.editor.generation_queue.len();
+            self.editor
+                .generation_queue
+                .retain(|job| job.status == GenerationJobStatus::Running);
+            let cleared = before.saturating_sub(self.editor.generation_queue.len());
+            self.editor.status = if cleared == 1 {
+                "Cleared 1 generation job.".to_string()
+            } else {
+                format!("Cleared {cleared} generation jobs.")
+            };
+        }
         if close_clicked {
             self.editor.overlays.queue = false;
         }
@@ -4196,17 +4285,11 @@ impl NlaEguiApp {
                         320.0,
                         kit::SECONDARY_BUTTON_H,
                         |ui| {
-                            let editor_size = ui.available_size();
-                            kit::sunken_frame().show(ui, |ui| {
-                                ui.set_min_size(editor_size);
-                                let edit = egui::TextEdit::multiline(&mut self.provider_json_text)
-                                    .font(FontId::monospace(12.0))
-                                    .desired_width(f32::INFINITY)
-                                    .lock_focus(true)
-                                    .code_editor()
-                                    .frame(egui::Frame::new().fill(Color32::TRANSPARENT));
-                                ui.add_sized(ui.available_size(), edit);
-                            });
+                            kit::code_editor_field(
+                                ui,
+                                &mut self.provider_json_text,
+                                "provider_json_editor",
+                            );
                         },
                         |ui| {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -4981,7 +5064,8 @@ const ADD_ASSETS_CARD_H: f32 = kit::SECTION_PAD as f32 * 2.0
     + kit::FORM_ROW_GAP
     + kit::FIELD_LABEL_H
     + 6.0
-    + kit::MEDIA_PILL_H;
+    + kit::MEDIA_PILL_H
+    + kit::FORM_ROW_GAP;
 const ASSET_ROW_H: f32 = 56.0;
 const ASSET_ROW_THUMBNAIL_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 const ASSET_THUMBNAIL_IMAGE_INSET: f32 = 3.0;
@@ -7045,6 +7129,334 @@ fn transform_editor(ui: &mut Ui, transform: &mut ClipTransform, preview_dirty: &
         ("Rot", &mut transform.rotation_deg, 1.0),
         ("Opacity", &mut transform.opacity, 0.01),
     );
+}
+
+fn queue_list_height(jobs: &[GenerationJob]) -> f32 {
+    if jobs.is_empty() {
+        return QUEUE_EMPTY_BODY_H;
+    }
+    jobs.iter().map(queue_job_height).sum::<f32>()
+        + QUEUE_JOB_GAP * jobs.len().saturating_sub(1) as f32
+}
+
+fn queue_job_height(job: &GenerationJob) -> f32 {
+    match job.status {
+        GenerationJobStatus::Running => QUEUE_JOB_RUNNING_H,
+        GenerationJobStatus::Failed => QUEUE_JOB_FAILED_H,
+        GenerationJobStatus::Queued | GenerationJobStatus::Succeeded => QUEUE_JOB_CARD_H,
+    }
+}
+
+fn paint_queue_panel_shell(ui: &mut Ui, rect: Rect, attention: bool) {
+    let radius = egui::CornerRadius::same(10);
+    let shadow_rect = rect.translate(Vec2::new(0.0, 10.0)).expand(10.0);
+    ui.painter().rect_filled(
+        shadow_rect,
+        egui::CornerRadius::same(14),
+        Color32::from_rgba_unmultiplied(2, 4, 7, 116),
+    );
+    ui.painter().rect_filled(rect, radius, kit::PANEL_RAISED);
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, kit::MODAL_STROKE),
+        egui::StrokeKind::Inside,
+    );
+
+    if attention {
+        let time = ui.input(|input| input.time);
+        let pulse = ((time * std::f64::consts::TAU / 1.6).sin() as f32 + 1.0) * 0.5;
+        let alpha = (42.0 + pulse * 92.0).round() as u8;
+        ui.painter().rect_stroke(
+            rect.expand(1.0),
+            radius,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn queue_header(
+    ui: &mut Ui,
+    rect: Rect,
+    job_count: usize,
+    has_clearable: bool,
+    clear_clicked: &mut bool,
+    close_clicked: &mut bool,
+) {
+    let mut header_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    header_ui.set_min_size(rect.size());
+    header_ui.shrink_clip_rect(rect);
+
+    let count_label = if job_count == 0 {
+        "Empty".to_string()
+    } else {
+        job_count.to_string()
+    };
+    header_ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        ui.add_sized(
+            [112.0, 16.0],
+            egui::Label::new(
+                RichText::new("Generation Queue")
+                    .color(kit::TEXT)
+                    .size(12.0),
+            )
+            .truncate(),
+        );
+        ui.add_sized(
+            [112.0, 12.0],
+            egui::Label::new(
+                RichText::new(count_label.to_ascii_uppercase())
+                    .color(kit::TEXT_MUTED)
+                    .size(10.0),
+            )
+            .truncate(),
+        );
+    });
+    header_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        if kit::popover_button(ui, "Close", 50.0, true).clicked() {
+            *close_clicked = true;
+        }
+        if kit::popover_button(ui, "Clear All", 68.0, has_clearable).clicked() {
+            *clear_clicked = true;
+        }
+    });
+}
+
+fn queue_body(ui: &mut Ui, rect: Rect, jobs: &[GenerationJob]) {
+    let mut body_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    body_ui.set_min_size(rect.size());
+    body_ui.shrink_clip_rect(rect);
+    body_ui.set_width(rect.width());
+    body_ui.set_height(rect.height());
+
+    kit::clipped_scroll_body(&mut body_ui, "generation_queue_body", |ui| {
+        ui.spacing_mut().item_spacing.y = QUEUE_JOB_GAP;
+        if jobs.is_empty() {
+            queue_empty_state(ui);
+        } else {
+            for job in jobs.iter().rev() {
+                queue_job_card(ui, job);
+            }
+        }
+    });
+}
+
+fn queue_empty_state(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), QUEUE_EMPTY_BODY_H),
+        Sense::hover(),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(8),
+        Stroke::new(1.0, kit::BORDER_SOFT),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "No generation jobs yet.",
+        FontId::proportional(11.0),
+        kit::TEXT_DIM,
+    );
+}
+
+fn queue_job_card(ui: &mut Ui, job: &GenerationJob) {
+    let height = queue_job_height(job);
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let radius = egui::CornerRadius::same(8);
+    ui.painter().rect_filled(rect, radius, kit::PANEL);
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, kit::BORDER_SOFT),
+        egui::StrokeKind::Inside,
+    );
+
+    let content = rect.shrink(10.0);
+    let (status_label, status_color) = queue_status_style(job.status);
+    let output_label = queue_output_label(job.output_type);
+    let status_w = match job.status {
+        GenerationJobStatus::Succeeded => 56.0,
+        GenerationJobStatus::Running => 64.0,
+        GenerationJobStatus::Failed => 60.0,
+        GenerationJobStatus::Queued => 62.0,
+    };
+    let title_rect = Rect::from_min_max(
+        content.left_top(),
+        Pos2::new(content.right() - status_w - 8.0, content.top() + 18.0),
+    );
+    let status_rect = Rect::from_min_size(
+        Pos2::new(content.right() - status_w, content.top()),
+        Vec2::new(status_w, 18.0),
+    );
+    queue_clipped_label(ui, title_rect, &job.asset_label, kit::TEXT, 12.0, true);
+    paint_queue_status_pill(ui, status_rect, status_label, status_color);
+
+    let meta_y = content.top() + 24.0;
+    let provider_rect = Rect::from_min_size(
+        Pos2::new(content.left(), meta_y),
+        Vec2::new((content.width() - 54.0).max(0.0), 14.0),
+    );
+    let output_rect = Rect::from_min_size(
+        Pos2::new(content.right() - 52.0, meta_y),
+        Vec2::new(52.0, 14.0),
+    );
+    queue_clipped_label(
+        ui,
+        provider_rect,
+        &job.provider.name,
+        kit::TEXT_MUTED,
+        10.0,
+        false,
+    );
+    queue_clipped_label(ui, output_rect, output_label, kit::TEXT_DIM, 10.0, false);
+
+    match job.status {
+        GenerationJobStatus::Running => {
+            let workflow = job.progress_overall.unwrap_or(0.0).clamp(0.0, 1.0);
+            let node = job.progress_node.unwrap_or(0.0).clamp(0.0, 1.0);
+            let progress_rect = Rect::from_min_max(
+                Pos2::new(content.left(), content.top() + 44.0),
+                content.right_bottom(),
+            );
+            queue_progress_rows(ui, progress_rect, workflow, node);
+        }
+        GenerationJobStatus::Failed => {
+            if let Some(error) = job.error.as_ref() {
+                let error_rect = Rect::from_min_size(
+                    Pos2::new(content.left(), content.top() + 44.0),
+                    Vec2::new(content.width(), 30.0),
+                );
+                queue_clipped_label(ui, error_rect, error, kit::DANGER, 10.0, false);
+            }
+        }
+        GenerationJobStatus::Queued | GenerationJobStatus::Succeeded => {}
+    }
+}
+
+fn queue_progress_rows(ui: &mut Ui, rect: Rect, workflow: f32, node: f32) {
+    let row_h = 26.0;
+    queue_progress_row(
+        ui,
+        Rect::from_min_size(rect.min, Vec2::new(rect.width(), row_h)),
+        "Workflow",
+        workflow,
+        kit::PRIMARY,
+    );
+    queue_progress_row(
+        ui,
+        Rect::from_min_size(
+            Pos2::new(rect.left(), rect.top() + row_h),
+            Vec2::new(rect.width(), row_h),
+        ),
+        "Node",
+        node,
+        kit::MARKER,
+    );
+}
+
+fn queue_progress_row(ui: &mut Ui, rect: Rect, label: &str, progress: f32, color: Color32) {
+    let pct = (progress.clamp(0.0, 1.0) * 100.0).round() as u32;
+    ui.painter().text(
+        rect.left_top(),
+        egui::Align2::LEFT_TOP,
+        label,
+        FontId::proportional(9.0),
+        kit::TEXT_DIM,
+    );
+    ui.painter().text(
+        rect.right_top(),
+        egui::Align2::RIGHT_TOP,
+        format!("{pct}%"),
+        FontId::proportional(9.0),
+        kit::TEXT_DIM,
+    );
+
+    let track_rect = Rect::from_min_size(
+        Pos2::new(rect.left(), rect.top() + 15.0),
+        Vec2::new(rect.width(), 6.0),
+    );
+    ui.painter()
+        .rect_filled(track_rect, egui::CornerRadius::same(3), kit::PANEL_SUNKEN);
+    let fill_rect = Rect::from_min_size(
+        track_rect.min,
+        Vec2::new(
+            track_rect.width() * progress.clamp(0.0, 1.0),
+            track_rect.height(),
+        ),
+    );
+    ui.painter()
+        .rect_filled(fill_rect, egui::CornerRadius::same(3), color);
+}
+
+fn paint_queue_status_pill(ui: &mut Ui, rect: Rect, label: &str, color: Color32) {
+    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22);
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(9), fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(9),
+        Stroke::new(1.0, color),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label.to_ascii_uppercase(),
+        FontId::proportional(9.0),
+        color,
+    );
+}
+
+fn queue_clipped_label(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &str,
+    color: Color32,
+    size: f32,
+    strong: bool,
+) {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.set_min_size(rect.size());
+    child.shrink_clip_rect(rect);
+    let mut text = RichText::new(text).color(color).size(size);
+    if strong {
+        text = text.strong();
+    }
+    child.add_sized(rect.size(), egui::Label::new(text).truncate());
+}
+
+fn queue_status_style(status: GenerationJobStatus) -> (&'static str, Color32) {
+    match status {
+        GenerationJobStatus::Queued => ("Queued", kit::TEXT_MUTED),
+        GenerationJobStatus::Running => ("Running", kit::MARKER),
+        GenerationJobStatus::Succeeded => ("Done", kit::PRIMARY_HOVER),
+        GenerationJobStatus::Failed => ("Failed", kit::DANGER),
+    }
+}
+
+fn queue_output_label(output_type: ProviderOutputType) -> &'static str {
+    match output_type {
+        ProviderOutputType::Image => "Image",
+        ProviderOutputType::Video => "Video",
+        ProviderOutputType::Audio => "Audio",
+    }
 }
 
 fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
