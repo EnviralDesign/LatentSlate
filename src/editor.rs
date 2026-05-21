@@ -7,12 +7,14 @@ use uuid::Uuid;
 use crate::constants::{DEFAULT_CLIP_DURATION_SECONDS, PREVIEW_CACHE_BUDGET_BYTES};
 use crate::core::automation::{AutomationCommand, AutomationResponse};
 use crate::core::media::{probe_missing_duration, resolve_asset_duration_seconds};
-use crate::core::provider_store::{list_global_provider_files, load_global_provider_entries_or_empty};
+use crate::core::provider_store::{
+    list_global_provider_files, load_global_provider_entries_or_empty,
+};
 use crate::core::thumbnailer::Thumbnailer;
 use crate::state::{
     generative_video_duration_seconds, next_generative_index, Asset, AssetKind, GenerationJob,
-    Project, ProjectSettings, ProviderEntry, SelectionState,
-    DEFAULT_GENERATIVE_VIDEO_FPS, DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
+    Project, ProjectSettings, ProviderEntry, SelectionState, DEFAULT_GENERATIVE_VIDEO_FPS,
+    DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
 #[derive(Clone, Debug)]
@@ -25,6 +27,8 @@ pub struct EditorLayout {
     pub left_width: f32,
     pub right_width: f32,
     pub timeline_height: f32,
+    pub timeline_zoom: f32,
+    pub timeline_scroll_x: f32,
 }
 
 impl Default for EditorLayout {
@@ -38,6 +42,8 @@ impl Default for EditorLayout {
             left_width: 250.0,
             right_width: 250.0,
             timeline_height: 220.0,
+            timeline_zoom: 4.0,
+            timeline_scroll_x: 0.0,
         }
     }
 }
@@ -189,7 +195,9 @@ impl EditorState {
         let clip_id = self
             .project
             .add_clip_from_asset(asset_id, time, duration)
-            .ok_or_else(|| "Asset could not be placed on a compatible timeline track.".to_string())?;
+            .ok_or_else(|| {
+                "Asset could not be placed on a compatible timeline track.".to_string()
+            })?;
         self.selection.select_clip(clip_id);
         self.preview_dirty = true;
         Ok(clip_id)
@@ -274,12 +282,8 @@ impl EditorState {
             DEFAULT_GENERATIVE_VIDEO_FPS
         };
         let frame_count = frame_count.max(1);
-        let asset = Asset::new_generative_video(
-            format!("Gen Video {index}"),
-            folder,
-            fps,
-            frame_count,
-        );
+        let asset =
+            Asset::new_generative_video(format!("Gen Video {index}"), folder, fps, frame_count);
         let id = self.project.add_asset(asset);
         self.preview_dirty = true;
         Ok(id)
@@ -308,7 +312,11 @@ impl EditorState {
                 parent_dir,
                 name,
                 settings,
-            } => match self.create_project(parent_dir, name.clone(), settings.clone().unwrap_or_default()) {
+            } => match self.create_project(
+                parent_dir,
+                name.clone(),
+                settings.clone().unwrap_or_default(),
+            ) {
                 Ok(path) => AutomationResponse::ok(json!({ "project_path": path })),
                 Err(err) => AutomationResponse::error(err),
             },
@@ -509,6 +517,8 @@ impl EditorState {
                 "left_collapsed": self.layout.left_collapsed,
                 "right_collapsed": self.layout.right_collapsed,
                 "timeline_collapsed": self.layout.timeline_collapsed,
+                "timeline_zoom": self.layout.timeline_zoom,
+                "timeline_scroll_x": self.layout.timeline_scroll_x,
                 "preview_stats": self.layout.preview_stats,
                 "hardware_decode": self.layout.hardware_decode,
             },

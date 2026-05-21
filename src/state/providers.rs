@@ -54,7 +54,10 @@ pub enum ProviderConnection {
         #[serde(default)]
         manifest_path: Option<String>,
     },
-    CustomHttp { base_url: String, api_key: Option<String> },
+    CustomHttp {
+        base_url: String,
+        api_key: Option<String>,
+    },
 }
 
 /// A configured provider entry stored on disk.

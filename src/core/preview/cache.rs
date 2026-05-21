@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use image::RgbaImage;
 use std::sync::Arc;
 
-use super::{CachedFrame, FrameKey};
 use super::utils::image_size_bytes;
+use super::{CachedFrame, FrameKey};
 
 struct CacheEntry {
     image: Arc<RgbaImage>,
@@ -35,7 +35,6 @@ impl FrameCache {
             asset_index: HashMap::new(),
         }
     }
-
 
     pub(crate) fn get(&mut self, key: &FrameKey) -> Option<CachedFrame> {
         let (image, source_width, source_height) = {

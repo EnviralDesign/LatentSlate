@@ -13,19 +13,19 @@ use uuid::Uuid;
 #[allow(dead_code)]
 pub enum AssetKind {
     /// A standard video file
-    Video { 
+    Video {
         /// Path relative to project root
-        path: PathBuf 
+        path: PathBuf,
     },
     /// A standard image file
-    Image { 
+    Image {
         /// Path relative to project root
-        path: PathBuf 
+        path: PathBuf,
     },
     /// A standard audio file
-    Audio { 
+    Audio {
         /// Path relative to project root
-        path: PathBuf 
+        path: PathBuf,
     },
     /// A generative video asset with version history
     GenerativeVideo {
@@ -188,12 +188,18 @@ impl Asset {
 
     /// Check if this is a video asset (including generative video)
     pub fn is_video(&self) -> bool {
-        matches!(self.kind, AssetKind::Video { .. } | AssetKind::GenerativeVideo { .. })
+        matches!(
+            self.kind,
+            AssetKind::Video { .. } | AssetKind::GenerativeVideo { .. }
+        )
     }
 
     /// Check if this is an image asset (including generative image)  
     pub fn is_image(&self) -> bool {
-        matches!(self.kind, AssetKind::Image { .. } | AssetKind::GenerativeImage { .. })
+        matches!(
+            self.kind,
+            AssetKind::Image { .. } | AssetKind::GenerativeImage { .. }
+        )
     }
 
     /// Check if this asset can be placed on a video track

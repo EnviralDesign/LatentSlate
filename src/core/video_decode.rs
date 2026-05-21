@@ -108,19 +108,20 @@ impl VideoDecodeWorker {
                                 .decoder
                                 .decode_frame_at_time(time_seconds, mode)
                         }
-                        Entry::Vacant(entry) => match VideoDecoder::open(&path, max_width, max_height, allow_hw)
-                        {
-                            Ok(mut decoder) => {
-                                access_counter = access_counter.wrapping_add(1);
-                                let outcome = decoder.decode_frame_at_time(time_seconds, mode);
-                                entry.insert(DecoderEntry {
-                                    decoder,
-                                    last_used: access_counter,
-                                });
-                                outcome
+                        Entry::Vacant(entry) => {
+                            match VideoDecoder::open(&path, max_width, max_height, allow_hw) {
+                                Ok(mut decoder) => {
+                                    access_counter = access_counter.wrapping_add(1);
+                                    let outcome = decoder.decode_frame_at_time(time_seconds, mode);
+                                    entry.insert(DecoderEntry {
+                                        decoder,
+                                        last_used: access_counter,
+                                    });
+                                    outcome
+                                }
+                                Err(_) => DecodeOutcome::none(),
                             }
-                            Err(_) => DecodeOutcome::none(),
-                        },
+                        }
                     };
 
                     if decoders.len() > MAX_DECODERS {
@@ -160,7 +161,13 @@ impl VideoDecodeWorker {
         lane_id: u64,
         allow_hw: bool,
     ) -> Option<DecodeResponse> {
-        self.decode_with_mode(path, time_seconds, DecodeMode::Sequential, lane_id, allow_hw)
+        self.decode_with_mode(
+            path,
+            time_seconds,
+            DecodeMode::Sequential,
+            lane_id,
+            allow_hw,
+        )
     }
 
     pub fn decode_async(

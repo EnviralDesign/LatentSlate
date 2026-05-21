@@ -10,10 +10,10 @@ pub struct ComfyWorkflowNode {
 }
 
 pub fn load_workflow_nodes(path: &Path) -> Result<Vec<ComfyWorkflowNode>, String> {
-    let json = std::fs::read_to_string(path)
-        .map_err(|err| format!("Failed to read workflow: {}", err))?;
-    let value: Value = serde_json::from_str(&json)
-        .map_err(|err| format!("Invalid workflow JSON: {}", err))?;
+    let json =
+        std::fs::read_to_string(path).map_err(|err| format!("Failed to read workflow: {}", err))?;
+    let value: Value =
+        serde_json::from_str(&json).map_err(|err| format!("Invalid workflow JSON: {}", err))?;
     parse_workflow_nodes(&value)
 }
 

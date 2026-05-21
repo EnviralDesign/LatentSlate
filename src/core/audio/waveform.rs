@@ -7,7 +7,9 @@ use std::path::Path;
 use tokio::task;
 use uuid::Uuid;
 
-use super::cache::{peak_cache_path, source_identity, write_peak_cache, PeakCache, PeakLevel, PeakPair};
+use super::cache::{
+    peak_cache_path, source_identity, write_peak_cache, PeakCache, PeakLevel, PeakPair,
+};
 use super::decode::{decode_audio_chunks, AudioDecodeConfig};
 use crate::state::{Asset, AssetKind};
 
@@ -53,7 +55,12 @@ pub fn build_peak_cache(source_path: &Path, config: PeakBuildConfig) -> Result<P
     )?;
 
     let base_peaks = accumulator.finish();
-    let levels = build_levels(base_peaks, config.base_block, config.level_factor, config.max_levels);
+    let levels = build_levels(
+        base_peaks,
+        config.base_block,
+        config.level_factor,
+        config.max_levels,
+    );
 
     Ok(PeakCache {
         sample_rate: config.target_rate,
@@ -82,7 +89,9 @@ pub fn spawn_peak_cache_build(
     source_path: std::path::PathBuf,
     config: PeakBuildConfig,
 ) -> task::JoinHandle<Result<std::path::PathBuf, String>> {
-    task::spawn_blocking(move || build_and_store_peak_cache(&project_root, asset_id, &source_path, config))
+    task::spawn_blocking(move || {
+        build_and_store_peak_cache(&project_root, asset_id, &source_path, config)
+    })
 }
 
 pub fn resolve_audio_source(project_root: &Path, asset: &Asset) -> Option<std::path::PathBuf> {
@@ -270,7 +279,10 @@ fn resolve_generative_audio_source(
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)) {
+                if extensions
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                {
                     return Some(path);
                 }
             }
@@ -302,7 +314,10 @@ fn resolve_generative_video_source(
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)) {
+                if extensions
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                {
                     return Some(path);
                 }
             }

@@ -1,28 +1,66 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align, Color32, ColorImage, Context, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke,
-    TextureHandle, TextureOptions, Ui, Vec2,
+    TextureHandle, TextureId, TextureOptions, Ui, Vec2,
 };
 use uuid::Uuid;
 
+use crate::core::audio::cache::{
+    cache_matches_source, load_peak_cache, peak_cache_path, PeakCache,
+};
+use crate::core::audio::decode::{decode_audio_to_f32, AudioDecodeConfig};
+use crate::core::audio::playback::{AudioPlaybackEngine, PlaybackItem};
+use crate::core::audio::waveform::{
+    build_and_store_peak_cache, resolve_audio_or_video_source, resolve_audio_source,
+    PeakBuildConfig,
+};
 use crate::core::preview::{PreviewDecodeMode, PreviewFrameInfo, PreviewStats};
 use crate::core::preview_store;
+use crate::core::timeline_snap::{
+    best_snap_delta_frames, frames_from_seconds, seconds_from_frames, snap_time_to_frame,
+    SnapTarget,
+};
 use crate::editor::{
     default_generative_video_fps, default_generative_video_frames, default_projects_dir,
     generative_video_duration_label, EditorState,
 };
 use crate::state::{
-    asset_display_name, Asset, AssetKind, Clip, ClipTransform, ProjectSettings, ProviderEntry,
-    TrackType,
+    asset_display_name, Asset, AssetKind, Clip, ClipTransform, Project, ProjectSettings,
+    ProviderEntry, TrackType,
 };
 use crate::ui_kit as kit;
 
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
 const PROJECT_WIZARD_MIN_SIZE: [f32; 2] = [560.0, 500.0];
+const TIMELINE_LABEL_W: f32 = 140.0;
+const TIMELINE_HEADER_H: f32 = 32.0;
+const TIMELINE_RULER_H: f32 = 24.0;
+const TIMELINE_TRACK_H: f32 = 36.0;
+const TIMELINE_ADD_ROW_H: f32 = 42.0;
+const TIMELINE_CLIP_H: f32 = 32.0;
+const TIMELINE_CLIP_Y_PAD: f32 = 2.0;
+const TIMELINE_SCROLLBAR_H: f32 = 12.0;
+const TIMELINE_MIN_ZOOM_FLOOR: f32 = 0.1;
+const TIMELINE_MAX_PX_PER_FRAME: f32 = 8.0;
+const TIMELINE_SNAP_THRESHOLD_PX: f64 = 6.0;
+const TIMELINE_THUMB_TILE_W: f32 = 60.0;
+const TIMELINE_MAX_THUMB_TILES: usize = 120;
+const TIMELINE_MIN_CLIP_W: f32 = 2.0;
+const TIMELINE_HANDLE_W: f32 = 8.0;
+const TIMELINE_MARKER_HIT_W: f32 = 22.0;
+const TIMELINE_MARKER_LABEL_W: f32 = 96.0;
+const TIMELINE_MARKER_LABEL_H: f32 = 18.0;
+const TIMELINE_SCRUB_PREVIEW_SECONDS: f64 = 0.12;
+const TIMELINE_HEADER_PAD_X: f32 = 4.0;
+const TIMELINE_HEADER_LEFT_W: f32 = 286.0;
+const TIMELINE_HEADER_RIGHT_W: f32 = 102.0;
+const TIMELINE_HEADER_CENTER_GAP: f32 = 8.0;
+const TIMELINE_TRANSPORT_BUTTON_COUNT: f32 = 5.0;
 const MEDIA_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "png", "jpg", "jpeg", "gif", "webp", "wav", "mp3", "flac",
     "ogg",
@@ -84,6 +122,17 @@ pub struct NlaEguiApp {
     preview_texture: Option<TextureHandle>,
     asset_thumbnails: HashMap<Uuid, AssetThumbnail>,
     asset_thumbnail_misses: HashSet<Uuid>,
+    timeline_thumbnails: HashMap<TimelineThumbnailKey, AssetThumbnail>,
+    timeline_thumbnail_misses: HashSet<TimelineThumbnailKey>,
+    audio_peak_caches: HashMap<Uuid, PeakCache>,
+    audio_peak_builds: HashSet<Uuid>,
+    audio_engine: Option<Arc<AudioPlaybackEngine>>,
+    audio_sample_cache: Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
+    audio_decode_in_flight: Arc<Mutex<HashSet<Uuid>>>,
+    audio_decode_failures: Arc<Mutex<HashMap<Uuid, String>>>,
+    timeline_drag: Option<TimelineDrag>,
+    timeline_snap_preview: Option<f64>,
+    timeline_scrub_was_playing: bool,
     preview_frame: Option<PreviewFrameInfo>,
     preview_stats: Option<PreviewStats>,
     last_tick: Instant,
@@ -100,16 +149,104 @@ struct AssetThumbnail {
     size: Vec2,
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct TimelineThumbnailKey {
+    asset_id: Uuid,
+    bucket_millis: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimelineThumbTile {
+    texture_id: TextureId,
+    size: Vec2,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TimelineDrag {
+    Playhead,
+    ClipMove {
+        clip_id: Uuid,
+        start_time: f64,
+        duration: f64,
+    },
+    ClipResizeLeft {
+        clip_id: Uuid,
+        start_time: f64,
+        duration: f64,
+    },
+    ClipResizeRight {
+        clip_id: Uuid,
+        start_time: f64,
+        duration: f64,
+    },
+    MarkerMove {
+        marker_id: Uuid,
+        start_time: f64,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TimelineHit {
+    Ruler,
+    TrackLabel(Uuid),
+    ClipBody(Uuid),
+    ClipLeftEdge(Uuid),
+    ClipRightEdge(Uuid),
+    Marker(Uuid),
+    EmptyTrack,
+    Empty,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimelineRects {
+    outer: Rect,
+    label: Rect,
+    ruler: Rect,
+    tracks: Rect,
+    add_row: Rect,
+    scrollbar: Rect,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimelineClipGeom {
+    clip_id: Uuid,
+    rect: Rect,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimelineMarkerGeom {
+    marker_id: Uuid,
+    hit_rect: Rect,
+}
+
 impl NlaEguiApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         kit::configure_style(&cc.egui_ctx);
-        let editor = EditorState::new();
+        let mut editor = EditorState::new();
+        let audio_engine = match AudioPlaybackEngine::new() {
+            Ok(engine) => Some(Arc::new(engine)),
+            Err(err) => {
+                editor.status = format!("Audio unavailable: {err}");
+                None
+            }
+        };
         Self {
             project_settings: editor.project.settings.clone(),
             editor,
             preview_texture: None,
             asset_thumbnails: HashMap::new(),
             asset_thumbnail_misses: HashSet::new(),
+            timeline_thumbnails: HashMap::new(),
+            timeline_thumbnail_misses: HashSet::new(),
+            audio_peak_caches: HashMap::new(),
+            audio_peak_builds: HashSet::new(),
+            audio_engine,
+            audio_sample_cache: Arc::new(Mutex::new(HashMap::new())),
+            audio_decode_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            audio_decode_failures: Arc::new(Mutex::new(HashMap::new())),
+            timeline_drag: None,
+            timeline_snap_preview: None,
+            timeline_scrub_was_playing: false,
             preview_frame: None,
             preview_stats: None,
             last_tick: Instant::now(),
@@ -142,6 +279,28 @@ impl NlaEguiApp {
         self.preview_stats = None;
         self.asset_thumbnails.clear();
         self.asset_thumbnail_misses.clear();
+        self.timeline_thumbnails.clear();
+        self.timeline_thumbnail_misses.clear();
+        self.audio_peak_caches.clear();
+        self.audio_peak_builds.clear();
+        if let Ok(mut cache) = self.audio_sample_cache.lock() {
+            cache.clear();
+        }
+        if let Ok(mut in_flight) = self.audio_decode_in_flight.lock() {
+            in_flight.clear();
+        }
+        if let Ok(mut failures) = self.audio_decode_failures.lock() {
+            failures.clear();
+        }
+        if let Some(engine) = &self.audio_engine {
+            engine.pause();
+            engine.set_items(Vec::new());
+            engine.set_scrub_hold(false);
+        }
+        self.editor.is_playing = false;
+        self.timeline_drag = None;
+        self.timeline_snap_preview = None;
+        self.timeline_scrub_was_playing = false;
     }
 
     fn open_project_folder(&mut self, folder: PathBuf) -> bool {
@@ -171,15 +330,127 @@ impl NlaEguiApp {
         if !self.editor.is_playing {
             return;
         }
-        let next = self.editor.current_time + delta;
         let duration = self.editor.project.duration();
+
+        if self.audio_engine.is_some() {
+            self.refresh_audio_playback_items();
+            let engine = self.audio_engine.as_ref().unwrap();
+            let time = engine.playhead_seconds();
+            let snapped = snap_time_to_frame(time.min(duration), self.editor.project.settings.fps);
+            self.editor.current_time = snapped;
+            self.editor.preview_dirty = true;
+            if time >= duration {
+                engine.pause();
+                engine.set_scrub_hold(false);
+                self.editor.is_playing = false;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        let next = self.editor.current_time + delta;
         if next >= duration {
-            self.editor.current_time = duration;
+            self.seek_editor(duration, false);
             self.editor.is_playing = false;
         } else {
-            self.editor.seek(next);
+            self.seek_editor(next, false);
         }
         ctx.request_repaint();
+    }
+
+    fn seek_editor(&mut self, time: f64, scrub_audio: bool) {
+        let duration = self.editor.project.duration();
+        let snapped = snap_time_to_frame(
+            time.clamp(0.0, duration),
+            self.editor.project.settings.fps.max(1.0),
+        );
+        self.editor.seek(snapped);
+        let Some(engine) = self.audio_engine.as_ref().map(Arc::clone) else {
+            return;
+        };
+
+        if scrub_audio {
+            self.refresh_audio_playback_items();
+        }
+        engine.seek_seconds(self.editor.current_time);
+        if scrub_audio && !self.editor.is_playing {
+            engine.set_scrub_hold(true);
+            engine.trigger_scrub_preview(
+                ((engine.sample_rate() as f64) * TIMELINE_SCRUB_PREVIEW_SECONDS).round() as u64,
+            );
+            engine.play();
+        }
+    }
+
+    fn toggle_playback(&mut self) {
+        let next_playing = !self.editor.is_playing;
+        if let Some(engine) = self.audio_engine.as_ref().map(Arc::clone) {
+            if next_playing {
+                self.refresh_audio_playback_items();
+                engine.set_scrub_hold(false);
+                engine.seek_seconds(self.editor.current_time);
+                engine.play();
+            } else {
+                engine.set_scrub_hold(false);
+                engine.pause();
+            }
+        }
+        self.editor.is_playing = next_playing;
+    }
+
+    fn refresh_audio_playback_items(&mut self) {
+        let Some(engine) = self.audio_engine.as_ref().map(Arc::clone) else {
+            return;
+        };
+        let Some(project_root) = self.editor.project.project_path.clone() else {
+            engine.set_items(Vec::new());
+            return;
+        };
+
+        let project_snapshot = self.editor.project.clone();
+        let (items, missing) = build_audio_playback_items(
+            &project_snapshot,
+            &project_root,
+            &engine,
+            &self.audio_sample_cache,
+            &self.audio_decode_failures,
+            false,
+        );
+        engine.set_items(items);
+        if missing.is_empty() {
+            return;
+        }
+
+        let missing: HashSet<Uuid> = missing.into_iter().collect();
+        let mut targets = audio_decode_targets_for_project(&project_snapshot, &project_root);
+        targets.retain(|(asset_id, _)| missing.contains(asset_id));
+        let decode_config = AudioDecodeConfig {
+            target_rate: engine.sample_rate(),
+            target_channels: engine.channels(),
+        };
+        schedule_audio_decode_targets(
+            targets,
+            decode_config,
+            Arc::clone(&self.audio_sample_cache),
+            Arc::clone(&self.audio_decode_in_flight),
+            Arc::clone(&self.audio_decode_failures),
+        );
+    }
+
+    fn finish_timeline_scrub(&mut self) {
+        let Some(engine) = self.audio_engine.as_ref() else {
+            self.timeline_scrub_was_playing = false;
+            return;
+        };
+        engine.set_scrub_hold(false);
+        if self.timeline_scrub_was_playing {
+            engine.seek_seconds(self.editor.current_time);
+            engine.play();
+            self.editor.is_playing = true;
+        } else if !self.editor.is_playing {
+            engine.pause();
+        }
+        self.timeline_scrub_was_playing = false;
     }
 
     fn update_preview_texture(&mut self, ctx: &Context) {
@@ -247,6 +518,85 @@ impl NlaEguiApp {
 
         self.asset_thumbnail_misses.insert(asset.id);
         None
+    }
+
+    fn timeline_thumbnail(
+        &mut self,
+        ctx: &Context,
+        asset: &Asset,
+        time_seconds: f64,
+    ) -> Option<(egui::TextureId, Vec2)> {
+        let bucket_millis = (time_seconds.max(0.0).floor() * 1000.0) as u64;
+        let key = TimelineThumbnailKey {
+            asset_id: asset.id,
+            bucket_millis,
+        };
+        if let Some(thumbnail) = self.timeline_thumbnails.get(&key) {
+            return Some((thumbnail.texture.id(), thumbnail.size));
+        }
+        if self.timeline_thumbnail_misses.contains(&key) {
+            return self.asset_thumbnail(ctx, asset);
+        }
+
+        let Some(path) = self
+            .editor
+            .thumbnailer
+            .get_thumbnail_path(asset.id, time_seconds)
+        else {
+            return self.asset_thumbnail(ctx, asset);
+        };
+        if let Some((image, size)) = load_thumbnail_image(&path) {
+            let texture = ctx.load_texture(
+                format!("timeline-thumbnail-{}-{}", asset.id, bucket_millis),
+                image,
+                TextureOptions::LINEAR,
+            );
+            let texture_id = texture.id();
+            self.timeline_thumbnails
+                .insert(key, AssetThumbnail { texture, size });
+            return Some((texture_id, size));
+        }
+
+        self.timeline_thumbnail_misses.insert(key);
+        self.asset_thumbnail(ctx, asset)
+    }
+
+    fn timeline_clip_thumbnail_tiles(
+        &mut self,
+        ctx: &Context,
+        asset: &Asset,
+        clip: &Clip,
+        clip_rect: Rect,
+        zoom: f32,
+    ) -> Vec<TimelineThumbTile> {
+        if !asset.is_visual() || clip_rect.width() <= 8.0 {
+            return Vec::new();
+        }
+
+        let fallback = self.asset_thumbnail(ctx, asset);
+        let mut tile_w = TIMELINE_THUMB_TILE_W.max(1.0);
+        let estimated = (clip_rect.width() / tile_w).ceil().max(1.0) as usize;
+        if estimated > TIMELINE_MAX_THUMB_TILES {
+            tile_w = (clip_rect.width() / TIMELINE_MAX_THUMB_TILES as f32)
+                .ceil()
+                .max(1.0);
+        }
+        let tile_count = (clip_rect.width() / tile_w).ceil().max(1.0) as usize;
+        let tile_time = tile_w as f64 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64;
+        let mut tiles = Vec::with_capacity(tile_count);
+
+        for index in 0..tile_count {
+            let time_in_clip = (index as f64 * tile_time).min(clip.duration.max(0.0));
+            let source_time = clip.trim_in_seconds.max(0.0) + time_in_clip;
+            let tile = self
+                .timeline_thumbnail(ctx, asset, source_time)
+                .or(fallback);
+            if let Some((texture_id, size)) = tile {
+                tiles.push(TimelineThumbTile { texture_id, size });
+            }
+        }
+
+        tiles
     }
 
     fn top_bar(&mut self, ctx: &Context) {
@@ -389,10 +739,10 @@ impl NlaEguiApp {
     fn left_panel(&mut self, ctx: &Context) {
         if self.editor.layout.left_collapsed {
             egui::SidePanel::left("assets_collapsed")
-                .exact_width(36.0)
-                .frame(kit::dock_frame())
+                .exact_width(kit::COLLAPSED_RAIL_W)
+                .frame(kit::collapsed_dock_frame())
                 .show(ctx, |ui| {
-                    if kit::collapsed_rail(ui, "ASSETS", kit::VIDEO).clicked() {
+                    if kit::collapsed_rail_button(ui, "▶").clicked() {
                         self.editor.layout.left_collapsed = false;
                     }
                 });
@@ -522,10 +872,10 @@ impl NlaEguiApp {
     fn right_panel(&mut self, ctx: &Context) {
         if self.editor.layout.right_collapsed {
             egui::SidePanel::right("attributes_collapsed")
-                .exact_width(36.0)
-                .frame(kit::dock_frame())
+                .exact_width(kit::COLLAPSED_RAIL_W)
+                .frame(kit::collapsed_dock_frame())
                 .show(ctx, |ui| {
-                    if kit::collapsed_rail(ui, "ATTR", kit::AUDIO).clicked() {
+                    if kit::collapsed_rail_button(ui, "◀").clicked() {
                         self.editor.layout.right_collapsed = false;
                     }
                 });
@@ -687,6 +1037,7 @@ impl NlaEguiApp {
     fn marker_attributes(&mut self, ui: &mut Ui, marker_id: Uuid) {
         let mut should_sort = false;
         let mut delete_marker = false;
+        let mut marker_changed = false;
         if let Some(marker) = self
             .editor
             .project
@@ -706,27 +1057,36 @@ impl NlaEguiApp {
                     } else {
                         Some(label)
                     };
+                    marker_changed = true;
                 }
                 ui.add_space(kit::FORM_ROW_GAP);
                 let mut description = marker.description.clone().unwrap_or_default();
-                if inspector_text_field(ui, "Description", &mut description) {
+                if inspector_multiline_text_field(
+                    ui,
+                    "Description",
+                    &mut description,
+                    kit::MultilineTextFieldOptions::rows(3),
+                ) {
                     marker.description = if description.trim().is_empty() {
                         None
                     } else {
                         Some(description)
                     };
+                    marker_changed = true;
                 }
                 ui.add_space(kit::FORM_ROW_GAP);
-                let mut color = marker.color.clone().unwrap_or_default();
-                if inspector_text_field(ui, "Color", &mut color) {
-                    marker.color = if color.trim().is_empty() {
-                        None
-                    } else {
-                        Some(color)
-                    };
+                let mut color = marker
+                    .color
+                    .as_deref()
+                    .and_then(parse_hex_color)
+                    .unwrap_or(kit::MARKER);
+                if inspector_color_field(ui, "Color", &mut color) {
+                    marker.color = Some(color_to_hex(color));
+                    marker_changed = true;
                 }
                 if changed {
                     should_sort = true;
+                    marker_changed = true;
                 }
                 ui.add_space(kit::ACTION_GAP);
                 let delete_w = ui.available_width();
@@ -740,6 +1100,9 @@ impl NlaEguiApp {
             self.editor.selection.clear();
             self.editor.preview_dirty = true;
             return;
+        }
+        if marker_changed {
+            self.editor.preview_dirty = true;
         }
         if should_sort {
             self.editor
@@ -777,22 +1140,41 @@ impl NlaEguiApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(kit::PANEL_SUNKEN))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(kit::section_label("Preview"));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let s = &self.editor.project.settings;
-                        ui.label(kit::caption(format!(
-                            "{} x {} @ {:.0}",
-                            s.width, s.height, s.fps
-                        )));
-                    });
-                });
-                ui.separator();
+                let header_h = 30.0;
+                let (header_rect, _) = ui
+                    .allocate_exact_size(Vec2::new(ui.available_width(), header_h), Sense::hover());
+                ui.painter().rect_filled(header_rect, 0.0, kit::CHROME);
+                ui.painter().line_segment(
+                    [header_rect.left_bottom(), header_rect.right_bottom()],
+                    Stroke::new(1.0, kit::BORDER),
+                );
+                let header_inner = header_rect.shrink2(Vec2::new(14.0, 0.0));
+                let title_rect = Rect::from_min_max(
+                    header_inner.left_top(),
+                    Pos2::new(
+                        (header_inner.left() + 180.0).min(header_inner.right()),
+                        header_inner.bottom(),
+                    ),
+                );
+                let mut title_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(title_rect)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                title_ui.label(kit::section_label("Preview"));
+                let s = &self.editor.project.settings;
+                ui.painter().text(
+                    header_inner.right_center(),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("{} x {} @ {:.0}", s.width, s.height, s.fps),
+                    FontId::monospace(11.0),
+                    kit::TEXT_DIM,
+                );
                 let available = ui.available_size();
                 let preview_height = available.y.max(160.0);
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(available.x, preview_height), Sense::hover());
-                self.paint_preview(ui, rect);
+                self.paint_preview(ui, rect.shrink(8.0));
             });
     }
 
@@ -894,103 +1276,224 @@ impl NlaEguiApp {
     }
 
     fn timeline_header(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
+        let duration = self.editor.project.duration().max(10.0);
+        let fps = self.editor.project.settings.fps.max(1.0) as f32;
+        let viewport_w = (ui.available_width() - TIMELINE_LABEL_W).max(1.0);
+        let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
+        self.editor.layout.timeline_zoom =
+            self.editor.layout.timeline_zoom.clamp(fit_zoom, max_zoom);
+
+        let header_w = ui.available_width();
+        let (header_rect, _) =
+            ui.allocate_exact_size(Vec2::new(header_w, TIMELINE_HEADER_H), Sense::hover());
+        let inner_rect = header_rect.shrink2(Vec2::new(TIMELINE_HEADER_PAD_X, 0.0));
+        let right_w = TIMELINE_HEADER_RIGHT_W.min(inner_rect.width() * 0.28);
+        let left_w = TIMELINE_HEADER_LEFT_W
+            .min((inner_rect.width() - right_w - TIMELINE_HEADER_CENTER_GAP).max(0.0));
+        let left_rect = Rect::from_min_max(
+            inner_rect.left_top(),
+            Pos2::new(inner_rect.left() + left_w, inner_rect.bottom()),
+        );
+        let right_rect = Rect::from_min_max(
+            Pos2::new(inner_rect.right() - right_w, inner_rect.top()),
+            inner_rect.right_bottom(),
+        );
+        let center_left = (left_rect.right() + TIMELINE_HEADER_CENTER_GAP).min(right_rect.left());
+        let center_right = (right_rect.left() - TIMELINE_HEADER_CENTER_GAP).max(center_left);
+        let center_region = Rect::from_min_max(
+            Pos2::new(center_left, inner_rect.top()),
+            Pos2::new(center_right, inner_rect.bottom()),
+        );
+        let transport_gap = 4.0;
+        let transport_w = TIMELINE_TRANSPORT_BUTTON_COUNT * kit::TIMELINE_TRANSPORT_BUTTON_W
+            + (TIMELINE_TRANSPORT_BUTTON_COUNT - 1.0) * transport_gap;
+        let transport_rect = centered_child_rect(center_region, transport_w, TIMELINE_HEADER_H);
+
+        let mut left_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        left_ui.set_clip_rect(left_rect);
+        left_ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(kit::section_label("Timeline"));
-            if kit::icon_button(ui, "—").clicked() {
+            ui.add_space(8.0);
+            if kit::timeline_tool_icon_button(ui, "−").clicked() {
+                self.set_timeline_zoom_anchored(
+                    self.editor.layout.timeline_zoom * 0.8,
+                    duration,
+                    viewport_w,
+                );
+            }
+            let zoom = self.editor.layout.timeline_zoom;
+            let zoom_label = if (zoom - fit_zoom).abs() <= 0.5 {
+                "Fit".to_string()
+            } else if (zoom - max_zoom).abs() <= 0.5 {
+                "Frames".to_string()
+            } else {
+                format!("{zoom:.0}px/s")
+            };
+            ui.label(kit::caption(zoom_label));
+            if kit::timeline_tool_icon_button(ui, "+").clicked() {
+                self.set_timeline_zoom_anchored(
+                    self.editor.layout.timeline_zoom * 1.25,
+                    duration,
+                    viewport_w,
+                );
+            }
+            let fit_active = (zoom - fit_zoom).abs() <= 0.5;
+            let frames_active = (zoom - max_zoom).abs() <= 0.5;
+            if kit::timeline_tool_text_button(ui, "Fit", 42.0, fit_active).clicked() {
+                self.set_timeline_zoom_anchored(fit_zoom, duration, viewport_w);
+            }
+            if kit::timeline_tool_text_button(ui, "Frames", 58.0, frames_active).clicked() {
+                self.set_timeline_zoom_anchored(max_zoom, duration, viewport_w);
+            }
+        });
+
+        let mut transport_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(transport_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        transport_ui.set_clip_rect(transport_rect);
+        transport_ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = transport_gap;
+            if kit::timeline_transport_button(ui, "⏮", false).clicked() {
+                self.seek_editor(0.0, false);
+            }
+            if kit::timeline_transport_button(ui, "◀", false).clicked() {
+                self.seek_editor(
+                    previous_frame_time(self.editor.current_time, self.editor.project.settings.fps),
+                    false,
+                );
+            }
+            let play_icon = if self.editor.is_playing { "⏸" } else { "▶" };
+            if kit::timeline_transport_button(ui, play_icon, true).clicked() {
+                self.toggle_playback();
+            }
+            if kit::timeline_transport_button(ui, "▶", false).clicked() {
+                self.seek_editor(
+                    next_frame_time(
+                        self.editor.current_time,
+                        self.editor.project.duration(),
+                        self.editor.project.settings.fps,
+                    ),
+                    false,
+                );
+            }
+            if kit::timeline_transport_button(ui, "⏭", false).clicked() {
+                self.seek_editor(self.editor.project.duration(), false);
+            }
+        });
+
+        let mut right_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(right_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        right_ui.set_clip_rect(right_rect);
+        right_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if kit::timeline_transport_button(ui, "▼", false).clicked() {
                 self.editor.layout.timeline_collapsed = true;
             }
-            ui.separator();
-            if kit::icon_button(ui, if self.editor.is_playing { "II" } else { "▶" }).clicked() {
-                self.editor.is_playing = !self.editor.is_playing;
-            }
-            if kit::icon_button(ui, "‹").clicked() {
-                self.editor.seek((self.editor.current_time - 1.0).max(0.0));
-            }
-            if kit::icon_button(ui, "›").clicked() {
-                self.editor.seek(self.editor.current_time + 1.0);
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    RichText::new(timecode(self.editor.current_time))
-                        .monospace()
-                        .color(kit::TEXT_MUTED)
-                        .size(11.0),
-                );
-            });
+            ui.label(
+                RichText::new(timecode(self.editor.current_time))
+                    .monospace()
+                    .color(kit::TEXT_MUTED)
+                    .size(11.0),
+            );
         });
         ui.separator();
     }
 
     fn paint_timeline(&mut self, ui: &mut Ui) {
-        let label_width = 140.0;
-        let row_h = 36.0;
-        let ruler_h = 24.0;
+        self.paint_timeline_v2(ui);
+    }
+
+    fn paint_timeline_v2(&mut self, ui: &mut Ui) {
+        let available = ui.available_size();
         let duration = self.editor.project.duration().max(10.0);
-        let min_h = ruler_h + self.editor.project.tracks.len() as f32 * row_h + 42.0;
-        let total_h = ui.available_height().max(min_h);
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), total_h),
-            Sense::click_and_drag(),
+        let fps = self.editor.project.settings.fps.max(1.0) as f32;
+        let track_count = self.editor.project.tracks.len().max(1) as f32;
+        let min_h = TIMELINE_RULER_H
+            + track_count * TIMELINE_TRACK_H
+            + TIMELINE_ADD_ROW_H
+            + TIMELINE_SCROLLBAR_H;
+        let total_h = available.y.max(min_h);
+        let (outer, response) =
+            ui.allocate_exact_size(Vec2::new(available.x, total_h), Sense::click_and_drag());
+        let rects = timeline_rects(outer);
+        let viewport_w = rects.tracks.width().max(1.0);
+        let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
+        self.editor.layout.timeline_zoom =
+            self.editor.layout.timeline_zoom.clamp(fit_zoom, max_zoom);
+        let zoom = self
+            .editor
+            .layout
+            .timeline_zoom
+            .max(TIMELINE_MIN_ZOOM_FLOOR);
+        let content_w = (duration as f32 * zoom).max(viewport_w);
+        self.clamp_timeline_scroll(content_w, viewport_w);
+        self.handle_timeline_keyboard(ui, duration, viewport_w);
+        let content_viewport =
+            Rect::from_min_max(rects.ruler.left_top(), rects.tracks.right_bottom());
+        self.handle_timeline_shift_scroll(ui, content_viewport, content_w, viewport_w);
+
+        let painter = ui.painter_at(outer);
+        let content_clip = Rect::from_min_max(
+            rects.ruler.left_top(),
+            Pos2::new(rects.outer.right(), rects.add_row.top()),
         );
-        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-        let painter = ui.painter_at(rect);
-        let timeline_rect = Rect::from_min_max(
-            Pos2::new(rect.left() + label_width, rect.top() + ruler_h),
-            rect.right_bottom(),
-        );
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(12, 13, 15));
+        let content_painter = painter.with_clip_rect(content_clip);
+        painter.rect_filled(outer, 0.0, Color32::from_rgb(12, 13, 15));
+        painter.rect_filled(rects.label, 0.0, kit::PANEL);
+        painter.rect_filled(rects.ruler, 0.0, kit::CHROME);
         painter.line_segment(
             [
-                Pos2::new(rect.left() + label_width, rect.top()),
-                Pos2::new(rect.left() + label_width, rect.bottom()),
+                Pos2::new(rects.tracks.left(), outer.top()),
+                Pos2::new(rects.tracks.left(), outer.bottom()),
             ],
             Stroke::new(1.0, kit::BORDER),
         );
 
-        for i in 0..=6 {
-            let t = duration * i as f64 / 6.0;
-            let x = timeline_rect.left() + timeline_rect.width() * i as f32 / 6.0;
-            painter.line_segment(
-                [
-                    Pos2::new(x, rect.top() + ruler_h - 6.0),
-                    Pos2::new(x, rect.bottom()),
-                ],
-                Stroke::new(1.0, Color32::from_rgb(31, 33, 38)),
-            );
-            painter.text(
-                Pos2::new(x + 4.0, rect.top() + 4.0),
-                egui::Align2::LEFT_TOP,
-                timecode(t),
-                FontId::monospace(10.0),
-                kit::TEXT_MUTED,
-            );
-        }
+        let tracks = self.editor.project.tracks.clone();
+        let clips = self.editor.project.clips.clone();
+        let markers = self.editor.project.markers.clone();
+        let assets_by_id: HashMap<Uuid, Asset> = self
+            .editor
+            .project
+            .assets
+            .iter()
+            .cloned()
+            .map(|asset| (asset.id, asset))
+            .collect();
 
-        for (row, track) in self.editor.project.tracks.iter().enumerate() {
-            let y = timeline_rect.top() + row as f32 * row_h;
-            let row_rect = Rect::from_min_max(
-                Pos2::new(rect.left(), y),
-                Pos2::new(rect.right(), y + row_h),
+        self.paint_timeline_ruler(&content_painter, rects.ruler, duration, zoom, fps);
+
+        let mut clip_geoms = Vec::new();
+        let mut marker_geoms = Vec::new();
+        for (row, track) in tracks.iter().enumerate() {
+            let row_rect = timeline_row_rect(rects, row);
+            let label_rect = Rect::from_min_max(
+                Pos2::new(outer.left(), row_rect.top()),
+                Pos2::new(rects.tracks.left(), row_rect.bottom()),
             );
             let selected = self.editor.selection.track_ids.contains(&track.id);
-            let label_rect = Rect::from_min_max(
-                row_rect.left_top(),
-                Pos2::new(rect.left() + label_width, row_rect.bottom()),
-            );
+            let track_color = track_color(track.track_type);
             painter.rect_filled(
                 label_rect,
                 0.0,
                 if selected {
-                    Color32::from_rgb(28, 51, 40)
+                    Color32::from_rgb(25, 42, 35)
                 } else {
-                    Color32::from_rgb(18, 19, 22)
+                    kit::PANEL
                 },
             );
-            painter.rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(rect.left() + label_width, row_rect.top()),
-                    row_rect.right_bottom(),
-                ),
+            content_painter.rect_filled(
+                row_rect,
                 0.0,
                 if row % 2 == 0 {
                     Color32::from_rgb(14, 15, 17)
@@ -1000,179 +1503,943 @@ impl NlaEguiApp {
             );
             painter.line_segment(
                 [
-                    Pos2::new(rect.left(), row_rect.bottom()),
-                    Pos2::new(rect.right(), row_rect.bottom()),
+                    Pos2::new(outer.left(), row_rect.bottom()),
+                    Pos2::new(rects.tracks.left(), row_rect.bottom()),
                 ],
                 Stroke::new(1.0, kit::BORDER_SOFT),
             );
-            let color = match track.track_type {
-                TrackType::Video => kit::VIDEO,
-                TrackType::Audio => kit::AUDIO,
-                TrackType::Marker => kit::MARKER,
-            };
+            content_painter.line_segment(
+                [
+                    Pos2::new(rects.tracks.left(), row_rect.bottom()),
+                    Pos2::new(rects.tracks.right(), row_rect.bottom()),
+                ],
+                Stroke::new(1.0, kit::BORDER_SOFT),
+            );
             painter.rect_filled(
                 Rect::from_min_size(
-                    Pos2::new(rect.left() + 10.0, y + 10.0),
+                    Pos2::new(label_rect.left() + 12.0, row_rect.center().y - 8.0),
                     Vec2::new(3.0, 16.0),
                 ),
                 1.0,
-                color,
+                track_color,
             );
             painter.text(
-                Pos2::new(rect.left() + 24.0, y + 10.0),
-                egui::Align2::LEFT_TOP,
+                Pos2::new(label_rect.left() + 26.0, row_rect.center().y),
+                egui::Align2::LEFT_CENTER,
                 &track.name,
                 FontId::proportional(12.5),
                 kit::TEXT,
             );
-        }
 
-        let clips = self.editor.project.clips.clone();
-        for clip in clips {
-            if let Some(track_index) = self
-                .editor
-                .project
-                .tracks
-                .iter()
-                .position(|track| track.id == clip.track_id)
-            {
-                let clip_rect = self.clip_rect(&clip, timeline_rect, duration, track_index, row_h);
+            for clip in clips.iter().filter(|clip| clip.track_id == track.id) {
+                let clip_rect =
+                    timeline_clip_rect(clip, row_rect, zoom, self.editor.layout.timeline_scroll_x);
+                clip_geoms.push(TimelineClipGeom {
+                    clip_id: clip.id,
+                    rect: clip_rect,
+                });
                 let selected = self.editor.selection.clip_ids.contains(&clip.id);
-                painter.rect_filled(clip_rect, 4.0, Color32::from_rgb(19, 146, 94));
-                painter.rect_stroke(
+                let asset = assets_by_id.get(&clip.asset_id);
+                let thumbnail_tiles = asset
+                    .filter(|asset| asset.is_visual())
+                    .map(|asset| {
+                        self.timeline_clip_thumbnail_tiles(ui.ctx(), asset, clip, clip_rect, zoom)
+                    })
+                    .unwrap_or_default();
+                let waveform = asset
+                    .filter(|asset| asset.is_audio())
+                    .and_then(|asset| self.audio_peak_cache(ui.ctx(), asset));
+                self.paint_timeline_clip(
+                    &content_painter,
+                    clip,
+                    asset,
                     clip_rect,
-                    4.0,
-                    Stroke::new(
-                        if selected { 2.0 } else { 1.0 },
-                        if selected {
-                            kit::BORDER_FOCUS
-                        } else {
-                            Color32::from_rgb(45, 194, 121)
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                let label = self
-                    .editor
-                    .project
-                    .find_asset(clip.asset_id)
-                    .map(|asset| asset.name.as_str())
-                    .unwrap_or("clip");
-                painter.text(
-                    clip_rect.left_center() + Vec2::new(8.0, -7.0),
-                    egui::Align2::LEFT_TOP,
-                    label,
-                    FontId::proportional(11.0),
-                    kit::TEXT_ON_ACCENT,
+                    track_color,
+                    selected,
+                    &thumbnail_tiles,
+                    waveform.as_ref(),
                 );
             }
-        }
 
-        if let Some(marker_row) = self
-            .editor
-            .project
-            .tracks
-            .iter()
-            .position(|track| track.track_type == TrackType::Marker)
-        {
-            for marker in self.editor.project.markers.iter() {
-                let x = timeline_rect.left()
-                    + (marker.time as f32 / duration as f32) * timeline_rect.width();
-                let y = timeline_rect.top() + marker_row as f32 * row_h;
-                painter.line_segment(
-                    [Pos2::new(x, y + 4.0), Pos2::new(x, y + row_h - 4.0)],
-                    Stroke::new(2.0, kit::MARKER),
-                );
-                painter.circle_filled(Pos2::new(x, y + 8.0), 4.0, kit::MARKER);
-            }
-        }
-
-        let playhead_x = timeline_rect.left()
-            + (self.editor.current_time as f32 / duration as f32) * timeline_rect.width();
-        painter.line_segment(
-            [
-                Pos2::new(playhead_x, rect.top() + ruler_h - 2.0),
-                Pos2::new(playhead_x, rect.bottom()),
-            ],
-            Stroke::new(2.0, kit::PLAYHEAD),
-        );
-        painter.circle_filled(
-            Pos2::new(playhead_x, rect.top() + ruler_h - 2.0),
-            5.0,
-            kit::PLAYHEAD,
-        );
-
-        painter.text(
-            Pos2::new(rect.left() + 14.0, rect.bottom() - 26.0),
-            egui::Align2::LEFT_TOP,
-            "+ Video    + Audio",
-            FontId::proportional(11.0),
-            kit::TEXT_DIM,
-        );
-
-        if let Some(pos) = response.interact_pointer_pos() {
-            if response.dragged() || response.drag_started() {
-                self.scrub_timeline(pos, timeline_rect, duration);
-            } else if response.clicked() {
-                self.handle_timeline_click(pos, timeline_rect, duration, row_h);
-            }
-        }
-    }
-
-    fn clip_rect(
-        &self,
-        clip: &Clip,
-        timeline_rect: Rect,
-        duration: f64,
-        row: usize,
-        row_h: f32,
-    ) -> Rect {
-        let x1 = timeline_rect.left()
-            + (clip.start_time as f32 / duration as f32) * timeline_rect.width();
-        let x2 = timeline_rect.left()
-            + (clip.end_time() as f32 / duration as f32) * timeline_rect.width();
-        let y = timeline_rect.top() + row as f32 * row_h + 6.0;
-        Rect::from_min_max(
-            Pos2::new(x1, y),
-            Pos2::new(x2.max(x1 + 46.0), y + row_h - 12.0),
-        )
-    }
-
-    fn handle_timeline_click(&mut self, pos: Pos2, timeline_rect: Rect, duration: f64, row_h: f32) {
-        if pos.x < timeline_rect.left() {
-            let row = ((pos.y - timeline_rect.top()) / row_h).floor().max(0.0) as usize;
-            if let Some(track) = self.editor.project.tracks.get(row) {
-                self.editor.selection.select_track(track.id);
-            }
-            return;
-        }
-        let time = ((pos.x - timeline_rect.left()) / timeline_rect.width()).clamp(0.0, 1.0) as f64
-            * duration;
-        for clip in self.editor.project.clips.clone() {
-            if let Some(track_index) = self
-                .editor
-                .project
-                .tracks
-                .iter()
-                .position(|track| track.id == clip.track_id)
-            {
-                let rect = self.clip_rect(&clip, timeline_rect, duration, track_index, row_h);
-                if rect.contains(pos) {
-                    self.editor.selection.select_clip(clip.id);
-                    return;
+            if track.track_type == TrackType::Marker {
+                for marker in markers.iter() {
+                    let x = time_to_timeline_x(
+                        marker.time,
+                        rects.tracks.left(),
+                        zoom,
+                        self.editor.layout.timeline_scroll_x,
+                    );
+                    let hit_rect = timeline_marker_hit_rect(marker, row_rect, x);
+                    marker_geoms.push(TimelineMarkerGeom {
+                        marker_id: marker.id,
+                        hit_rect,
+                    });
+                    self.paint_timeline_marker(&content_painter, marker, row_rect, x);
                 }
             }
         }
-        self.editor.seek(time);
+
+        self.paint_add_track_row(ui, &painter, rects);
+        self.paint_timeline_playhead(&content_painter, rects, duration, zoom);
+        if let Some(time) = self.timeline_snap_preview {
+            let x = time_to_timeline_x(
+                time,
+                rects.tracks.left(),
+                zoom,
+                self.editor.layout.timeline_scroll_x,
+            );
+            content_painter.line_segment(
+                [
+                    Pos2::new(x, rects.ruler.top()),
+                    Pos2::new(x, rects.add_row.top()),
+                ],
+                Stroke::new(1.0, Color32::from_rgb(229, 187, 47)),
+            );
+        }
+        self.paint_timeline_scrollbar(ui, &painter, rects, content_w, viewport_w);
+        self.handle_timeline_pointer(
+            ui,
+            &response,
+            rects,
+            &tracks,
+            &clips,
+            &clip_geoms,
+            &marker_geoms,
+            duration,
+            zoom,
+        );
     }
 
-    fn scrub_timeline(&mut self, pos: Pos2, timeline_rect: Rect, duration: f64) {
-        if pos.x < timeline_rect.left() {
+    fn set_timeline_zoom_anchored(&mut self, zoom: f32, duration: f64, viewport_w: f32) {
+        let fps = self.editor.project.settings.fps.max(1.0) as f32;
+        let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
+        let next_zoom = zoom.clamp(fit_zoom, max_zoom);
+        let old_zoom = self
+            .editor
+            .layout
+            .timeline_zoom
+            .max(TIMELINE_MIN_ZOOM_FLOOR);
+        if (next_zoom - old_zoom).abs() < f32::EPSILON {
             return;
         }
-        let time = ((pos.x - timeline_rect.left()) / timeline_rect.width()).clamp(0.0, 1.0) as f64
-            * duration;
-        self.editor.seek(time);
+        let current_time = self.editor.current_time as f32;
+        let anchor_x = current_time * old_zoom - self.editor.layout.timeline_scroll_x;
+        self.editor.layout.timeline_scroll_x = current_time * next_zoom - anchor_x;
+        self.editor.layout.timeline_zoom = next_zoom;
+        let content_w = (duration as f32 * next_zoom).max(viewport_w);
+        self.clamp_timeline_scroll(content_w, viewport_w);
+    }
+
+    fn clamp_timeline_scroll(&mut self, content_w: f32, viewport_w: f32) {
+        let max_scroll = (content_w - viewport_w).max(0.0);
+        if !self.editor.layout.timeline_scroll_x.is_finite() {
+            self.editor.layout.timeline_scroll_x = 0.0;
+        }
+        self.editor.layout.timeline_scroll_x =
+            self.editor.layout.timeline_scroll_x.clamp(0.0, max_scroll);
+    }
+
+    fn handle_timeline_keyboard(&mut self, ui: &mut Ui, duration: f64, viewport_w: f32) {
+        let zoom_in = ui.input(|input| {
+            input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals)
+        });
+        let zoom_out = ui.input(|input| input.key_pressed(egui::Key::Minus));
+        if zoom_in {
+            self.set_timeline_zoom_anchored(
+                self.editor.layout.timeline_zoom * 1.25,
+                duration,
+                viewport_w,
+            );
+        }
+        if zoom_out {
+            self.set_timeline_zoom_anchored(
+                self.editor.layout.timeline_zoom * 0.8,
+                duration,
+                viewport_w,
+            );
+        }
+    }
+
+    fn handle_timeline_shift_scroll(
+        &mut self,
+        ui: &mut Ui,
+        viewport_rect: Rect,
+        content_w: f32,
+        viewport_w: f32,
+    ) {
+        let Some(pointer) = ui.ctx().pointer_hover_pos() else {
+            return;
+        };
+        if !viewport_rect.contains(pointer) {
+            return;
+        }
+        let (shift, smooth_delta, wheel_delta) = ui.input(|input| {
+            let wheel_delta = input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::MouseWheel {
+                        delta, modifiers, ..
+                    } if modifiers.shift => Some(*delta),
+                    _ => None,
+                })
+                .fold(Vec2::ZERO, |sum, delta| sum + delta);
+            (
+                input.modifiers.shift,
+                input.smooth_scroll_delta,
+                wheel_delta,
+            )
+        });
+        let content_delta = if wheel_delta.x.abs() > 0.0 {
+            wheel_delta.x
+        } else if wheel_delta.y.abs() > 0.0 {
+            wheel_delta.y
+        } else if smooth_delta.x.abs() > 0.0 {
+            smooth_delta.x
+        } else if shift && smooth_delta.y.abs() > 0.0 {
+            smooth_delta.y
+        } else {
+            0.0
+        };
+        if content_delta.abs() > 0.0 {
+            self.editor.layout.timeline_scroll_x -= content_delta;
+            self.clamp_timeline_scroll(content_w, viewport_w);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn paint_timeline_ruler(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        duration: f64,
+        zoom: f32,
+        fps: f32,
+    ) {
+        let scroll_x = self.editor.layout.timeline_scroll_x;
+        let visible_start = (scroll_x / zoom).max(0.0) as f64;
+        let visible_end = ((scroll_x + rect.width()) / zoom).min(duration as f32) as f64;
+        let target_seconds = (90.0 / zoom.max(0.1)).max(0.5) as f64;
+        let major_step = nice_timeline_step(target_seconds);
+        let first_tick = (visible_start / major_step).floor() as i32 - 1;
+        let last_tick = (visible_end / major_step).ceil() as i32 + 1;
+
+        if zoom >= 240.0 {
+            let fps = fps.max(1.0);
+            let first_frame = (visible_start * fps as f64).floor() as i64 - 1;
+            let last_frame = (visible_end * fps as f64).ceil() as i64 + 1;
+            let fps_i = fps.round().max(1.0) as i64;
+            for frame in first_frame..=last_frame {
+                if frame < 0 || frame % fps_i == 0 {
+                    continue;
+                }
+                let t = frame as f64 / fps as f64;
+                let x = time_to_timeline_x(t, rect.left(), zoom, scroll_x);
+                if rect.x_range().contains(x) {
+                    painter.line_segment(
+                        [
+                            Pos2::new(x, rect.bottom() - 4.0),
+                            Pos2::new(x, rect.bottom()),
+                        ],
+                        Stroke::new(1.0, kit::BORDER_SOFT),
+                    );
+                }
+            }
+        }
+
+        for tick in first_tick..=last_tick {
+            if tick < 0 {
+                continue;
+            }
+            let t = tick as f64 * major_step;
+            if t > duration {
+                continue;
+            }
+            let x = time_to_timeline_x(t, rect.left(), zoom, scroll_x);
+            if x < rect.left() - 80.0 || x > rect.right() + 8.0 {
+                continue;
+            }
+            painter.line_segment(
+                [
+                    Pos2::new(x, rect.bottom() - 10.0),
+                    Pos2::new(x, rect.bottom()),
+                ],
+                Stroke::new(1.0, Color32::from_rgb(52, 55, 62)),
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(x, rect.bottom()),
+                    Pos2::new(x, rect.bottom() + rect.height() * 12.0),
+                ],
+                Stroke::new(1.0, Color32::from_rgb(25, 27, 31)),
+            );
+            painter.text(
+                Pos2::new(x + 4.0, rect.top() + 4.0),
+                egui::Align2::LEFT_TOP,
+                timeline_ruler_label(t),
+                FontId::monospace(9.0),
+                kit::TEXT_DIM,
+            );
+        }
+    }
+
+    fn paint_timeline_clip(
+        &self,
+        painter: &egui::Painter,
+        clip: &Clip,
+        asset: Option<&Asset>,
+        rect: Rect,
+        accent: Color32,
+        selected: bool,
+        thumbnail_tiles: &[TimelineThumbTile],
+        waveform: Option<&PeakCache>,
+    ) {
+        let fill = if selected {
+            Color32::from_rgb(18, 50, 36)
+        } else {
+            Color32::from_rgb(23, 25, 29)
+        };
+        let type_stroke = if selected {
+            accent
+        } else {
+            accent.gamma_multiply(0.58)
+        };
+        let selection_stroke = if selected {
+            kit::BORDER_FOCUS
+        } else {
+            type_stroke
+        };
+        painter.rect_filled(rect, 4.0, fill);
+        if !thumbnail_tiles.is_empty() {
+            paint_clip_thumbnail_strip(painter, rect, thumbnail_tiles);
+            if selected {
+                painter.rect_filled(rect, 4.0, Color32::from_rgba_unmultiplied(20, 90, 54, 44));
+            }
+        }
+        if let Some(cache) = waveform {
+            paint_clip_waveform(painter, rect.shrink2(Vec2::new(2.0, 4.0)), clip, cache);
+        }
+        painter.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(if selected { 2.0 } else { 1.0 }, selection_stroke),
+            egui::StrokeKind::Inside,
+        );
+        painter.rect_filled(
+            Rect::from_min_size(rect.left_top(), Vec2::new(4.0, rect.height())),
+            2.0,
+            type_stroke,
+        );
+        let label = asset
+            .map(asset_display_name)
+            .unwrap_or_else(|| "Clip".to_string());
+        painter.text(
+            rect.left_center() + Vec2::new(8.0, -6.5),
+            egui::Align2::LEFT_TOP,
+            label,
+            FontId::proportional(10.5),
+            kit::TEXT_ON_ACCENT,
+        );
+    }
+
+    fn paint_timeline_marker(
+        &self,
+        painter: &egui::Painter,
+        marker: &crate::state::Marker,
+        row_rect: Rect,
+        x: f32,
+    ) {
+        let selected = self.editor.selection.marker_ids.contains(&marker.id);
+        let color = marker
+            .color
+            .as_deref()
+            .and_then(parse_hex_color)
+            .unwrap_or(kit::MARKER);
+        let marker_color = if selected {
+            color
+        } else {
+            color.gamma_multiply(0.62)
+        };
+        painter.line_segment(
+            [
+                Pos2::new(x, row_rect.top() + 4.0),
+                Pos2::new(x, row_rect.bottom() - 4.0),
+            ],
+            Stroke::new(if selected { 2.0 } else { 1.25 }, marker_color),
+        );
+        let points = [
+            Pos2::new(x - 4.5, row_rect.bottom() - 1.0),
+            Pos2::new(x + 4.5, row_rect.bottom() - 1.0),
+            Pos2::new(x, row_rect.bottom() - 8.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            points.to_vec(),
+            marker_color,
+            Stroke::NONE,
+        ));
+        if let Some((label, label_rect)) = marker_label_and_rect(marker, row_rect, x) {
+            painter.rect_filled(
+                label_rect,
+                5.0,
+                if selected {
+                    Color32::from_rgb(18, 50, 36)
+                } else {
+                    kit::PANEL_RAISED
+                },
+            );
+            painter.rect_stroke(
+                label_rect,
+                5.0,
+                Stroke::new(
+                    if selected { 2.0 } else { 1.0 },
+                    if selected {
+                        kit::BORDER_FOCUS
+                    } else {
+                        marker_color
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                label_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                FontId::proportional(10.0),
+                kit::TEXT,
+            );
+        }
+    }
+
+    fn paint_timeline_playhead(
+        &self,
+        painter: &egui::Painter,
+        rects: TimelineRects,
+        duration: f64,
+        zoom: f32,
+    ) {
+        let t = snap_time_to_frame(self.editor.current_time, self.editor.project.settings.fps)
+            .clamp(0.0, duration);
+        let x = time_to_timeline_x(
+            t,
+            rects.tracks.left(),
+            zoom,
+            self.editor.layout.timeline_scroll_x,
+        );
+        painter.line_segment(
+            [
+                Pos2::new(x, rects.ruler.top()),
+                Pos2::new(x, rects.add_row.top()),
+            ],
+            Stroke::new(1.5, kit::PLAYHEAD),
+        );
+        let head = [
+            Pos2::new(x - 6.0, rects.ruler.top()),
+            Pos2::new(x + 6.0, rects.ruler.top()),
+            Pos2::new(x, rects.ruler.top() + 8.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            head.to_vec(),
+            kit::PLAYHEAD,
+            Stroke::NONE,
+        ));
+    }
+
+    fn paint_add_track_row(&mut self, ui: &mut Ui, painter: &egui::Painter, rects: TimelineRects) {
+        painter.rect_filled(rects.add_row, 0.0, kit::PANEL);
+        painter.line_segment(
+            [
+                Pos2::new(rects.outer.left(), rects.add_row.top()),
+                Pos2::new(rects.outer.right(), rects.add_row.top()),
+            ],
+            Stroke::new(1.0, kit::BORDER_SOFT),
+        );
+        let video_rect = Rect::from_min_size(
+            rects.add_row.left_top() + Vec2::new(12.0, 10.0),
+            Vec2::new(56.0, 24.0),
+        );
+        let audio_rect = Rect::from_min_size(
+            rects.add_row.left_top() + Vec2::new(72.0, 10.0),
+            Vec2::new(56.0, 24.0),
+        );
+        let video_resp = ui.interact(
+            video_rect,
+            ui.id().with("timeline-add-video"),
+            Sense::click(),
+        );
+        let audio_resp = ui.interact(
+            audio_rect,
+            ui.id().with("timeline-add-audio"),
+            Sense::click(),
+        );
+        if video_resp.clicked() {
+            self.editor.project.add_video_track();
+        }
+        if audio_resp.clicked() {
+            self.editor.project.add_audio_track();
+        }
+        paint_dashed_timeline_button(
+            painter,
+            video_rect,
+            "+ Video",
+            kit::VIDEO,
+            video_resp.hovered(),
+        );
+        paint_dashed_timeline_button(
+            painter,
+            audio_rect,
+            "+ Audio",
+            kit::AUDIO,
+            audio_resp.hovered(),
+        );
+    }
+
+    fn paint_timeline_scrollbar(
+        &mut self,
+        ui: &mut Ui,
+        painter: &egui::Painter,
+        rects: TimelineRects,
+        content_w: f32,
+        viewport_w: f32,
+    ) {
+        if content_w <= viewport_w + 1.0 {
+            return;
+        }
+        let max_scroll = (content_w - viewport_w).max(0.0);
+        let handle_w =
+            (viewport_w / content_w * rects.scrollbar.width()).clamp(42.0, rects.scrollbar.width());
+        let handle_x = rects.scrollbar.left()
+            + (self.editor.layout.timeline_scroll_x / max_scroll)
+                * (rects.scrollbar.width() - handle_w);
+        let handle = Rect::from_min_size(
+            Pos2::new(handle_x, rects.scrollbar.center().y - 3.0),
+            Vec2::new(handle_w, 6.0),
+        );
+        painter.rect_filled(
+            rects.scrollbar.shrink2(Vec2::new(0.0, 4.0)),
+            3.0,
+            kit::FIELD_BG,
+        );
+        painter.rect_filled(handle, 3.0, kit::BORDER);
+        let response = ui.interact(
+            rects.scrollbar,
+            ui.id().with("timeline-scrollbar"),
+            Sense::click_and_drag(),
+        );
+        if (response.dragged() || response.clicked()) && response.interact_pointer_pos().is_some() {
+            let pos = response.interact_pointer_pos().unwrap();
+            let ratio = ((pos.x - rects.scrollbar.left() - handle_w * 0.5)
+                / (rects.scrollbar.width() - handle_w).max(1.0))
+            .clamp(0.0, 1.0);
+            self.editor.layout.timeline_scroll_x = ratio * max_scroll;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_timeline_pointer(
+        &mut self,
+        ui: &mut Ui,
+        response: &egui::Response,
+        rects: TimelineRects,
+        tracks: &[crate::state::Track],
+        clips: &[Clip],
+        clip_geoms: &[TimelineClipGeom],
+        marker_geoms: &[TimelineMarkerGeom],
+        duration: f64,
+        zoom: f32,
+    ) {
+        if let Some(pos) = ui
+            .ctx()
+            .pointer_hover_pos()
+            .filter(|pos| rects.outer.contains(*pos))
+        {
+            let cursor = match self.timeline_drag {
+                Some(TimelineDrag::ClipResizeLeft { .. })
+                | Some(TimelineDrag::ClipResizeRight { .. })
+                | Some(TimelineDrag::MarkerMove { .. })
+                | Some(TimelineDrag::Playhead) => egui::CursorIcon::ResizeHorizontal,
+                Some(TimelineDrag::ClipMove { .. }) => egui::CursorIcon::Grabbing,
+                None => match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
+                    TimelineHit::ClipLeftEdge(_)
+                    | TimelineHit::ClipRightEdge(_)
+                    | TimelineHit::Marker(_)
+                    | TimelineHit::Ruler => egui::CursorIcon::ResizeHorizontal,
+                    TimelineHit::ClipBody(_) => egui::CursorIcon::Grab,
+                    TimelineHit::TrackLabel(_) => egui::CursorIcon::PointingHand,
+                    TimelineHit::EmptyTrack | TimelineHit::Empty => egui::CursorIcon::Default,
+                },
+            };
+            ui.ctx().set_cursor_icon(cursor);
+        }
+
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
+                    TimelineHit::Ruler => {
+                        self.timeline_scrub_was_playing = self.editor.is_playing;
+                        if self.editor.is_playing {
+                            self.editor.is_playing = false;
+                        }
+                        self.timeline_drag = Some(TimelineDrag::Playhead);
+                        self.seek_from_timeline_pos(
+                            pos,
+                            rects,
+                            duration,
+                            zoom,
+                            true,
+                            timeline_snapping_enabled(ui),
+                        );
+                    }
+                    TimelineHit::ClipLeftEdge(id) => {
+                        if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
+                            self.editor.selection.select_clip(id);
+                            self.timeline_drag = Some(TimelineDrag::ClipResizeLeft {
+                                clip_id: id,
+                                start_time: clip.start_time,
+                                duration: clip.duration,
+                            });
+                        }
+                    }
+                    TimelineHit::ClipRightEdge(id) => {
+                        if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
+                            self.editor.selection.select_clip(id);
+                            self.timeline_drag = Some(TimelineDrag::ClipResizeRight {
+                                clip_id: id,
+                                start_time: clip.start_time,
+                                duration: clip.duration,
+                            });
+                        }
+                    }
+                    TimelineHit::ClipBody(id) => {
+                        if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
+                            self.editor.selection.select_clip(id);
+                            self.timeline_drag = Some(TimelineDrag::ClipMove {
+                                clip_id: id,
+                                start_time: clip.start_time,
+                                duration: clip.duration,
+                            });
+                        }
+                    }
+                    TimelineHit::Marker(id) => {
+                        if let Some(marker) = self
+                            .editor
+                            .project
+                            .markers
+                            .iter()
+                            .find(|marker| marker.id == id)
+                        {
+                            self.editor.selection.select_marker(id);
+                            self.timeline_drag = Some(TimelineDrag::MarkerMove {
+                                marker_id: id,
+                                start_time: marker.time,
+                            });
+                        }
+                    }
+                    TimelineHit::TrackLabel(id) => self.editor.selection.select_track(id),
+                    TimelineHit::EmptyTrack | TimelineHit::Empty => {}
+                }
+            }
+        }
+
+        if response.dragged() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let drag_delta_x = response
+                    .total_drag_delta()
+                    .map(|delta| delta.x)
+                    .unwrap_or_else(|| response.drag_delta().x);
+                self.apply_timeline_drag(
+                    drag_delta_x,
+                    pos,
+                    rects,
+                    duration,
+                    zoom,
+                    timeline_snapping_enabled(ui),
+                );
+            }
+        }
+
+        let primary_down = ui.input(|input| input.pointer.primary_down());
+        if !primary_down && self.timeline_drag.is_some() {
+            let was_playhead_drag = matches!(self.timeline_drag, Some(TimelineDrag::Playhead));
+            self.timeline_drag = None;
+            self.timeline_snap_preview = None;
+            if was_playhead_drag {
+                self.finish_timeline_scrub();
+            }
+        }
+
+        if response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
+                    TimelineHit::Ruler => self.seek_from_timeline_pos(
+                        pos,
+                        rects,
+                        duration,
+                        zoom,
+                        false,
+                        timeline_snapping_enabled(ui),
+                    ),
+                    TimelineHit::ClipLeftEdge(id)
+                    | TimelineHit::ClipRightEdge(id)
+                    | TimelineHit::ClipBody(id) => self.editor.selection.select_clip(id),
+                    TimelineHit::Marker(id) => self.editor.selection.select_marker(id),
+                    TimelineHit::TrackLabel(id) => self.editor.selection.select_track(id),
+                    TimelineHit::EmptyTrack => self.editor.selection.clear(),
+                    TimelineHit::Empty => {}
+                }
+            }
+        }
+    }
+
+    fn seek_from_timeline_pos(
+        &mut self,
+        pos: Pos2,
+        rects: TimelineRects,
+        duration: f64,
+        zoom: f32,
+        scrub_audio: bool,
+        snap_enabled: bool,
+    ) {
+        let raw_time = ((pos.x - rects.tracks.left() + self.editor.layout.timeline_scroll_x) / zoom)
+            .clamp(0.0, duration as f32) as f64;
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let raw_frames = frames_from_seconds(raw_time, fps);
+        let snap_threshold_frames =
+            (TIMELINE_SNAP_THRESHOLD_PX / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64) * fps;
+        let seek_frames = if snap_enabled {
+            let targets = self.timeline_snap_targets(None, None, false);
+            if let Some(hit) =
+                best_snap_delta_frames(&[raw_frames], &targets, snap_threshold_frames)
+            {
+                self.timeline_snap_preview = if scrub_audio {
+                    Some(seconds_from_frames(hit.target.frame, fps))
+                } else {
+                    None
+                };
+                raw_frames + hit.delta_frames
+            } else {
+                self.timeline_snap_preview = None;
+                raw_frames
+            }
+        } else {
+            self.timeline_snap_preview = None;
+            raw_frames
+        };
+        let max_frames = frames_from_seconds(duration, fps).round();
+        let time = seconds_from_frames(seek_frames.round().clamp(0.0, max_frames), fps);
+        self.seek_editor(time, scrub_audio);
+    }
+
+    fn apply_timeline_drag(
+        &mut self,
+        delta_x: f32,
+        pos: Pos2,
+        rects: TimelineRects,
+        duration: f64,
+        zoom: f32,
+        snap_enabled: bool,
+    ) {
+        let Some(drag) = self.timeline_drag else {
+            return;
+        };
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let delta_frames = (delta_x as f64 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64) * fps;
+        let min_duration_frames = (0.1 * fps).ceil().max(1.0);
+        let snap_threshold_frames = (TIMELINE_SNAP_THRESHOLD_PX / zoom as f64) * fps;
+        match drag {
+            TimelineDrag::Playhead => {
+                self.seek_from_timeline_pos(pos, rects, duration, zoom, true, snap_enabled)
+            }
+            TimelineDrag::ClipMove {
+                clip_id,
+                start_time,
+                duration: clip_duration,
+            } => {
+                let start_frames = frames_from_seconds(start_time, fps).round();
+                let duration_frames = frames_from_seconds(clip_duration, fps).round();
+                let mut new_start_frames = start_frames + delta_frames;
+                if snap_enabled {
+                    let targets = self.timeline_snap_targets(Some(clip_id), None, true);
+                    if let Some(hit) = best_snap_delta_frames(
+                        &[new_start_frames, new_start_frames + duration_frames],
+                        &targets,
+                        snap_threshold_frames,
+                    ) {
+                        new_start_frames += hit.delta_frames;
+                        self.timeline_snap_preview =
+                            Some(seconds_from_frames(hit.target.frame, fps));
+                    } else {
+                        self.timeline_snap_preview = None;
+                    }
+                } else {
+                    self.timeline_snap_preview = None;
+                }
+                let new_start = seconds_from_frames(new_start_frames.round().max(0.0), fps);
+                if self.editor.project.move_clip(clip_id, new_start) {
+                    self.editor.preview_dirty = true;
+                }
+            }
+            TimelineDrag::ClipResizeLeft {
+                clip_id,
+                start_time,
+                duration: clip_duration,
+            } => {
+                let end_frames = frames_from_seconds(start_time + clip_duration, fps).round();
+                let mut new_start_frames =
+                    frames_from_seconds(start_time, fps).round() + delta_frames;
+                if snap_enabled {
+                    let targets = self.timeline_snap_targets(Some(clip_id), None, true);
+                    if let Some(hit) =
+                        best_snap_delta_frames(&[new_start_frames], &targets, snap_threshold_frames)
+                    {
+                        new_start_frames += hit.delta_frames;
+                        self.timeline_snap_preview =
+                            Some(seconds_from_frames(hit.target.frame, fps));
+                    } else {
+                        self.timeline_snap_preview = None;
+                    }
+                } else {
+                    self.timeline_snap_preview = None;
+                }
+                new_start_frames = new_start_frames.clamp(0.0, end_frames - min_duration_frames);
+                let new_duration_frames = (end_frames - new_start_frames).max(min_duration_frames);
+                let new_start = seconds_from_frames(new_start_frames.round(), fps);
+                let new_duration = seconds_from_frames(new_duration_frames.round(), fps);
+                if self
+                    .editor
+                    .project
+                    .resize_clip(clip_id, new_start, new_duration)
+                {
+                    self.editor.preview_dirty = true;
+                }
+            }
+            TimelineDrag::ClipResizeRight {
+                clip_id,
+                start_time,
+                duration: clip_duration,
+            } => {
+                let start_frames = frames_from_seconds(start_time, fps).round();
+                let mut new_end_frames =
+                    start_frames + frames_from_seconds(clip_duration, fps).round() + delta_frames;
+                if snap_enabled {
+                    let targets = self.timeline_snap_targets(Some(clip_id), None, true);
+                    if let Some(hit) =
+                        best_snap_delta_frames(&[new_end_frames], &targets, snap_threshold_frames)
+                    {
+                        new_end_frames += hit.delta_frames;
+                        self.timeline_snap_preview =
+                            Some(seconds_from_frames(hit.target.frame, fps));
+                    } else {
+                        self.timeline_snap_preview = None;
+                    }
+                } else {
+                    self.timeline_snap_preview = None;
+                }
+                let new_duration_frames = (new_end_frames - start_frames).max(min_duration_frames);
+                let new_duration = seconds_from_frames(new_duration_frames.round(), fps);
+                if self
+                    .editor
+                    .project
+                    .resize_clip(clip_id, start_time, new_duration)
+                {
+                    self.editor.preview_dirty = true;
+                }
+            }
+            TimelineDrag::MarkerMove {
+                marker_id,
+                start_time,
+            } => {
+                let mut new_frames = frames_from_seconds(start_time, fps).round() + delta_frames;
+                if snap_enabled {
+                    let targets = self.timeline_snap_targets(None, Some(marker_id), true);
+                    if let Some(hit) =
+                        best_snap_delta_frames(&[new_frames], &targets, snap_threshold_frames)
+                    {
+                        new_frames += hit.delta_frames;
+                        self.timeline_snap_preview =
+                            Some(seconds_from_frames(hit.target.frame, fps));
+                    } else {
+                        self.timeline_snap_preview = None;
+                    }
+                } else {
+                    self.timeline_snap_preview = None;
+                }
+                let max_frames = frames_from_seconds(duration, fps).round();
+                let new_time = seconds_from_frames(new_frames.round().clamp(0.0, max_frames), fps);
+                if self.editor.project.move_marker(marker_id, new_time) {
+                    self.editor.preview_dirty = true;
+                }
+            }
+        }
+    }
+
+    fn timeline_snap_targets(
+        &self,
+        exclude_clip: Option<Uuid>,
+        exclude_marker: Option<Uuid>,
+        include_playhead: bool,
+    ) -> Vec<SnapTarget> {
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let mut targets = Vec::new();
+        if include_playhead {
+            targets.push(SnapTarget::playhead(frames_from_seconds(
+                self.editor.current_time,
+                fps,
+            )));
+        }
+        for clip in self.editor.project.clips.iter() {
+            if Some(clip.id) == exclude_clip {
+                continue;
+            }
+            targets.push(SnapTarget::clip_edge(
+                frames_from_seconds(clip.start_time, fps).round(),
+                clip.id,
+            ));
+            targets.push(SnapTarget::clip_edge(
+                frames_from_seconds(clip.end_time(), fps).round(),
+                clip.id,
+            ));
+        }
+        for marker in self.editor.project.markers.iter() {
+            if Some(marker.id) == exclude_marker {
+                continue;
+            }
+            targets.push(SnapTarget::marker(
+                frames_from_seconds(marker.time, fps).round(),
+                marker.id,
+            ));
+        }
+        targets
+    }
+
+    fn audio_peak_cache(&mut self, ctx: &Context, asset: &Asset) -> Option<PeakCache> {
+        if let Some(cache) = self.audio_peak_caches.get(&asset.id) {
+            return Some(cache.clone());
+        }
+        let project_root = self.editor.project_root()?.to_path_buf();
+        let source = resolve_audio_source(&project_root, asset)?;
+        let cache_path = peak_cache_path(&project_root, asset.id);
+        if cache_path.exists() {
+            if let Ok(cache) = load_peak_cache(&cache_path) {
+                if cache_matches_source(&cache, &source).unwrap_or(false) {
+                    self.audio_peak_caches.insert(asset.id, cache.clone());
+                    return Some(cache);
+                }
+            }
+        }
+        if self.audio_peak_builds.insert(asset.id) {
+            let ctx = ctx.clone();
+            let asset_id = asset.id;
+            std::thread::spawn(move || {
+                let _ = build_and_store_peak_cache(
+                    &project_root,
+                    asset_id,
+                    &source,
+                    PeakBuildConfig::default(),
+                );
+                ctx.request_repaint();
+            });
+        }
+        None
     }
 
     fn modals(&mut self, ctx: &Context) {
@@ -1622,24 +2889,12 @@ impl NlaEguiApp {
             self.editor.overlays.providers = false;
         }
     }
-}
 
-impl eframe::App for NlaEguiApp {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.poll_automation();
-        self.keep_automation_responsive(&ctx);
-        self.tick_playback(&ctx);
-        self.update_preview_texture(&ctx);
-
-        self.top_bar(&ctx);
-        self.left_panel(&ctx);
-        self.right_panel(&ctx);
-
+    fn status_bar(&mut self, ctx: &Context) {
         egui::TopBottomPanel::bottom("status")
             .exact_height(kit::STATUS_BAR_H)
             .frame(kit::chrome_frame())
-            .show(&ctx, |ui| {
+            .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(&self.editor.status)
@@ -1659,7 +2914,22 @@ impl eframe::App for NlaEguiApp {
                     });
                 });
             });
+    }
+}
 
+impl eframe::App for NlaEguiApp {
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.poll_automation();
+        self.keep_automation_responsive(&ctx);
+        self.tick_playback(&ctx);
+        self.update_preview_texture(&ctx);
+
+        self.top_bar(&ctx);
+        // App-wide bars claim root space first; docked editor panels sit above the status bar.
+        self.status_bar(&ctx);
+        self.left_panel(&ctx);
+        self.right_panel(&ctx);
         self.timeline_panel(&ctx);
         self.central_preview(&ctx);
 
@@ -1689,6 +2959,541 @@ const ASSET_ROW_THUMBNAIL_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 const ASSET_THUMBNAIL_IMAGE_INSET: f32 = 3.0;
 const ASSET_ROW_TEXT_GAP: f32 = 10.0;
 const INSPECTOR_THUMBNAIL_SIZE: Vec2 = Vec2::new(68.0, 50.0);
+
+fn timeline_rects(outer: Rect) -> TimelineRects {
+    let ruler = Rect::from_min_max(
+        Pos2::new(outer.left() + TIMELINE_LABEL_W, outer.top()),
+        Pos2::new(outer.right(), outer.top() + TIMELINE_RULER_H),
+    );
+    let add_row = Rect::from_min_max(
+        Pos2::new(
+            outer.left(),
+            outer.bottom() - TIMELINE_ADD_ROW_H - TIMELINE_SCROLLBAR_H,
+        ),
+        Pos2::new(outer.right(), outer.bottom() - TIMELINE_SCROLLBAR_H),
+    );
+    let tracks = Rect::from_min_max(
+        Pos2::new(outer.left() + TIMELINE_LABEL_W, ruler.bottom()),
+        Pos2::new(outer.right(), add_row.top()),
+    );
+    let label = Rect::from_min_max(
+        outer.left_top(),
+        Pos2::new(outer.left() + TIMELINE_LABEL_W, add_row.top()),
+    );
+    let scrollbar = Rect::from_min_max(
+        Pos2::new(outer.left() + TIMELINE_LABEL_W, add_row.bottom()),
+        outer.right_bottom(),
+    );
+    TimelineRects {
+        outer,
+        label,
+        ruler,
+        tracks,
+        add_row,
+        scrollbar,
+    }
+}
+
+fn timeline_row_rect(rects: TimelineRects, row: usize) -> Rect {
+    let top = rects.tracks.top() + row as f32 * TIMELINE_TRACK_H;
+    Rect::from_min_max(
+        Pos2::new(rects.tracks.left(), top),
+        Pos2::new(rects.tracks.right(), top + TIMELINE_TRACK_H),
+    )
+}
+
+fn centered_child_rect(parent: Rect, width: f32, height: f32) -> Rect {
+    let size = Vec2::new(
+        width.min(parent.width()).max(0.0),
+        height.min(parent.height()).max(0.0),
+    );
+    let left = (parent.center().x - size.x * 0.5).clamp(parent.left(), parent.right() - size.x);
+    let top = (parent.center().y - size.y * 0.5).clamp(parent.top(), parent.bottom() - size.y);
+    Rect::from_min_size(Pos2::new(left, top), size)
+}
+
+fn timeline_snapping_enabled(ui: &Ui) -> bool {
+    ui.input(|input| !input.modifiers.alt)
+}
+
+fn marker_label_and_rect(
+    marker: &crate::state::Marker,
+    row_rect: Rect,
+    x: f32,
+) -> Option<(&str, Rect)> {
+    let label = marker
+        .label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())?;
+    Some((
+        label,
+        Rect::from_min_size(
+            Pos2::new(x + 8.0, row_rect.top() + 7.0),
+            Vec2::new(TIMELINE_MARKER_LABEL_W, TIMELINE_MARKER_LABEL_H),
+        ),
+    ))
+}
+
+fn timeline_marker_hit_rect(marker: &crate::state::Marker, row_rect: Rect, x: f32) -> Rect {
+    let stem_hit = Rect::from_center_size(
+        Pos2::new(x, row_rect.center().y),
+        Vec2::new(TIMELINE_MARKER_HIT_W, row_rect.height()),
+    );
+    if let Some((_, label_rect)) = marker_label_and_rect(marker, row_rect, x) {
+        rect_union(stem_hit, label_rect.expand2(Vec2::new(6.0, 4.0)))
+    } else {
+        stem_hit
+    }
+}
+
+fn rect_union(a: Rect, b: Rect) -> Rect {
+    Rect::from_min_max(
+        Pos2::new(a.left().min(b.left()), a.top().min(b.top())),
+        Pos2::new(a.right().max(b.right()), a.bottom().max(b.bottom())),
+    )
+}
+
+fn timeline_clip_rect(clip: &Clip, row_rect: Rect, zoom: f32, scroll_x: f32) -> Rect {
+    let x1 = time_to_timeline_x(clip.start_time, row_rect.left(), zoom, scroll_x);
+    let x2 = time_to_timeline_x(clip.end_time(), row_rect.left(), zoom, scroll_x);
+    let y = row_rect.top() + TIMELINE_CLIP_Y_PAD;
+    Rect::from_min_max(
+        Pos2::new(x1, y),
+        Pos2::new(
+            x2.max(x1 + TIMELINE_MIN_CLIP_W),
+            y + TIMELINE_CLIP_H.min(row_rect.height() - TIMELINE_CLIP_Y_PAD * 2.0),
+        ),
+    )
+}
+
+fn time_to_timeline_x(time: f64, left: f32, zoom: f32, scroll_x: f32) -> f32 {
+    left + time as f32 * zoom - scroll_x
+}
+
+fn timeline_zoom_bounds(duration: f32, viewport_w: f32, fps: f32) -> (f32, f32) {
+    let duration = duration.max(0.01);
+    let min_zoom = (viewport_w / duration).max(TIMELINE_MIN_ZOOM_FLOOR);
+    let max_zoom = (fps.max(1.0) * TIMELINE_MAX_PX_PER_FRAME).max(min_zoom);
+    (min_zoom, max_zoom)
+}
+
+fn nice_timeline_step(target_seconds: f64) -> f64 {
+    const STEPS: &[f64] = &[0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0];
+    STEPS
+        .iter()
+        .copied()
+        .find(|step| *step >= target_seconds)
+        .unwrap_or(*STEPS.last().unwrap())
+}
+
+fn timeline_ruler_label(seconds: f64) -> String {
+    let total_seconds = seconds.round().max(0.0) as u64;
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    format!("{minutes}:{seconds:02}")
+}
+
+fn track_color(track_type: TrackType) -> Color32 {
+    match track_type {
+        TrackType::Video => kit::VIDEO,
+        TrackType::Audio => kit::AUDIO,
+        TrackType::Marker => kit::MARKER,
+    }
+}
+
+fn build_audio_playback_items(
+    project: &Project,
+    project_root: &Path,
+    engine: &AudioPlaybackEngine,
+    sample_cache: &Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
+    failure_cache: &Arc<Mutex<HashMap<Uuid, String>>>,
+    allow_decode: bool,
+) -> (Vec<PlaybackItem>, Vec<Uuid>) {
+    let mut track_types = HashMap::new();
+    let mut track_volumes = HashMap::new();
+    for track in project.tracks.iter() {
+        track_types.insert(track.id, track.track_type);
+        track_volumes.insert(track.id, track.volume);
+    }
+
+    let sample_rate = engine.sample_rate() as f64;
+    let channels = engine.channels();
+    let mut items = Vec::new();
+    let mut missing = Vec::new();
+
+    for clip in project.clips.iter() {
+        let Some(track_type) = track_types.get(&clip.track_id) else {
+            continue;
+        };
+        if *track_type != TrackType::Audio && *track_type != TrackType::Video {
+            continue;
+        }
+        let Some(asset) = project.find_asset(clip.asset_id) else {
+            continue;
+        };
+        if !asset.is_audio() && !asset.is_video() {
+            continue;
+        }
+        let Some(source_path) = resolve_audio_or_video_source(project_root, asset) else {
+            continue;
+        };
+
+        let known_failure = failure_cache
+            .lock()
+            .ok()
+            .map(|failures| failures.contains_key(&asset.id))
+            .unwrap_or(false);
+        if known_failure {
+            continue;
+        }
+
+        let cached = sample_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&asset.id).cloned());
+        let samples = if let Some(samples) = cached {
+            samples
+        } else if !allow_decode {
+            missing.push(asset.id);
+            continue;
+        } else {
+            let decode_config = AudioDecodeConfig {
+                target_rate: engine.sample_rate(),
+                target_channels: engine.channels(),
+            };
+            let decoded = match decode_audio_to_f32(&source_path, decode_config) {
+                Ok(decoded) => decoded,
+                Err(err) => {
+                    eprintln!(
+                        "[AUDIO ERROR] Playback decode failed asset_id={} err={}",
+                        asset.id, err
+                    );
+                    if let Ok(mut failures) = failure_cache.lock() {
+                        failures.insert(asset.id, err);
+                    }
+                    continue;
+                }
+            };
+            let samples = Arc::new(decoded.samples);
+            if let Ok(mut cache) = sample_cache.lock() {
+                cache.insert(asset.id, Arc::clone(&samples));
+            }
+            samples
+        };
+
+        let total_frames = (samples.len() / channels.max(1) as usize) as u64;
+        let trim_frames = (clip.trim_in_seconds.max(0.0) * sample_rate).round() as u64;
+        if trim_frames >= total_frames {
+            continue;
+        }
+        let clip_frames = (clip.duration.max(0.0) * sample_rate).round() as u64;
+        let available_frames = total_frames.saturating_sub(trim_frames);
+        let frame_count = clip_frames.min(available_frames);
+        if frame_count == 0 {
+            continue;
+        }
+        let start_frame = (clip.start_time.max(0.0) * sample_rate).round() as u64;
+        let track_volume = track_volumes.get(&clip.track_id).copied().unwrap_or(1.0);
+        let gain = (track_volume * clip.volume).max(0.0);
+
+        items.push(PlaybackItem {
+            samples,
+            start_frame,
+            sample_offset_frames: trim_frames,
+            frame_count,
+            channels,
+            gain,
+        });
+    }
+
+    (items, missing)
+}
+
+fn audio_decode_targets_for_project(
+    project: &Project,
+    project_root: &Path,
+) -> Vec<(Uuid, PathBuf)> {
+    let mut track_types = HashMap::new();
+    for track in project.tracks.iter() {
+        track_types.insert(track.id, track.track_type);
+    }
+
+    let mut seen = HashSet::new();
+    let mut targets = Vec::new();
+    for clip in project.clips.iter() {
+        let Some(track_type) = track_types.get(&clip.track_id) else {
+            continue;
+        };
+        if *track_type != TrackType::Audio && *track_type != TrackType::Video {
+            continue;
+        }
+        let Some(asset) = project.find_asset(clip.asset_id) else {
+            continue;
+        };
+        if !asset.is_audio() && !asset.is_video() {
+            continue;
+        }
+        if !seen.insert(asset.id) {
+            continue;
+        }
+        if let Some(source_path) = resolve_audio_or_video_source(project_root, asset) {
+            targets.push((asset.id, source_path));
+        }
+    }
+    targets
+}
+
+fn schedule_audio_decode_targets(
+    targets: Vec<(Uuid, PathBuf)>,
+    decode_config: AudioDecodeConfig,
+    sample_cache: Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
+    in_flight: Arc<Mutex<HashSet<Uuid>>>,
+    failure_cache: Arc<Mutex<HashMap<Uuid, String>>>,
+) {
+    for (asset_id, source_path) in targets {
+        let known_failure = failure_cache
+            .lock()
+            .ok()
+            .map(|failures| failures.contains_key(&asset_id))
+            .unwrap_or(false);
+        if known_failure {
+            continue;
+        }
+
+        let cache_hit = sample_cache
+            .lock()
+            .ok()
+            .map(|cache| cache.contains_key(&asset_id))
+            .unwrap_or(false);
+        if cache_hit {
+            continue;
+        }
+
+        let mut inflight_guard = match in_flight.lock() {
+            Ok(guard) => guard,
+            Err(_) => continue,
+        };
+        if inflight_guard.contains(&asset_id) {
+            continue;
+        }
+        inflight_guard.insert(asset_id);
+        drop(inflight_guard);
+
+        let sample_cache = Arc::clone(&sample_cache);
+        let in_flight = Arc::clone(&in_flight);
+        let failure_cache = Arc::clone(&failure_cache);
+
+        std::thread::spawn(move || {
+            let result = decode_audio_to_f32(&source_path, decode_config);
+
+            match result {
+                Ok(decoded) => {
+                    let samples = Arc::new(decoded.samples);
+                    if let Ok(mut cache) = sample_cache.lock() {
+                        cache.insert(asset_id, Arc::clone(&samples));
+                    }
+                }
+                Err(err) => {
+                    let first_failure = failure_cache
+                        .lock()
+                        .ok()
+                        .map(|mut failures| failures.insert(asset_id, err.clone()).is_none())
+                        .unwrap_or(false);
+                    if first_failure {
+                        eprintln!(
+                            "[AUDIO WARN] Playback decode skipped asset_id={} err={}",
+                            asset_id, err
+                        );
+                    }
+                }
+            }
+
+            if let Ok(mut inflight) = in_flight.lock() {
+                inflight.remove(&asset_id);
+            }
+        });
+    }
+}
+
+fn timeline_hit(
+    pos: Pos2,
+    rects: TimelineRects,
+    tracks: &[crate::state::Track],
+    clip_geoms: &[TimelineClipGeom],
+    marker_geoms: &[TimelineMarkerGeom],
+) -> TimelineHit {
+    if rects.ruler.contains(pos) {
+        return TimelineHit::Ruler;
+    }
+    if pos.x < rects.tracks.left() && pos.y >= rects.tracks.top() && pos.y < rects.add_row.top() {
+        let row = ((pos.y - rects.tracks.top()) / TIMELINE_TRACK_H)
+            .floor()
+            .max(0.0) as usize;
+        return tracks
+            .get(row)
+            .map(|track| TimelineHit::TrackLabel(track.id))
+            .unwrap_or(TimelineHit::Empty);
+    }
+    for geom in clip_geoms.iter().rev() {
+        let hit_rect = geom.rect.expand2(Vec2::new(TIMELINE_HANDLE_W, 0.0));
+        if !hit_rect.contains(pos) {
+            continue;
+        }
+        if (pos.x - geom.rect.left()).abs() <= TIMELINE_HANDLE_W {
+            return TimelineHit::ClipLeftEdge(geom.clip_id);
+        }
+        if (pos.x - geom.rect.right()).abs() <= TIMELINE_HANDLE_W {
+            return TimelineHit::ClipRightEdge(geom.clip_id);
+        }
+        if geom.rect.contains(pos) {
+            return TimelineHit::ClipBody(geom.clip_id);
+        }
+    }
+    for geom in marker_geoms.iter().rev() {
+        if geom.hit_rect.contains(pos) {
+            return TimelineHit::Marker(geom.marker_id);
+        }
+    }
+    if rects.tracks.contains(pos) {
+        TimelineHit::EmptyTrack
+    } else {
+        TimelineHit::Empty
+    }
+}
+
+fn paint_clip_thumbnail_strip(painter: &egui::Painter, rect: Rect, tiles: &[TimelineThumbTile]) {
+    if tiles.is_empty() {
+        return;
+    }
+    let clip_painter = painter.with_clip_rect(rect.shrink(1.0));
+    let tile_w = (rect.width() / tiles.len() as f32).max(1.0);
+    for (index, tile) in tiles.iter().enumerate() {
+        let x = rect.left() + index as f32 * tile_w;
+        if x > rect.right() {
+            break;
+        }
+        let image_bounds = Rect::from_min_max(
+            Pos2::new(x, rect.top()),
+            Pos2::new((x + tile_w).min(rect.right()), rect.bottom()),
+        );
+        let scale = (image_bounds.width() / tile.size.x)
+            .max(image_bounds.height() / tile.size.y)
+            .max(0.01);
+        let image_rect = Rect::from_center_size(image_bounds.center(), tile.size * scale);
+        clip_painter.image(
+            tile.texture_id,
+            image_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::from_white_alpha(145),
+        );
+    }
+}
+
+fn paint_clip_waveform(painter: &egui::Painter, rect: Rect, clip: &Clip, cache: &PeakCache) {
+    let Some(level) = cache.levels.first() else {
+        return;
+    };
+    if level.peaks.is_empty() || rect.width() <= 1.0 {
+        return;
+    }
+    let sample_rate = cache.sample_rate.max(1) as f64;
+    let start_frame = (clip.trim_in_seconds.max(0.0) * sample_rate).floor() as usize;
+    let end_frame = ((clip.trim_in_seconds + clip.duration).max(0.0) * sample_rate).ceil() as usize;
+    let start_index = start_frame / level.block_size.max(1);
+    let end_index = (end_frame / level.block_size.max(1))
+        .min(level.peaks.len())
+        .max(start_index + 1);
+    if start_index >= level.peaks.len() {
+        return;
+    }
+    let peaks = &level.peaks[start_index..end_index];
+    let width = rect.width().round().max(1.0) as usize;
+    let step = peaks.len() as f32 / width as f32;
+    let center_y = rect.center().y;
+    let amp = rect.height() * 0.44;
+    let clip_painter = painter.with_clip_rect(rect);
+    for x in 0..width {
+        let start = (x as f32 * step).floor() as usize;
+        let end = ((x + 1) as f32 * step).ceil() as usize;
+        let end = end.min(peaks.len()).max(start + 1);
+        let mut min = i16::MAX;
+        let mut max = i16::MIN;
+        for peak in &peaks[start..end] {
+            min = min.min(peak.min_l.min(peak.min_r));
+            max = max.max(peak.max_l.max(peak.max_r));
+        }
+        let min = min as f32 / i16::MAX as f32;
+        let max = max as f32 / i16::MAX as f32;
+        let y1 = center_y - max * amp;
+        let y2 = center_y - min * amp;
+        let px = rect.left() + x as f32;
+        clip_painter.line_segment(
+            [Pos2::new(px, y1), Pos2::new(px, y2)],
+            Stroke::new(1.0, Color32::from_gray(158)),
+        );
+    }
+}
+
+fn paint_dashed_timeline_button(
+    painter: &egui::Painter,
+    rect: Rect,
+    label: &str,
+    color: Color32,
+    hovered: bool,
+) {
+    painter.rect_filled(
+        rect,
+        4.0,
+        if hovered {
+            color.gamma_multiply(0.16)
+        } else {
+            Color32::TRANSPARENT
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        4.0,
+        Stroke::new(1.0, color.gamma_multiply(if hovered { 0.8 } else { 0.45 })),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(10.5),
+        if hovered { color } else { kit::TEXT_DIM },
+    );
+}
+
+fn parse_hex_color(value: &str) -> Option<Color32> {
+    let value = value.trim().trim_start_matches('#');
+    if value.len() != 6 {
+        return None;
+    }
+    let rgb = u32::from_str_radix(value, 16).ok()?;
+    Some(Color32::from_rgb(
+        ((rgb >> 16) & 0xff) as u8,
+        ((rgb >> 8) & 0xff) as u8,
+        (rgb & 0xff) as u8,
+    ))
+}
+
+fn color_to_hex(color: Color32) -> String {
+    let [r, g, b, _] = color.to_srgba_unmultiplied();
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+fn previous_frame_time(current: f64, fps: f64) -> f64 {
+    let fps = fps.max(1.0);
+    let frame = (current * fps).round() - 1.0;
+    (frame.max(0.0)) / fps
+}
+
+fn next_frame_time(current: f64, duration: f64, fps: f64) -> f64 {
+    let fps = fps.max(1.0);
+    let frame = (current * fps).round() + 1.0;
+    (frame / fps).min(duration)
+}
 
 fn asset_row(
     ui: &mut Ui,
@@ -2030,6 +3835,23 @@ fn inspector_text_field(ui: &mut Ui, label: &str, value: &mut String) -> bool {
     kit::field_label(ui, label);
     let width = ui.available_width();
     kit::singleline_text_field(ui, value, width).changed()
+}
+
+fn inspector_multiline_text_field(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut String,
+    options: kit::MultilineTextFieldOptions,
+) -> bool {
+    kit::field_label(ui, label);
+    let width = ui.available_width();
+    kit::multiline_text_field(ui, value, width, options).changed()
+}
+
+fn inspector_color_field(ui: &mut Ui, label: &str, color: &mut Color32) -> bool {
+    kit::field_label(ui, label);
+    let width = ui.available_width();
+    kit::color_field(ui, color, width).changed()
 }
 
 fn inspector_card(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {

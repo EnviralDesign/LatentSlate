@@ -1,11 +1,11 @@
+use crate::state::Asset;
+use image::imageops::FilterType;
+use image::{DynamicImage, GenericImageView, ImageFormat};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
-use crate::state::Asset;
-use image::imageops::FilterType;
-use image::{DynamicImage, ImageFormat, GenericImageView};
 
 const THUMBNAIL_INTERVAL_SECONDS: f64 = 1.0;
 const THUMBNAIL_HEIGHT: u32 = 120;
@@ -32,7 +32,7 @@ impl Thumbnailer {
         if !cache_root.exists() {
             let _ = std::fs::create_dir_all(&cache_root);
         }
-        
+
         Self {
             // Limit to 2 concurrent thumbnail tasks to avoid choking the CPU
             semaphore: Arc::new(Semaphore::new(2)),
@@ -101,7 +101,7 @@ impl Thumbnailer {
         self.generate_from_source(asset, &absolute_source_path, force, source_kind)
             .await
     }
-    
+
     /// Get the path to the thumbnail for a specific time
     /// Returns None if not generated yet
     pub fn get_thumbnail_path(&self, asset_id: uuid::Uuid, time_seconds: f64) -> Option<PathBuf> {
@@ -109,12 +109,12 @@ impl Thumbnailer {
         if !dir.exists() {
             return None;
         }
-        
+
         // Map time to index (fps=1/interval)
         // thumb_0001.jpg covers 0-interval
         // thumb_0002.jpg covers interval-2*interval
         let index = (time_seconds / THUMBNAIL_INTERVAL_SECONDS).floor() as u32 + 1;
-        
+
         let path = dir.join(format!("thumb_{:04}.jpg", index));
         if path.exists() {
             Some(path)
@@ -264,7 +264,10 @@ fn resolve_generative_source(
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)) {
+                if extensions
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                {
                     return Some(path);
                 }
             }

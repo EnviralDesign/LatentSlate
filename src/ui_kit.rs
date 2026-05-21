@@ -2,10 +2,12 @@
 
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use eframe::egui::{
-    self, Align, Color32, Context, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect,
-    Response, RichText, Sense, Shadow, Stroke, StrokeKind, Ui, Vec2,
+    self, Align, Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
+    Frame, Layout, Margin, Pos2, Rect, Response, RichText, Sense, Shadow, Stroke, StrokeKind, Ui,
+    Vec2,
 };
 use egui_extras::{Size, StripBuilder};
 
@@ -26,8 +28,8 @@ pub const TEXT_MUTED: Color32 = Color32::from_rgb(145, 151, 162);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(86, 91, 101);
 pub const PRIMARY: Color32 = Color32::from_rgb(31, 178, 91);
 pub const PRIMARY_HOVER: Color32 = Color32::from_rgb(39, 204, 108);
-pub const VIDEO: Color32 = Color32::from_rgb(38, 204, 122);
-pub const IMAGE: Color32 = Color32::from_rgb(42, 184, 129);
+pub const VIDEO: Color32 = Color32::from_rgb(148, 126, 245);
+pub const IMAGE: Color32 = Color32::from_rgb(50, 178, 195);
 pub const AUDIO: Color32 = Color32::from_rgb(79, 149, 232);
 pub const MARKER: Color32 = Color32::from_rgb(244, 127, 45);
 pub const DANGER: Color32 = Color32::from_rgb(235, 75, 75);
@@ -59,11 +61,15 @@ pub const FIELD_LABEL_H: f32 = 12.0;
 pub const FIELD_TEXT_SIZE: f32 = 12.5;
 pub const FIELD_INNER_MARGIN_X: i8 = 8;
 pub const FIELD_INNER_MARGIN_Y: i8 = 5;
+pub const MULTILINE_FIELD_ROW_H: f32 = 20.0;
+pub const DEFAULT_MULTILINE_FIELD_ROWS: usize = 4;
 pub const STANDALONE_BUTTON_H: f32 = 32.0;
 pub const STANDALONE_BUTTON_RADIUS: u8 = 5;
 pub const STANDALONE_BUTTON_TEXT_SIZE: f32 = 12.0;
 pub const PRIMARY_BUTTON_H: f32 = STANDALONE_BUTTON_H;
 pub const SECONDARY_BUTTON_H: f32 = STANDALONE_BUTTON_H;
+pub const ICON_BUTTON_W: f32 = 24.0;
+pub const ICON_BUTTON_H: f32 = 22.0;
 pub const CLOSE_BUTTON_SIZE: f32 = STANDALONE_BUTTON_H;
 pub const CLOSE_BUTTON_RADIUS: u8 = STANDALONE_BUTTON_RADIUS;
 pub const CLOSE_BUTTON_ICON_SIZE: f32 = 11.0;
@@ -91,8 +97,17 @@ pub const ACTION_GAP: f32 = 12.0;
 pub const MEDIA_PILL_H: f32 = 24.0;
 pub const MEDIA_PILL_MIN_W: f32 = 42.0;
 pub const MEDIA_PILL_MIN_GAP: f32 = 4.0;
+pub const TIMELINE_TOOL_BUTTON_H: f32 = 20.0;
+pub const TIMELINE_TOOL_ICON_W: f32 = 22.0;
+pub const TIMELINE_TRANSPORT_BUTTON_W: f32 = 26.0;
+pub const TIMELINE_TRANSPORT_BUTTON_H: f32 = 24.0;
+pub const TIMELINE_TEXT_BUTTON_RADIUS: u8 = 3;
+pub const COLLAPSED_RAIL_W: f32 = 34.0;
+pub const COLLAPSED_RAIL_BUTTON_SIZE: f32 = 24.0;
 
 pub fn configure_style(ctx: &Context) {
+    configure_fonts(ctx);
+
     let mut visuals = egui::Visuals::dark();
     visuals.window_fill = PANEL_RAISED;
     visuals.panel_fill = PANEL;
@@ -123,6 +138,61 @@ pub fn configure_style(ctx: &Context) {
     });
 }
 
+fn configure_fonts(ctx: &Context) {
+    let mut fonts = FontDefinitions::default();
+    let mut installed = false;
+
+    installed |= install_font(
+        &mut fonts,
+        "segoe_ui",
+        Path::new(r"C:\Windows\Fonts\segoeui.ttf"),
+        FontFamily::Proportional,
+        true,
+    );
+    installed |= install_font(
+        &mut fonts,
+        "segoe_ui_symbol",
+        Path::new(r"C:\Windows\Fonts\seguisym.ttf"),
+        FontFamily::Proportional,
+        false,
+    );
+    installed |= install_font(
+        &mut fonts,
+        "segoe_ui_symbol_mono",
+        Path::new(r"C:\Windows\Fonts\seguisym.ttf"),
+        FontFamily::Monospace,
+        false,
+    );
+
+    if installed {
+        ctx.set_fonts(fonts);
+    }
+}
+
+fn install_font(
+    fonts: &mut FontDefinitions,
+    name: &str,
+    path: &Path,
+    family: FontFamily,
+    primary: bool,
+) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    fonts
+        .font_data
+        .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
+    if let Some(family_fonts) = fonts.families.get_mut(&family) {
+        let font_name = name.to_owned();
+        if primary {
+            family_fonts.insert(0, font_name);
+        } else {
+            family_fonts.push(font_name);
+        }
+    }
+    true
+}
+
 pub fn chrome_frame() -> Frame {
     Frame::new()
         .fill(CHROME)
@@ -135,6 +205,13 @@ pub fn dock_frame() -> Frame {
         .fill(PANEL)
         .stroke(Stroke::new(1.0, BORDER))
         .inner_margin(Margin::same(PANEL_PAD))
+}
+
+pub fn collapsed_dock_frame() -> Frame {
+    Frame::new()
+        .fill(PANEL)
+        .stroke(Stroke::new(1.0, BORDER))
+        .inner_margin(Margin::same(0))
 }
 
 pub fn timeline_frame() -> Frame {
@@ -694,6 +771,135 @@ pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Res
     output.response.response
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MultilineTextFieldOptions {
+    pub rows: usize,
+}
+
+impl Default for MultilineTextFieldOptions {
+    fn default() -> Self {
+        Self {
+            rows: DEFAULT_MULTILINE_FIELD_ROWS,
+        }
+    }
+}
+
+impl MultilineTextFieldOptions {
+    pub fn rows(rows: usize) -> Self {
+        Self { rows: rows.max(1) }
+    }
+}
+
+pub fn multiline_text_field(
+    ui: &mut Ui,
+    value: &mut String,
+    width: f32,
+    options: MultilineTextFieldOptions,
+) -> Response {
+    let rows = options.rows.max(1);
+    let height = multiline_text_field_height(rows);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Min)),
+    );
+    child.set_min_size(rect.size());
+    child.set_clip_rect(rect);
+    configure_field_widget_style(&mut child, rect.width());
+
+    let field_id = child.next_auto_id();
+    child.skip_ahead_auto_ids(1);
+
+    ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
+    let output = egui::TextEdit::multiline(value)
+        .id(field_id)
+        .desired_width(rect.width())
+        .desired_rows(rows)
+        .min_size(rect.size())
+        .lock_focus(true)
+        .text_color(TEXT)
+        .font(FontId::proportional(FIELD_TEXT_SIZE))
+        .frame(field_text_frame())
+        .show(&mut child);
+    ui.painter().rect_stroke(
+        rect,
+        field_radius(),
+        field_stroke(&output),
+        StrokeKind::Inside,
+    );
+    output.response.response
+}
+
+pub fn multiline_text_field_height(rows: usize) -> f32 {
+    rows.max(1) as f32 * MULTILINE_FIELD_ROW_H + FIELD_INNER_MARGIN_Y as f32 * 2.0
+}
+
+pub fn color_field(ui: &mut Ui, color: &mut Color32, width: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
+    let mut response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let popup_id = response.id.with("color_picker_popup");
+    let popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let rounding = field_radius();
+    let stroke = if response.has_focus() || popup_open {
+        Stroke::new(1.0, BORDER_FOCUS)
+    } else if response.hovered() {
+        Stroke::new(1.0, BORDER)
+    } else {
+        Stroke::new(1.0, BORDER_SOFT)
+    };
+
+    ui.painter().rect_filled(rect, rounding, FIELD_BG);
+    let swatch_rect = rect.shrink2(Vec2::new(3.0, 3.0));
+    ui.painter()
+        .rect_filled(swatch_rect, field_radius(), *color);
+    ui.painter()
+        .rect_stroke(rect, rounding, stroke, StrokeKind::Inside);
+
+    let label = color_hex_label(*color);
+    let label_color = readable_text_on_color(*color);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(FIELD_TEXT_SIZE),
+        label_color,
+    );
+
+    let mut changed = false;
+    egui::Popup::menu(&response)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.spacing_mut().slider_width = 260.0;
+            changed |= egui::color_picker::color_picker_color32(
+                ui,
+                color,
+                egui::color_picker::Alpha::Opaque,
+            );
+        });
+    if changed {
+        response.mark_changed();
+    }
+
+    response.on_hover_text("Click to edit color")
+}
+
+fn color_hex_label(color: Color32) -> String {
+    let [r, g, b, _] = color.to_srgba_unmultiplied();
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+fn readable_text_on_color(color: Color32) -> Color32 {
+    let [r, g, b, _] = color.to_srgba_unmultiplied();
+    let luma = (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0;
+    if luma > 0.56 {
+        PANEL_SUNKEN
+    } else {
+        TEXT_ON_ACCENT
+    }
+}
+
 fn field_text_frame() -> Frame {
     Frame::new()
         .fill(Color32::TRANSPARENT)
@@ -864,7 +1070,7 @@ pub fn panel_header(ui: &mut Ui, label: &str, toggle: Option<&str>, mut on_toggl
 
 pub fn section_label(label: &str) -> RichText {
     RichText::new(label.to_ascii_uppercase())
-        .size(10.0)
+        .size(10.5)
         .color(TEXT_MUTED)
         .strong()
 }
@@ -945,7 +1151,7 @@ pub fn icon_button(ui: &mut Ui, label: &str) -> Response {
     painted_button(
         ui,
         label,
-        Vec2::new(24.0, 22.0),
+        Vec2::new(ICON_BUTTON_W, ICON_BUTTON_H),
         ButtonSkin {
             fill: Color32::from_rgb(27, 28, 32),
             hover_fill: Color32::from_rgb(38, 40, 45),
@@ -954,6 +1160,73 @@ pub fn icon_button(ui: &mut Ui, label: &str) -> Response {
             text: TEXT_MUTED,
             text_size: 11.0,
             radius: 4,
+        },
+    )
+}
+
+pub fn timeline_tool_icon_button(ui: &mut Ui, label: &str) -> Response {
+    timeline_subtle_button(
+        ui,
+        label,
+        Vec2::new(TIMELINE_TOOL_ICON_W, TIMELINE_TOOL_BUTTON_H),
+        false,
+        11.0,
+        TIMELINE_TEXT_BUTTON_RADIUS,
+    )
+}
+
+pub fn timeline_tool_text_button(ui: &mut Ui, label: &str, width: f32, active: bool) -> Response {
+    timeline_subtle_button(
+        ui,
+        label,
+        Vec2::new(width, TIMELINE_TOOL_BUTTON_H),
+        active,
+        10.5,
+        TIMELINE_TEXT_BUTTON_RADIUS,
+    )
+}
+
+pub fn timeline_transport_button(ui: &mut Ui, label: &str, active: bool) -> Response {
+    timeline_subtle_button(
+        ui,
+        label,
+        Vec2::new(TIMELINE_TRANSPORT_BUTTON_W, TIMELINE_TRANSPORT_BUTTON_H),
+        active,
+        11.0,
+        4,
+    )
+}
+
+fn timeline_subtle_button(
+    ui: &mut Ui,
+    label: &str,
+    size: Vec2,
+    active: bool,
+    text_size: f32,
+    radius: u8,
+) -> Response {
+    let fill = if active {
+        Color32::from_rgb(31, 33, 38)
+    } else {
+        Color32::TRANSPARENT
+    };
+    let stroke = if active {
+        BORDER_SOFT
+    } else {
+        Color32::TRANSPARENT
+    };
+    painted_button(
+        ui,
+        label,
+        size,
+        ButtonSkin {
+            fill,
+            hover_fill: Color32::from_rgb(32, 34, 39),
+            active_fill: Color32::from_rgb(35, 39, 43),
+            stroke,
+            text: if active { TEXT } else { TEXT_MUTED },
+            text_size,
+            radius,
         },
     )
 }
@@ -1197,32 +1470,56 @@ pub fn empty_state(ui: &mut Ui, title: &str, detail: &str) {
     });
 }
 
-pub fn collapsed_rail(ui: &mut Ui, label: &str, accent: Color32) -> Response {
+pub fn collapsed_rail_button(ui: &mut Ui, icon: &str) -> Response {
+    let size = ui.available_size();
     let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 140.0), Sense::click());
+        ui.allocate_exact_size(Vec2::new(size.x, size.y.max(1.0)), Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let fill = if response.hovered() {
-        Color32::from_rgb(26, 28, 32)
+        Color32::from_rgb(20, 22, 25)
     } else {
         PANEL
     };
     ui.painter().rect_filled(rect, 0.0, fill);
-    ui.painter().rect_filled(
-        Rect::from_min_size(rect.left_top(), Vec2::new(3.0, rect.height())),
-        0.0,
-        accent,
+
+    let button_rect = Rect::from_center_size(
+        Pos2::new(
+            rect.center().x,
+            rect.top() + PANEL_PAD as f32 + COLLAPSED_RAIL_BUTTON_SIZE * 0.5,
+        ),
+        Vec2::splat(COLLAPSED_RAIL_BUTTON_SIZE),
     );
-    let chars: Vec<char> = label.chars().filter(|ch| !ch.is_whitespace()).collect();
-    let step = 12.0;
-    let start_y = rect.center().y - (chars.len().saturating_sub(1) as f32 * step / 2.0);
-    for (index, ch) in chars.iter().enumerate() {
-        ui.painter().text(
-            egui::pos2(rect.center().x + 1.0, start_y + index as f32 * step),
-            egui::Align2::CENTER_CENTER,
-            ch,
-            FontId::proportional(10.0),
-            TEXT_MUTED,
+    let button_fill = if response.is_pointer_button_down_on() {
+        FIELD_BG_ACTIVE
+    } else if response.hovered() {
+        FIELD_BG_HOVER
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter()
+        .rect_filled(button_rect, CornerRadius::same(4), button_fill);
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_stroke(
+            button_rect,
+            CornerRadius::same(4),
+            Stroke::new(
+                1.0,
+                if response.has_focus() {
+                    BORDER_FOCUS
+                } else {
+                    BORDER_SOFT
+                },
+            ),
+            StrokeKind::Inside,
         );
     }
+    ui.painter().text(
+        button_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        FontId::proportional(12.0),
+        TEXT_MUTED,
+    );
     response
 }
 

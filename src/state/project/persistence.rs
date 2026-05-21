@@ -3,20 +3,21 @@ use std::io;
 use std::path::Path;
 use uuid::Uuid;
 
-use crate::state::{Asset, AssetKind, GenerativeConfig};
 use super::{Project, ProjectSettings};
+use crate::state::{Asset, AssetKind, GenerativeConfig};
 
 impl Project {
-// =========================================================================
+    // =========================================================================
     // Save/Load
     // =========================================================================
 
     /// Save the project to its folder
     #[allow(dead_code)]
     pub fn save(&self) -> io::Result<()> {
-        let path = self.project_path.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "Project path not set")
-        })?;
+        let path = self
+            .project_path
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Project path not set"))?;
         self.save_to(path)
     }
 
@@ -83,11 +84,7 @@ impl Project {
         Ok(())
     }
 
-    pub fn set_generative_provider_id(
-        &mut self,
-        asset_id: Uuid,
-        provider_id: Option<Uuid>,
-    ) {
+    pub fn set_generative_provider_id(&mut self, asset_id: Uuid, provider_id: Option<Uuid>) {
         let _ = self.update_generative_config(asset_id, |config| {
             config.provider_id = provider_id;
         });

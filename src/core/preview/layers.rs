@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use image::{Rgba, RgbaImage};
 use image::imageops::{overlay, resize, FilterType};
+use image::{Rgba, RgbaImage};
 use imageproc::geometric_transformations::{rotate_about_center, Interpolation};
 
 use crate::state::ClipTransform;

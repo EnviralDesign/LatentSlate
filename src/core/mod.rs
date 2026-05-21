@@ -1,13 +1,13 @@
-pub mod thumbnailer;
+pub mod audio;
 pub mod automation;
+pub mod comfyui_workflow;
+pub mod generation;
 pub mod media;
+pub mod paths;
 pub mod preview;
 pub mod preview_store;
 pub mod provider_store;
-pub mod generation;
-pub mod comfyui_workflow;
-pub mod paths;
+pub mod thumbnailer;
 pub mod timeline_snap;
 mod video_decode;
-pub mod audio;
 // pub mod ffmpeg; // Placeholder for future imports

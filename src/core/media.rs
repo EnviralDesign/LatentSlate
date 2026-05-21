@@ -45,8 +45,12 @@ pub fn probe_asset_duration(
         (project_root, asset_path, needs_probe)
     };
 
-    let Some(project_root) = project_root else { return None; };
-    let Some(asset_path) = asset_path else { return None; };
+    let Some(project_root) = project_root else {
+        return None;
+    };
+    let Some(asset_path) = asset_path else {
+        return None;
+    };
     if !needs_probe {
         return project.asset_duration_seconds(asset_id);
     }
@@ -98,8 +102,12 @@ pub fn resolve_asset_duration_seconds(
         return None;
     }
 
-    let Some(project_root) = project_root else { return None; };
-    let Some(asset_path) = asset_path else { return None; };
+    let Some(project_root) = project_root else {
+        return None;
+    };
+    let Some(asset_path) = asset_path else {
+        return None;
+    };
 
     let absolute_path = project_root.join(asset_path);
     let duration = probe_duration_seconds(&absolute_path);

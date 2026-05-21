@@ -5,12 +5,12 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use ffmpeg_next as ffmpeg;
 use ffmpeg::channel_layout::ChannelLayout;
 use ffmpeg::codec;
 use ffmpeg::format;
 use ffmpeg::frame;
 use ffmpeg::media;
+use ffmpeg_next as ffmpeg;
 
 use super::resample::{frame_to_f32_interleaved, AudioResampleConfig, AudioResampler};
 
@@ -84,10 +84,8 @@ where
         None
     };
 
-    let codec_context =
-        codec::context::Context::from_parameters(stream.parameters()).map_err(|err| {
-            format!("Failed to create audio codec context: {}", err)
-        })?;
+    let codec_context = codec::context::Context::from_parameters(stream.parameters())
+        .map_err(|err| format!("Failed to create audio codec context: {}", err))?;
     let mut decoder = codec_context
         .decoder()
         .audio()
@@ -111,7 +109,6 @@ where
             target_channels: config.target_channels,
         },
     )?;
-
 
     let meta = AudioDecodeMeta {
         source_rate,

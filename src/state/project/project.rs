@@ -5,8 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 use super::{Clip, ClipTransform, Marker, ProjectSettings, Track, TrackType};
+use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 
 /// The main project container
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +25,7 @@ pub struct Project {
     pub clips: Vec<Clip>,
     /// All markers
     pub markers: Vec<Marker>,
-    
+
     /// Path to the project folder (not serialized - set on load)
     #[serde(skip)]
     pub project_path: Option<PathBuf>,
@@ -115,10 +115,9 @@ impl Project {
     pub fn ensure_generative_video_durations(&mut self) {
         for asset in self.assets.iter_mut() {
             let AssetKind::GenerativeVideo {
-                fps,
-                frame_count,
-                ..
-            } = &asset.kind else {
+                fps, frame_count, ..
+            } = &asset.kind
+            else {
                 continue;
             };
             if asset.duration_seconds.is_none() {
@@ -129,12 +128,18 @@ impl Project {
 
     /// Get all clips on a specific track
     pub fn clips_on_track(&self, track_id: Uuid) -> Vec<&Clip> {
-        self.clips.iter().filter(|c| c.track_id == track_id).collect()
+        self.clips
+            .iter()
+            .filter(|c| c.track_id == track_id)
+            .collect()
     }
 
     /// Get all clips that overlap a time range
     pub fn clips_in_range(&self, start: f64, end: f64) -> Vec<&Clip> {
-        self.clips.iter().filter(|c| c.overlaps(start, end)).collect()
+        self.clips
+            .iter()
+            .filter(|c| c.overlaps(start, end))
+            .collect()
     }
 
     /// Get assets that have clips overlapping a time range
@@ -144,7 +149,7 @@ impl Project {
             .iter()
             .map(|c| c.asset_id)
             .collect();
-        
+
         self.assets
             .iter()
             .filter(|a| clip_asset_ids.contains(&a.id))
@@ -153,7 +158,11 @@ impl Project {
 
     /// Add a new video track
     pub fn add_video_track(&mut self) -> Uuid {
-        let count = self.tracks.iter().filter(|t| t.track_type == TrackType::Video).count();
+        let count = self
+            .tracks
+            .iter()
+            .filter(|t| t.track_type == TrackType::Video)
+            .count();
         let track = Track::new(format!("Video {}", count + 1), TrackType::Video);
         let id = track.id;
         self.tracks.push(track);
@@ -162,7 +171,11 @@ impl Project {
 
     /// Add a new audio track
     pub fn add_audio_track(&mut self) -> Uuid {
-        let count = self.tracks.iter().filter(|t| t.track_type == TrackType::Audio).count();
+        let count = self
+            .tracks
+            .iter()
+            .filter(|t| t.track_type == TrackType::Audio)
+            .count();
         let track = Track::new(format!("Audio {}", count + 1), TrackType::Audio);
         let id = track.id;
         self.tracks.push(track);
@@ -177,10 +190,10 @@ impl Project {
                 return false; // Cannot remove the Markers track
             }
         }
-        
+
         // Remove any clips on this track
         self.clips.retain(|c| c.track_id != id);
-        
+
         // Remove the track
         let len = self.tracks.len();
         self.tracks.retain(|t| t.id != id);
@@ -204,27 +217,37 @@ impl Project {
     /// Copies the file to the appropriate project subdirectory and returns a new Asset ID
     pub fn import_file(&mut self, source_path: &Path) -> io::Result<Uuid> {
         let project_root = self.project_path.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "Project must be saved before importing files")
+            io::Error::new(
+                io::ErrorKind::Other,
+                "Project must be saved before importing files",
+            )
         })?;
 
         // 1. Determine asset type and target subfolder
-        let ext = source_path.extension()
+        let ext = source_path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
-        
+
         let (subfolder, is_video, is_audio, _is_image) = match ext.as_str() {
             "mp4" | "mov" | "avi" | "mkv" | "webm" => ("video", true, false, false),
             "mp3" | "wav" | "ogg" | "flac" => ("audio", false, true, false),
             "png" | "jpg" | "jpeg" | "gif" | "webp" => ("images", false, false, true),
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported file type")),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Unsupported file type",
+                ))
+            }
         };
 
         // 2. Determine target filename with collision handling
-        let file_stem = source_path.file_stem()
+        let file_stem = source_path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("import");
-        
+
         let target_dir = project_root.join(subfolder);
         // Ensure directory exists (it should, but safety first)
         if !target_dir.exists() {
@@ -263,7 +286,7 @@ impl Project {
     pub fn remove_asset(&mut self, id: Uuid) -> bool {
         // Remove any clips that reference this asset
         self.clips.retain(|c| c.asset_id != id);
-        
+
         // Remove the asset
         let len = self.assets.len();
         self.assets.retain(|a| a.id != id);
@@ -290,10 +313,15 @@ impl Project {
 
     /// Create and add a clip from an asset at the specified time
     /// Places on first compatible track (Video track for video/image, Audio for audio)
-    pub fn add_clip_from_asset(&mut self, asset_id: Uuid, start_time: f64, duration: f64) -> Option<Uuid> {
+    pub fn add_clip_from_asset(
+        &mut self,
+        asset_id: Uuid,
+        start_time: f64,
+        duration: f64,
+    ) -> Option<Uuid> {
         // Find the asset to determine what track type to use
         let asset = self.assets.iter().find(|a| a.id == asset_id)?;
-        
+
         let target_track_type = if asset.is_video() || asset.is_image() {
             TrackType::Video
         } else if asset.is_audio() {
@@ -301,11 +329,14 @@ impl Project {
         } else {
             return None; // Can't place this asset type
         };
-        
+
         // Find first matching track
-        let track = self.tracks.iter().find(|t| t.track_type == target_track_type)?;
+        let track = self
+            .tracks
+            .iter()
+            .find(|t| t.track_type == target_track_type)?;
         let track_id = track.id;
-        
+
         // Create the clip
         let clip = Clip::new(asset_id, track_id, start_time, duration);
         Some(self.add_clip(clip))
@@ -325,7 +356,8 @@ impl Project {
         let id = marker.id;
         self.markers.push(marker);
         // Keep markers sorted by time
-        self.markers.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        self.markers
+            .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
         id
     }
 
@@ -333,7 +365,8 @@ impl Project {
     pub fn move_marker(&mut self, id: Uuid, new_time: f64) -> bool {
         if let Some(marker) = self.markers.iter_mut().find(|marker| marker.id == id) {
             marker.time = new_time.max(0.0);
-            self.markers.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+            self.markers
+                .sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
             return true;
         }
         false
@@ -387,7 +420,7 @@ impl Project {
         if let Some(clip) = self.clips.iter_mut().find(|c| c.id == id) {
             let old_start = clip.start_time;
             let start_time = new_start.max(0.0);
-            let mut duration = new_duration.max(0.1);  // Minimum 0.1 second
+            let mut duration = new_duration.max(0.1); // Minimum 0.1 second
 
             let asset = self.assets.iter().find(|a| a.id == clip.asset_id);
             let max_duration = asset.and_then(|a| a.duration_seconds).filter(|d| *d > 0.0);
@@ -397,7 +430,9 @@ impl Project {
             }
 
             if let Some(asset) = asset {
-                if (asset.is_video() || asset.is_audio()) && (start_time - old_start).abs() > f64::EPSILON {
+                if (asset.is_video() || asset.is_audio())
+                    && (start_time - old_start).abs() > f64::EPSILON
+                {
                     let delta = start_time - old_start;
                     clip.trim_in_seconds = (clip.trim_in_seconds + delta).max(0.0);
 
@@ -452,7 +487,11 @@ impl Project {
         };
 
         let current_track_id = self.clips[clip_index].track_id;
-        let current_track_index = match self.tracks.iter().position(|track| track.id == current_track_id) {
+        let current_track_index = match self
+            .tracks
+            .iter()
+            .position(|track| track.id == current_track_id)
+        {
             Some(index) => index,
             None => return false,
         };
@@ -516,10 +555,10 @@ mod tests {
     #[test]
     fn test_clip_overlap() {
         let clip = Clip::new(Uuid::new_v4(), Uuid::new_v4(), 5.0, 10.0);
-        assert!(clip.overlaps(0.0, 10.0));  // Overlaps start
+        assert!(clip.overlaps(0.0, 10.0)); // Overlaps start
         assert!(clip.overlaps(10.0, 20.0)); // Overlaps end
-        assert!(clip.overlaps(7.0, 12.0));  // Overlaps middle
-        assert!(!clip.overlaps(0.0, 5.0));  // Just before
+        assert!(clip.overlaps(7.0, 12.0)); // Overlaps middle
+        assert!(!clip.overlaps(0.0, 5.0)); // Just before
         assert!(!clip.overlaps(15.0, 20.0)); // Just after
     }
 
@@ -536,11 +575,11 @@ mod tests {
     fn test_add_tracks() {
         let mut project = Project::default();
         let initial_count = project.tracks.len();
-        
+
         project.add_video_track();
         assert_eq!(project.tracks.len(), initial_count + 1);
         assert_eq!(project.tracks.last().unwrap().name, "Video 2");
-        
+
         project.add_audio_track();
         assert_eq!(project.tracks.len(), initial_count + 2);
         assert_eq!(project.tracks.last().unwrap().name, "Audio 2");

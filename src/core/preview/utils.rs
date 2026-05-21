@@ -1,8 +1,8 @@
 use std::path::Path;
 use std::time::Instant;
 
-use image::{Rgba, RgbaImage};
 use image::imageops::{resize, FilterType};
+use image::{Rgba, RgbaImage};
 
 use crate::state::{Asset, AssetKind};
 
@@ -40,9 +40,7 @@ pub(crate) fn track_lane_id(track_id: uuid::Uuid) -> u64 {
 pub(crate) fn image_size_bytes(image: &RgbaImage) -> usize {
     let width = image.width() as usize;
     let height = image.height() as usize;
-    width
-        .saturating_mul(height)
-        .saturating_mul(4)
+    width.saturating_mul(height).saturating_mul(4)
 }
 
 pub(crate) fn scale_image_to_fit(image: RgbaImage, max_width: u32, max_height: u32) -> RgbaImage {
@@ -112,7 +110,10 @@ pub(crate) fn resolve_generative_path(
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)) {
+                if extensions
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                {
                     return Some(path);
                 }
             }

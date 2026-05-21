@@ -2,15 +2,15 @@
 //!
 //! This module contains the core data structures for a video project.
 
-mod project;
-mod track;
 mod clip;
 mod marker;
-mod settings;
 mod persistence;
+mod project;
+mod settings;
+mod track;
 
-pub use project::Project;
-pub use track::{Track, TrackType};
 pub use clip::{Clip, ClipTransform};
 pub use marker::Marker;
+pub use project::Project;
 pub use settings::ProjectSettings;
+pub use track::{Track, TrackType};

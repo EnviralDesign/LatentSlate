@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 //! Generative asset config model and persistence helpers.
 
+use crate::state::{Asset, AssetKind, Project, ProviderEntry, ProviderOutputType};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -8,7 +9,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-use crate::state::{Asset, AssetKind, Project, ProviderEntry, ProviderOutputType};
 
 /// Input value bound to a provider field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,7 +181,9 @@ pub fn generative_info_for_clip(
 
 pub fn parse_version_index(version: &str) -> Option<u32> {
     let trimmed = version.trim();
-    let numeric = trimmed.strip_prefix('v').or_else(|| trimmed.strip_prefix('V'))?;
+    let numeric = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))?;
     numeric.parse::<u32>().ok()
 }
 

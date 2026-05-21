@@ -23,15 +23,11 @@ pub fn resolve_provider_inputs(
     let mut missing_required = Vec::new();
 
     for input in provider.inputs.iter() {
-        let value = literal_input_value(config, &input.name)
-            .or_else(|| input.default.clone());
+        let value = literal_input_value(config, &input.name).or_else(|| input.default.clone());
 
         if let Some(value) = value {
             values.insert(input.name.clone(), value.clone());
-            snapshot.insert(
-                input.name.clone(),
-                InputValue::Literal { value },
-            );
+            snapshot.insert(input.name.clone(), InputValue::Literal { value });
         } else if input.required {
             missing_required.push(input.name.clone());
         }
@@ -68,15 +64,14 @@ fn literal_input_value(config: &GenerativeConfig, name: &str) -> Option<Value> {
 
 fn parse_version_number(version: &str) -> Option<u32> {
     let trimmed = version.trim();
-    let numeric = trimmed.strip_prefix('v').or_else(|| trimmed.strip_prefix('V'))?;
+    let numeric = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))?;
     numeric.parse::<u32>().ok()
 }
 
 /// Resolve which provider input should be treated as the seed for batching.
-pub fn resolve_seed_field(
-    provider: &ProviderEntry,
-    preferred: Option<&str>,
-) -> Option<String> {
+pub fn resolve_seed_field(provider: &ProviderEntry, preferred: Option<&str>) -> Option<String> {
     if let Some(preferred) = preferred {
         if provider
             .inputs
@@ -119,10 +114,12 @@ pub fn random_seed_i64() -> i64 {
 }
 
 fn seed_like(name: &str, label: &str) -> bool {
-    name.to_ascii_lowercase().contains("seed")
-        || label.to_ascii_lowercase().contains("seed")
+    name.to_ascii_lowercase().contains("seed") || label.to_ascii_lowercase().contains("seed")
 }
 
 fn is_seed_candidate(input: &ProviderInputField) -> bool {
-    matches!(input.input_type, ProviderInputType::Integer | ProviderInputType::Number)
+    matches!(
+        input.input_type,
+        ProviderInputType::Integer | ProviderInputType::Number
+    )
 }

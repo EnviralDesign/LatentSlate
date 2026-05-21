@@ -741,6 +741,30 @@ The 0.34 `Panel` docs show the new unified `Panel::{left,right,top,bottom}` API,
 
 ## Pitfalls and debugging checklist
 
+## Precision Timeline Surfaces
+
+Timeline editors are not normal form layouts. Treat them as precision canvases with explicit geometry, not as a row of flexible widgets.
+
+- Use a single time-space mapping: `x = left + time_seconds * pixels_per_second - scroll_x`. Do not stretch timeline duration to the visible width except when computing the Fit zoom value.
+- Store zoom and horizontal scroll as explicit state. Clip width, clip position, ruler ticks, playhead position, marker position, thumbnails, and waveform columns must all derive from the same zoom/scroll values.
+- Keep fixed labels and scrollable track content as separate regions. The label column should never be part of horizontal scroll; the ruler and track content should share the same scroll coordinate system.
+- Clip the scrollable timeline painter to the right-side content viewport. Offscreen clips, thumbnails, waveforms, ruler grid lines, markers, and playhead overlays must never paint into fixed track labels, footer buttons, or the header controls.
+- Hit-test direct manipulation in priority order: clip edge resize, clip body move, marker move/select, ruler seek, track-label select, empty-track deselect. Avoid a single catch-all timeline drag that turns every click into playhead scrubbing.
+- Keep marker hit targets aligned with their visible affordance. The stem, marker head, and label bubble should all behave like one draggable timeline item so switching directly from one marker to another does not require a second click.
+- Use `Response::total_drag_delta()` for interactions computed from a drag-start baseline. `Response::drag_delta()` is movement since the previous frame in egui 0.34, so baseline math using it will appear to move only while the pointer is moving and then snap back.
+- Snap in frame units, not pixels. Convert sources and targets to frames, apply snap deltas, then convert back to seconds. Alt is the timeline precision override and should bypass clip, marker, and playhead boundary snapping while preserving frame-quantized time math.
+- Do not use selection green as a media type color. Timeline items should use neutral fills by default, subdued type-color outlines/stripes when unselected, and green focus/selection treatment only when selected.
+- Treat colors and long text as first-class field types. A color field should be a field-height swatch backed by egui's popup color picker while project storage can remain hex; descriptions/notes/prompts should use the shared configurable multi-line text field instead of squeezing into single-line inputs.
+- Draw frame ticks only when the zoom level gives them enough pixel separation to be readable. The frame ticks are a precision affordance, not decoration.
+- Treat timeline headers as explicit regions, not one long horizontal row: left-side zoom/view tools, centered transport controls, and right-side timecode/collapse actions should occupy stable rects so one group cannot push another off balance.
+- Timeline toolbar controls should be subtle by default. Use transparent icon/text buttons with hover and active fills instead of full standalone button chrome, and keep their height tied to the timeline header channel rather than the global form button height.
+- Media previews on timeline clips should be clipped to the clip rect. Thumbnail strips and waveform strokes must not bleed through rounded clip corners or track dividers.
+- Timeline thumbnail strips should sample the media cache by source time for each tile. Repeating a single first-frame texture is only an explicit fallback when a time-specific thumbnail is unavailable.
+- Shift+wheel scrolling is platform-sensitive: handle both raw shifted wheel `y` deltas and horizontal `x` deltas from trackpads or OS-level shifted wheel translation. Egui wheel deltas describe content movement, so invert them when updating a viewport scroll offset: wheel down should increase timeline `scroll_x` and reveal later time to the right.
+- Long-running media analysis, such as waveform peak cache generation, should not block the paint pass. Load existing caches synchronously when cheap, then queue background generation and repaint when the cache appears.
+- Audio playback engines that own native device streams should stay on the UI/runtime owner thread unless the type is explicitly Send/Sync. Background workers can decode into shared caches; the UI thread should rebuild playback items and update the engine.
+- Playback decode failures should be cached for the current project session. Silent videos on video tracks are valid visual clips, not actionable repeated audio errors; log once, mark them as unavailable for playback audio, and keep the timeline moving.
+
 ### Common anti-patterns
 
 | Anti-pattern                                                           | Why it breaks                                                                                           | Replacement                                                                                            |
@@ -762,7 +786,7 @@ When a layout clips, overflows, or misaligns:
 
 1. Print or temporarily paint `ui.available_rect_before_wrap()`, `ui.min_rect()`, `ui.max_rect()`, and every important `response.rect`.
 2. Check whether the parent is bounded. A scroll area in an unbounded vertical layout cannot know what “fill the middle” means.
-3. Confirm panel order: top/left/right/bottom panels first, central panel last, windows/modals after panels. ([Docs.rs][2])
+3. Confirm panel order: app-wide top/bottom chrome first, docked side panels next, center-scoped timeline/footer panels after side panels, central panel last, windows/modals after panels. A bottom panel registered after side panels will only span the remaining center region. ([Docs.rs][2])
 4. Check whether `auto_shrink(true)` is shrinking a scroll body that should fill.
 5. Check whether a `with_layout` call is taking all available space.
 6. Check whether `add_space` is adding on top of `item_spacing`.

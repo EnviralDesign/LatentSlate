@@ -87,7 +87,9 @@ impl PreviewRenderer {
         };
 
         let declared = declared_duration.filter(|value| *value > 0.0);
-        let actual = self.cached_video_duration(path).filter(|value| *value > 0.0);
+        let actual = self
+            .cached_video_duration(path)
+            .filter(|value| *value > 0.0);
         if let (Some(declared), Some(actual)) = (declared, actual) {
             let ratio = actual / declared;
             return (source_time * ratio, Some(actual));
@@ -106,10 +108,7 @@ impl PreviewRenderer {
     ) -> RenderOutput {
         let render_start = Instant::now();
         let mut stats = PreviewStats::default();
-        let project_root = project
-            .project_path
-            .as_ref()
-            .unwrap_or(&self.project_root);
+        let project_root = project.project_path.as_ref().unwrap_or(&self.project_root);
 
         let (canvas_w, canvas_h, preview_scale) = preview_canvas_size(
             project.settings.width,
@@ -192,10 +191,7 @@ impl PreviewRenderer {
     ) -> RenderOutput {
         let render_start = Instant::now();
         let mut stats = PreviewStats::default();
-        let project_root = project
-            .project_path
-            .as_ref()
-            .unwrap_or(&self.project_root);
+        let project_root = project.project_path.as_ref().unwrap_or(&self.project_root);
 
         let (canvas_w, canvas_h, preview_scale) = preview_canvas_size(
             project.settings.width,
@@ -457,9 +453,11 @@ impl PreviewRenderer {
         }
 
         layers.sort_by(|a, b| {
-            b.track_index
-                .cmp(&a.track_index)
-                .then_with(|| a.start_time.partial_cmp(&b.start_time).unwrap_or(std::cmp::Ordering::Equal))
+            b.track_index.cmp(&a.track_index).then_with(|| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
 
         layers
@@ -479,10 +477,7 @@ impl PreviewRenderer {
         }
 
         let fps = project.settings.fps.max(1.0);
-        let project_root = project
-            .project_path
-            .as_ref()
-            .unwrap_or(&self.project_root);
+        let project_root = project.project_path.as_ref().unwrap_or(&self.project_root);
         let start_frame = time_to_frame_index(time_seconds, fps);
         let step = direction.signum() as i64;
 
@@ -522,10 +517,7 @@ impl PreviewRenderer {
         project: &Project,
         bucket_hint_seconds: f64,
     ) -> HashMap<uuid::Uuid, Vec<bool>> {
-        let project_root = project
-            .project_path
-            .as_ref()
-            .unwrap_or(&self.project_root);
+        let project_root = project.project_path.as_ref().unwrap_or(&self.project_root);
         let fps = project.settings.fps.max(1.0);
         let min_bucket_seconds = (1.0 / fps).max(0.001);
         let bucket_hint_seconds = bucket_hint_seconds.max(min_bucket_seconds);
@@ -557,7 +549,8 @@ impl PreviewRenderer {
                 continue;
             }
 
-            let mut bucket_seconds = bucket_hint_seconds.max(clip_duration / MAX_CACHE_BUCKETS as f64);
+            let mut bucket_seconds =
+                bucket_hint_seconds.max(clip_duration / MAX_CACHE_BUCKETS as f64);
             bucket_seconds = bucket_seconds.max(min_bucket_seconds);
             let bucket_count = (clip_duration / bucket_seconds).ceil().max(1.0) as usize;
 
@@ -607,8 +600,12 @@ impl PreviewRenderer {
         allow_hw_decode: bool,
         mut stats: Option<&mut PreviewStats>,
     ) -> Option<Arc<RgbaImage>> {
-        let (path, is_video, duration) =
-            resolve_asset_source(project_root, asset, &["png", "jpg", "jpeg", "webp"], &["mp4", "mov", "mkv", "webm"])?;
+        let (path, is_video, duration) = resolve_asset_source(
+            project_root,
+            asset,
+            &["png", "jpg", "jpeg", "webp"],
+            &["mp4", "mov", "mkv", "webm"],
+        )?;
 
         let (frame_index, frame_time) = if is_video {
             let (mapped_time, clamp_duration) =
@@ -649,10 +646,12 @@ impl PreviewRenderer {
                     self.video_decoder
                         .decode(&path, frame_time, lane_id, allow_hw_decode)?
                 }
-                DecodeMode::Sequential => {
-                    self.video_decoder
-                        .decode_sequential(&path, frame_time, lane_id, allow_hw_decode)?
-                }
+                DecodeMode::Sequential => self.video_decoder.decode_sequential(
+                    &path,
+                    frame_time,
+                    lane_id,
+                    allow_hw_decode,
+                )?,
             };
             if let Some(stats) = stats.as_deref_mut() {
                 let timings = response.timings;
@@ -730,11 +729,7 @@ impl PreviewRenderer {
                 }
             }
 
-            let fill = Arc::new(RgbaImage::from_pixel(
-                width,
-                height,
-                Rgba([0, 0, 0, 255]),
-            ));
+            let fill = Arc::new(RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 255])));
             let mut border = RgbaImage::from_pixel(width, height, Rgba([0, 0, 0, 0]));
             draw_border(&mut border, PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH);
 

@@ -60,7 +60,6 @@ impl AudioPlaybackEngine {
 
         let channels_for_cb = channels;
 
-
         let stream = match output.sample_format {
             SampleFormat::F32 => build_output_stream::<f32>(
                 &device,
@@ -143,10 +142,7 @@ impl AudioPlaybackEngine {
                 channels_for_cb,
             )?,
             other => {
-                return Err(format!(
-                    "Unsupported output sample format: {}",
-                    other
-                ));
+                return Err(format!("Unsupported output sample format: {}", other));
             }
         };
 

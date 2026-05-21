@@ -77,20 +77,17 @@ impl AudioResampler {
     }
 
     pub fn flush(&mut self) -> Result<Option<frame::Audio>, String> {
-        let delay_samples = self
-            .ctx
-            .delay()
-            .map(|delay| delay.output)
-            .unwrap_or(0);
+        let delay_samples = self.ctx.delay().map(|delay| delay.output).unwrap_or(0);
         if delay_samples <= 0 {
             return Ok(None);
         }
 
-        let mut output =
-            frame::Audio::new(self.target_format, delay_samples as usize, self.target_layout);
-        self.ctx
-            .flush(&mut output)
-            .map_err(|err| err.to_string())?;
+        let mut output = frame::Audio::new(
+            self.target_format,
+            delay_samples as usize,
+            self.target_layout,
+        );
+        self.ctx.flush(&mut output).map_err(|err| err.to_string())?;
         if output.samples() == 0 {
             return Ok(None);
         }
@@ -123,10 +120,7 @@ fn channel_layout_for_channels(channels: u16) -> ChannelLayout {
 pub fn frame_to_f32_interleaved(frame: &frame::Audio) -> Result<Vec<f32>, String> {
     let format = frame.format();
     if format != Sample::F32(sample::Type::Packed) {
-        return Err(format!(
-            "Expected packed f32 samples, got {:?}",
-            format
-        ));
+        return Err(format!("Expected packed f32 samples, got {:?}", format));
     }
     let data = frame.data(0);
     let expected_samples = frame.samples().saturating_mul(frame.channels() as usize);

@@ -238,14 +238,14 @@ results are returned for identical inputs; try changing the seed or using batch 
 }
 
 fn load_workflow(path: &Path) -> Result<Value, String> {
-    let json = std::fs::read_to_string(path)
-        .map_err(|err| format!("Failed to read workflow: {}", err))?;
+    let json =
+        std::fs::read_to_string(path).map_err(|err| format!("Failed to read workflow: {}", err))?;
     serde_json::from_str(&json).map_err(|err| format!("Invalid workflow JSON: {}", err))
 }
 
 fn load_manifest(path: &Path) -> Result<ProviderManifest, String> {
-    let json = std::fs::read_to_string(path)
-        .map_err(|err| format!("Failed to read manifest: {}", err))?;
+    let json =
+        std::fs::read_to_string(path).map_err(|err| format!("Failed to read manifest: {}", err))?;
     serde_json::from_str(&json).map_err(|err| format!("Invalid manifest JSON: {}", err))
 }
 
@@ -272,9 +272,8 @@ fn apply_manifest_inputs(
         };
         let node_id = resolve_node_id(workflow, &manifest_input.bind.selector)?;
         let mut resolved = apply_binding_transform(value, manifest_input.bind.transform.as_ref())?;
-        resolved = coerce_manifest_value(&resolved, &manifest_input.input_type).map_err(|err| {
-            format!("Input {}: {}", manifest_input.name, err)
-        })?;
+        resolved = coerce_manifest_value(&resolved, &manifest_input.input_type)
+            .map_err(|err| format!("Input {}: {}", manifest_input.name, err))?;
         set_workflow_input(
             workflow,
             &node_id,
@@ -382,10 +381,7 @@ fn resolve_node_id_internal(
         ));
     }
 
-    Ok(candidates
-        .pop()
-        .map(|(id, _)| id)
-        .unwrap_or_default())
+    Ok(candidates.pop().map(|(id, _)| id).unwrap_or_default())
 }
 
 fn selector_label(selector: &NodeSelector) -> String {
@@ -439,10 +435,7 @@ fn apply_binding_transform(
         .ok_or_else(|| "Transformed value is not a valid number.".to_string())
 }
 
-fn coerce_manifest_value(
-    value: &Value,
-    input_type: &ProviderInputType,
-) -> Result<Value, String> {
+fn coerce_manifest_value(value: &Value, input_type: &ProviderInputType) -> Result<Value, String> {
     match input_type {
         ProviderInputType::Text => Ok(Value::String(match value {
             Value::String(text) => text.clone(),
@@ -453,20 +446,18 @@ fn coerce_manifest_value(
             other => other.to_string(),
         })),
         ProviderInputType::Number => {
-            let number = input_value_as_f64(value)
-                .ok_or_else(|| "Expected number.".to_string())?;
+            let number = input_value_as_f64(value).ok_or_else(|| "Expected number.".to_string())?;
             serde_json::Number::from_f64(number)
                 .map(Value::Number)
                 .ok_or_else(|| "Number is not valid.".to_string())
         }
         ProviderInputType::Integer => {
-            let number = input_value_as_i64(value)
-                .ok_or_else(|| "Expected integer.".to_string())?;
+            let number =
+                input_value_as_i64(value).ok_or_else(|| "Expected integer.".to_string())?;
             Ok(Value::Number(number.into()))
         }
         ProviderInputType::Boolean => {
-            let flag = input_value_as_bool(value)
-                .ok_or_else(|| "Expected boolean.".to_string())?;
+            let flag = input_value_as_bool(value).ok_or_else(|| "Expected boolean.".to_string())?;
             Ok(Value::Bool(flag))
         }
         ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
@@ -538,11 +529,7 @@ async fn submit_prompt(
         .await
         .map_err(|err| format!("Failed to parse prompt response: {}", err))?;
     if !status.is_success() {
-        return Err(format!(
-            "ComfyUI rejected prompt ({}): {}",
-            status,
-            payload
-        ));
+        return Err(format!("ComfyUI rejected prompt ({}): {}", status, payload));
     }
     payload
         .get("prompt_id")
@@ -556,11 +543,7 @@ async fn poll_history(
     base_url: &str,
     prompt_id: &str,
 ) -> Result<Value, String> {
-    let url = format!(
-        "{}/history/{}",
-        base_url.trim_end_matches('/'),
-        prompt_id
-    );
+    let url = format!("{}/history/{}", base_url.trim_end_matches('/'), prompt_id);
     for _ in 0..240 {
         let response = client
             .get(&url)
@@ -629,9 +612,9 @@ async fn listen_progress_ws(
                 let Some(data) = value.get("data") else {
                     continue;
                 };
-                let Some(message_prompt_id) = data
-                    .get("prompt_id")
-                    .and_then(|value| value.as_str()) else {
+                let Some(message_prompt_id) =
+                    data.get("prompt_id").and_then(|value| value.as_str())
+                else {
                     continue;
                 };
                 if message_prompt_id != prompt_id {
@@ -705,10 +688,7 @@ fn overall_ratio_from_state(data: &Value, total_nodes: usize) -> Option<f32> {
                 total += 1.0;
             }
             "running" => {
-                let max = node
-                    .get("max")
-                    .and_then(json_number_as_f64)
-                    .unwrap_or(0.0);
+                let max = node.get("max").and_then(json_number_as_f64).unwrap_or(0.0);
                 if max > 0.0 {
                     let value = node
                         .get("value")
@@ -791,11 +771,10 @@ fn find_output_any(
     output_type: ProviderOutputType,
     index: Option<u32>,
 ) -> Option<OutputRef> {
-    outputs
-        .as_object()
-        .and_then(|map| map.values().find_map(|value| {
-            extract_output_ref_any(value, output_type, index)
-        }))
+    outputs.as_object().and_then(|map| {
+        map.values()
+            .find_map(|value| extract_output_ref_any(value, output_type, index))
+    })
 }
 
 fn extract_output_ref(
