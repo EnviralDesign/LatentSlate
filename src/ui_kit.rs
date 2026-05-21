@@ -276,6 +276,9 @@ pub fn fixed_panel_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) -> Resp
     );
     child.set_clip_rect(allocated_rect);
     child.set_min_size(allocated_rect.size());
+    child.set_width(allocated_rect.width());
+    child.set_max_width(allocated_rect.width());
+    child.set_height(allocated_rect.height());
     add_contents(&mut child);
     response
 }
@@ -302,6 +305,9 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
             .layout(Layout::top_down(Align::Min)),
     );
     child.set_min_size(content_rect.size());
+    child.set_clip_rect(content_rect);
+    child.set_width(content_rect.width());
+    child.set_max_width(content_rect.width());
     add_contents(&mut child);
     response
 }
@@ -332,10 +338,33 @@ pub fn body_with_footer(
 }
 
 pub fn scroll_body(ui: &mut Ui, add_body: impl FnOnce(&mut Ui)) {
+    let id_salt = ui.next_auto_id();
+    ui.skip_ahead_auto_ids(1);
+    clipped_scroll_body(ui, id_salt, add_body);
+}
+
+pub fn clipped_scroll_body(ui: &mut Ui, id_salt: impl Hash, add_body: impl FnOnce(&mut Ui)) {
     fixed_panel_body(ui, |ui| {
+        let viewport_rect = ui.available_rect_before_wrap();
+        let viewport_width = viewport_rect.width().max(0.0);
+        ui.set_clip_rect(ui.clip_rect().intersect(viewport_rect));
+        ui.set_width(viewport_width);
+        ui.set_min_width(viewport_width);
+        ui.set_max_width(viewport_width);
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+
         egui::ScrollArea::vertical()
+            .id_salt(id_salt)
+            .max_width(viewport_width)
             .auto_shrink([false, false])
-            .show(ui, add_body);
+            .show_viewport(ui, |ui, _viewport| {
+                let content_width = ui.max_rect().width().min(viewport_width).max(0.0);
+                ui.set_clip_rect(ui.clip_rect().intersect(viewport_rect));
+                ui.set_width(content_width);
+                ui.set_min_width(content_width);
+                ui.set_max_width(content_width);
+                add_body(ui);
+            });
     });
 }
 
@@ -601,6 +630,58 @@ pub fn labeled_text_field(ui: &mut Ui, label: &str, value: &mut String) -> Respo
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
         field_label(ui, label);
         singleline_text_field(ui, value, ui.available_width())
+    })
+    .inner
+}
+
+pub fn combo_field<R>(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    selected_text: impl Into<String>,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
+    let selected_text = selected_text.into();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.set_min_size(rect.size());
+    child.set_clip_rect(rect);
+    configure_field_widget_style(&mut child, rect.width());
+
+    let combo_id = child.make_persistent_id(("combo_field", id_salt));
+    let inner = egui::ComboBox::from_id_salt(combo_id)
+        .selected_text(
+            RichText::new(selected_text)
+                .color(TEXT)
+                .size(FIELD_TEXT_SIZE),
+        )
+        .width(rect.width())
+        .show_ui(&mut child, add_contents);
+
+    response.union(inner.response)
+}
+
+pub fn labeled_combo_field<R>(
+    ui: &mut Ui,
+    label: &str,
+    id_salt: impl Hash,
+    selected_text: impl Into<String>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+        field_label(ui, label);
+        combo_field(
+            ui,
+            id_salt,
+            selected_text,
+            ui.available_width(),
+            add_contents,
+        )
     })
     .inner
 }
@@ -1863,8 +1944,10 @@ pub fn draw_accent_row(
     accent: Color32,
     add_contents: impl FnOnce(&mut Ui, Rect),
 ) -> Response {
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height),
+        Sense::click_and_drag(),
+    );
     let fill = row_fill(selected, response.hovered());
     ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
     ui.painter().rect_stroke(

@@ -203,6 +203,24 @@ impl EditorState {
         Ok(clip_id)
     }
 
+    pub fn add_asset_to_timeline_track(
+        &mut self,
+        asset_id: Uuid,
+        track_id: Uuid,
+        time: Option<f64>,
+    ) -> Result<Uuid, String> {
+        let time = time.unwrap_or(self.current_time);
+        let duration = resolve_asset_duration_seconds(&mut self.project, asset_id)
+            .unwrap_or(DEFAULT_CLIP_DURATION_SECONDS);
+        let clip_id = self
+            .project
+            .add_clip_from_asset_to_track(asset_id, track_id, time, duration)
+            .ok_or_else(|| "Asset could not be placed on that timeline track.".to_string())?;
+        self.selection.select_clip(clip_id);
+        self.preview_dirty = true;
+        Ok(clip_id)
+    }
+
     pub fn seek(&mut self, time: f64) {
         let duration = self.project.duration();
         let fps = self.project.settings.fps.max(1.0);

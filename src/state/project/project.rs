@@ -83,6 +83,17 @@ impl Project {
         self.assets.iter().find(|a| a.id == id)
     }
 
+    /// Return true when an asset can be placed on the given track.
+    pub fn asset_compatible_with_track(&self, asset_id: Uuid, track_id: Uuid) -> bool {
+        let Some(asset) = self.find_asset(asset_id) else {
+            return false;
+        };
+        let Some(track) = self.find_track(track_id) else {
+            return false;
+        };
+        asset_matches_track_type(asset, track.track_type)
+    }
+
     /// Get the in-memory generative config for an asset.
     pub fn generative_config(&self, asset_id: Uuid) -> Option<&GenerativeConfig> {
         self.generative_configs.get(&asset_id)
@@ -322,7 +333,7 @@ impl Project {
         // Find the asset to determine what track type to use
         let asset = self.assets.iter().find(|a| a.id == asset_id)?;
 
-        let target_track_type = if asset.is_video() || asset.is_image() {
+        let target_track_type = if asset.is_visual() {
             TrackType::Video
         } else if asset.is_audio() {
             TrackType::Audio
@@ -338,6 +349,22 @@ impl Project {
         let track_id = track.id;
 
         // Create the clip
+        let clip = Clip::new(asset_id, track_id, start_time, duration);
+        Some(self.add_clip(clip))
+    }
+
+    /// Create and add a clip from an asset on a specific compatible track.
+    pub fn add_clip_from_asset_to_track(
+        &mut self,
+        asset_id: Uuid,
+        track_id: Uuid,
+        start_time: f64,
+        duration: f64,
+    ) -> Option<Uuid> {
+        if !self.asset_compatible_with_track(asset_id, track_id) {
+            return None;
+        }
+
         let clip = Clip::new(asset_id, track_id, start_time, duration);
         Some(self.add_clip(clip))
     }
@@ -536,6 +563,14 @@ impl Project {
             }
         }
         false
+    }
+}
+
+fn asset_matches_track_type(asset: &Asset, track_type: TrackType) -> bool {
+    match track_type {
+        TrackType::Video => asset.is_visual(),
+        TrackType::Audio => asset.is_audio(),
+        TrackType::Marker => false,
     }
 }
 

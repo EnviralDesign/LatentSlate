@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -18,6 +18,10 @@ use crate::core::audio::waveform::{
     build_and_store_peak_cache, resolve_audio_or_video_source, resolve_audio_source,
     PeakBuildConfig,
 };
+use crate::core::generation::{
+    next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
+    update_seed_inputs,
+};
 use crate::core::preview::{PreviewDecodeMode, PreviewFrameInfo, PreviewStats};
 use crate::core::preview_store;
 use crate::core::timeline_snap::{
@@ -28,11 +32,14 @@ use crate::editor::{
     default_generative_video_fps, default_generative_video_frames, default_projects_dir,
     generative_video_duration_label, EditorState,
 };
+use crate::providers::comfyui;
 use crate::state::{
-    asset_display_name, Asset, AssetKind, Clip, ClipTransform, ComfyOutputSelector,
-    ComfyWorkflowRef, InputBinding, InputUi, ManifestInput, NodeSelector, Project, ProjectSettings,
-    ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType, ProviderManifest,
-    ProviderOutputType, TrackType,
+    asset_display_name, input_value_as_bool, input_value_as_f64, input_value_as_i64,
+    input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipTransform,
+    ComfyOutputSelector, ComfyWorkflowRef, GenerationJob, GenerationJobStatus, GenerationRecord,
+    GenerativeConfig, InputBinding, InputUi, InputValue, ManifestInput, NodeSelector, Project,
+    ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
+    ProviderManifest, ProviderOutputType, SeedStrategy, TrackType,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
@@ -97,6 +104,7 @@ const JSON_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExten
 const PROVIDERS_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
+const MAX_GENERATION_BATCH_COUNT: u32 = 50;
 
 fn project_wizard_size(ctx: &Context) -> Vec2 {
     let available = ctx.content_rect().size();
@@ -169,6 +177,10 @@ pub struct NlaEguiApp {
     provider_json_error: Option<String>,
     provider_builder_open: bool,
     provider_builder: ProviderBuilderState,
+    generation_runtime: Option<tokio::runtime::Runtime>,
+    generation_events_tx: mpsc::Sender<GenerationEvent>,
+    generation_events_rx: mpsc::Receiver<GenerationEvent>,
+    generation_active: Option<Uuid>,
 }
 
 struct AssetThumbnail {
@@ -246,6 +258,36 @@ struct TimelineMarkerGeom {
     hit_rect: Rect,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AssetTimelineDragPayload {
+    asset_id: Uuid,
+}
+
+#[derive(Debug)]
+enum GenerationEvent {
+    Progress {
+        job_id: Uuid,
+        overall: Option<f32>,
+        node: Option<f32>,
+    },
+    Finished {
+        job_id: Uuid,
+        result: Result<GenerationOutput, GenerationFailure>,
+    },
+}
+
+#[derive(Debug)]
+struct GenerationOutput {
+    version: String,
+    path: PathBuf,
+}
+
+#[derive(Debug)]
+enum GenerationFailure {
+    Offline(String),
+    Error(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProviderBuilderTab {
     Inputs,
@@ -310,6 +352,18 @@ impl NlaEguiApp {
                 None
             }
         };
+        let generation_runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("nla-generation")
+            .build()
+        {
+            Ok(runtime) => Some(runtime),
+            Err(err) => {
+                editor.status = format!("Generation runtime unavailable: {err}");
+                None
+            }
+        };
+        let (generation_events_tx, generation_events_rx) = mpsc::channel();
         Self {
             project_settings: editor.project.settings.clone(),
             editor,
@@ -341,6 +395,10 @@ impl NlaEguiApp {
             provider_json_error: None,
             provider_builder_open: false,
             provider_builder: ProviderBuilderState::default(),
+            generation_runtime,
+            generation_events_tx,
+            generation_events_rx,
+            generation_active: None,
         }
     }
 
@@ -389,6 +447,7 @@ impl NlaEguiApp {
         self.timeline_drag = None;
         self.timeline_snap_preview = None;
         self.timeline_scrub_was_playing = false;
+        self.generation_active = None;
     }
 
     fn open_project_folder(&mut self, folder: PathBuf) -> bool {
@@ -963,6 +1022,7 @@ impl NlaEguiApp {
                 let selected = self.editor.selection.asset_ids.contains(&asset.id);
                 let thumbnail = self.asset_thumbnail(ui.ctx(), &asset);
                 let response = asset_row(ui, &asset, selected, thumbnail);
+                response.dnd_set_drag_payload(AssetTimelineDragPayload { asset_id: asset.id });
                 if response.clicked() {
                     self.editor.selection.clear();
                     self.editor.selection.asset_ids.push(asset.id);
@@ -1054,6 +1114,13 @@ impl NlaEguiApp {
     }
 
     fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid) {
+        let clip_asset_id = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| clip.asset_id);
         let asset_name = self
             .editor
             .project
@@ -1098,9 +1165,551 @@ impl NlaEguiApp {
                 );
             });
         }
+        if let Some(asset_id) = clip_asset_id {
+            if generative_output_for_asset(&self.editor.project, asset_id).is_some() {
+                ui.add_space(kit::FORM_ROW_GAP);
+                self.generative_clip_attributes(ui, clip_id, asset_id);
+            }
+        }
         if preview_dirty {
             self.editor.preview_dirty = true;
         }
+    }
+
+    fn generative_clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid, asset_id: Uuid) {
+        let Some((folder, output_type)) =
+            generative_output_for_asset(&self.editor.project, asset_id)
+        else {
+            return;
+        };
+        let config_snapshot = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .cloned()
+            .unwrap_or_default();
+        let folder_path = self
+            .editor
+            .project
+            .project_path
+            .as_ref()
+            .map(|root| root.join(&folder));
+        let asset_label = self
+            .editor
+            .project
+            .find_asset(asset_id)
+            .map(|asset| asset.name.clone())
+            .unwrap_or_else(|| "Generative Asset".to_string());
+
+        let compatible_providers: Vec<ProviderEntry> = self
+            .editor
+            .provider_entries
+            .iter()
+            .filter(|entry| entry.output_type == output_type)
+            .cloned()
+            .collect();
+        let selected_provider_id = config_snapshot.provider_id;
+        let selected_provider = selected_provider_id.and_then(|id| {
+            compatible_providers
+                .iter()
+                .find(|entry| entry.id == id)
+                .cloned()
+        });
+        let show_missing_provider = selected_provider_id.is_some() && selected_provider.is_none();
+
+        let mut version_options: Vec<String> = config_snapshot
+            .versions
+            .iter()
+            .map(|record| record.version.clone())
+            .collect();
+        if let Some(active) = config_snapshot.active_version.as_ref() {
+            if !active.trim().is_empty() && !version_options.contains(active) {
+                version_options.push(active.clone());
+            }
+        }
+        version_options.sort_by(
+            |a, b| match (parse_version_index(a), parse_version_index(b)) {
+                (Some(a_num), Some(b_num)) => b_num.cmp(&a_num),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => b.cmp(a),
+            },
+        );
+        version_options.dedup();
+
+        let selected_version_value = config_snapshot.active_version.clone().unwrap_or_default();
+        let provider_label = selected_provider
+            .as_ref()
+            .map(|provider| provider.name.clone())
+            .unwrap_or_else(|| "None selected".to_string());
+
+        let batch = config_snapshot.batch.clone();
+        let seed_field_options = selected_provider
+            .as_ref()
+            .map(seed_field_options_for_provider)
+            .unwrap_or_default();
+        let seed_field_missing = batch
+            .seed_field
+            .as_ref()
+            .map(|field| !seed_field_options.iter().any(|(name, _)| name == field))
+            .unwrap_or(false);
+        let resolved_seed_field = selected_provider
+            .as_ref()
+            .and_then(|provider| resolve_seed_field(provider, batch.seed_field.as_deref()));
+        let seed_hint = if seed_field_missing {
+            batch
+                .seed_field
+                .as_ref()
+                .map(|field| format!("Seed field '{field}' not found in provider inputs."))
+        } else if batch.seed_field.is_none() && selected_provider.is_some() {
+            Some(match resolved_seed_field.as_ref() {
+                Some(field) => format!("Auto-detect: {field}"),
+                None => "Auto-detect: none".to_string(),
+            })
+        } else {
+            None
+        };
+        let batch_hint = if batch.count > 1 {
+            match batch.seed_strategy {
+                SeedStrategy::Keep => {
+                    Some("Identical inputs can be cached; use Increment or Random.".to_string())
+                }
+                _ if resolved_seed_field.is_none() => {
+                    Some("No numeric seed field detected. Pick one to offset seeds.".to_string())
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let mut next_version = selected_version_value.clone();
+        let mut next_provider_id = selected_provider_id;
+        let mut next_batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT) as i64;
+        let mut next_seed_strategy = batch.seed_strategy;
+        let mut next_seed_field = batch.seed_field.clone().unwrap_or_default();
+        let mut open_versions_folder = false;
+        let mut generate_clicked = false;
+
+        inspector_card(ui, "Generative", |ui| {
+            kit::field_label(ui, "Version");
+            let row_w = ui.available_width();
+            let (row_rect, _) =
+                ui.allocate_exact_size(Vec2::new(row_w, kit::FIELD_H), Sense::hover());
+            let mut row_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(row_rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            row_ui.set_clip_rect(row_rect);
+            row_ui.spacing_mut().item_spacing.x = kit::FIELD_COMPOUND_GAP;
+            StripBuilder::new(&mut row_ui)
+                .clip(true)
+                .size(Size::remainder().at_least(86.0))
+                .size(Size::exact(kit::BROWSE_BUTTON_W))
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        let selected_text = if next_version.trim().is_empty() {
+                            "No versions yet".to_string()
+                        } else {
+                            next_version.clone()
+                        };
+                        kit::combo_field(
+                            ui,
+                            ("gen_version", asset_id),
+                            selected_text,
+                            ui.available_width(),
+                            |ui| {
+                                if version_options.is_empty() {
+                                    ui.label(kit::caption("No versions yet"));
+                                } else {
+                                    for version in version_options.iter() {
+                                        ui.selectable_value(
+                                            &mut next_version,
+                                            version.clone(),
+                                            version,
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    });
+                    strip.cell(|ui| {
+                        let button_w = ui.available_width();
+                        if kit::field_button(ui, "Manage", button_w).clicked() {
+                            open_versions_folder = true;
+                        }
+                    });
+                });
+
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::field_label(ui, "Provider");
+            kit::combo_field(
+                ui,
+                ("gen_provider", asset_id),
+                provider_label,
+                ui.available_width(),
+                |ui| {
+                    ui.selectable_value(&mut next_provider_id, None, "None selected");
+                    for provider in compatible_providers.iter() {
+                        ui.selectable_value(
+                            &mut next_provider_id,
+                            Some(provider.id),
+                            provider.name.as_str(),
+                        );
+                    }
+                },
+            );
+
+            if show_missing_provider {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(
+                    RichText::new("Selected provider is missing from global providers.")
+                        .color(kit::MARKER)
+                        .size(11.0),
+                );
+            } else if compatible_providers.is_empty() {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(format!(
+                    "No {:?} providers configured.",
+                    output_type
+                )));
+            }
+
+            ui.add_space(kit::ACTION_GAP);
+            let generate_w = ui.available_width();
+            if kit::primary_button(ui, "Generate", generate_w).clicked() {
+                generate_clicked = true;
+            }
+            if let Some(status) = self.generation_status_for_asset(asset_id) {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(status));
+            }
+        });
+
+        ui.add_space(kit::FORM_ROW_GAP);
+        inspector_card(ui, "Batch", |ui| {
+            if inspector_drag_i64(
+                ui,
+                "Count",
+                &mut next_batch_count,
+                1.0,
+                ui.available_width(),
+            ) {
+                next_batch_count = next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64);
+            }
+            ui.add_space(kit::FORM_ROW_GAP);
+            let mut draw_strategy = |ui: &mut Ui| {
+                kit::labeled_combo_field(
+                    ui,
+                    "Seed Strategy",
+                    ("seed_strategy", asset_id),
+                    seed_strategy_label(next_seed_strategy),
+                    |ui| {
+                        ui.selectable_value(
+                            &mut next_seed_strategy,
+                            SeedStrategy::Increment,
+                            "Increment",
+                        );
+                        ui.selectable_value(
+                            &mut next_seed_strategy,
+                            SeedStrategy::Random,
+                            "Random",
+                        );
+                        ui.selectable_value(&mut next_seed_strategy, SeedStrategy::Keep, "Keep");
+                    },
+                );
+            };
+            let mut draw_seed_field = |ui: &mut Ui| {
+                let selected_text = if next_seed_field.trim().is_empty() {
+                    "Auto-detect".to_string()
+                } else {
+                    seed_field_options
+                        .iter()
+                        .find(|(name, _)| name == &next_seed_field)
+                        .map(|(_, label)| label.clone())
+                        .unwrap_or_else(|| next_seed_field.clone())
+                };
+                kit::labeled_combo_field(
+                    ui,
+                    "Seed Field",
+                    ("seed_field", asset_id),
+                    selected_text,
+                    |ui| {
+                        ui.selectable_value(&mut next_seed_field, String::new(), "Auto-detect");
+                        for (name, label) in seed_field_options.iter() {
+                            ui.selectable_value(&mut next_seed_field, name.clone(), label);
+                        }
+                    },
+                );
+            };
+            if ui.available_width() >= 210.0 {
+                ui.columns(2, |columns| {
+                    draw_strategy(&mut columns[0]);
+                    draw_seed_field(&mut columns[1]);
+                });
+            } else {
+                draw_strategy(ui);
+                ui.add_space(kit::FORM_ROW_GAP);
+                draw_seed_field(ui);
+            }
+            if let Some(hint) = seed_hint {
+                ui.add_space(kit::FORM_ROW_GAP);
+                let color = if seed_field_missing {
+                    kit::MARKER
+                } else {
+                    kit::TEXT_DIM
+                };
+                ui.label(RichText::new(hint).color(color).size(11.0));
+            }
+            if let Some(hint) = batch_hint {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(RichText::new(hint).color(kit::MARKER).size(11.0));
+            }
+        });
+
+        ui.add_space(kit::FORM_ROW_GAP);
+        let input_updates =
+            self.provider_inputs_card(ui, asset_id, selected_provider.clone(), &config_snapshot);
+
+        let mut config_dirty = false;
+        let mut preview_dirty = false;
+        if next_version != selected_version_value {
+            let next_active = if next_version.trim().is_empty() {
+                None
+            } else {
+                Some(next_version.trim().to_string())
+            };
+            self.editor
+                .project
+                .update_generative_config(asset_id, |config| {
+                    config.active_version = next_active.clone();
+                    if let Some(version) = next_active.as_ref() {
+                        if let Some(record) = config
+                            .versions
+                            .iter()
+                            .find(|record| record.version == *version)
+                        {
+                            config.inputs = record.inputs_snapshot.clone();
+                            config.provider_id = Some(record.provider_id);
+                        }
+                    }
+                });
+            config_dirty = true;
+            preview_dirty = true;
+        }
+        if next_provider_id != selected_provider_id {
+            self.editor
+                .project
+                .set_generative_provider_id(asset_id, next_provider_id);
+            config_dirty = true;
+        }
+        let clamped_batch_count =
+            next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
+        let next_seed_field_opt = if next_seed_field.trim().is_empty() {
+            None
+        } else {
+            Some(next_seed_field.trim().to_string())
+        };
+        if clamped_batch_count != batch.count
+            || next_seed_strategy != batch.seed_strategy
+            || next_seed_field_opt != batch.seed_field
+        {
+            self.editor
+                .project
+                .update_generative_config(asset_id, |config| {
+                    config.batch.count = clamped_batch_count;
+                    config.batch.seed_strategy = next_seed_strategy;
+                    config.batch.seed_field = next_seed_field_opt;
+                });
+            config_dirty = true;
+        }
+        if !input_updates.is_empty() {
+            self.editor
+                .project
+                .update_generative_config(asset_id, |config| {
+                    for (name, value) in input_updates {
+                        config.inputs.insert(name, InputValue::Literal { value });
+                    }
+                });
+            config_dirty = true;
+        }
+        if config_dirty {
+            if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+                self.editor.status = format!("Failed to save generative config: {err}");
+            }
+        }
+        if preview_dirty {
+            self.invalidate_asset_visual_cache(asset_id);
+            self.editor.preview_dirty = true;
+        }
+
+        if open_versions_folder {
+            if let Some(folder_path) = folder_path.as_ref() {
+                if let Err(err) = open_path_in_file_manager(folder_path) {
+                    self.editor.status = err;
+                }
+            } else {
+                self.editor.status = "Project folder is unavailable.".to_string();
+            }
+        }
+
+        if generate_clicked {
+            let config_for_generation = self
+                .editor
+                .project
+                .generative_config(asset_id)
+                .cloned()
+                .unwrap_or(config_snapshot);
+            let Some(provider_id) = config_for_generation.provider_id else {
+                self.editor.status = "Select a provider first.".to_string();
+                return;
+            };
+            let Some(provider) = compatible_providers
+                .into_iter()
+                .find(|provider| provider.id == provider_id)
+            else {
+                self.editor.status = "Selected provider is unavailable.".to_string();
+                return;
+            };
+            let Some(folder_path) = folder_path else {
+                self.editor.status = "Project folder is unavailable.".to_string();
+                return;
+            };
+            match self.enqueue_generation_jobs(
+                asset_id,
+                clip_id,
+                provider,
+                config_for_generation,
+                folder_path,
+                asset_label,
+            ) {
+                Ok(status) => {
+                    self.editor.status = status;
+                    self.editor.overlays.queue = true;
+                }
+                Err(err) => self.editor.status = err,
+            }
+        }
+    }
+
+    fn provider_inputs_card(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        selected_provider: Option<ProviderEntry>,
+        config_snapshot: &GenerativeConfig,
+    ) -> Vec<(String, serde_json::Value)> {
+        let mut updates = Vec::new();
+        inspector_card(ui, "Provider Inputs", |ui| {
+            let Some(provider) = selected_provider else {
+                ui.label(kit::caption("Select a provider to configure inputs."));
+                return;
+            };
+            if provider.inputs.is_empty() {
+                ui.label(kit::caption("No inputs defined."));
+                return;
+            }
+
+            for (index, input) in provider.inputs.iter().enumerate() {
+                if index > 0 {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
+                let label = if input.required {
+                    format!("{} *", input.label)
+                } else {
+                    input.label.clone()
+                };
+                let current_value = literal_config_input(config_snapshot, &input.name)
+                    .or_else(|| input.default.clone());
+                match &input.input_type {
+                    ProviderInputType::Text => {
+                        let mut value = current_value
+                            .as_ref()
+                            .and_then(input_value_as_string)
+                            .unwrap_or_default();
+                        let multiline = input.ui.as_ref().map(|ui| ui.multiline).unwrap_or(false);
+                        let changed = if multiline {
+                            inspector_multiline_text_field(
+                                ui,
+                                &label,
+                                &mut value,
+                                kit::MultilineTextFieldOptions::rows(3),
+                            )
+                        } else {
+                            inspector_text_field(ui, &label, &mut value)
+                        };
+                        if changed {
+                            updates.push((input.name.clone(), serde_json::Value::String(value)));
+                        }
+                    }
+                    ProviderInputType::Number => {
+                        let mut value = current_value
+                            .as_ref()
+                            .and_then(input_value_as_f64)
+                            .unwrap_or(0.0);
+                        let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(0.1);
+                        let width = ui.available_width();
+                        if inspector_drag_f64(ui, &label, &mut value, step, width) {
+                            if let Some(number) = serde_json::Number::from_f64(value) {
+                                updates
+                                    .push((input.name.clone(), serde_json::Value::Number(number)));
+                            }
+                        }
+                    }
+                    ProviderInputType::Integer => {
+                        let mut value = current_value
+                            .as_ref()
+                            .and_then(input_value_as_i64)
+                            .unwrap_or(0);
+                        let width = ui.available_width();
+                        if inspector_drag_i64(ui, &label, &mut value, 1.0, width) {
+                            updates.push((
+                                input.name.clone(),
+                                serde_json::Value::Number(value.into()),
+                            ));
+                        }
+                    }
+                    ProviderInputType::Boolean => {
+                        let mut value = current_value
+                            .as_ref()
+                            .and_then(input_value_as_bool)
+                            .unwrap_or(false);
+                        if inspector_bool_field(ui, &label, &mut value) {
+                            updates.push((input.name.clone(), serde_json::Value::Bool(value)));
+                        }
+                    }
+                    ProviderInputType::Enum { options } => {
+                        let mut value = current_value
+                            .as_ref()
+                            .and_then(input_value_as_string)
+                            .or_else(|| options.first().cloned())
+                            .unwrap_or_default();
+                        let before = value.clone();
+                        kit::labeled_combo_field(
+                            ui,
+                            &label,
+                            ("provider_input_enum", asset_id, &input.name),
+                            empty_dash(&value).to_string(),
+                            |ui| {
+                                for option in options {
+                                    ui.selectable_value(&mut value, option.clone(), option);
+                                }
+                            },
+                        );
+                        if value != before {
+                            updates.push((input.name.clone(), serde_json::Value::String(value)));
+                        }
+                    }
+                    ProviderInputType::Image
+                    | ProviderInputType::Video
+                    | ProviderInputType::Audio => {
+                        ui.label(kit::caption(format!("{label}: asset inputs not wired yet")));
+                    }
+                }
+            }
+        });
+        updates
     }
 
     fn asset_attributes(&mut self, ui: &mut Ui, asset_id: Uuid) {
@@ -1620,6 +2229,19 @@ impl NlaEguiApp {
             .cloned()
             .map(|asset| (asset.id, asset))
             .collect();
+        let dragged_asset_id = egui::DragAndDrop::payload::<AssetTimelineDragPayload>(ui.ctx())
+            .map(|payload| payload.asset_id);
+        let drop_target_track_id = dragged_asset_id.and_then(|asset_id| {
+            ui.ctx().pointer_hover_pos().and_then(|pos| {
+                timeline_track_at_pos(pos, rects, &tracks)
+                    .filter(|track| {
+                        self.editor
+                            .project
+                            .asset_compatible_with_track(asset_id, track.id)
+                    })
+                    .map(|track| track.id)
+            })
+        });
 
         self.paint_timeline_ruler(&content_painter, rects.ruler, duration, zoom, fps);
 
@@ -1651,6 +2273,15 @@ impl NlaEguiApp {
                     Color32::from_rgb(11, 12, 14)
                 },
             );
+            if drop_target_track_id == Some(track.id) {
+                content_painter.rect_filled(row_rect, 0.0, kit::BORDER_FOCUS.gamma_multiply(0.10));
+                content_painter.rect_stroke(
+                    row_rect.shrink(1.0),
+                    3.0,
+                    Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.85)),
+                    egui::StrokeKind::Inside,
+                );
+            }
             painter.line_segment(
                 [
                     Pos2::new(outer.left(), row_rect.bottom()),
@@ -1747,6 +2378,15 @@ impl NlaEguiApp {
             );
         }
         self.paint_timeline_scrollbar(ui, &painter, rects, content_w, viewport_w);
+        if let Some(payload) = response.dnd_release_payload::<AssetTimelineDragPayload>() {
+            if let Some(pos) = ui
+                .ctx()
+                .pointer_interact_pos()
+                .or_else(|| ui.ctx().pointer_hover_pos())
+            {
+                self.drop_asset_on_timeline(payload.asset_id, pos, rects, &tracks, duration, zoom);
+            }
+        }
         self.handle_timeline_pointer(
             ui,
             &response,
@@ -1758,6 +2398,43 @@ impl NlaEguiApp {
             duration,
             zoom,
         );
+    }
+
+    fn drop_asset_on_timeline(
+        &mut self,
+        asset_id: Uuid,
+        pos: Pos2,
+        rects: TimelineRects,
+        tracks: &[crate::state::Track],
+        duration: f64,
+        zoom: f32,
+    ) {
+        let Some(track) = timeline_track_at_pos(pos, rects, tracks) else {
+            return;
+        };
+        if !self
+            .editor
+            .project
+            .asset_compatible_with_track(asset_id, track.id)
+        {
+            self.editor.status = "Asset cannot be placed on that track".to_string();
+            return;
+        }
+
+        let raw_time = ((pos.x - rects.tracks.left() + self.editor.layout.timeline_scroll_x) / zoom)
+            .clamp(0.0, duration as f32) as f64;
+        let time = snap_time_to_frame(raw_time, self.editor.project.settings.fps.max(1.0));
+        match self
+            .editor
+            .add_asset_to_timeline_track(asset_id, track.id, Some(time))
+        {
+            Ok(_) => {
+                self.editor.status = format!("Added clip to {}", track.name);
+            }
+            Err(err) => {
+                self.editor.status = err;
+            }
+        }
     }
 
     fn set_timeline_zoom_anchored(&mut self, zoom: f32, duration: f64, viewport_w: f32) {
@@ -1980,9 +2657,7 @@ impl NlaEguiApp {
             2.0,
             type_stroke,
         );
-        let label = asset
-            .map(asset_display_name)
-            .unwrap_or_else(|| "Clip".to_string());
+        let label = timeline_clip_title(clip, asset);
         painter.text(
             rect.left_center() + Vec2::new(8.0, -6.5),
             egui::Align2::LEFT_TOP,
@@ -2202,21 +2877,39 @@ impl NlaEguiApp {
             .pointer_hover_pos()
             .filter(|pos| rects.outer.contains(*pos))
         {
-            let cursor = match self.timeline_drag {
-                Some(TimelineDrag::ClipResizeLeft { .. })
-                | Some(TimelineDrag::ClipResizeRight { .. })
-                | Some(TimelineDrag::MarkerMove { .. })
-                | Some(TimelineDrag::Playhead) => egui::CursorIcon::ResizeHorizontal,
-                Some(TimelineDrag::ClipMove { .. }) => egui::CursorIcon::Grabbing,
-                None => match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
-                    TimelineHit::ClipLeftEdge(_)
-                    | TimelineHit::ClipRightEdge(_)
-                    | TimelineHit::Marker(_)
-                    | TimelineHit::Ruler => egui::CursorIcon::ResizeHorizontal,
-                    TimelineHit::ClipBody(_) => egui::CursorIcon::Grab,
-                    TimelineHit::TrackLabel(_) => egui::CursorIcon::PointingHand,
-                    TimelineHit::EmptyTrack | TimelineHit::Empty => egui::CursorIcon::Default,
-                },
+            let cursor = if let Some(payload) =
+                egui::DragAndDrop::payload::<AssetTimelineDragPayload>(ui.ctx())
+            {
+                timeline_track_at_pos(pos, rects, tracks)
+                    .map(|track| {
+                        if self
+                            .editor
+                            .project
+                            .asset_compatible_with_track(payload.asset_id, track.id)
+                        {
+                            egui::CursorIcon::Copy
+                        } else {
+                            egui::CursorIcon::NoDrop
+                        }
+                    })
+                    .unwrap_or(egui::CursorIcon::NoDrop)
+            } else {
+                match self.timeline_drag {
+                    Some(TimelineDrag::ClipResizeLeft { .. })
+                    | Some(TimelineDrag::ClipResizeRight { .. })
+                    | Some(TimelineDrag::MarkerMove { .. })
+                    | Some(TimelineDrag::Playhead) => egui::CursorIcon::ResizeHorizontal,
+                    Some(TimelineDrag::ClipMove { .. }) => egui::CursorIcon::Grabbing,
+                    None => match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
+                        TimelineHit::ClipLeftEdge(_)
+                        | TimelineHit::ClipRightEdge(_)
+                        | TimelineHit::Marker(_)
+                        | TimelineHit::Ruler => egui::CursorIcon::ResizeHorizontal,
+                        TimelineHit::ClipBody(_) => egui::CursorIcon::Grab,
+                        TimelineHit::TrackLabel(_) => egui::CursorIcon::PointingHand,
+                        TimelineHit::EmptyTrack | TimelineHit::Empty => egui::CursorIcon::Default,
+                    },
+                }
             };
             ui.ctx().set_cursor_icon(cursor);
         }
@@ -2949,6 +3642,345 @@ impl NlaEguiApp {
         }
     }
 
+    fn service_generation_queue(&mut self, ctx: &Context) {
+        while let Ok(event) = self.generation_events_rx.try_recv() {
+            self.handle_generation_event(event);
+        }
+
+        if self.generation_active.is_none() {
+            self.start_next_generation_job();
+        }
+
+        if self.generation_active.is_some()
+            || self
+                .editor
+                .generation_queue
+                .iter()
+                .any(|job| job.status == GenerationJobStatus::Queued)
+        {
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
+    }
+
+    fn start_next_generation_job(&mut self) {
+        let Some(index) = self
+            .editor
+            .generation_queue
+            .iter()
+            .position(|job| job.status == GenerationJobStatus::Queued)
+        else {
+            return;
+        };
+
+        let Some(runtime) = self.generation_runtime.as_ref() else {
+            if let Some(job) = self.editor.generation_queue.get_mut(index) {
+                job.status = GenerationJobStatus::Failed;
+                job.error = Some("Generation runtime unavailable.".to_string());
+            }
+            self.editor.status = "Generation runtime unavailable.".to_string();
+            return;
+        };
+
+        let version = {
+            let asset_id = self.editor.generation_queue[index].asset_id;
+            let config = self
+                .editor
+                .project
+                .generative_config(asset_id)
+                .cloned()
+                .unwrap_or_default();
+            next_version_label(&config)
+        };
+        let job = {
+            let entry = &mut self.editor.generation_queue[index];
+            entry.status = GenerationJobStatus::Running;
+            entry.progress_overall = Some(0.0);
+            entry.progress_node = Some(0.0);
+            entry.error = None;
+            entry.version = Some(version.clone());
+            entry.clone()
+        };
+        self.generation_active = Some(job.id);
+
+        let events = self.generation_events_tx.clone();
+        runtime.spawn(async move {
+            let (progress_tx, mut progress_rx) =
+                tokio::sync::mpsc::unbounded_channel::<comfyui::ComfyUiProgress>();
+            let progress_job_id = job.id;
+            let progress_events = events.clone();
+            tokio::spawn(async move {
+                while let Some(progress) = progress_rx.recv().await {
+                    let _ = progress_events.send(GenerationEvent::Progress {
+                        job_id: progress_job_id,
+                        overall: progress.overall,
+                        node: progress.node,
+                    });
+                }
+            });
+
+            let job_id = job.id;
+            let result = execute_generation_job_async(job, version, Some(progress_tx)).await;
+            let _ = events.send(GenerationEvent::Finished { job_id, result });
+        });
+    }
+
+    fn handle_generation_event(&mut self, event: GenerationEvent) {
+        match event {
+            GenerationEvent::Progress {
+                job_id,
+                overall,
+                node,
+            } => {
+                if let Some(job) = self
+                    .editor
+                    .generation_queue
+                    .iter_mut()
+                    .find(|job| job.id == job_id)
+                {
+                    if job.status == GenerationJobStatus::Running {
+                        if let Some(overall) = overall {
+                            job.progress_overall = Some(overall.clamp(0.0, 1.0));
+                        }
+                        if let Some(node) = node {
+                            job.progress_node = Some(node.clamp(0.0, 1.0));
+                        }
+                    }
+                }
+            }
+            GenerationEvent::Finished { job_id, result } => {
+                if self.generation_active == Some(job_id) {
+                    self.generation_active = None;
+                }
+                let job_snapshot = self
+                    .editor
+                    .generation_queue
+                    .iter()
+                    .find(|job| job.id == job_id)
+                    .cloned();
+
+                match result {
+                    Ok(output) => {
+                        if let Some(job) = job_snapshot {
+                            if let Some(entry) = self
+                                .editor
+                                .generation_queue
+                                .iter_mut()
+                                .find(|job| job.id == job_id)
+                            {
+                                entry.status = GenerationJobStatus::Succeeded;
+                                entry.version = Some(output.version.clone());
+                                entry.progress_overall = Some(1.0);
+                                entry.progress_node = Some(1.0);
+                                entry.error = None;
+                            }
+                            self.finish_generation_success(job, output);
+                        }
+                    }
+                    Err(err) => {
+                        let message = match err {
+                            GenerationFailure::Offline(err) => format!("Provider offline: {err}"),
+                            GenerationFailure::Error(err) => err,
+                        };
+                        if let Some(entry) = self
+                            .editor
+                            .generation_queue
+                            .iter_mut()
+                            .find(|job| job.id == job_id)
+                        {
+                            entry.status = GenerationJobStatus::Failed;
+                            entry.progress_overall = None;
+                            entry.progress_node = None;
+                            entry.error = Some(message.clone());
+                        }
+                        self.editor.status = message;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish_generation_success(&mut self, job: GenerationJob, output: GenerationOutput) {
+        if self.editor.project.find_asset(job.asset_id).is_none() {
+            return;
+        }
+
+        let version = output.version.clone();
+        let record = GenerationRecord {
+            version: version.clone(),
+            timestamp: chrono::Utc::now(),
+            provider_id: job.provider.id,
+            inputs_snapshot: job.inputs_snapshot.clone(),
+        };
+        self.editor
+            .project
+            .update_generative_config(job.asset_id, |config| {
+                config.provider_id = Some(job.provider.id);
+                config.active_version = Some(version.clone());
+                config.inputs = job.inputs_snapshot.clone();
+                if let Some(existing) = config
+                    .versions
+                    .iter_mut()
+                    .find(|record| record.version == version)
+                {
+                    *existing = record;
+                } else {
+                    config.versions.push(record);
+                }
+            });
+        if let Err(err) = self.editor.project.save_generative_config(job.asset_id) {
+            self.editor.status = format!("Generated, but config save failed: {err}");
+        } else {
+            self.editor.status = format!(
+                "Generated {} {} ({})",
+                job.asset_label,
+                output.version,
+                path_label(&output.path)
+            );
+        }
+
+        self.editor.previewer.invalidate_folder(&job.folder_path);
+        self.invalidate_asset_visual_cache(job.asset_id);
+        self.editor.preview_dirty = true;
+
+        if let (Some(runtime), Some(asset)) = (
+            self.generation_runtime.as_ref(),
+            self.editor.project.find_asset(job.asset_id).cloned(),
+        ) {
+            let thumbnailer = Arc::clone(&self.editor.thumbnailer);
+            runtime.spawn(async move {
+                let _ = thumbnailer.generate(&asset, true).await;
+            });
+        }
+    }
+
+    fn invalidate_asset_visual_cache(&mut self, asset_id: Uuid) {
+        self.asset_thumbnails.remove(&asset_id);
+        self.asset_thumbnail_misses.remove(&asset_id);
+        self.timeline_thumbnails
+            .retain(|key, _| key.asset_id != asset_id);
+        self.timeline_thumbnail_misses
+            .retain(|key| key.asset_id != asset_id);
+    }
+
+    fn generation_status_for_asset(&self, asset_id: Uuid) -> Option<String> {
+        self.editor
+            .generation_queue
+            .iter()
+            .rev()
+            .find(|job| job.asset_id == asset_id)
+            .map(|job| match job.status {
+                GenerationJobStatus::Queued => "Queued".to_string(),
+                GenerationJobStatus::Running => {
+                    let pct = job
+                        .progress_overall
+                        .or(job.progress_node)
+                        .map(|value| format!(" {:.0}%", value * 100.0))
+                        .unwrap_or_default();
+                    format!("Generating{pct}")
+                }
+                GenerationJobStatus::Succeeded => job
+                    .version
+                    .as_ref()
+                    .map(|version| format!("Generated {version}"))
+                    .unwrap_or_else(|| "Generated".to_string()),
+                GenerationJobStatus::Failed => job
+                    .error
+                    .as_ref()
+                    .map(|error| format!("Failed: {error}"))
+                    .unwrap_or_else(|| "Failed".to_string()),
+            })
+    }
+
+    fn enqueue_generation_jobs(
+        &mut self,
+        asset_id: Uuid,
+        clip_id: Uuid,
+        provider: ProviderEntry,
+        config_snapshot: GenerativeConfig,
+        folder_path: PathBuf,
+        asset_label: String,
+    ) -> Result<String, String> {
+        if provider.output_type == ProviderOutputType::Audio {
+            return Err("Audio generation is not supported in the queue yet.".to_string());
+        }
+
+        let resolved = resolve_provider_inputs(&provider, &config_snapshot);
+        if !resolved.missing_required.is_empty() {
+            return Err(format!(
+                "Missing inputs: {}",
+                resolved.missing_required.join(", ")
+            ));
+        }
+
+        let batch = config_snapshot.batch.clone();
+        let batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT);
+        let seed_field = resolve_seed_field(&provider, batch.seed_field.as_deref());
+        let mut seed_base = seed_field
+            .as_ref()
+            .and_then(|field| resolved.values.get(field))
+            .and_then(input_value_as_i64);
+        let mut seed_base_randomized = false;
+        if seed_base.is_none()
+            && seed_field.is_some()
+            && batch.seed_strategy == SeedStrategy::Increment
+        {
+            seed_base = Some(random_seed_i64());
+            seed_base_randomized = true;
+        }
+
+        for index in 0..batch_count {
+            let (inputs, inputs_snapshot) = match (batch.seed_strategy, seed_field.as_ref()) {
+                (SeedStrategy::Keep, _) | (_, None) => {
+                    (resolved.values.clone(), resolved.snapshot.clone())
+                }
+                (SeedStrategy::Increment, Some(field)) => {
+                    let seed = seed_base.unwrap_or(0) + index as i64;
+                    update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed)
+                }
+                (SeedStrategy::Random, Some(field)) => {
+                    let seed = random_seed_i64();
+                    update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed)
+                }
+            };
+
+            self.editor.generation_queue.push(GenerationJob {
+                id: Uuid::new_v4(),
+                created_at: chrono::Utc::now(),
+                status: GenerationJobStatus::Queued,
+                progress_overall: None,
+                progress_node: None,
+                attempts: 0,
+                next_attempt_at: None,
+                provider: provider.clone(),
+                output_type: provider.output_type,
+                asset_id,
+                clip_id,
+                asset_label: asset_label.clone(),
+                folder_path: folder_path.clone(),
+                inputs,
+                inputs_snapshot,
+                version: None,
+                error: None,
+            });
+        }
+
+        let mut status = if batch_count > 1 {
+            format!("Queued {batch_count} jobs")
+        } else {
+            "Queued".to_string()
+        };
+        if batch_count > 1 {
+            if batch.seed_strategy == SeedStrategy::Keep {
+                status.push_str(" (identical inputs may be cached)");
+            } else if seed_field.is_none() {
+                status.push_str(" (no seed field detected)");
+            } else if seed_base_randomized {
+                status.push_str(" (seed missing, randomized base)");
+            }
+        }
+        Ok(status)
+    }
+
     fn providers_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
@@ -3491,7 +4523,8 @@ impl NlaEguiApp {
                 ProviderBuilderTab::Output => {
                     kit::field_label(ui, "Output Node");
                     ui.add_space(kit::FORM_ROW_GAP);
-                    if kit::secondary_button(ui, "Use as Output", ui.available_width()).clicked() {
+                    let use_output_w = ui.available_width();
+                    if kit::secondary_button(ui, "Use as Output", use_output_w).clicked() {
                         self.provider_builder.output_node = Some(ProviderOutputNodeDraft {
                             class_type: node.class_type,
                             title: node.title,
@@ -3850,6 +4883,7 @@ impl eframe::App for NlaEguiApp {
         self.poll_automation();
         self.keep_automation_responsive(&ctx);
         self.tick_playback(&ctx);
+        self.service_generation_queue(&ctx);
         self.update_preview_texture(&ctx);
 
         self.top_bar(ui);
@@ -3863,6 +4897,72 @@ impl eframe::App for NlaEguiApp {
         self.modals(&ctx);
         self.service_audio_decode_warmup(&ctx);
     }
+}
+
+async fn execute_generation_job_async(
+    job: GenerationJob,
+    version: String,
+    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<comfyui::ComfyUiProgress>>,
+) -> Result<GenerationOutput, GenerationFailure> {
+    if job.output_type == ProviderOutputType::Audio {
+        return Err(GenerationFailure::Error(
+            "Audio outputs are not supported in the queue yet.".to_string(),
+        ));
+    }
+
+    let output = match job.provider.connection.clone() {
+        ProviderConnection::ComfyUi {
+            base_url,
+            workflow_path,
+            manifest_path,
+        } => {
+            let workflow_path = comfyui::resolve_workflow_path(workflow_path.as_deref());
+            let manifest_path = comfyui::resolve_manifest_path(manifest_path.as_deref());
+            if let Err(err) = comfyui::check_health(&base_url).await {
+                return Err(GenerationFailure::Offline(err));
+            }
+            comfyui::generate_output(
+                &base_url,
+                &workflow_path,
+                &job.inputs,
+                manifest_path.as_deref(),
+                job.output_type,
+                progress_tx,
+            )
+            .await
+            .map_err(GenerationFailure::Error)
+        }
+        ProviderConnection::CustomHttp { .. } => Err(GenerationFailure::Error(
+            "Provider connection not supported yet.".to_string(),
+        )),
+    };
+
+    let output = match output {
+        Ok(output) => output,
+        Err(GenerationFailure::Error(err)) => {
+            if let ProviderConnection::ComfyUi { base_url, .. } = job.provider.connection.clone() {
+                if let Err(health_err) = comfyui::check_health(&base_url).await {
+                    return Err(GenerationFailure::Offline(health_err));
+                }
+            }
+            return Err(GenerationFailure::Error(err));
+        }
+        Err(err) => return Err(err),
+    };
+
+    std::fs::create_dir_all(&job.folder_path).map_err(|err| {
+        GenerationFailure::Error(format!("Failed to create output folder: {err}"))
+    })?;
+    let output_path = job
+        .folder_path
+        .join(format!("{}.{}", version, output.extension));
+    std::fs::write(&output_path, &output.bytes)
+        .map_err(|err| GenerationFailure::Error(format!("Failed to save output: {err}")))?;
+
+    Ok(GenerationOutput {
+        version,
+        path: output_path,
+    })
 }
 
 fn menu_button(
@@ -3976,6 +5076,16 @@ fn measured_text_width(ui: &Ui, text: &str, font_id: FontId) -> f32 {
 
 fn timeline_snapping_enabled(ui: &Ui) -> bool {
     ui.input(|input| !input.modifiers.alt)
+}
+
+fn timeline_clip_title(clip: &Clip, asset: Option<&Asset>) -> String {
+    clip.label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| asset.map(asset_display_name))
+        .unwrap_or_else(|| "Clip".to_string())
 }
 
 fn marker_label_and_rect(
@@ -4321,6 +5431,20 @@ fn timeline_hit(
     } else {
         TimelineHit::Empty
     }
+}
+
+fn timeline_track_at_pos<'a>(
+    pos: Pos2,
+    rects: TimelineRects,
+    tracks: &'a [crate::state::Track],
+) -> Option<&'a crate::state::Track> {
+    if !rects.tracks.contains(pos) {
+        return None;
+    }
+    let row = ((pos.y - rects.tracks.top()) / TIMELINE_TRACK_H)
+        .floor()
+        .max(0.0) as usize;
+    tracks.get(row)
 }
 
 fn paint_clip_thumbnail_strip(painter: &egui::Painter, rect: Rect, tiles: &[TimelineThumbTile]) {
@@ -5613,6 +6737,86 @@ fn path_label(path: &Path) -> String {
     }
 }
 
+fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|err| format!("Failed to open folder: {err}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let command = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        std::process::Command::new(command)
+            .arg(path)
+            .spawn()
+            .map_err(|err| format!("Failed to open folder: {err}"))?;
+        Ok(())
+    }
+}
+
+fn generative_output_for_asset(
+    project: &Project,
+    asset_id: Uuid,
+) -> Option<(PathBuf, ProviderOutputType)> {
+    let asset = project.find_asset(asset_id)?;
+    match &asset.kind {
+        AssetKind::GenerativeImage { folder, .. } => {
+            Some((folder.clone(), ProviderOutputType::Image))
+        }
+        AssetKind::GenerativeVideo { folder, .. } => {
+            Some((folder.clone(), ProviderOutputType::Video))
+        }
+        AssetKind::GenerativeAudio { folder, .. } => {
+            Some((folder.clone(), ProviderOutputType::Audio))
+        }
+        _ => None,
+    }
+}
+
+fn literal_config_input(config: &GenerativeConfig, name: &str) -> Option<serde_json::Value> {
+    config.inputs.get(name).and_then(|input| match input {
+        InputValue::Literal { value } => Some(value.clone()),
+        InputValue::AssetRef { .. } => None,
+    })
+}
+
+fn seed_field_options_for_provider(provider: &ProviderEntry) -> Vec<(String, String)> {
+    provider
+        .inputs
+        .iter()
+        .filter(|input| {
+            matches!(
+                input.input_type,
+                ProviderInputType::Integer | ProviderInputType::Number
+            )
+        })
+        .map(|input| {
+            let label = if input.label.trim().is_empty() || input.label == input.name {
+                input.name.clone()
+            } else {
+                format!("{} ({})", input.label, input.name)
+            };
+            (input.name.clone(), label)
+        })
+        .collect()
+}
+
+fn seed_strategy_label(strategy: SeedStrategy) -> &'static str {
+    match strategy {
+        SeedStrategy::Increment => "Increment",
+        SeedStrategy::Random => "Random",
+        SeedStrategy::Keep => "Keep",
+    }
+}
+
 fn inspector_text_field(ui: &mut Ui, label: &str, value: &mut String) -> bool {
     kit::field_label(ui, label);
     let width = ui.available_width();
@@ -5636,8 +6840,24 @@ fn inspector_color_field(ui: &mut Ui, label: &str, color: &mut Color32) -> bool 
     kit::color_field(ui, color, width).changed()
 }
 
+fn inspector_bool_field(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
+    kit::field_label(ui, label);
+    let before = *value;
+    let label = if *value { "On" } else { "Off" };
+    let width = ui.available_width();
+    if kit::field_button(ui, label, width).clicked() {
+        *value = !*value;
+    }
+    *value != before
+}
+
 fn inspector_card(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
     kit::card_frame().show(ui, |ui| {
+        let clip_rect = ui.clip_rect();
+        let content_width = ui.available_width().max(0.0);
+        ui.set_clip_rect(clip_rect);
+        ui.set_width(content_width);
+        ui.set_max_width(content_width);
         kit::field_label(ui, title);
         ui.add_space(kit::FORM_ROW_GAP);
         add_contents(ui);
@@ -5722,6 +6942,28 @@ fn inspector_drag_f64_in_rect(
     rect: Rect,
     label: &str,
     value: &mut f64,
+    speed: f64,
+) -> bool {
+    inspector_numeric_field(ui, rect, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value)
+                .prefix(kit::field_prefix(label))
+                .speed(speed),
+        )
+    })
+}
+
+fn inspector_drag_i64(ui: &mut Ui, label: &str, value: &mut i64, speed: f64, width: f32) -> bool {
+    let rect = inspector_numeric_rect(ui, width);
+    inspector_drag_i64_in_rect(ui, rect, label, value, speed)
+}
+
+fn inspector_drag_i64_in_rect(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    value: &mut i64,
     speed: f64,
 ) -> bool {
     inspector_numeric_field(ui, rect, |ui, width| {

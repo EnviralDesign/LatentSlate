@@ -80,11 +80,11 @@ kit::scroll_body(ui, |ui| {
 });
 ```
 
-The important part is `auto_shrink([false, false])`: when content is short, blank space remains **inside** the scroll area, so the scroll viewport still occupies the available body cell. The docs describe the opposite default: `auto_shrink(true)` puts blank space outside the scroll area. ([Docs.rs][4])
+The important parts are the exact parent rect, the scroll area's `max_width`, and the inner UI width clamp. `auto_shrink([false, false])` keeps blank vertical space **inside** the scroll body, but it is not enough by itself: a vertical scroll area still has a disabled horizontal axis, and wide descendants can otherwise make the scroll response/content width leak outside a side rail.
 
 The shared helper also routes the scroll area through an exact-rect child UI. A raw `ScrollArea::vertical().show(ui, ...)` in a modal column can still paint text past the visual body if the parent cell was not bounded first. Treat scroll panes as hard clipped viewports before drawing cards, rows, or long form fields inside them.
 
-Egui 0.34 paints scroll-edge fade gradients by default through `style.spacing.scroll.fade`. This app disables those globally because editor panes should read as recessed clipped surfaces, not blurred/faded web panels.
+Egui 0.34 paints scroll-edge fade gradients by default through `style.spacing.scroll.fade`. The shared app scroll helper disables those fades for editor-pane bodies because inspectors, provider forms, and asset lists should read as recessed clipped surfaces, not blurred/faded web panels.
 
 ---
 
@@ -163,14 +163,12 @@ StripBuilder::new(ui)
 
 `min_scrolled_height(h)` only applies when a vertical scroll area requires scrollbars. It is a lower bound for the scrolled viewport; the default is `64.0`, and the scroll area can still be smaller when content itself is smaller and no scrollbar is required. ([Docs.rs][4])
 
-`auto_shrink([false, false])` is the key for “fill this bounded cell.” With `true`, blank space goes outside the scroll area. With `false`, blank space goes inside it. In a modal body cell, you almost always want:
+`auto_shrink([false, false])` is one part of “fill this bounded cell.” With `true`, blank space goes outside the scroll area. With `false`, blank space goes inside it. However, do not use a raw vertical scroll area in sidebars or modals. The helper must also cap the outer width and set the content UI width so long fields/cards clip instead of expanding the panel:
 
 ```rust
-egui::ScrollArea::vertical()
-    .auto_shrink([false, false])
-    .show(ui, |ui| {
-        // form/list rows
-    });
+kit::clipped_scroll_body(ui, "inspector-scroll", |ui| {
+    // form/list rows
+});
 ```
 
 For huge lists, prefer `show_rows`; the docs show measuring row height via `ui.text_style_height(&TextStyle::Body)` for labels or `ui.spacing().interact_size.y` for button rows. ([Docs.rs][4])
@@ -239,6 +237,8 @@ This lets the product have reusable variants such as primary, secondary, danger,
 Main-shell lists and inspectors should use reusable row/card templates, not local one-off layout. Asset rows are a good pattern: one fixed row height token, one thumbnail/icon region, one text column with truncation, and one semantic accent color derived from asset kind. The same row painter should handle selected, hovered, and normal states so every asset-like list can inherit future row improvements.
 
 Inspector panels should be built from section cards with shared field labels, field-height controls, two-column numeric helpers, and small metadata rows. If a clip, asset, marker, or track inspector needs a new control, first ask whether it is a field, value field, numeric drag field, metadata row, action button, or preview thumbnail. Add a named helper only when none of those fits.
+
+Dropdowns/selectors belong to the same field family. A version picker, provider picker, seed strategy selector, or schema enum input should use a field-height combo helper with the same fill, radius, focus stroke, text sizing, and clipping as text/value fields. Provider-driven inspectors should be generated from the provider schema into shared field primitives rather than hand-building a separate form style for each provider.
 
 Media thumbnails should be treated as a first-class UI primitive. Prefer cached project thumbnails for videos and generated assets, fall back to the source image for stills, and only fall back to text badges when no previewable image exists. Clear thumbnail/preview caches when the project changes so stale textures do not leak across projects.
 
@@ -776,7 +776,7 @@ Dense editor chrome should not look like a wall of standalone form buttons. For 
 
 ### Button-like rows
 
-Rows that behave like buttons should not contain nested selectable text widgets. Allocate the row once, paint the row fill/stroke/accent, paint truncated text directly into the row rect, and return one click response with a pointing-hand cursor. Use real `Label`/`TextEdit` widgets only when text selection or editing is intended.
+Rows that behave like buttons should not contain nested selectable text widgets. Allocate the row once, paint the row fill/stroke/accent, paint truncated text directly into the row rect, and return one click response with a pointing-hand cursor. Use real `Label`/`TextEdit` widgets only when text selection or editing is intended. If a row can also start drag/drop, keep it as the same row primitive with `Sense::click_and_drag()` and attach a typed egui drag payload at the call site rather than adding a separate hidden drag handle.
 
 ### Shell panel borders
 
