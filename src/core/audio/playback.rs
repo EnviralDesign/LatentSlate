@@ -37,6 +37,7 @@ pub struct AudioPlaybackEngine {
     playhead_frames: Arc<AtomicU64>,
     scrub_hold: Arc<AtomicBool>,
     scrub_preview_frames: Arc<AtomicU64>,
+    scrub_preview_offset_frames: Arc<AtomicU64>,
     sample_rate: u32,
     channels: u16,
     sample_format: SampleFormat,
@@ -57,6 +58,7 @@ impl AudioPlaybackEngine {
         let playhead_frames = Arc::new(AtomicU64::new(0));
         let scrub_hold = Arc::new(AtomicBool::new(false));
         let scrub_preview_frames = Arc::new(AtomicU64::new(0));
+        let scrub_preview_offset_frames = Arc::new(AtomicU64::new(0));
 
         let channels_for_cb = channels;
 
@@ -69,6 +71,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::I16 => build_output_stream::<i16>(
@@ -79,6 +82,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::U16 => build_output_stream::<u16>(
@@ -89,6 +93,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::I32 => build_output_stream::<i32>(
@@ -99,6 +104,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::U32 => build_output_stream::<u32>(
@@ -109,6 +115,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::F64 => build_output_stream::<f64>(
@@ -119,6 +126,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::I8 => build_output_stream::<i8>(
@@ -129,6 +137,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             SampleFormat::U8 => build_output_stream::<u8>(
@@ -139,6 +148,7 @@ impl AudioPlaybackEngine {
                 Arc::clone(&playhead_frames),
                 Arc::clone(&scrub_hold),
                 Arc::clone(&scrub_preview_frames),
+                Arc::clone(&scrub_preview_offset_frames),
                 channels_for_cb,
             )?,
             other => {
@@ -155,6 +165,7 @@ impl AudioPlaybackEngine {
             playhead_frames,
             scrub_hold,
             scrub_preview_frames,
+            scrub_preview_offset_frames,
             sample_rate,
             channels,
             sample_format: output.sample_format,
@@ -200,10 +211,12 @@ impl AudioPlaybackEngine {
         self.scrub_hold.store(hold, Ordering::Relaxed);
         if !hold {
             self.scrub_preview_frames.store(0, Ordering::Relaxed);
+            self.scrub_preview_offset_frames.store(0, Ordering::Relaxed);
         }
     }
 
     pub fn trigger_scrub_preview(&self, frames: u64) {
+        self.scrub_preview_offset_frames.store(0, Ordering::Relaxed);
         self.scrub_preview_frames.store(frames, Ordering::Relaxed);
     }
 
@@ -264,6 +277,7 @@ fn build_output_stream<T>(
     playhead: Arc<AtomicU64>,
     scrub_hold: Arc<AtomicBool>,
     scrub_preview_frames: Arc<AtomicU64>,
+    scrub_preview_offset_frames: Arc<AtomicU64>,
     channels: u16,
 ) -> Result<cpal::Stream, String>
 where
@@ -289,8 +303,33 @@ where
                     *sample = 0.0;
                 }
 
-                let start_frame = playhead.load(Ordering::Relaxed);
-                let end_frame = start_frame + frames as u64;
+                let scrub_active = scrub_hold.load(Ordering::Relaxed);
+                let preview_remaining = if scrub_active {
+                    scrub_preview_frames.load(Ordering::Relaxed)
+                } else {
+                    0
+                };
+                if scrub_active && preview_remaining == 0 {
+                    for sample in data.iter_mut() {
+                        *sample = T::from_sample(0.0);
+                    }
+                    return;
+                }
+
+                let base_playhead = playhead.load(Ordering::Relaxed);
+                let render_frames = if scrub_active {
+                    (frames as u64)
+                        .min(preview_remaining)
+                        .min(u64::MAX.saturating_sub(base_playhead))
+                } else {
+                    frames as u64
+                };
+                let start_frame = if scrub_active {
+                    base_playhead + scrub_preview_offset_frames.load(Ordering::Relaxed)
+                } else {
+                    base_playhead
+                };
+                let end_frame = start_frame + render_frames;
 
                 if let Ok(items) = items.lock() {
                     for item in items.iter() {
@@ -324,22 +363,16 @@ where
                     }
                 }
 
-                if scrub_hold.load(Ordering::Relaxed) {
-                    let preview_remaining = scrub_preview_frames.load(Ordering::Relaxed);
-                    if preview_remaining == 0 {
-                        for sample in data.iter_mut() {
-                            *sample = T::from_sample(0.0);
-                        }
-                        return;
-                    }
-                    let consumed = preview_remaining.saturating_sub(frames as u64);
+                if scrub_active {
+                    let consumed = preview_remaining.saturating_sub(render_frames);
                     scrub_preview_frames.store(consumed, Ordering::Relaxed);
+                    scrub_preview_offset_frames.fetch_add(render_frames, Ordering::Relaxed);
                 }
 
                 for (out, sample) in data.iter_mut().zip(mix_buffer.iter()) {
                     *out = T::from_sample(sample.clamp(-1.0, 1.0));
                 }
-                if !scrub_hold.load(Ordering::Relaxed) {
+                if !scrub_active {
                     playhead.store(end_frame, Ordering::Relaxed);
                 }
             },

@@ -78,6 +78,7 @@ const PREVIEW_IDLE_PREFETCH_BEHIND_SECONDS: f64 = 1.0;
 const PREVIEW_RENDER_RETRY_MS: u64 = 16;
 const PREVIEW_ZOOM_MIN: f32 = 0.05;
 const PREVIEW_ZOOM_MAX: f32 = 16.0;
+const PREVIEW_SCROLL_ZOOM_SENSITIVITY: f32 = 0.012;
 const PREVIEW_HANDLE_SIZE: f32 = 9.0;
 const PREVIEW_ROTATE_HANDLE_DISTANCE: f32 = 34.0;
 const PREVIEW_SNAP_THRESHOLD_PX: f32 = 8.0;
@@ -88,7 +89,7 @@ const TIMELINE_HANDLE_W: f32 = 8.0;
 const TIMELINE_MARKER_HIT_W: f32 = 22.0;
 const TIMELINE_MARKER_LABEL_W: f32 = 96.0;
 const TIMELINE_MARKER_LABEL_H: f32 = 18.0;
-const TIMELINE_SCRUB_PREVIEW_SECONDS: f64 = 0.12;
+const TIMELINE_SCRUB_PREVIEW_SECONDS: f64 = 0.03;
 const TIMELINE_HEADER_PAD_X: f32 = 4.0;
 const TIMELINE_HEADER_LEFT_W: f32 = 286.0;
 const TIMELINE_HEADER_RIGHT_W: f32 = 102.0;
@@ -220,6 +221,7 @@ pub struct NlaEguiApp {
     timeline_drag: Option<TimelineDrag>,
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
+    timeline_last_scrub_audio_time: Option<f64>,
     preview_auto_fit: bool,
     preview_zoom: f32,
     preview_pan: Vec2,
@@ -401,6 +403,7 @@ enum TimelineDrag {
 enum PreviewTransformDrag {
     Pan {
         start_pan: Vec2,
+        start_pointer: Pos2,
     },
     Move {
         clip_id: Uuid,
@@ -433,6 +436,12 @@ enum PreviewScaleHandle {
     South,
     SouthWest,
     West,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewScaleSnapAxis {
+    X,
+    Y,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -660,6 +669,7 @@ impl NlaEguiApp {
             timeline_drag: None,
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
+            timeline_last_scrub_audio_time: None,
             preview_auto_fit: true,
             preview_zoom: 1.0,
             preview_pan: Vec2::ZERO,
@@ -916,6 +926,7 @@ impl NlaEguiApp {
         let was_playing = self.editor.is_playing;
         if scrub_audio {
             self.timeline_scrub_was_playing = was_playing;
+            self.timeline_last_scrub_audio_time = None;
         }
 
         let profile_start = Instant::now();
@@ -1035,6 +1046,7 @@ impl NlaEguiApp {
         self.timeline_drag = None;
         self.timeline_snap_preview = None;
         self.timeline_scrub_was_playing = false;
+        self.timeline_last_scrub_audio_time = None;
         self.preview_auto_fit = true;
         self.preview_zoom = 1.0;
         self.preview_pan = Vec2::ZERO;
@@ -1075,6 +1087,110 @@ impl NlaEguiApp {
             self.export_modal.status = ExportRunStatus::Running;
         } else {
             self.editor.overlays.export_video = false;
+        }
+    }
+
+    fn keyboard_shortcuts_suppressed(&self, ctx: &Context) -> bool {
+        ctx.text_edit_focused()
+            || self.editor.show_startup()
+            || self.editor.overlays.new_project
+            || self.editor.overlays.project_settings
+            || self.editor.overlays.generative_video
+            || self.editor.overlays.export_video
+            || self.editor.overlays.providers
+            || self.editor.overlays.api_keys
+            || self.editor.overlays.queue
+            || self.provider_json_editor_path.is_some()
+            || self.provider_builder_open
+    }
+
+    fn handle_app_keyboard(&mut self, ctx: &Context) {
+        if self.keyboard_shortcuts_suppressed(ctx) || self.editor.project.project_path.is_none() {
+            return;
+        }
+
+        let (save, play_pause, left, right, command_down) = ctx.input(|input| {
+            (
+                input.modifiers.command && input.key_pressed(egui::Key::S),
+                !input.modifiers.command
+                    && !input.modifiers.alt
+                    && !input.modifiers.ctrl
+                    && !input.modifiers.mac_cmd
+                    && input.key_pressed(egui::Key::Space),
+                input.key_pressed(egui::Key::ArrowLeft),
+                input.key_pressed(egui::Key::ArrowRight),
+                input.modifiers.command,
+            )
+        });
+
+        if save {
+            if let Err(err) = self.editor.save() {
+                self.editor.status = err;
+            }
+            ctx.request_repaint();
+            return;
+        }
+
+        if play_pause {
+            self.toggle_playback();
+            ctx.request_repaint();
+            return;
+        }
+
+        if left {
+            if command_down {
+                self.seek_to_adjacent_timeline_snap(-1);
+            } else {
+                self.seek_editor(
+                    previous_frame_time(self.editor.current_time, self.editor.project.settings.fps),
+                    false,
+                );
+            }
+            ctx.request_repaint();
+        } else if right {
+            if command_down {
+                self.seek_to_adjacent_timeline_snap(1);
+            } else {
+                self.seek_editor(
+                    next_frame_time(
+                        self.editor.current_time,
+                        self.editor.project.duration(),
+                        self.editor.project.settings.fps,
+                    ),
+                    false,
+                );
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    fn seek_to_adjacent_timeline_snap(&mut self, direction: i32) {
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let duration = self.editor.project.duration().max(0.0);
+        let current_frame = frames_from_seconds(self.editor.current_time, fps).round() as i64;
+        let max_frame = frames_from_seconds(duration, fps).round().max(0.0) as i64;
+        let mut frames = Vec::with_capacity(self.editor.project.clips.len() * 2 + 8);
+        frames.push(0);
+        frames.push(max_frame);
+        frames.extend(
+            self.timeline_snap_targets(None, None, false)
+                .into_iter()
+                .map(|target| target.frame.round().clamp(0.0, max_frame as f64) as i64),
+        );
+        frames.sort_unstable();
+        frames.dedup();
+
+        let target_frame = if direction < 0 {
+            frames
+                .into_iter()
+                .rev()
+                .find(|frame| *frame < current_frame)
+        } else {
+            frames.into_iter().find(|frame| *frame > current_frame)
+        };
+
+        if let Some(frame) = target_frame {
+            self.seek_editor(seconds_from_frames(frame as f64, fps), false);
         }
     }
 
@@ -1255,14 +1371,24 @@ impl NlaEguiApp {
 
         if scrub_audio {
             self.refresh_audio_playback_items();
+        } else {
+            self.timeline_last_scrub_audio_time = None;
         }
         engine.seek_seconds(self.editor.current_time);
         if scrub_audio && !self.editor.is_playing {
             engine.set_scrub_hold(true);
-            engine.trigger_scrub_preview(
-                ((engine.sample_rate() as f64) * TIMELINE_SCRUB_PREVIEW_SECONDS).round() as u64,
-            );
-            engine.play();
+            let frame_epsilon = (0.5 / self.editor.project.settings.fps.max(1.0)).max(0.000_001);
+            let should_preview = self
+                .timeline_last_scrub_audio_time
+                .map(|last| (last - self.editor.current_time).abs() > frame_epsilon)
+                .unwrap_or(true);
+            if should_preview {
+                self.timeline_last_scrub_audio_time = Some(self.editor.current_time);
+                engine.trigger_scrub_preview(
+                    ((engine.sample_rate() as f64) * TIMELINE_SCRUB_PREVIEW_SECONDS).round() as u64,
+                );
+                engine.play();
+            }
         }
     }
 
@@ -1272,10 +1398,12 @@ impl NlaEguiApp {
             if next_playing {
                 self.refresh_audio_playback_items();
                 engine.set_scrub_hold(false);
+                self.timeline_last_scrub_audio_time = None;
                 engine.seek_seconds(self.editor.current_time);
                 engine.play();
             } else {
                 engine.set_scrub_hold(false);
+                self.timeline_last_scrub_audio_time = None;
                 engine.pause();
             }
         }
@@ -1324,9 +1452,11 @@ impl NlaEguiApp {
     fn finish_timeline_scrub(&mut self) {
         let Some(engine) = self.audio_engine.as_ref() else {
             self.timeline_scrub_was_playing = false;
+            self.timeline_last_scrub_audio_time = None;
             return;
         };
         engine.set_scrub_hold(false);
+        self.timeline_last_scrub_audio_time = None;
         if self.timeline_scrub_was_playing {
             engine.seek_seconds(self.editor.current_time);
             engine.play();
@@ -3171,33 +3301,47 @@ impl NlaEguiApp {
     fn handle_preview_view_input(
         &mut self,
         ui: &mut Ui,
-        response: &egui::Response,
+        _response: &egui::Response,
         rect: Rect,
         layers: &PreviewLayerStack,
         fit_scale: f32,
     ) {
-        if response.drag_started_by(egui::PointerButton::Secondary) {
-            self.preview_auto_fit = false;
-            if !self.preview_zoom.is_finite() || self.preview_zoom <= 0.0 {
-                self.preview_zoom = fit_scale;
+        let pointer = ui
+            .ctx()
+            .pointer_interact_pos()
+            .or_else(|| ui.ctx().pointer_hover_pos());
+        let pointer_in_preview = pointer.map(|point| rect.contains(point)).unwrap_or(false);
+        let secondary_pressed_in_preview =
+            ui.input(|input| input.pointer.secondary_pressed()) && pointer_in_preview;
+        if secondary_pressed_in_preview {
+            if let Some(start_pointer) = pointer {
+                self.preview_auto_fit = false;
+                if !self.preview_zoom.is_finite() || self.preview_zoom <= 0.0 {
+                    self.preview_zoom = fit_scale;
+                }
+                self.preview_drag = Some(PreviewTransformDrag::Pan {
+                    start_pan: self.preview_pan,
+                    start_pointer,
+                });
             }
-            self.preview_drag = Some(PreviewTransformDrag::Pan {
-                start_pan: self.preview_pan,
-            });
         }
-        if let Some(PreviewTransformDrag::Pan { start_pan }) = self.preview_drag {
-            if response.dragged_by(egui::PointerButton::Secondary) {
-                self.preview_pan = start_pan + response.drag_delta();
-                ui.ctx().request_repaint();
-            }
-        }
-        if !ui.input(|input| input.pointer.secondary_down())
-            && matches!(self.preview_drag, Some(PreviewTransformDrag::Pan { .. }))
+        if let Some(PreviewTransformDrag::Pan {
+            start_pan,
+            start_pointer,
+        }) = self.preview_drag
         {
-            self.preview_drag = None;
+            if ui.input(|input| input.pointer.secondary_down()) {
+                if let Some(pointer) = pointer {
+                    self.preview_pan = start_pan + (pointer - start_pointer);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::AllScroll);
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                self.preview_drag = None;
+            }
         }
 
-        let scroll_delta = preview_scroll_delta(ui, response);
+        let scroll_delta = preview_scroll_delta(ui, rect);
         if scroll_delta.abs() <= 0.0 {
             return;
         }
@@ -3217,7 +3361,9 @@ impl NlaEguiApp {
         );
         let pointer = ui.ctx().pointer_hover_pos().unwrap_or(rect.center());
         let canvas_point = (pointer - old_canvas_rect.min) / old_scale.max(0.0001);
-        let zoom_factor = (scroll_delta * 0.0015).exp().clamp(0.5, 2.0);
+        let zoom_factor = (scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY)
+            .exp()
+            .clamp(0.25, 4.0);
 
         self.preview_auto_fit = false;
         self.preview_zoom = (old_scale * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
@@ -3391,7 +3537,7 @@ impl NlaEguiApp {
                 egui::StrokeKind::Inside,
             );
             if response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+                ui.ctx().set_cursor_icon(preview_scale_cursor(handle));
             }
             if response.drag_started() {
                 if let Some(transform) = self.clip_transform(selected.clip_id) {
@@ -3532,16 +3678,34 @@ impl NlaEguiApp {
                 start_center_project,
                 start_half_size,
             } if clip_id == selected.clip_id => {
+                let constrain_aspect = !shift_down;
+                let (scale_pointer, snap_axis, guides) = if alt_down {
+                    (pointer_project, None, Vec::new())
+                } else {
+                    self.snap_preview_scale_pointer(
+                        clip_id,
+                        pointer_project,
+                        handle,
+                        objects,
+                        canvas_rect,
+                        layers,
+                        selected.project_to_screen,
+                        selected.project_to_screen
+                            / preview_project_scale(layers, self.editor.project.settings.width)
+                                .max(0.0001),
+                    )
+                };
                 let transform = preview_scaled_transform(
                     start_transform,
                     start_center_project,
-                    pointer_project,
+                    scale_pointer,
                     handle,
                     start_half_size,
-                    shift_down,
+                    constrain_aspect,
+                    snap_axis,
                     selected.project_to_screen,
                 );
-                self.preview_snap_guides.clear();
+                self.preview_snap_guides = guides;
                 transform
             }
             PreviewTransformDrag::Rotate {
@@ -3553,7 +3717,7 @@ impl NlaEguiApp {
                 let current_angle = vector_angle_deg(pointer_project - start_center_project);
                 let mut rotation =
                     start_transform.rotation_deg + current_angle - start_pointer_angle;
-                if !alt_down {
+                if !shift_down {
                     rotation = (rotation / 15.0).round() * 15.0;
                 }
                 let mut transform = start_transform;
@@ -3656,6 +3820,108 @@ impl NlaEguiApp {
         }
 
         (transform, guides)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn snap_preview_scale_pointer(
+        &self,
+        clip_id: Uuid,
+        pointer_project: Pos2,
+        handle: PreviewScaleHandle,
+        objects: &[PreviewObjectGeometry],
+        canvas_rect: Rect,
+        layers: &PreviewLayerStack,
+        project_to_screen: f32,
+        canvas_scale: f32,
+    ) -> (Pos2, Option<PreviewScaleSnapAxis>, Vec<PreviewSnapGuide>) {
+        let (sx, sy) = preview_scale_handle_signs(handle);
+        let project_w = self.editor.project.settings.width.max(1) as f32;
+        let project_h = self.editor.project.settings.height.max(1) as f32;
+        let threshold = (PREVIEW_SNAP_THRESHOLD_PX / project_to_screen.max(0.0001)).max(0.5);
+        let preview_scale = preview_project_scale(layers, self.editor.project.settings.width);
+
+        let mut x_targets = vec![0.0, project_w * 0.5, project_w];
+        let mut y_targets = vec![0.0, project_h * 0.5, project_h];
+        for object in objects.iter().filter(|object| object.clip_id != clip_id) {
+            x_targets.extend([
+                object.project_rect.left(),
+                object.project_rect.center().x,
+                object.project_rect.right(),
+            ]);
+            y_targets.extend([
+                object.project_rect.top(),
+                object.project_rect.center().y,
+                object.project_rect.bottom(),
+            ]);
+        }
+
+        let x_snap = if sx != 0.0 {
+            nearest_snap_delta([pointer_project.x], &x_targets, threshold).map(|(delta, target)| {
+                let p0 = preview_project_to_screen(
+                    Pos2::new(target, 0.0),
+                    canvas_rect,
+                    preview_scale,
+                    canvas_scale,
+                );
+                let p1 = preview_project_to_screen(
+                    Pos2::new(target, project_h),
+                    canvas_rect,
+                    preview_scale,
+                    canvas_scale,
+                );
+                (
+                    delta,
+                    PreviewSnapGuide { start: p0, end: p1 },
+                    PreviewScaleSnapAxis::X,
+                )
+            })
+        } else {
+            None
+        };
+        let y_snap = if sy != 0.0 {
+            nearest_snap_delta([pointer_project.y], &y_targets, threshold).map(|(delta, target)| {
+                let p0 = preview_project_to_screen(
+                    Pos2::new(0.0, target),
+                    canvas_rect,
+                    preview_scale,
+                    canvas_scale,
+                );
+                let p1 = preview_project_to_screen(
+                    Pos2::new(project_w, target),
+                    canvas_rect,
+                    preview_scale,
+                    canvas_scale,
+                );
+                (
+                    delta,
+                    PreviewSnapGuide { start: p0, end: p1 },
+                    PreviewScaleSnapAxis::Y,
+                )
+            })
+        } else {
+            None
+        };
+
+        let selected_snap = match (x_snap, y_snap) {
+            (Some(x), Some(y)) if x.0.abs() <= y.0.abs() => Some(x),
+            (Some(_), Some(y)) => Some(y),
+            (Some(x), None) => Some(x),
+            (None, Some(y)) => Some(y),
+            (None, None) => None,
+        };
+
+        let mut pointer = pointer_project;
+        let mut guides = Vec::new();
+        if let Some((delta, guide, axis)) = selected_snap {
+            match axis {
+                PreviewScaleSnapAxis::X => pointer.x += delta,
+                PreviewScaleSnapAxis::Y => pointer.y += delta,
+            }
+            guides.push(guide);
+            (pointer, Some(axis), guides)
+        } else {
+            (pointer, None, guides)
+        }
     }
 
     fn clip_transform(&self, clip_id: Uuid) -> Option<ClipTransform> {
@@ -4218,6 +4484,10 @@ impl NlaEguiApp {
     }
 
     fn handle_timeline_keyboard(&mut self, ui: &mut Ui, duration: f64, viewport_w: f32) {
+        if self.keyboard_shortcuts_suppressed(ui.ctx()) {
+            return;
+        }
+
         let zoom_in = ui.input(|input| {
             input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals)
         });
@@ -4674,6 +4944,7 @@ impl NlaEguiApp {
                 match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
                     TimelineHit::Ruler => {
                         self.timeline_scrub_was_playing = self.editor.is_playing;
+                        self.timeline_last_scrub_audio_time = None;
                         if self.editor.is_playing {
                             self.editor.is_playing = false;
                         }
@@ -7454,8 +7725,13 @@ fn preview_project_scale(layers: &PreviewLayerStack, project_width: u32) -> f32 
     layers.canvas_width.max(1) as f32 / project_width.max(1) as f32
 }
 
-fn preview_scroll_delta(ui: &Ui, response: &egui::Response) -> f32 {
-    if !response.hovered() {
+fn preview_scroll_delta(ui: &Ui, rect: Rect) -> f32 {
+    let pointer_in_rect = ui
+        .ctx()
+        .pointer_hover_pos()
+        .map(|pointer| rect.contains(pointer))
+        .unwrap_or(false);
+    if !pointer_in_rect {
         return 0.0;
     }
     ui.input(|input| {
@@ -7565,43 +7841,69 @@ fn preview_scaled_transform(
     handle: PreviewScaleHandle,
     start_half_size: Vec2,
     constrain_aspect: bool,
+    snap_axis: Option<PreviewScaleSnapAxis>,
     project_to_screen: f32,
 ) -> ClipTransform {
     let (sx, sy) = preview_scale_handle_signs(handle);
     let min_half = (4.0 / project_to_screen.max(0.0001)).max(0.5);
+    let start_half_x = start_half_size.x.max(min_half);
+    let start_half_y = start_half_size.y.max(min_half);
     let pointer_local = rotate_vec(
         pointer_project - start_center_project,
         -start_transform.rotation_deg,
     );
 
-    let mut new_half_x = start_half_size.x.max(min_half);
-    let mut new_half_y = start_half_size.y.max(min_half);
+    let mut new_half_x = start_half_x;
+    let mut new_half_y = start_half_y;
     let mut center_local = Vec2::ZERO;
 
     if sx != 0.0 {
-        let anchor_x = -sx * start_half_size.x;
+        let anchor_x = -sx * start_half_x;
         let handle_x = pointer_local.x;
         new_half_x = ((handle_x - anchor_x).abs() * 0.5).max(min_half);
         center_local.x = (handle_x + anchor_x) * 0.5;
     }
     if sy != 0.0 {
-        let anchor_y = -sy * start_half_size.y;
+        let anchor_y = -sy * start_half_y;
         let handle_y = pointer_local.y;
         new_half_y = ((handle_y - anchor_y).abs() * 0.5).max(min_half);
         center_local.y = (handle_y + anchor_y) * 0.5;
     }
 
-    if constrain_aspect && sx != 0.0 && sy != 0.0 {
-        let aspect = (start_half_size.x / start_half_size.y.max(0.0001)).max(0.0001);
-        if new_half_x / new_half_y.max(0.0001) > aspect {
-            new_half_y = new_half_x / aspect;
+    if constrain_aspect && (sx != 0.0 || sy != 0.0) {
+        let factor_x = if sx != 0.0 {
+            new_half_x / start_half_x.max(0.0001)
         } else {
-            new_half_x = new_half_y * aspect;
+            1.0
+        };
+        let factor_y = if sy != 0.0 {
+            new_half_y / start_half_y.max(0.0001)
+        } else {
+            1.0
+        };
+        let mut factor = match (sx != 0.0, sy != 0.0, snap_axis) {
+            (true, true, Some(PreviewScaleSnapAxis::X)) => factor_x,
+            (true, true, Some(PreviewScaleSnapAxis::Y)) => factor_y,
+            (true, true, None) => factor_x.max(factor_y),
+            (true, false, _) => factor_x,
+            (false, true, _) => factor_y,
+            _ => 1.0,
+        };
+        factor = factor
+            .max(min_half / start_half_x.max(0.0001))
+            .max(min_half / start_half_y.max(0.0001));
+        new_half_x = start_half_x * factor;
+        new_half_y = start_half_y * factor;
+
+        center_local = Vec2::ZERO;
+        if sx != 0.0 {
+            let anchor_x = -sx * start_half_x;
+            center_local.x = anchor_x + sx * new_half_x;
         }
-        let anchor_x = -sx * start_half_size.x;
-        let anchor_y = -sy * start_half_size.y;
-        center_local.x = anchor_x + sx * new_half_x;
-        center_local.y = anchor_y + sy * new_half_y;
+        if sy != 0.0 {
+            let anchor_y = -sy * start_half_y;
+            center_local.y = anchor_y + sy * new_half_y;
+        }
     }
 
     let start_project_origin = Pos2::new(
@@ -7612,13 +7914,26 @@ fn preview_scaled_transform(
     let mut transform = start_transform;
     transform.position_x = next_center.x - start_project_origin.x;
     transform.position_y = next_center.y - start_project_origin.y;
-    if start_half_size.x > 0.0 {
-        transform.scale_x = start_transform.scale_x * (new_half_x / start_half_size.x);
+    if start_half_x > 0.0 {
+        transform.scale_x = start_transform.scale_x * (new_half_x / start_half_x);
     }
-    if start_half_size.y > 0.0 {
-        transform.scale_y = start_transform.scale_y * (new_half_y / start_half_size.y);
+    if start_half_y > 0.0 {
+        transform.scale_y = start_transform.scale_y * (new_half_y / start_half_y);
     }
     transform
+}
+
+fn preview_scale_cursor(handle: PreviewScaleHandle) -> egui::CursorIcon {
+    match handle {
+        PreviewScaleHandle::North | PreviewScaleHandle::South => egui::CursorIcon::ResizeVertical,
+        PreviewScaleHandle::East | PreviewScaleHandle::West => egui::CursorIcon::ResizeHorizontal,
+        PreviewScaleHandle::NorthEast | PreviewScaleHandle::SouthWest => {
+            egui::CursorIcon::ResizeNeSw
+        }
+        PreviewScaleHandle::NorthWest | PreviewScaleHandle::SouthEast => {
+            egui::CursorIcon::ResizeNwSe
+        }
+    }
 }
 
 fn preview_scale_handle_signs(handle: PreviewScaleHandle) -> (f32, f32) {
@@ -7774,6 +8089,7 @@ impl eframe::App for NlaEguiApp {
         self.service_export_events(&ctx);
         self.update_preview_texture(&ctx);
         self.service_preview_idle_prefetch(&ctx);
+        self.handle_app_keyboard(&ctx);
 
         self.top_bar(ui);
         // App-wide bars claim root space first; docked editor panels sit above the status bar.
