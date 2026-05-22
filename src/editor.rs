@@ -326,6 +326,13 @@ impl EditorState {
     pub fn apply_automation_command(&mut self, command: &AutomationCommand) -> AutomationResponse {
         match command {
             AutomationCommand::GetState => AutomationResponse::ok(self.state_json()),
+            AutomationCommand::GetUi
+            | AutomationCommand::ClickUi { .. }
+            | AutomationCommand::TextUi { .. }
+            | AutomationCommand::Screenshot { .. } => AutomationResponse::with_status(
+                "UI automation commands must be handled by the egui runtime.",
+                500,
+            ),
             AutomationCommand::CreateProject {
                 parent_dir,
                 name,

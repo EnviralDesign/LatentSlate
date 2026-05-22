@@ -282,7 +282,7 @@ pub fn fixed_panel_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) -> Resp
     child.set_max_width(allocated_rect.width());
     child.set_height(allocated_rect.height());
     add_contents(&mut child);
-    response
+    crate::core::automation::instrument_response(response, "panel", None, false, false)
 }
 
 pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
@@ -311,7 +311,7 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
     child.set_width(content_rect.width());
     child.set_max_width(content_rect.width());
     add_contents(&mut child);
-    response
+    crate::core::automation::instrument_response(response, "panel", None, false, false)
 }
 
 pub fn stack_card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
@@ -663,16 +663,25 @@ pub fn combo_field<R>(
     configure_field_widget_style(&mut child, rect.width());
 
     let combo_id = child.make_persistent_id(("combo_field", id_salt));
+    if crate::core::automation::consume_pending_click_for_egui_id(combo_id) {
+        egui::Popup::toggle_id(child.ctx(), combo_id.with("popup"));
+    }
     let inner = egui::ComboBox::from_id_salt(combo_id)
         .selected_text(
-            RichText::new(selected_text)
+            RichText::new(selected_text.clone())
                 .color(TEXT)
                 .size(FIELD_TEXT_SIZE),
         )
         .width(rect.width())
         .show_ui(&mut child, add_contents);
 
-    response.union(inner.response)
+    crate::core::automation::instrument_response(
+        response.union(inner.response),
+        "combo",
+        Some(selected_text),
+        true,
+        false,
+    )
 }
 
 pub fn labeled_combo_field<R>(
@@ -894,7 +903,13 @@ pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> 
         field_stroke(&output),
         StrokeKind::Inside,
     );
-    output.response.response.on_hover_text(value)
+    crate::core::automation::instrument_response(
+        output.response.response.on_hover_text(value.clone()),
+        "readonly_field",
+        Some(value),
+        false,
+        false,
+    )
 }
 
 fn select_all_on_focus(output: &mut egui::text_edit::TextEditOutput, text: &str) {
@@ -940,13 +955,15 @@ pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Res
     let mut output = field_text_edit(ui, value, rect);
     let selected_text = value.clone();
     select_all_on_focus(&mut output, &selected_text);
+    let mut response = output.response.response.clone();
+    crate::core::automation::apply_pending_text(&mut response, value);
     ui.painter().rect_stroke(
         rect,
         field_radius(),
         field_stroke(&output),
         StrokeKind::Inside,
     );
-    output.response.response
+    crate::core::automation::instrument_response(response, "text_field", None, true, true)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1000,13 +1017,15 @@ pub fn multiline_text_field(
         .font(FontId::proportional(FIELD_TEXT_SIZE))
         .frame(field_text_frame())
         .show(&mut child);
+    let mut response = output.response.response.clone();
+    crate::core::automation::apply_pending_text(&mut response, value);
     ui.painter().rect_stroke(
         rect,
         field_radius(),
         field_stroke(&output),
         StrokeKind::Inside,
     );
-    output.response.response
+    crate::core::automation::instrument_response(response, "multiline_text_field", None, true, true)
 }
 
 pub fn multiline_text_field_height(rows: usize) -> f32 {
@@ -1057,11 +1076,12 @@ pub fn code_editor_field(ui: &mut Ui, value: &mut String, id_salt: impl Hash) ->
             text_response = Some(output.response.response);
         });
 
-    let response = if let Some(text_response) = text_response {
+    let mut response = if let Some(text_response) = text_response {
         response.union(text_response)
     } else {
         response
     };
+    crate::core::automation::apply_pending_text(&mut response, value);
     let stroke = if response.has_focus() {
         Stroke::new(1.0, BORDER_FOCUS)
     } else if response.hovered() {
@@ -1071,13 +1091,16 @@ pub fn code_editor_field(ui: &mut Ui, value: &mut String, id_salt: impl Hash) ->
     };
     ui.painter()
         .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
-    response
+    crate::core::automation::instrument_response(response, "code_editor", None, true, true)
 }
 
 pub fn color_field(ui: &mut Ui, color: &mut Color32, width: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::click());
     let mut response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let popup_id = response.id.with("color_picker_popup");
+    if crate::core::automation::consume_pending_click_for_egui_id(response.id) {
+        egui::Popup::toggle_id(ui.ctx(), popup_id);
+    }
     let popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
     let rounding = field_radius();
     let stroke = if response.has_focus() || popup_open {
@@ -1100,7 +1123,7 @@ pub fn color_field(ui: &mut Ui, color: &mut Color32, width: f32) -> Response {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        label,
+        label.clone(),
         FontId::proportional(FIELD_TEXT_SIZE),
         label_color,
     );
@@ -1121,7 +1144,13 @@ pub fn color_field(ui: &mut Ui, color: &mut Color32, width: f32) -> Response {
         response.mark_changed();
     }
 
-    response.on_hover_text("Click to edit color")
+    crate::core::automation::instrument_response(
+        response.on_hover_text("Click to edit color"),
+        "color_field",
+        Some(label),
+        true,
+        false,
+    )
 }
 
 fn color_hex_label(color: Color32) -> String {
@@ -1461,7 +1490,13 @@ pub fn timeline_transport_icon_button(
         TEXT_MUTED
     };
     paint_timeline_transport_icon(ui, rect, icon, icon_color);
-    response
+    crate::core::automation::instrument_response(
+        response,
+        "transport_button",
+        Some(format!("{icon:?}")),
+        true,
+        false,
+    )
 }
 
 pub fn queue_toggle_button(ui: &mut Ui, count: usize, active: bool, attention: bool) -> Response {
@@ -1526,7 +1561,13 @@ pub fn queue_toggle_button(ui: &mut Ui, count: usize, active: bool, attention: b
         );
     }
 
-    response
+    crate::core::automation::instrument_response(
+        response,
+        "queue_button",
+        Some("QUE".to_string()),
+        true,
+        false,
+    )
 }
 
 pub fn top_bar_menu_button<R>(
@@ -1595,7 +1636,13 @@ pub fn popover_button(ui: &mut Ui, label: &str, width: f32, enabled: bool) -> Re
         FontId::proportional(11.0),
         text,
     );
-    response
+    crate::core::automation::instrument_response(
+        response,
+        "popover_button",
+        Some(label.to_string()),
+        enabled,
+        false,
+    )
 }
 
 fn subtle_button(
@@ -1803,7 +1850,13 @@ pub fn close_button(ui: &mut Ui) -> Response {
         stroke,
     );
 
-    response
+    crate::core::automation::instrument_response(
+        response,
+        "close_button",
+        Some("Close".to_string()),
+        true,
+        false,
+    )
 }
 
 pub fn media_pill(ui: &mut Ui, label: &str, color: Color32) -> Response {
@@ -1992,7 +2045,13 @@ fn paint_button_at(
         );
     ui.painter()
         .galley(rect.center() - galley.size() * 0.5, galley, skin.text);
-    response
+    crate::core::automation::instrument_response(
+        response,
+        "button",
+        Some(label.to_string()),
+        true,
+        false,
+    )
 }
 
 fn paint_button_background(ui: &Ui, rect: Rect, response: &Response, skin: ButtonSkin) {
@@ -2095,7 +2154,13 @@ pub fn collapsed_rail_button(ui: &mut Ui, icon: &str) -> Response {
         FontId::proportional(12.0),
         TEXT_MUTED,
     );
-    response
+    crate::core::automation::instrument_response(
+        response,
+        "collapsed_rail",
+        Some(icon.to_string()),
+        true,
+        false,
+    )
 }
 
 pub fn row_fill(selected: bool, hovered: bool) -> Color32 {
@@ -2140,5 +2205,11 @@ pub fn draw_accent_row(
     );
     child.shrink_clip_rect(content_rect);
     add_contents(&mut child, content_rect);
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    crate::core::automation::instrument_response(
+        response.on_hover_cursor(egui::CursorIcon::PointingHand),
+        "row",
+        None,
+        true,
+        false,
+    )
 }

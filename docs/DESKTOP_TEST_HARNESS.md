@@ -1,6 +1,6 @@
 # Desktop Test Harness Plan
 
-This app cannot be exercised like a browser tab. The current egui/eframe shell is native desktop UI, so the harness uses two layers: fast core checks that do not launch the UI, and desktop smoke scenarios that launch the executable and capture visual evidence from the app window.
+This app cannot be exercised like a browser tab. The current egui/eframe shell is native desktop UI, so the harness uses three layers: fast core checks that do not launch the UI, a loopback REST API for semantic/editor operations, and a UI-level registry that lets automation discover and invoke visible egui widgets.
 
 ## Current Smoke Scripts
 
@@ -62,6 +62,10 @@ Endpoints:
 
 - `GET /health` confirms the control plane is enabled.
 - `GET /state` returns project, current time, selection, startup, and provider-modal state.
+- `GET /ui` returns the visible widget registry from the last completed egui frame.
+- `POST /ui/click` invokes a visible clickable widget by its current `/ui` ID.
+- `POST /ui/text` replaces or appends text in a visible editable widget by its current `/ui` ID.
+- `POST /screenshot` captures the current egui viewport and writes a PNG under `.tmp/automation-screenshots/`.
 - `POST /command` accepts JSON commands tagged with `type`.
 
 Current commands:
@@ -90,7 +94,21 @@ Current commands:
 - `set_layout`
 - `close_all_overlays`
 
-This is intentionally not a separate testing model. HTTP requests are converted into semantic editor commands, then consumed by the egui app loop and applied through `EditorState`, the same model/controller used by visible UI actions. That keeps the harness close to native interaction without relying on pixel clicks.
+The UI-level endpoints are also accepted through `POST /command` as `get_ui`, `click_ui`, `text_ui`, and `screenshot`.
+
+Example UI-level flow:
+
+```powershell
+$base = "http://127.0.0.1:47890"
+$ui = Invoke-RestMethod "$base/ui"
+$button = $ui.data.elements | Where-Object { $_.kind -eq "button" -and $_.label -eq "New Project..." } | Select-Object -First 1
+Invoke-RestMethod "$base/ui/click" -Method Post -ContentType "application/json" -Body (@{ id = $button.id } | ConvertTo-Json)
+$shot = Invoke-RestMethod "$base/screenshot" -Method Post -ContentType "application/json" -Body (@{ name = "new-project" } | ConvertTo-Json)
+```
+
+`/ui/click` returns `404` when the element ID is no longer present and `409` when the element is visible but disabled or not clickable. `/ui/text` uses the same visibility checks and additionally requires `editable: true`.
+
+This is intentionally not a separate testing model. Semantic HTTP requests are consumed by the egui app loop and applied through `EditorState`, the same model/controller used by visible UI actions. UI-level HTTP requests are consumed by shared egui widget helpers during the normal render pass, so automation follows the real button/text-field path rather than a hidden parallel UI path.
 
 ## Why DLL Staging Exists
 
@@ -111,8 +129,8 @@ They are available in the local vcpkg install, but launching `target\release\nla
    - A later `src/lib.rs` split would let integration tests import `state` and `core` directly instead of only relying on unit tests inside modules.
 
 2. Put UI work behind commands.
-   - The current `core::automation` module is a first slice: it queues semantic commands from loopback HTTP and the app runtime applies them through existing project/state operations.
-   - The next step is to extract these operations into an editor model/controller layer that owns create project, import asset, add clip, select clip, seek, generate, and save.
+   - `core::automation` queues semantic commands from loopback HTTP and the app runtime applies them through existing project/state operations.
+   - Shared `ui_kit` widgets register current-frame egui responses and consume queued UI actions, which gives automation a self-assembling control surface as more UI is moved onto the kit.
    - egui should render the model and dispatch commands; tests should execute the same commands headlessly or through the loopback harness.
 
 3. Treat screenshot tests as smoke checks, not exact goldens.
@@ -122,6 +140,7 @@ They are available in the local vcpkg install, but launching `target\release\nla
 4. For the egui refactor, prefer a native scenario runner.
    - egui is much easier to drive off a single model because the UI is immediate-mode.
    - The ideal loop is: build model state, run a scripted command sequence, render one or more frames, capture the window or an offscreen surface, and compare targeted visual invariants.
+   - Prefer `POST /screenshot` over external window-capture scripts when automation mode is available; it captures the egui viewport directly from the renderer and writes deterministic files under `.tmp`.
 
 ## Near-Term Scenarios
 

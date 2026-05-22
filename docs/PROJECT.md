@@ -821,6 +821,7 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-21:** Added a Rust-native UI-level automation layer on top of the existing loopback harness. Shared egui kit widgets now register a current-frame `/ui` control registry, `/ui/click` and `/ui/text` queue actions for real widgets to consume during the normal render pass, and `/screenshot` captures the application viewport directly to `.tmp/automation-screenshots/` through eframe's native screenshot command.
 - **2026-05-21:** Restored the Add Assets/New Generative card height budget so the media-type buttons have a normal bottom gutter and no longer clip against the card edge in the Assets panel.
 - **2026-05-21:** Rebuilt the egui Generation Queue as a custom anchored popover instead of a stock window. The queue now closes from its scrim, scales vertically with job count up to the available app height, keeps Clear All/Close controls in a compact header, shows Dioxus-style status pills plus Workflow/Node progress bars, and uses an active-count QUE badge with a slow orange pulse without auto-opening the popover when jobs are enqueued.
 - **2026-05-21:** Updated the SDXL Vanilla API workflow checkpoint reference to ComfyUI's current nested checkpoint key `sdxl\juggernautXL_juggXIByRundiffusion.safetensors`. ComfyUI validation was rejecting the old bare filename after the checkpoint moved under the `sdxl` folder.

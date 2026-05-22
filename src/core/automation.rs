@@ -1,11 +1,15 @@
 //! Loopback-only automation control plane for desktop smoke scenarios.
 //!
-//! This module deliberately exposes semantic editor commands instead of pixel
-//! clicking. The UI remains responsible for applying commands on its normal
-//! thread, so automation follows the same project/state paths as the visible UI.
+//! This module exposes both semantic editor commands and a UI-level control
+//! plane. Shared egui widgets register their current-frame responses here, so
+//! automation can discover visible controls and ask the real widgets to invoke
+//! clicks or text changes during the normal UI render pass.
 
+use eframe::egui::{self, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -22,6 +26,7 @@ const RESPONSE_TIMEOUT_SECONDS: u64 = 20;
 static CONFIG: OnceLock<AutomationConfig> = OnceLock::new();
 static COMMAND_TX: OnceLock<Sender<AutomationEnvelope>> = OnceLock::new();
 static COMMAND_RX: OnceLock<Mutex<Receiver<AutomationEnvelope>>> = OnceLock::new();
+static UI_REGISTRY: OnceLock<Mutex<UiRegistry>> = OnceLock::new();
 
 /// Configuration for the loopback automation server.
 #[derive(Clone, Debug)]
@@ -31,11 +36,27 @@ pub struct AutomationConfig {
 }
 
 /// Semantic app commands accepted by the automation API.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AutomationCommand {
     /// Return the current app state snapshot.
     GetState,
+    /// Return the current visible UI registry.
+    GetUi,
+    /// Click a visible UI widget by automation ID.
+    ClickUi { id: String },
+    /// Replace or append text in a visible editable UI widget by automation ID.
+    TextUi {
+        id: String,
+        text: String,
+        #[serde(default = "default_text_replace")]
+        replace: bool,
+    },
+    /// Capture the current application viewport to `.tmp/automation-screenshots`.
+    Screenshot {
+        #[serde(default)]
+        name: Option<String>,
+    },
     /// Create a project under `parent_dir/name`.
     CreateProject {
         parent_dir: PathBuf,
@@ -144,6 +165,70 @@ impl AutomationEnvelope {
     }
 }
 
+/// Screen-space rectangle reported by the UI registry.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct UiRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl From<egui::Rect> for UiRect {
+    fn from(rect: egui::Rect) -> Self {
+        Self {
+            x: rect.left(),
+            y: rect.top(),
+            width: rect.width(),
+            height: rect.height(),
+        }
+    }
+}
+
+/// A visible widget captured from the most recent egui frame.
+#[derive(Clone, Debug, Serialize)]
+pub struct UiElement {
+    /// Stable for the current widget identity. Query `/ui` before using it.
+    pub id: String,
+    /// Widget class such as `button`, `text_field`, `combo`, `row`, or `color_field`.
+    pub kind: String,
+    /// Human-facing label/value when the widget helper knows one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Full paint rectangle in egui points.
+    pub rect: UiRect,
+    /// Interactive rectangle after egui clipping.
+    pub interact_rect: UiRect,
+    /// Whether egui considered the widget enabled this frame.
+    pub enabled: bool,
+    /// Whether `/ui/click` can invoke it.
+    pub clickable: bool,
+    /// Whether `/ui/text` can replace or append text.
+    pub editable: bool,
+    /// Whether the widget currently has keyboard focus.
+    pub focused: bool,
+}
+
+#[derive(Clone, Debug)]
+struct UiElementRecord {
+    element: UiElement,
+}
+
+#[derive(Default)]
+struct PendingText {
+    text: String,
+    replace: bool,
+}
+
+#[derive(Default)]
+struct UiRegistry {
+    elements: Vec<UiElementRecord>,
+    pending_clicks: HashSet<String>,
+    pending_text: HashMap<String, PendingText>,
+    consumed_actions: HashSet<String>,
+    frame_index: u64,
+}
+
 /// JSON response returned by the automation API.
 #[derive(Clone, Debug, Serialize)]
 pub struct AutomationResponse {
@@ -155,6 +240,9 @@ pub struct AutomationResponse {
     /// Command-specific response payload.
     #[serde(default)]
     pub data: Value,
+    /// HTTP status to use for this response.
+    #[serde(skip)]
+    pub http_status: u16,
 }
 
 impl AutomationResponse {
@@ -164,6 +252,7 @@ impl AutomationResponse {
             ok: true,
             message: None,
             data,
+            http_status: 200,
         }
     }
 
@@ -178,8 +267,62 @@ impl AutomationResponse {
             ok: false,
             message: Some(message.into()),
             data: json!({}),
+            http_status: 400,
         }
     }
+
+    /// Build a 404 response.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            data: json!({}),
+            http_status: 404,
+        }
+    }
+
+    /// Build a 409 response for stateful UI/action conflicts.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            data: json!({}),
+            http_status: 409,
+        }
+    }
+
+    /// Build a failed response with an explicit HTTP status.
+    pub fn with_status(message: impl Into<String>, http_status: u16) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            data: json!({}),
+            http_status,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UiClickRequest {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UiTextRequest {
+    id: String,
+    text: String,
+    #[serde(default = "default_text_replace")]
+    replace: bool,
+}
+
+#[derive(Default, Debug, Deserialize)]
+struct ScreenshotRequest {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+fn default_text_replace() -> bool {
+    true
 }
 
 /// Parse automation configuration from CLI args and environment variables.
@@ -251,6 +394,209 @@ pub fn try_recv_command() -> Option<AutomationEnvelope> {
     guard.try_recv().ok()
 }
 
+/// Clear the current-frame registry before the egui tree is drawn.
+pub fn begin_ui_frame() {
+    if !is_enabled() {
+        return;
+    }
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry.elements.clear();
+        registry.consumed_actions.clear();
+        registry.frame_index = registry.frame_index.saturating_add(1);
+    }
+}
+
+/// Register a real egui response and consume any queued click targeting it.
+pub fn instrument_response(
+    mut response: Response,
+    kind: &'static str,
+    label: Option<String>,
+    clickable: bool,
+    editable: bool,
+) -> Response {
+    if !is_enabled() {
+        return response;
+    }
+
+    let id = ui_element_id(response.id);
+    let enabled = response.enabled();
+    let senses_click = response.sense.senses_click();
+    let element_clickable = clickable && senses_click;
+    let element = UiElement {
+        id: id.clone(),
+        kind: kind.to_string(),
+        label,
+        rect: response.rect.into(),
+        interact_rect: response.interact_rect.into(),
+        enabled,
+        clickable: element_clickable,
+        editable,
+        focused: response.has_focus(),
+    };
+
+    let mut consume_click = false;
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry.elements.push(UiElementRecord { element });
+        if enabled && element_clickable && registry.pending_clicks.remove(&id) {
+            registry.consumed_actions.insert(id.clone());
+            consume_click = true;
+        }
+    }
+
+    if consume_click {
+        response
+            .flags
+            .insert(egui::response::Flags::FAKE_PRIMARY_CLICKED);
+        response.request_focus();
+    }
+
+    response
+}
+
+/// Apply a pending text operation to a text widget, if one targets this response.
+pub fn apply_pending_text(response: &mut Response, value: &mut String) {
+    if !is_enabled() {
+        return;
+    }
+    let id = ui_element_id(response.id);
+    let pending = {
+        let Ok(mut registry) = ui_registry().lock() else {
+            return;
+        };
+        registry.pending_text.remove(&id)
+    };
+    if let Some(pending) = pending {
+        if pending.replace {
+            *value = pending.text;
+        } else {
+            value.push_str(&pending.text);
+        }
+        response.mark_changed();
+        response.request_focus();
+        mark_action_consumed(&id);
+    }
+}
+
+/// Return the visible UI registry from the last completed frame.
+pub fn ui_snapshot() -> Vec<UiElement> {
+    ui_registry()
+        .lock()
+        .map(|registry| {
+            registry
+                .elements
+                .iter()
+                .map(|record| record.element.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Find a visible UI element in the latest registry.
+pub fn find_ui_element(id: &str) -> Option<UiElement> {
+    ui_registry().lock().ok().and_then(|registry| {
+        registry
+            .elements
+            .iter()
+            .find(|record| record.element.id == id)
+            .map(|record| record.element.clone())
+    })
+}
+
+/// Queue a click for consumption by the widget during the next render pass.
+pub fn queue_ui_click(id: String) {
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry.pending_clicks.insert(id);
+    }
+}
+
+/// Queue a text edit for consumption by the target text widget during the next render pass.
+pub fn queue_ui_text(id: String, text: String, replace: bool) {
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry
+            .pending_text
+            .insert(id, PendingText { text, replace });
+    }
+}
+
+/// Consume a pending click before a widget with internal click handling is shown.
+pub fn consume_pending_click_for_egui_id(egui_id: egui::Id) -> bool {
+    let id = ui_element_id(egui_id);
+    let Ok(mut registry) = ui_registry().lock() else {
+        return false;
+    };
+    if registry.pending_clicks.remove(&id) {
+        registry.consumed_actions.insert(id);
+        true
+    } else {
+        false
+    }
+}
+
+/// Return whether a queued UI action was consumed in the current frame.
+pub fn was_action_consumed(id: &str) -> bool {
+    ui_registry()
+        .lock()
+        .map(|registry| registry.consumed_actions.contains(id))
+        .unwrap_or(false)
+}
+
+/// Remove any queued action targeting `id`.
+pub fn clear_pending_ui_action(id: &str) {
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry.pending_clicks.remove(id);
+        registry.pending_text.remove(id);
+        registry.consumed_actions.remove(id);
+    }
+}
+
+/// Build a deterministic screenshot path under `.tmp/automation-screenshots`.
+pub fn screenshot_path(name: Option<&str>) -> Result<PathBuf, String> {
+    let root = std::env::current_dir()
+        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
+    let dir = root.join(".tmp").join("automation-screenshots");
+    fs::create_dir_all(&dir).map_err(|err| {
+        format!(
+            "Failed to create automation screenshot directory {}: {err}",
+            dir.display()
+        )
+    })?;
+    let suffix = name
+        .map(sanitize_file_stem)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "capture".to_string());
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
+    Ok(dir.join(format!("automation-{timestamp}-{suffix}.png")))
+}
+
+fn ui_registry() -> &'static Mutex<UiRegistry> {
+    UI_REGISTRY.get_or_init(|| Mutex::new(UiRegistry::default()))
+}
+
+fn ui_element_id(id: egui::Id) -> String {
+    format!("{:016x}", id.value())
+}
+
+fn mark_action_consumed(id: &str) {
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry.consumed_actions.insert(id.to_string());
+    }
+}
+
+fn sanitize_file_stem(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 fn run_server(config: AutomationConfig) {
     let address = format!("127.0.0.1:{}", config.port);
     let listener = match TcpListener::bind(&address) {
@@ -293,6 +639,33 @@ fn handle_connection(mut stream: TcpStream) {
             "port": CONFIG.get().map(|config| config.port),
         })),
         ("GET", "/state") => dispatch_command(AutomationCommand::GetState),
+        ("GET", "/ui") => dispatch_command(AutomationCommand::GetUi),
+        ("POST", "/ui/click") => match serde_json::from_slice::<UiClickRequest>(&request.body) {
+            Ok(payload) => dispatch_command(AutomationCommand::ClickUi { id: payload.id }),
+            Err(err) => AutomationResponse::error(format!("Invalid UI click JSON: {}", err)),
+        },
+        ("POST", "/ui/text") => match serde_json::from_slice::<UiTextRequest>(&request.body) {
+            Ok(payload) => dispatch_command(AutomationCommand::TextUi {
+                id: payload.id,
+                text: payload.text,
+                replace: payload.replace,
+            }),
+            Err(err) => AutomationResponse::error(format!("Invalid UI text JSON: {}", err)),
+        },
+        ("POST", "/screenshot") => {
+            let payload = if request.body.is_empty() {
+                Ok(ScreenshotRequest::default())
+            } else {
+                serde_json::from_slice::<ScreenshotRequest>(&request.body)
+                    .map_err(|err| format!("Invalid screenshot JSON: {}", err))
+            };
+            match payload {
+                Ok(payload) => {
+                    dispatch_command(AutomationCommand::Screenshot { name: payload.name })
+                }
+                Err(err) => AutomationResponse::error(err),
+            }
+        }
         ("POST", "/command") => match serde_json::from_slice::<AutomationCommand>(&request.body) {
             Ok(command) => dispatch_command(command),
             Err(err) => AutomationResponse::error(format!("Invalid command JSON: {}", err)),
@@ -303,8 +676,7 @@ fn handle_connection(mut stream: TcpStream) {
         )),
     };
 
-    let status = if response.ok { 200 } else { 400 };
-    let _ = write_json(&mut stream, status, &response);
+    let _ = write_json(&mut stream, response.http_status, &response);
 }
 
 fn dispatch_command(command: AutomationCommand) -> AutomationResponse {
@@ -405,6 +777,7 @@ fn write_json(
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
+        409 => "Conflict",
         500 => "Internal Server Error",
         _ => "OK",
     };

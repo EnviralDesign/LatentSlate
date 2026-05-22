@@ -37,6 +37,7 @@ description: Best practices and rules for AI developers working on this project
 
 - Keep UI rendering in `src/egui_app.rs` until a split is clearly needed
 - Keep reusable editor operations in `src/editor.rs` so automation and UI actions share the same path
+- Keep the opt-in loopback automation surface Rust-native. UI-level automation should register and invoke real egui widget responses through shared kit helpers instead of external screenshot/click scripts or hidden duplicate UI logic.
 - Prefer native egui widgets and custom painting over hidden parallel UI logic
 - State management goes in `src/state/`
 - Core logic (non-UI) goes in `src/core/`
@@ -49,7 +50,7 @@ src/
 ├── egui_app.rs          # eframe/egui desktop shell
 ├── editor.rs            # Editor model/controller shared by UI and automation
 ├── state/               # State management
-├── core/                # Non-UI logic
+├── core/                # Non-UI logic plus the opt-in automation control plane
 └── providers/           # Provider adapters
 ```
 

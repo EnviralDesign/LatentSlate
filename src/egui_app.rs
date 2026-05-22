@@ -194,6 +194,20 @@ pub struct NlaEguiApp {
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
     generation_active: Option<Uuid>,
     queue_button_rect: Option<Rect>,
+    pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
+    pending_automation_screenshot: Option<PendingAutomationScreenshot>,
+}
+
+struct PendingAutomationUiAction {
+    id: String,
+    action: &'static str,
+    envelope: crate::core::automation::AutomationEnvelope,
+}
+
+struct PendingAutomationScreenshot {
+    path: PathBuf,
+    requested_at: Instant,
+    envelope: crate::core::automation::AutomationEnvelope,
 }
 
 struct AssetThumbnail {
@@ -413,23 +427,150 @@ impl NlaEguiApp {
             generation_events_rx,
             generation_active: None,
             queue_button_rect: None,
+            pending_automation_ui_actions: Vec::new(),
+            pending_automation_screenshot: None,
         }
     }
 
-    fn poll_automation(&mut self) {
+    fn poll_automation(&mut self, ctx: &Context) {
         if !crate::core::automation::is_enabled() {
             return;
         }
         while let Some(envelope) = crate::core::automation::try_recv_command() {
-            let previous_project_path = self.editor.project.project_path.clone();
-            let response = self.editor.apply_automation_command(&envelope.command);
-            self.project_settings = self.editor.project.settings.clone();
-            if self.editor.project.project_path != previous_project_path {
-                self.clear_project_runtime_cache();
-                self.warm_audio_playback_cache();
+            match envelope.command.clone() {
+                crate::core::automation::AutomationCommand::GetUi => {
+                    envelope.respond(crate::core::automation::AutomationResponse::ok(
+                        serde_json::json!({
+                            "elements": crate::core::automation::ui_snapshot(),
+                        }),
+                    ));
+                }
+                crate::core::automation::AutomationCommand::ClickUi { id } => {
+                    self.queue_automation_click(ctx, envelope, id);
+                }
+                crate::core::automation::AutomationCommand::TextUi { id, text, replace } => {
+                    self.queue_automation_text(ctx, envelope, id, text, replace);
+                }
+                crate::core::automation::AutomationCommand::Screenshot { name } => {
+                    self.queue_automation_screenshot(ctx, envelope, name.as_deref());
+                }
+                _ => {
+                    let previous_project_path = self.editor.project.project_path.clone();
+                    let response = self.editor.apply_automation_command(&envelope.command);
+                    self.project_settings = self.editor.project.settings.clone();
+                    if self.editor.project.project_path != previous_project_path {
+                        self.clear_project_runtime_cache();
+                        self.warm_audio_playback_cache();
+                    }
+                    envelope.respond(response);
+                }
             }
-            envelope.respond(response);
         }
+    }
+
+    fn queue_automation_click(
+        &mut self,
+        ctx: &Context,
+        envelope: crate::core::automation::AutomationEnvelope,
+        id: String,
+    ) {
+        let Some(element) = crate::core::automation::find_ui_element(&id) else {
+            envelope.respond(crate::core::automation::AutomationResponse::not_found(
+                format!("No visible UI element with id {id}. Refresh /ui and try again."),
+            ));
+            return;
+        };
+        if !element.enabled {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                format!("UI element {id} is visible but disabled."),
+            ));
+            return;
+        }
+        if !element.clickable {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                format!("UI element {id} is not clickable."),
+            ));
+            return;
+        }
+
+        crate::core::automation::queue_ui_click(id.clone());
+        self.pending_automation_ui_actions
+            .push(PendingAutomationUiAction {
+                id,
+                action: "click",
+                envelope,
+            });
+        ctx.request_repaint();
+    }
+
+    fn queue_automation_text(
+        &mut self,
+        ctx: &Context,
+        envelope: crate::core::automation::AutomationEnvelope,
+        id: String,
+        text: String,
+        replace: bool,
+    ) {
+        let Some(element) = crate::core::automation::find_ui_element(&id) else {
+            envelope.respond(crate::core::automation::AutomationResponse::not_found(
+                format!("No visible UI element with id {id}. Refresh /ui and try again."),
+            ));
+            return;
+        };
+        if !element.enabled {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                format!("UI element {id} is visible but disabled."),
+            ));
+            return;
+        }
+        if !element.editable {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                format!("UI element {id} is not editable."),
+            ));
+            return;
+        }
+
+        crate::core::automation::queue_ui_text(id.clone(), text, replace);
+        self.pending_automation_ui_actions
+            .push(PendingAutomationUiAction {
+                id,
+                action: "text",
+                envelope,
+            });
+        ctx.request_repaint();
+    }
+
+    fn queue_automation_screenshot(
+        &mut self,
+        ctx: &Context,
+        envelope: crate::core::automation::AutomationEnvelope,
+        name: Option<&str>,
+    ) {
+        if self.pending_automation_screenshot.is_some() {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                "A screenshot request is already pending.",
+            ));
+            return;
+        }
+
+        let path = match crate::core::automation::screenshot_path(name) {
+            Ok(path) => path,
+            Err(err) => {
+                envelope.respond(crate::core::automation::AutomationResponse::with_status(
+                    err, 500,
+                ));
+                return;
+            }
+        };
+        self.pending_automation_screenshot = Some(PendingAutomationScreenshot {
+            path,
+            requested_at: Instant::now(),
+            envelope,
+        });
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+            "automation_screenshot".to_string(),
+        )));
+        ctx.request_repaint();
     }
 
     fn clear_project_runtime_cache(&mut self) {
@@ -482,6 +623,85 @@ impl NlaEguiApp {
     fn keep_automation_responsive(&self, ctx: &Context) {
         if crate::core::automation::is_enabled() {
             ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    fn handle_automation_screenshot_events(&mut self, ctx: &Context) {
+        if self.pending_automation_screenshot.is_none() {
+            return;
+        }
+
+        let screenshot = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(Arc::clone(image)),
+                _ => None,
+            })
+        });
+
+        if let Some(image) = screenshot {
+            let pending = self
+                .pending_automation_screenshot
+                .take()
+                .expect("pending screenshot checked above");
+            match save_color_image_png(&pending.path, &image) {
+                Ok(()) => {
+                    pending
+                        .envelope
+                        .respond(crate::core::automation::AutomationResponse::ok(
+                            serde_json::json!({ "path": pending.path }),
+                        ))
+                }
+                Err(err) => pending.envelope.respond(
+                    crate::core::automation::AutomationResponse::with_status(err, 500),
+                ),
+            }
+            return;
+        }
+
+        let expired = self
+            .pending_automation_screenshot
+            .as_ref()
+            .map(|pending| pending.requested_at.elapsed() > Duration::from_secs(18))
+            .unwrap_or(false);
+        if expired {
+            let pending = self
+                .pending_automation_screenshot
+                .take()
+                .expect("pending screenshot checked above");
+            pending
+                .envelope
+                .respond(crate::core::automation::AutomationResponse::with_status(
+                    "Timed out waiting for eframe screenshot event.",
+                    500,
+                ));
+        }
+    }
+
+    fn finish_automation_ui_actions(&mut self) {
+        if self.pending_automation_ui_actions.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_automation_ui_actions);
+        for action in pending {
+            if crate::core::automation::was_action_consumed(&action.id) {
+                action
+                    .envelope
+                    .respond(crate::core::automation::AutomationResponse::ok(
+                        serde_json::json!({
+                            "id": action.id,
+                            "action": action.action,
+                        }),
+                    ));
+            } else {
+                crate::core::automation::clear_pending_ui_action(&action.id);
+                action.envelope.respond(
+                    crate::core::automation::AutomationResponse::conflict(format!(
+                        "UI element {} was visible in the previous frame but did not consume the queued {} action. It may have disappeared or is not instrumented yet.",
+                        action.id, action.action
+                    )),
+                );
+            }
         }
     }
 
@@ -815,11 +1035,15 @@ impl NlaEguiApp {
                         ui,
                         "File",
                         |ui, this: &mut Self| {
-                            if ui.button("New Project...").clicked() {
+                            if automation_button(ui.button("New Project..."), "New Project...")
+                                .clicked()
+                            {
                                 this.editor.overlays.new_project = true;
                                 ui.close();
                             }
-                            if ui.button("Open Project...").clicked() {
+                            if automation_button(ui.button("Open Project..."), "Open Project...")
+                                .clicked()
+                            {
                                 let initial_dir = default_projects_dir();
                                 let options = kit::BrowsePathOptions::new()
                                     .id_salt("menu_open_project")
@@ -831,12 +1055,17 @@ impl NlaEguiApp {
                                 ui.close();
                             }
                             ui.add_enabled_ui(this.editor.project.project_path.is_some(), |ui| {
-                                if ui.button("Project Settings...").clicked() {
+                                if automation_button(
+                                    ui.button("Project Settings..."),
+                                    "Project Settings...",
+                                )
+                                .clicked()
+                                {
                                     this.project_settings = this.editor.project.settings.clone();
                                     this.editor.overlays.project_settings = true;
                                     ui.close();
                                 }
-                                if ui.button("Save").clicked() {
+                                if automation_button(ui.button("Save"), "Save").clicked() {
                                     if let Err(err) = this.editor.save() {
                                         this.editor.status = err;
                                     }
@@ -851,11 +1080,16 @@ impl NlaEguiApp {
                         ui,
                         "Edit",
                         |ui, this: &mut Self| {
-                            if ui.button("Add Marker").clicked() {
+                            if automation_button(ui.button("Add Marker"), "Add Marker").clicked() {
                                 this.editor.add_marker(None);
                                 ui.close();
                             }
-                            if ui.button("Create Generative Video...").clicked() {
+                            if automation_button(
+                                ui.button("Create Generative Video..."),
+                                "Create Generative Video...",
+                            )
+                            .clicked()
+                            {
                                 this.editor.overlays.generative_video = true;
                                 ui.close();
                             }
@@ -867,13 +1101,23 @@ impl NlaEguiApp {
                         ui,
                         "View",
                         |ui, this: &mut Self| {
-                            ui.checkbox(&mut this.editor.layout.preview_stats, "Preview Stats");
-                            ui.checkbox(&mut this.editor.layout.left_collapsed, "Collapse Assets");
-                            ui.checkbox(
+                            automation_checkbox(
+                                ui,
+                                &mut this.editor.layout.preview_stats,
+                                "Preview Stats",
+                            );
+                            automation_checkbox(
+                                ui,
+                                &mut this.editor.layout.left_collapsed,
+                                "Collapse Assets",
+                            );
+                            automation_checkbox(
+                                ui,
                                 &mut this.editor.layout.right_collapsed,
                                 "Collapse Attributes",
                             );
-                            ui.checkbox(
+                            automation_checkbox(
+                                ui,
                                 &mut this.editor.layout.timeline_collapsed,
                                 "Collapse Timeline",
                             );
@@ -885,12 +1129,18 @@ impl NlaEguiApp {
                         ui,
                         "Settings",
                         |ui, this: &mut Self| {
-                            if ui.button("AI Providers...").clicked() {
+                            if automation_button(ui.button("AI Providers..."), "AI Providers...")
+                                .clicked()
+                            {
                                 this.editor.refresh_providers();
                                 this.editor.overlays.providers = true;
                                 ui.close();
                             }
-                            ui.checkbox(&mut this.editor.layout.hardware_decode, "Hardware Decode");
+                            automation_checkbox(
+                                ui,
+                                &mut this.editor.layout.hardware_decode,
+                                "Hardware Decode",
+                            );
                         },
                         self,
                     );
@@ -905,7 +1155,12 @@ impl NlaEguiApp {
                                     .small()
                                     .color(kit::TEXT_MUTED),
                             );
-                            if ui.button("Open Harness Docs").clicked() {
+                            if automation_button(
+                                ui.button("Open Harness Docs"),
+                                "Open Harness Docs",
+                            )
+                            .clicked()
+                            {
                                 this.editor.status = "See docs/DESKTOP_TEST_HARNESS.md".to_string();
                                 ui.close();
                             }
@@ -1047,13 +1302,14 @@ impl NlaEguiApp {
                     self.editor.selection.asset_ids.push(asset.id);
                 }
                 response.context_menu(|ui| {
-                    if ui.button("Add to timeline").clicked() {
+                    if automation_button(ui.button("Add to timeline"), "Add to timeline").clicked()
+                    {
                         if let Err(err) = self.editor.add_asset_to_timeline(asset.id, None) {
                             self.editor.status = err;
                         }
                         ui.close();
                     }
-                    if ui.button("Delete").clicked() {
+                    if automation_button(ui.button("Delete"), "Delete").clicked() {
                         self.editor.project.remove_asset(asset.id);
                         self.editor.selection.clear();
                         self.asset_thumbnails.remove(&asset.id);
@@ -1343,7 +1599,8 @@ impl NlaEguiApp {
                                     ui.label(kit::caption("No versions yet"));
                                 } else {
                                     for version in version_options.iter() {
-                                        ui.selectable_value(
+                                        automation_selectable_value(
+                                            ui,
                                             &mut next_version,
                                             version.clone(),
                                             version,
@@ -1369,9 +1626,10 @@ impl NlaEguiApp {
                 provider_label,
                 ui.available_width(),
                 |ui| {
-                    ui.selectable_value(&mut next_provider_id, None, "None selected");
+                    automation_selectable_value(ui, &mut next_provider_id, None, "None selected");
                     for provider in compatible_providers.iter() {
-                        ui.selectable_value(
+                        automation_selectable_value(
+                            ui,
                             &mut next_provider_id,
                             Some(provider.id),
                             provider.name.as_str(),
@@ -1425,17 +1683,24 @@ impl NlaEguiApp {
                     ("seed_strategy", asset_id),
                     seed_strategy_label(next_seed_strategy),
                     |ui| {
-                        ui.selectable_value(
+                        automation_selectable_value(
+                            ui,
                             &mut next_seed_strategy,
                             SeedStrategy::Increment,
                             "Increment",
                         );
-                        ui.selectable_value(
+                        automation_selectable_value(
+                            ui,
                             &mut next_seed_strategy,
                             SeedStrategy::Random,
                             "Random",
                         );
-                        ui.selectable_value(&mut next_seed_strategy, SeedStrategy::Keep, "Keep");
+                        automation_selectable_value(
+                            ui,
+                            &mut next_seed_strategy,
+                            SeedStrategy::Keep,
+                            "Keep",
+                        );
                     },
                 );
             };
@@ -1455,9 +1720,19 @@ impl NlaEguiApp {
                     ("seed_field", asset_id),
                     selected_text,
                     |ui| {
-                        ui.selectable_value(&mut next_seed_field, String::new(), "Auto-detect");
+                        automation_selectable_value(
+                            ui,
+                            &mut next_seed_field,
+                            String::new(),
+                            "Auto-detect",
+                        );
                         for (name, label) in seed_field_options.iter() {
-                            ui.selectable_value(&mut next_seed_field, name.clone(), label);
+                            automation_selectable_value(
+                                ui,
+                                &mut next_seed_field,
+                                name.clone(),
+                                label,
+                            );
                         }
                     },
                 );
@@ -1711,7 +1986,12 @@ impl NlaEguiApp {
                             empty_dash(&value).to_string(),
                             |ui| {
                                 for option in options {
-                                    ui.selectable_value(&mut value, option.clone(), option);
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut value,
+                                        option.clone(),
+                                        option,
+                                    );
                                 }
                             },
                         );
@@ -4963,8 +5243,10 @@ impl NlaEguiApp {
 impl eframe::App for NlaEguiApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.poll_automation();
+        self.handle_automation_screenshot_events(&ctx);
+        self.poll_automation(&ctx);
         self.keep_automation_responsive(&ctx);
+        crate::core::automation::begin_ui_frame();
         self.tick_playback(&ctx);
         self.service_generation_queue(&ctx);
         self.update_preview_texture(&ctx);
@@ -4979,7 +5261,86 @@ impl eframe::App for NlaEguiApp {
 
         self.modals(&ctx);
         self.service_audio_decode_warmup(&ctx);
+        self.finish_automation_ui_actions();
     }
+}
+
+fn save_color_image_png(path: &Path, image: &ColorImage) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create screenshot directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let mut rgba = Vec::with_capacity(image.pixels.len() * 4);
+    for pixel in &image.pixels {
+        rgba.extend_from_slice(&pixel.to_srgba_unmultiplied());
+    }
+
+    image::save_buffer(
+        path,
+        &rgba,
+        image.size[0] as u32,
+        image.size[1] as u32,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|err| format!("Failed to save screenshot {}: {err}", path.display()))
+}
+
+fn automation_button(response: egui::Response, label: &str) -> egui::Response {
+    crate::core::automation::instrument_response(
+        response,
+        "button",
+        Some(label.to_string()),
+        true,
+        false,
+    )
+}
+
+fn automation_checkbox(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
+    let response = ui.checkbox(value, label);
+    let real_clicked = response.clicked();
+    let mut response = crate::core::automation::instrument_response(
+        response,
+        "checkbox",
+        Some(label.to_string()),
+        true,
+        false,
+    );
+    if response.clicked() && !real_clicked {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response
+}
+
+fn automation_selectable_value<T>(
+    ui: &mut Ui,
+    value: &mut T,
+    selected_value: T,
+    label: &str,
+) -> egui::Response
+where
+    T: PartialEq + Clone,
+{
+    let response = ui.selectable_value(value, selected_value.clone(), label);
+    let real_clicked = response.clicked();
+    let mut response = crate::core::automation::instrument_response(
+        response,
+        "selectable",
+        Some(label.to_string()),
+        true,
+        false,
+    );
+    if response.clicked() && !real_clicked {
+        *value = selected_value;
+        response.mark_changed();
+        ui.close();
+    }
+    response
 }
 
 async fn execute_generation_job_async(
@@ -6493,9 +6854,9 @@ fn provider_output_type_field(ui: &mut Ui, label: &str, value: &mut ProviderOutp
             .width(width)
             .selected_text(provider_output_type_label(*value))
             .show_ui(ui, |ui| {
-                ui.selectable_value(value, ProviderOutputType::Image, "Image");
-                ui.selectable_value(value, ProviderOutputType::Video, "Video");
-                ui.selectable_value(value, ProviderOutputType::Audio, "Audio");
+                automation_selectable_value(ui, value, ProviderOutputType::Image, "Image");
+                automation_selectable_value(ui, value, ProviderOutputType::Video, "Video");
+                automation_selectable_value(ui, value, ProviderOutputType::Audio, "Audio");
             });
     });
 }
@@ -6567,9 +6928,9 @@ fn provider_builder_input_editor(
                 strip.cell(|ui| {
                     ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut input.required, "Required");
+                        automation_checkbox(ui, &mut input.required, "Required");
                         if input.input_type_key == "text" {
-                            ui.checkbox(&mut input.multiline, "Multiline");
+                            automation_checkbox(ui, &mut input.multiline, "Multiline");
                         } else {
                             input.multiline = false;
                         }
@@ -6622,7 +6983,7 @@ fn provider_input_type_field(ui: &mut Ui, label: &str, value: &mut String) {
                     ("video", "Video"),
                     ("audio", "Audio"),
                 ] {
-                    ui.selectable_value(value, key.to_string(), label);
+                    automation_selectable_value(ui, value, key.to_string(), label);
                 }
             });
     });
