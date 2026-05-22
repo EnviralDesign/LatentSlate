@@ -11,6 +11,7 @@ use crate::state::ClipTransform;
 use super::types::{FrameKey, PreviewLayerPlacement};
 
 pub(crate) struct PendingDecode {
+    pub(crate) clip_id: uuid::Uuid,
     pub(crate) track_index: usize,
     pub(crate) start_time: f64,
     pub(crate) path: PathBuf,
@@ -27,6 +28,7 @@ pub(crate) struct DecodedFrame {
 }
 
 pub(crate) struct PreviewLayer {
+    pub(crate) clip_id: uuid::Uuid,
     pub(crate) texture_key: u64,
     pub(crate) track_index: usize,
     pub(crate) start_time: f64,

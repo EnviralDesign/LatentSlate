@@ -161,6 +161,36 @@ pub fn default_xai_image_provider_entry() -> ProviderEntry {
     entry
 }
 
+pub fn default_xai_video_provider_entry() -> ProviderEntry {
+    let mut entry = ProviderEntry::new(
+        "xAI Grok Video",
+        ProviderOutputType::Video,
+        ProviderConnection::XaiVideo {
+            credential_id: XAI_CREDENTIAL_ID.to_string(),
+            model: "grok-imagine-video".to_string(),
+            base_url: None,
+        },
+    );
+    entry.inputs = vec![
+        text_input(
+            "prompt",
+            "Prompt",
+            Some("Describe the video to generate.".to_string()),
+            None,
+            true,
+        ),
+        integer_input("duration", "Duration Seconds", 6, Some(1.0), Some(15.0)),
+        enum_input(
+            "aspect_ratio",
+            "Aspect Ratio",
+            &["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"],
+            Some("16:9"),
+        ),
+        enum_input("resolution", "Resolution", &["480p", "720p"], Some("480p")),
+    ];
+    entry
+}
+
 fn text_input(
     name: &str,
     label: &str,
@@ -197,6 +227,28 @@ fn enum_input(
         required: true,
         default: default.map(|value| serde_json::Value::String(value.to_string())),
         ui: None,
+    }
+}
+
+fn integer_input(
+    name: &str,
+    label: &str,
+    default: i64,
+    min: Option<f64>,
+    max: Option<f64>,
+) -> ProviderInputField {
+    ProviderInputField {
+        name: name.to_string(),
+        label: label.to_string(),
+        input_type: ProviderInputType::Integer,
+        required: true,
+        default: Some(serde_json::Value::Number(default.into())),
+        ui: Some(InputUi {
+            min,
+            max,
+            step: Some(1.0),
+            ..InputUi::default()
+        }),
     }
 }
 

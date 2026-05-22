@@ -140,7 +140,7 @@ Provider entries are the pluggable backends that execute generation tasks. Key p
 - Can be an opinionated cloud provider adapter, local ComfyUI instance, or custom HTTP endpoint
 - ComfyUI entries reference an API workflow JSON via `workflow_path` (relative to repo/app or absolute path; MVP default: `workflows/sdxl_simple_example_API.json`)
 - Cloud provider entries store credential IDs, not raw API keys. API keys live in the app-managed encrypted local credential store.
-- The current generic executor dispatches ComfyUI, OpenAI image, and xAI image providers through the same generation queue/output-version path.
+- The current generic executor dispatches ComfyUI, OpenAI image, xAI image, and xAI Grok video providers through the same generation queue/output-version path.
 
 ---
 
@@ -168,6 +168,7 @@ The current interactive preview path asks the Rust renderer for a per-layer stac
     - Texture upload and result acceptance happen on the egui thread; decode/scan/layer collection happen off the UI thread.
     - Modals, panels, preview, and timeline now share one native window composition path.
     - This removes the previous split-surface layering issue where UI overlays could not appear above the preview.
+    - The preview canvas supports auto-fit and manual view control. Manual scroll zoom and right-drag pan disable auto-fit, while selected visual clips expose the same transform state through on-canvas move/scale/rotate handles and the Attributes inspector.
 4.  **Export (Rust + FFmpeg)**
     - Export still uses the RGBA compositor path so rendered frames can be written to the selected intermediate cache format before FFmpeg muxing.
 
@@ -483,6 +484,7 @@ workflows/
   - [x] ComfyUI adapter (first provider)
     - [x] Minimal T2I workflow (prompt + seed)
     - [x] Image output download/save into generated/{type}/{id}/
+  - [x] OpenAI image, xAI image, and xAI Grok video cloud adapters using app-managed credential IDs
 
 - [ ] **Generation Pipeline**
   - [ ] Queue generation jobs (async, non-blocking)
@@ -818,11 +820,15 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-22:** Added first-pass on-canvas transform controls for selected visual clips. The Preview header now has an Auto fit toggle; scroll zoom and right-drag pan switch to manual view mode, selected active clips get move/scale/rotate handles, Shift constrains corner scaling, Alt bypasses snapping, and live edits write directly to the shared clip transform so the Attributes inspector stays in sync. Move snapping now covers plate edges/centers plus active clip edges/centers, with guide lines rendered in the preview overlay.
 - **2026-05-22:** Restored old-preview-style async orchestration in the egui shell. Interactive preview rendering now runs off the UI thread behind a one-job render gate with latest-wins request IDs, stale render discard, background worker/delivery timing diagnostics, and richer View → Preview Stats output. The stats overlay now exposes detailed decode/cache timings, async state, stale counts, and timeline cache bucket strips so cold/warm cache behavior can be inspected visually and through the automation API.
 - **2026-05-22:** Added preview optimization observability to the Rust-native automation API. `get_performance_diagnostics` now returns recent preview render samples, aggregate stage timings, and frame-cache occupancy; `scrub_timeline_profile` drives the real egui seek/scrub path over a repeatable time range and returns per-sample timing/cache diagnostics so preview and timeline optimizations can be tested in a closed loop.
 - **2026-05-22:** Reconnected the old WGPU-era preview layer-stack strategy inside the egui shell. Interactive preview now renders cached source frames as reusable egui layer textures instead of CPU-compositing every cached frame into a new RGBA buffer, and directional plus idle prefetch once again warms frames around playback/scrub motion. The automation scrub profile over `projects/test` improved from a warm average of ~158ms before this pass to ~0.05ms after cached textures are resident, with CPU composite time dropping to 0ms in the interactive preview path.
 - **2026-05-22:** Improved API-key editor feedback by showing saved keys as length-matched masked placeholders. Leaving the placeholder unchanged keeps the existing encrypted key, while focusing the field auto-selects the mask so typing a replacement follows the normal field behavior.
 - **2026-05-22:** Reworked the AI Providers modal left panel around a compact Add Provider dropdown plus square green create button. Installed providers now stay in the scrollable list below, cloud provider types are disabled once already installed, API-key editing is anchored to the selected provider action area, and provider deletion moved there as well.
+- **2026-05-22:** Exposed timeline track reordering through the track-header context menu. Video/audio tracks can now move up or down, preserving attached clips because clips remain keyed to the stable track ID; reordering also invalidates preview because video track order affects compositing.
+- **2026-05-22:** Updated the New Generative Video modal so FPS, frame count, and seconds are all editable field-height controls. Seconds is derived from frames/FPS and editing seconds writes back to frame count, removing the old read-only duration label.
+- **2026-05-22:** Enabled xAI Grok video as a first-class cloud video provider. The xAI video template creates a `grok-imagine-video` provider with prompt, duration, aspect ratio, and resolution inputs, shares the app-managed xAI credential, submits `/v1/videos/generations`, polls `/v1/videos/{request_id}`, downloads the temporary MP4, and stores it through the existing generated-version pipeline.
 - **2026-05-22:** Added the first cloud-provider foundation. ComfyUI generation now runs behind a generic provider executor, OpenAI image and xAI image provider templates/adapters were added, and API keys can be stored through an in-app API Keys modal backed by a Windows DPAPI-protected local credential file instead of OS environment variables.
 - **2026-05-22:** Added an export intermediate-frame format option. Exports still default to PNG frame cache files, with a new BMP (Fast) lossless option that writes much larger temporary frames but avoids PNG compression overhead for performance testing.
 - **2026-05-22:** Added a shared weighted field-grid row helper to `ui_kit` and moved the export modal's grouped fields onto it. Export video fields now use equal thirds, codec/quality uses a one-third/two-thirds split, and range uses an even split instead of modal-local row sizing.

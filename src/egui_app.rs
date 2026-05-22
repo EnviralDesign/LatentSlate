@@ -37,7 +37,7 @@ use crate::core::timeline_snap::{
 };
 use crate::editor::{
     default_generative_video_fps, default_generative_video_frames, default_projects_dir,
-    generative_video_duration_label, EditorState,
+    EditorState,
 };
 use crate::providers::ProviderProgress;
 use crate::state::{
@@ -76,6 +76,11 @@ const PREVIEW_IDLE_PREFETCH_DELAY_MS: u64 = 800;
 const PREVIEW_IDLE_PREFETCH_AHEAD_SECONDS: f64 = 5.0;
 const PREVIEW_IDLE_PREFETCH_BEHIND_SECONDS: f64 = 1.0;
 const PREVIEW_RENDER_RETRY_MS: u64 = 16;
+const PREVIEW_ZOOM_MIN: f32 = 0.05;
+const PREVIEW_ZOOM_MAX: f32 = 16.0;
+const PREVIEW_HANDLE_SIZE: f32 = 9.0;
+const PREVIEW_ROTATE_HANDLE_DISTANCE: f32 = 34.0;
+const PREVIEW_SNAP_THRESHOLD_PX: f32 = 8.0;
 const AUTOMATION_SCRUB_MAX_STEPS: usize = 240;
 const AUTOMATION_SCRUB_MAX_REPEATS: usize = 20;
 const TIMELINE_MIN_CLIP_W: f32 = 2.0;
@@ -215,6 +220,11 @@ pub struct NlaEguiApp {
     timeline_drag: Option<TimelineDrag>,
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
+    preview_auto_fit: bool,
+    preview_zoom: f32,
+    preview_pan: Vec2,
+    preview_drag: Option<PreviewTransformDrag>,
+    preview_snap_guides: Vec<PreviewSnapGuide>,
     preview_stats: Option<PreviewStats>,
     preview_perf_samples: VecDeque<PreviewPerfSample>,
     preview_perf_sequence: u64,
@@ -328,6 +338,7 @@ enum ProviderTemplateKind {
     ComfyUi,
     OpenAiImage,
     XaiImage,
+    XaiVideo,
 }
 
 impl Default for ProviderTemplateKind {
@@ -337,10 +348,11 @@ impl Default for ProviderTemplateKind {
 }
 
 impl ProviderTemplateKind {
-    const ALL: [ProviderTemplateKind; 3] = [
+    const ALL: [ProviderTemplateKind; 4] = [
         ProviderTemplateKind::ComfyUi,
         ProviderTemplateKind::OpenAiImage,
         ProviderTemplateKind::XaiImage,
+        ProviderTemplateKind::XaiVideo,
     ];
 }
 
@@ -383,6 +395,59 @@ enum TimelineDrag {
         marker_id: Uuid,
         start_time: f64,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PreviewTransformDrag {
+    Pan {
+        start_pan: Vec2,
+    },
+    Move {
+        clip_id: Uuid,
+        start_transform: ClipTransform,
+        start_pointer_project: Pos2,
+        start_half_size: Vec2,
+    },
+    Scale {
+        clip_id: Uuid,
+        handle: PreviewScaleHandle,
+        start_transform: ClipTransform,
+        start_center_project: Pos2,
+        start_half_size: Vec2,
+    },
+    Rotate {
+        clip_id: Uuid,
+        start_transform: ClipTransform,
+        start_center_project: Pos2,
+        start_pointer_angle: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewScaleHandle {
+    NorthWest,
+    North,
+    NorthEast,
+    East,
+    SouthEast,
+    South,
+    SouthWest,
+    West,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreviewSnapGuide {
+    start: Pos2,
+    end: Pos2,
+}
+
+#[derive(Clone, Debug)]
+struct PreviewObjectGeometry {
+    clip_id: Uuid,
+    project_rect: Rect,
+    screen_corners: [Pos2; 4],
+    screen_center: Pos2,
+    project_to_screen: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -595,6 +660,11 @@ impl NlaEguiApp {
             timeline_drag: None,
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
+            preview_auto_fit: true,
+            preview_zoom: 1.0,
+            preview_pan: Vec2::ZERO,
+            preview_drag: None,
+            preview_snap_guides: Vec::new(),
             preview_stats: None,
             preview_perf_samples: VecDeque::new(),
             preview_perf_sequence: 0,
@@ -965,6 +1035,11 @@ impl NlaEguiApp {
         self.timeline_drag = None;
         self.timeline_snap_preview = None;
         self.timeline_scrub_was_playing = false;
+        self.preview_auto_fit = true;
+        self.preview_zoom = 1.0;
+        self.preview_pan = Vec2::ZERO;
+        self.preview_drag = None;
+        self.preview_snap_guides.clear();
         self.generation_active = None;
     }
 
@@ -2898,6 +2973,24 @@ impl NlaEguiApp {
                         .layout(Layout::left_to_right(Align::Center)),
                 );
                 title_ui.label(kit::section_label("Preview"));
+                let auto_rect = Rect::from_min_size(
+                    Pos2::new(title_rect.right() + 8.0, header_rect.center().y - 11.0),
+                    Vec2::new(44.0, 22.0),
+                );
+                let mut auto_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(auto_rect)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                if kit::timeline_tool_text_button(&mut auto_ui, "Auto", 44.0, self.preview_auto_fit)
+                    .on_hover_text("Auto-fit preview canvas")
+                    .clicked()
+                {
+                    self.preview_auto_fit = !self.preview_auto_fit;
+                    if self.preview_auto_fit {
+                        self.preview_pan = Vec2::ZERO;
+                    }
+                }
                 let s = &self.editor.project.settings;
                 ui.painter().text(
                     header_inner.right_center(),
@@ -2908,23 +3001,25 @@ impl NlaEguiApp {
                 );
                 let available = ui.available_size();
                 let preview_height = available.y.max(160.0);
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(available.x, preview_height), Sense::hover());
-                self.paint_preview(ui, rect.shrink(8.0));
+                let (rect, response) = ui.allocate_exact_size(
+                    Vec2::new(available.x, preview_height),
+                    Sense::click_and_drag(),
+                );
+                self.paint_preview(ui, rect.shrink(8.0), &response);
             });
     }
 
-    fn paint_preview(&mut self, ui: &mut Ui, rect: Rect) {
+    fn paint_preview(&mut self, ui: &mut Ui, rect: Rect, response: &egui::Response) {
         let painter = ui.painter().with_clip_rect(rect);
-        if let Some(layers) = &self.preview_layers {
-            let scale = (rect.width() / layers.canvas_width.max(1) as f32)
-                .min(rect.height() / layers.canvas_height.max(1) as f32)
-                .max(0.01);
+        if let Some(layers) = self.preview_layers.clone() {
+            let fit_scale = preview_fit_scale(rect, &layers);
+            self.handle_preview_view_input(ui, response, rect, &layers, fit_scale);
+            let scale = self.preview_canvas_screen_scale(fit_scale);
             let canvas_size = Vec2::new(
                 layers.canvas_width as f32 * scale,
                 layers.canvas_height as f32 * scale,
             );
-            let canvas_rect = Rect::from_center_size(rect.center(), canvas_size);
+            let canvas_rect = Rect::from_center_size(rect.center() + self.preview_pan, canvas_size);
             let layer_painter = painter.with_clip_rect(canvas_rect.intersect(rect));
             for layer in layers.layers.iter() {
                 let Some(texture) = self.preview_layer_textures.get(&layer.texture_key) else {
@@ -2955,6 +3050,14 @@ impl NlaEguiApp {
                     );
                 }
             }
+            let object_geometries = self.preview_object_geometries(&layers, canvas_rect, scale);
+            self.paint_preview_transform_overlay(
+                ui,
+                rect,
+                canvas_rect,
+                &layers,
+                &object_geometries,
+            );
         } else {
             painter.text(
                 rect.center(),
@@ -3049,6 +3152,519 @@ impl NlaEguiApp {
                 );
             }
         }
+    }
+
+    fn preview_canvas_screen_scale(&mut self, fit_scale: f32) -> f32 {
+        if self.preview_auto_fit {
+            self.preview_zoom = fit_scale;
+            self.preview_pan = Vec2::ZERO;
+            fit_scale
+        } else {
+            if !self.preview_zoom.is_finite() || self.preview_zoom <= 0.0 {
+                self.preview_zoom = fit_scale;
+            }
+            self.preview_zoom
+                .clamp(PREVIEW_ZOOM_MIN.max(fit_scale * 0.1), PREVIEW_ZOOM_MAX)
+        }
+    }
+
+    fn handle_preview_view_input(
+        &mut self,
+        ui: &mut Ui,
+        response: &egui::Response,
+        rect: Rect,
+        layers: &PreviewLayerStack,
+        fit_scale: f32,
+    ) {
+        if response.drag_started_by(egui::PointerButton::Secondary) {
+            self.preview_auto_fit = false;
+            if !self.preview_zoom.is_finite() || self.preview_zoom <= 0.0 {
+                self.preview_zoom = fit_scale;
+            }
+            self.preview_drag = Some(PreviewTransformDrag::Pan {
+                start_pan: self.preview_pan,
+            });
+        }
+        if let Some(PreviewTransformDrag::Pan { start_pan }) = self.preview_drag {
+            if response.dragged_by(egui::PointerButton::Secondary) {
+                self.preview_pan = start_pan + response.drag_delta();
+                ui.ctx().request_repaint();
+            }
+        }
+        if !ui.input(|input| input.pointer.secondary_down())
+            && matches!(self.preview_drag, Some(PreviewTransformDrag::Pan { .. }))
+        {
+            self.preview_drag = None;
+        }
+
+        let scroll_delta = preview_scroll_delta(ui, response);
+        if scroll_delta.abs() <= 0.0 {
+            return;
+        }
+
+        let old_scale = if self.preview_auto_fit {
+            fit_scale
+        } else {
+            self.preview_zoom
+        }
+        .clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
+        let old_canvas_rect = Rect::from_center_size(
+            rect.center() + self.preview_pan,
+            Vec2::new(
+                layers.canvas_width as f32 * old_scale,
+                layers.canvas_height as f32 * old_scale,
+            ),
+        );
+        let pointer = ui.ctx().pointer_hover_pos().unwrap_or(rect.center());
+        let canvas_point = (pointer - old_canvas_rect.min) / old_scale.max(0.0001);
+        let zoom_factor = (scroll_delta * 0.0015).exp().clamp(0.5, 2.0);
+
+        self.preview_auto_fit = false;
+        self.preview_zoom = (old_scale * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
+        let new_size = Vec2::new(
+            layers.canvas_width as f32 * self.preview_zoom,
+            layers.canvas_height as f32 * self.preview_zoom,
+        );
+        let new_min = pointer - canvas_point * self.preview_zoom;
+        let new_center = new_min + new_size * 0.5;
+        self.preview_pan = new_center - rect.center();
+        ui.ctx().request_repaint();
+    }
+
+    fn preview_object_geometries(
+        &self,
+        layers: &PreviewLayerStack,
+        canvas_rect: Rect,
+        canvas_scale: f32,
+    ) -> Vec<PreviewObjectGeometry> {
+        let project_w = self.editor.project.settings.width.max(1) as f32;
+        let project_h = self.editor.project.settings.height.max(1) as f32;
+        let preview_scale = layers.canvas_width.max(1) as f32 / project_w;
+        let project_to_screen = (preview_scale * canvas_scale).max(0.0001);
+        let project_center = Pos2::new(project_w * 0.5, project_h * 0.5);
+        let mut geometries = Vec::new();
+
+        for layer in layers.layers.iter() {
+            let Some(clip_id) = layer.clip_id else {
+                continue;
+            };
+            let Some(clip) = self
+                .editor
+                .project
+                .clips
+                .iter()
+                .find(|clip| clip.id == clip_id)
+            else {
+                continue;
+            };
+            let half_size = Vec2::new(
+                (layer.placement.scaled_w / preview_scale).max(1.0) * 0.5,
+                (layer.placement.scaled_h / preview_scale).max(1.0) * 0.5,
+            );
+            let center =
+                project_center + Vec2::new(clip.transform.position_x, clip.transform.position_y);
+            let project_rect = Rect::from_center_size(center, half_size * 2.0);
+            let corners_project = [
+                project_rect.left_top(),
+                project_rect.right_top(),
+                project_rect.right_bottom(),
+                project_rect.left_bottom(),
+            ];
+            let screen_corners = corners_project.map(|point| {
+                let rotated = rotate_point(point, center, clip.transform.rotation_deg);
+                preview_project_to_screen(rotated, canvas_rect, preview_scale, canvas_scale)
+            });
+            geometries.push(PreviewObjectGeometry {
+                clip_id,
+                project_rect,
+                screen_corners,
+                screen_center: preview_project_to_screen(
+                    center,
+                    canvas_rect,
+                    preview_scale,
+                    canvas_scale,
+                ),
+                project_to_screen,
+            });
+        }
+
+        geometries
+    }
+
+    fn paint_preview_transform_overlay(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        canvas_rect: Rect,
+        layers: &PreviewLayerStack,
+        objects: &[PreviewObjectGeometry],
+    ) {
+        let painter = ui.painter().with_clip_rect(rect);
+        for guide in self.preview_snap_guides.iter() {
+            painter.line_segment(
+                [guide.start, guide.end],
+                Stroke::new(1.0, Color32::from_rgb(229, 187, 47)),
+            );
+        }
+
+        let Some(selected_clip_id) = self.editor.selection.primary_clip() else {
+            if !matches!(self.preview_drag, Some(PreviewTransformDrag::Pan { .. })) {
+                self.preview_drag = None;
+                self.preview_snap_guides.clear();
+            }
+            return;
+        };
+        let Some(selected) = objects
+            .iter()
+            .find(|object| object.clip_id == selected_clip_id)
+            .cloned()
+        else {
+            if !matches!(self.preview_drag, Some(PreviewTransformDrag::Pan { .. })) {
+                self.preview_drag = None;
+                self.preview_snap_guides.clear();
+            }
+            return;
+        };
+
+        self.apply_preview_transform_drag(ui, canvas_rect, layers, objects, &selected);
+
+        let stroke = Stroke::new(1.0, kit::BORDER_FOCUS);
+        for index in 0..4 {
+            painter.line_segment(
+                [
+                    selected.screen_corners[index],
+                    selected.screen_corners[(index + 1) % 4],
+                ],
+                stroke,
+            );
+        }
+
+        let body_rect = rect_from_points(&selected.screen_corners).expand(4.0);
+        let body_response = ui.interact(
+            body_rect,
+            ui.id().with(("preview-transform-body", selected.clip_id)),
+            Sense::click_and_drag(),
+        );
+        if body_response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        if body_response.drag_started() {
+            if let Some(pointer) = body_response.interact_pointer_pos() {
+                if let Some(transform) = self.clip_transform(selected.clip_id) {
+                    let project_point = preview_screen_to_project(
+                        pointer,
+                        canvas_rect,
+                        layers,
+                        self.editor.project.settings.width,
+                    );
+                    self.preview_auto_fit = false;
+                    self.preview_drag = Some(PreviewTransformDrag::Move {
+                        clip_id: selected.clip_id,
+                        start_transform: transform,
+                        start_pointer_project: project_point,
+                        start_half_size: selected.project_rect.size() * 0.5,
+                    });
+                }
+            }
+        }
+
+        for (handle, point) in preview_scale_handle_points(&selected) {
+            let handle_rect = Rect::from_center_size(point, Vec2::splat(PREVIEW_HANDLE_SIZE));
+            let response = ui.interact(
+                handle_rect,
+                ui.id()
+                    .with(("preview-scale-handle", selected.clip_id, handle as u8)),
+                Sense::click_and_drag(),
+            );
+            painter.rect_filled(handle_rect, 2.0, kit::FIELD_BG);
+            painter.rect_stroke(
+                handle_rect,
+                2.0,
+                Stroke::new(
+                    1.0,
+                    if response.hovered() {
+                        kit::TEXT
+                    } else {
+                        kit::BORDER_FOCUS
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            }
+            if response.drag_started() {
+                if let Some(transform) = self.clip_transform(selected.clip_id) {
+                    self.preview_auto_fit = false;
+                    self.preview_drag = Some(PreviewTransformDrag::Scale {
+                        clip_id: selected.clip_id,
+                        handle,
+                        start_transform: transform,
+                        start_center_project: selected.project_rect.center(),
+                        start_half_size: selected.project_rect.size() * 0.5,
+                    });
+                }
+            }
+        }
+
+        let rotate_point = preview_rotate_handle_point(&selected);
+        painter.line_segment(
+            [selected.screen_center, rotate_point],
+            Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.65)),
+        );
+        let rotate_rect =
+            Rect::from_center_size(rotate_point, Vec2::splat(PREVIEW_HANDLE_SIZE + 2.0));
+        let rotate_response = ui.interact(
+            rotate_rect,
+            ui.id().with(("preview-rotate-handle", selected.clip_id)),
+            Sense::click_and_drag(),
+        );
+        painter.circle_filled(
+            rotate_point,
+            (PREVIEW_HANDLE_SIZE + 1.0) * 0.5,
+            kit::FIELD_BG,
+        );
+        painter.circle_stroke(
+            rotate_point,
+            (PREVIEW_HANDLE_SIZE + 1.0) * 0.5,
+            Stroke::new(
+                1.0,
+                if rotate_response.hovered() {
+                    kit::TEXT
+                } else {
+                    kit::BORDER_FOCUS
+                },
+            ),
+        );
+        if rotate_response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        if rotate_response.drag_started() {
+            if let Some(pointer) = rotate_response.interact_pointer_pos() {
+                if let Some(transform) = self.clip_transform(selected.clip_id) {
+                    let project_point = preview_screen_to_project(
+                        pointer,
+                        canvas_rect,
+                        layers,
+                        self.editor.project.settings.width,
+                    );
+                    let center = selected.project_rect.center();
+                    self.preview_auto_fit = false;
+                    self.preview_drag = Some(PreviewTransformDrag::Rotate {
+                        clip_id: selected.clip_id,
+                        start_transform: transform,
+                        start_center_project: center,
+                        start_pointer_angle: vector_angle_deg(project_point - center),
+                    });
+                }
+            }
+        }
+    }
+
+    fn apply_preview_transform_drag(
+        &mut self,
+        ui: &mut Ui,
+        canvas_rect: Rect,
+        layers: &PreviewLayerStack,
+        objects: &[PreviewObjectGeometry],
+        selected: &PreviewObjectGeometry,
+    ) {
+        let primary_down = ui.input(|input| input.pointer.primary_down());
+        if !primary_down {
+            if !matches!(self.preview_drag, Some(PreviewTransformDrag::Pan { .. })) {
+                self.preview_drag = None;
+                self.preview_snap_guides.clear();
+            }
+            return;
+        }
+
+        let Some(pointer) = ui.ctx().pointer_interact_pos() else {
+            return;
+        };
+        let pointer_project = preview_screen_to_project(
+            pointer,
+            canvas_rect,
+            layers,
+            self.editor.project.settings.width,
+        );
+        let alt_down = ui.input(|input| input.modifiers.alt);
+        let shift_down = ui.input(|input| input.modifiers.shift);
+        let Some(drag) = self.preview_drag else {
+            return;
+        };
+
+        let mut next_transform = match drag {
+            PreviewTransformDrag::Move {
+                clip_id,
+                start_transform,
+                start_pointer_project,
+                start_half_size,
+            } if clip_id == selected.clip_id => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                let delta = pointer_project - start_pointer_project;
+                let mut transform = start_transform;
+                transform.position_x = start_transform.position_x + delta.x;
+                transform.position_y = start_transform.position_y + delta.y;
+                if !alt_down {
+                    let snapped = self.snap_preview_transform_position(
+                        clip_id,
+                        transform,
+                        start_half_size,
+                        objects,
+                        canvas_rect,
+                        layers,
+                        selected.project_to_screen,
+                        selected.project_to_screen
+                            / preview_project_scale(layers, self.editor.project.settings.width)
+                                .max(0.0001),
+                    );
+                    transform = snapped.0;
+                    self.preview_snap_guides = snapped.1;
+                } else {
+                    self.preview_snap_guides.clear();
+                }
+                transform
+            }
+            PreviewTransformDrag::Scale {
+                clip_id,
+                handle,
+                start_transform,
+                start_center_project,
+                start_half_size,
+            } if clip_id == selected.clip_id => {
+                let transform = preview_scaled_transform(
+                    start_transform,
+                    start_center_project,
+                    pointer_project,
+                    handle,
+                    start_half_size,
+                    shift_down,
+                    selected.project_to_screen,
+                );
+                self.preview_snap_guides.clear();
+                transform
+            }
+            PreviewTransformDrag::Rotate {
+                clip_id,
+                start_transform,
+                start_center_project,
+                start_pointer_angle,
+            } if clip_id == selected.clip_id => {
+                let current_angle = vector_angle_deg(pointer_project - start_center_project);
+                let mut rotation =
+                    start_transform.rotation_deg + current_angle - start_pointer_angle;
+                if !alt_down {
+                    rotation = (rotation / 15.0).round() * 15.0;
+                }
+                let mut transform = start_transform;
+                transform.rotation_deg = rotation;
+                self.preview_snap_guides.clear();
+                transform
+            }
+            _ => return,
+        };
+
+        next_transform.scale_x = next_transform.scale_x.clamp(0.01, 100.0);
+        next_transform.scale_y = next_transform.scale_y.clamp(0.01, 100.0);
+        next_transform.opacity = next_transform.opacity.clamp(0.0, 1.0);
+        if self
+            .editor
+            .project
+            .set_clip_transform(selected.clip_id, next_transform)
+        {
+            self.editor.preview_dirty = true;
+            ui.ctx().request_repaint();
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn snap_preview_transform_position(
+        &self,
+        clip_id: Uuid,
+        transform: ClipTransform,
+        half_size: Vec2,
+        objects: &[PreviewObjectGeometry],
+        canvas_rect: Rect,
+        layers: &PreviewLayerStack,
+        project_to_screen: f32,
+        canvas_scale: f32,
+    ) -> (ClipTransform, Vec<PreviewSnapGuide>) {
+        let project_w = self.editor.project.settings.width.max(1) as f32;
+        let project_h = self.editor.project.settings.height.max(1) as f32;
+        let project_center = Pos2::new(project_w * 0.5, project_h * 0.5);
+        let center = project_center + Vec2::new(transform.position_x, transform.position_y);
+        let rect = Rect::from_center_size(center, half_size * 2.0);
+        let threshold = (PREVIEW_SNAP_THRESHOLD_PX / project_to_screen.max(0.0001)).max(0.5);
+
+        let mut x_targets = vec![0.0, project_w * 0.5, project_w];
+        let mut y_targets = vec![0.0, project_h * 0.5, project_h];
+        for object in objects.iter().filter(|object| object.clip_id != clip_id) {
+            x_targets.extend([
+                object.project_rect.left(),
+                object.project_rect.center().x,
+                object.project_rect.right(),
+            ]);
+            y_targets.extend([
+                object.project_rect.top(),
+                object.project_rect.center().y,
+                object.project_rect.bottom(),
+            ]);
+        }
+
+        let mut transform = transform;
+        let mut guides = Vec::new();
+        let preview_scale = preview_project_scale(layers, self.editor.project.settings.width);
+        if let Some((delta, target)) = nearest_snap_delta(
+            [rect.left(), rect.center().x, rect.right()],
+            &x_targets,
+            threshold,
+        ) {
+            transform.position_x += delta;
+            let p0 = preview_project_to_screen(
+                Pos2::new(target, 0.0),
+                canvas_rect,
+                preview_scale,
+                canvas_scale,
+            );
+            let p1 = preview_project_to_screen(
+                Pos2::new(target, project_h),
+                canvas_rect,
+                preview_scale,
+                canvas_scale,
+            );
+            guides.push(PreviewSnapGuide { start: p0, end: p1 });
+        }
+        if let Some((delta, target)) = nearest_snap_delta(
+            [rect.top(), rect.center().y, rect.bottom()],
+            &y_targets,
+            threshold,
+        ) {
+            transform.position_y += delta;
+            let p0 = preview_project_to_screen(
+                Pos2::new(0.0, target),
+                canvas_rect,
+                preview_scale,
+                canvas_scale,
+            );
+            let p1 = preview_project_to_screen(
+                Pos2::new(project_w, target),
+                canvas_rect,
+                preview_scale,
+                canvas_scale,
+            );
+            guides.push(PreviewSnapGuide { start: p0, end: p1 });
+        }
+
+        (transform, guides)
+    }
+
+    fn clip_transform(&self, clip_id: Uuid) -> Option<ClipTransform> {
+        self.editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| clip.transform)
     }
 
     fn timeline_panel(&mut self, root: &mut Ui) {
@@ -3258,14 +3874,16 @@ impl NlaEguiApp {
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         self.editor.layout.timeline_zoom =
             self.editor.layout.timeline_zoom.clamp(fit_zoom, max_zoom);
+        self.handle_timeline_keyboard(ui, duration, viewport_w);
         let zoom = self
             .editor
             .layout
             .timeline_zoom
+            .clamp(fit_zoom, max_zoom)
             .max(TIMELINE_MIN_ZOOM_FLOOR);
+        self.editor.layout.timeline_zoom = zoom;
         let content_w = (duration as f32 * zoom).max(viewport_w);
         self.clamp_timeline_scroll(content_w, viewport_w);
-        self.handle_timeline_keyboard(ui, duration, viewport_w);
         let content_viewport =
             Rect::from_min_max(rects.ruler.left_top(), rects.tracks.right_bottom());
         self.handle_timeline_shift_scroll(ui, content_viewport, content_w, viewport_w);
@@ -3333,6 +3951,60 @@ impl NlaEguiApp {
             );
             let selected = self.editor.selection.track_ids.contains(&track.id);
             let track_color = track_color(track.track_type);
+            let track_response = ui.interact(
+                label_rect,
+                ui.id().with(("timeline-track-label", track.id)),
+                Sense::click(),
+            );
+            track_response.context_menu(|ui| {
+                self.editor.selection.select_track(track.id);
+                let movable = track.track_type != TrackType::Marker;
+                ui.add_enabled_ui(movable, |ui| {
+                    let can_move_up = self
+                        .editor
+                        .project
+                        .tracks
+                        .iter()
+                        .position(|candidate| candidate.id == track.id)
+                        .map(|index| index > 0)
+                        .unwrap_or(false);
+                    let can_move_down = self
+                        .editor
+                        .project
+                        .tracks
+                        .iter()
+                        .position(|candidate| candidate.id == track.id)
+                        .map(|index| index + 1 < self.editor.project.tracks.len())
+                        .unwrap_or(false);
+                    if automation_button(
+                        ui.add_enabled(can_move_up, egui::Button::new("Move Up")),
+                        "Move Up",
+                    )
+                    .clicked()
+                    {
+                        if self.editor.project.move_track_up(track.id) {
+                            self.editor.preview_dirty = true;
+                            self.editor.status = format!("Moved {} up", track.name);
+                        }
+                        ui.close();
+                    }
+                    if automation_button(
+                        ui.add_enabled(can_move_down, egui::Button::new("Move Down")),
+                        "Move Down",
+                    )
+                    .clicked()
+                    {
+                        if self.editor.project.move_track_down(track.id) {
+                            self.editor.preview_dirty = true;
+                            self.editor.status = format!("Moved {} down", track.name);
+                        }
+                        ui.close();
+                    }
+                });
+                if !movable {
+                    ui.label(kit::caption("Marker track is fixed for now."));
+                }
+            });
             painter.rect_filled(
                 label_rect,
                 0.0,
@@ -4658,7 +5330,7 @@ impl NlaEguiApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .fixed_size([380.0, 220.0])
+            .fixed_size([480.0, 210.0])
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -4669,24 +5341,42 @@ impl NlaEguiApp {
                     true,
                 );
                 kit::modal_body(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.gen_video_fps)
-                                .speed(1.0)
-                                .prefix("FPS "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut self.gen_video_frames)
-                                .speed(1)
-                                .prefix("Frames "),
-                        );
-                    });
-                    ui.add_space(8.0);
-                    ui.label(kit::body(format!(
-                        "Duration {}",
-                        generative_video_duration_label(self.gen_video_fps, self.gen_video_frames)
-                    )));
-                    ui.add_space(18.0);
+                    let mut fps = self.gen_video_fps.max(1.0);
+                    let mut frames = self.gen_video_frames.max(1) as i64;
+                    let mut seconds = frames as f64 / fps;
+                    let mut seconds_changed = false;
+
+                    kit::field_grid_row_with_height(
+                        ui,
+                        &[1.0, 1.0, 1.0],
+                        kit::FIELD_H,
+                        kit::FORM_ROW_GAP,
+                        |ui, index| match index {
+                            0 => {
+                                let width = ui.available_width();
+                                inspector_drag_f64(ui, "FPS", &mut fps, 1.0, width);
+                            }
+                            1 => {
+                                let width = ui.available_width();
+                                inspector_drag_i64(ui, "Frames", &mut frames, 1.0, width);
+                            }
+                            _ => {
+                                let width = ui.available_width();
+                                seconds_changed =
+                                    inspector_drag_f64(ui, "Seconds", &mut seconds, 0.1, width);
+                            }
+                        },
+                    );
+
+                    fps = fps.clamp(1.0, 240.0);
+                    if seconds_changed {
+                        let min_seconds = 1.0 / fps;
+                        frames = (seconds.max(min_seconds) * fps).round().max(1.0) as i64;
+                    }
+                    self.gen_video_fps = fps;
+                    self.gen_video_frames = frames.clamp(1, 1_000_000) as u32;
+
+                    ui.add_space(kit::ACTION_GAP);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if kit::primary_button(ui, "Create", 120.0).clicked() {
                             if let Err(err) = self
@@ -5910,6 +6600,11 @@ impl NlaEguiApp {
                 .provider_entries
                 .iter()
                 .any(|entry| matches!(entry.connection, ProviderConnection::XaiImage { .. })),
+            ProviderTemplateKind::XaiVideo => self
+                .editor
+                .provider_entries
+                .iter()
+                .any(|entry| matches!(entry.connection, ProviderConnection::XaiVideo { .. })),
         }
     }
 
@@ -5921,6 +6616,9 @@ impl NlaEguiApp {
             ),
             ProviderTemplateKind::XaiImage => self.save_provider_template(
                 crate::core::provider_store::default_xai_image_provider_entry(),
+            ),
+            ProviderTemplateKind::XaiVideo => self.save_provider_template(
+                crate::core::provider_store::default_xai_video_provider_entry(),
             ),
         }
     }
@@ -6746,6 +7444,218 @@ impl NlaEguiApp {
     }
 }
 
+fn preview_fit_scale(rect: Rect, layers: &PreviewLayerStack) -> f32 {
+    (rect.width() / layers.canvas_width.max(1) as f32)
+        .min(rect.height() / layers.canvas_height.max(1) as f32)
+        .max(0.01)
+}
+
+fn preview_project_scale(layers: &PreviewLayerStack, project_width: u32) -> f32 {
+    layers.canvas_width.max(1) as f32 / project_width.max(1) as f32
+}
+
+fn preview_scroll_delta(ui: &Ui, response: &egui::Response) -> f32 {
+    if !response.hovered() {
+        return 0.0;
+    }
+    ui.input(|input| {
+        input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                _ => None,
+            })
+            .sum()
+    })
+}
+
+fn preview_project_to_screen(
+    point: Pos2,
+    canvas_rect: Rect,
+    preview_scale: f32,
+    canvas_scale: f32,
+) -> Pos2 {
+    canvas_rect.min + Vec2::new(point.x, point.y) * preview_scale * canvas_scale
+}
+
+fn preview_screen_to_project(
+    point: Pos2,
+    canvas_rect: Rect,
+    layers: &PreviewLayerStack,
+    project_width: u32,
+) -> Pos2 {
+    let preview_scale = preview_project_scale(layers, project_width);
+    let canvas_scale = (canvas_rect.width() / layers.canvas_width.max(1) as f32).max(0.0001);
+    let project = (point - canvas_rect.min) / (preview_scale * canvas_scale).max(0.0001);
+    Pos2::new(project.x, project.y)
+}
+
+fn rotate_point(point: Pos2, center: Pos2, degrees: f32) -> Pos2 {
+    center + rotate_vec(point - center, degrees)
+}
+
+fn rotate_vec(vec: Vec2, degrees: f32) -> Vec2 {
+    let radians = degrees.to_radians();
+    let (sin, cos) = radians.sin_cos();
+    Vec2::new(vec.x * cos - vec.y * sin, vec.x * sin + vec.y * cos)
+}
+
+fn vector_angle_deg(vec: Vec2) -> f32 {
+    vec.y.atan2(vec.x).to_degrees()
+}
+
+fn rect_from_points(points: &[Pos2]) -> Rect {
+    let mut min = Pos2::new(f32::INFINITY, f32::INFINITY);
+    let mut max = Pos2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for point in points {
+        min.x = min.x.min(point.x);
+        min.y = min.y.min(point.y);
+        max.x = max.x.max(point.x);
+        max.y = max.y.max(point.y);
+    }
+    Rect::from_min_max(min, max)
+}
+
+fn preview_scale_handle_points(object: &PreviewObjectGeometry) -> [(PreviewScaleHandle, Pos2); 8] {
+    let [nw, ne, se, sw] = object.screen_corners;
+    [
+        (PreviewScaleHandle::NorthWest, nw),
+        (
+            PreviewScaleHandle::North,
+            Pos2::new((nw.x + ne.x) * 0.5, (nw.y + ne.y) * 0.5),
+        ),
+        (PreviewScaleHandle::NorthEast, ne),
+        (
+            PreviewScaleHandle::East,
+            Pos2::new((ne.x + se.x) * 0.5, (ne.y + se.y) * 0.5),
+        ),
+        (PreviewScaleHandle::SouthEast, se),
+        (
+            PreviewScaleHandle::South,
+            Pos2::new((se.x + sw.x) * 0.5, (se.y + sw.y) * 0.5),
+        ),
+        (PreviewScaleHandle::SouthWest, sw),
+        (
+            PreviewScaleHandle::West,
+            Pos2::new((sw.x + nw.x) * 0.5, (sw.y + nw.y) * 0.5),
+        ),
+    ]
+}
+
+fn preview_rotate_handle_point(object: &PreviewObjectGeometry) -> Pos2 {
+    let top_mid = preview_scale_handle_points(object)
+        .iter()
+        .find(|(handle, _)| *handle == PreviewScaleHandle::North)
+        .map(|(_, point)| *point)
+        .unwrap_or(object.screen_center);
+    let offset = top_mid - object.screen_center;
+    let direction = if offset.length_sq() > 0.0001 {
+        offset.normalized()
+    } else {
+        Vec2::new(0.0, -1.0)
+    };
+    top_mid + direction * PREVIEW_ROTATE_HANDLE_DISTANCE
+}
+
+fn preview_scaled_transform(
+    start_transform: ClipTransform,
+    start_center_project: Pos2,
+    pointer_project: Pos2,
+    handle: PreviewScaleHandle,
+    start_half_size: Vec2,
+    constrain_aspect: bool,
+    project_to_screen: f32,
+) -> ClipTransform {
+    let (sx, sy) = preview_scale_handle_signs(handle);
+    let min_half = (4.0 / project_to_screen.max(0.0001)).max(0.5);
+    let pointer_local = rotate_vec(
+        pointer_project - start_center_project,
+        -start_transform.rotation_deg,
+    );
+
+    let mut new_half_x = start_half_size.x.max(min_half);
+    let mut new_half_y = start_half_size.y.max(min_half);
+    let mut center_local = Vec2::ZERO;
+
+    if sx != 0.0 {
+        let anchor_x = -sx * start_half_size.x;
+        let handle_x = pointer_local.x;
+        new_half_x = ((handle_x - anchor_x).abs() * 0.5).max(min_half);
+        center_local.x = (handle_x + anchor_x) * 0.5;
+    }
+    if sy != 0.0 {
+        let anchor_y = -sy * start_half_size.y;
+        let handle_y = pointer_local.y;
+        new_half_y = ((handle_y - anchor_y).abs() * 0.5).max(min_half);
+        center_local.y = (handle_y + anchor_y) * 0.5;
+    }
+
+    if constrain_aspect && sx != 0.0 && sy != 0.0 {
+        let aspect = (start_half_size.x / start_half_size.y.max(0.0001)).max(0.0001);
+        if new_half_x / new_half_y.max(0.0001) > aspect {
+            new_half_y = new_half_x / aspect;
+        } else {
+            new_half_x = new_half_y * aspect;
+        }
+        let anchor_x = -sx * start_half_size.x;
+        let anchor_y = -sy * start_half_size.y;
+        center_local.x = anchor_x + sx * new_half_x;
+        center_local.y = anchor_y + sy * new_half_y;
+    }
+
+    let start_project_origin = Pos2::new(
+        start_center_project.x - start_transform.position_x,
+        start_center_project.y - start_transform.position_y,
+    );
+    let next_center = start_center_project + rotate_vec(center_local, start_transform.rotation_deg);
+    let mut transform = start_transform;
+    transform.position_x = next_center.x - start_project_origin.x;
+    transform.position_y = next_center.y - start_project_origin.y;
+    if start_half_size.x > 0.0 {
+        transform.scale_x = start_transform.scale_x * (new_half_x / start_half_size.x);
+    }
+    if start_half_size.y > 0.0 {
+        transform.scale_y = start_transform.scale_y * (new_half_y / start_half_size.y);
+    }
+    transform
+}
+
+fn preview_scale_handle_signs(handle: PreviewScaleHandle) -> (f32, f32) {
+    match handle {
+        PreviewScaleHandle::NorthWest => (-1.0, -1.0),
+        PreviewScaleHandle::North => (0.0, -1.0),
+        PreviewScaleHandle::NorthEast => (1.0, -1.0),
+        PreviewScaleHandle::East => (1.0, 0.0),
+        PreviewScaleHandle::SouthEast => (1.0, 1.0),
+        PreviewScaleHandle::South => (0.0, 1.0),
+        PreviewScaleHandle::SouthWest => (-1.0, 1.0),
+        PreviewScaleHandle::West => (-1.0, 0.0),
+    }
+}
+
+fn nearest_snap_delta<const N: usize>(
+    candidates: [f32; N],
+    targets: &[f32],
+    threshold: f32,
+) -> Option<(f32, f32)> {
+    let mut best: Option<(f32, f32, f32)> = None;
+    for candidate in candidates {
+        for target in targets {
+            let delta = *target - candidate;
+            let distance = delta.abs();
+            if distance <= threshold
+                && best
+                    .map(|(_, _, best_distance)| distance < best_distance)
+                    .unwrap_or(true)
+            {
+                best = Some((delta, *target, distance));
+            }
+        }
+    }
+    best.map(|(delta, target, _)| (delta, target))
+}
+
 fn paint_rotated_texture(
     painter: &egui::Painter,
     texture_id: TextureId,
@@ -7510,27 +8420,46 @@ fn paint_clip_cache_buckets(painter: &egui::Painter, rect: Rect, buckets: &[bool
     if buckets.is_empty() || rect.width() <= 2.0 {
         return;
     }
-    let bucket_w = (rect.width() / buckets.len() as f32).max(1.0);
     let y = rect.bottom() - 4.0;
+    let strip_rect = Rect::from_min_max(
+        Pos2::new(rect.left(), y),
+        Pos2::new(rect.right(), rect.bottom() - 1.0),
+    );
     let clip_painter = painter.with_clip_rect(rect.shrink(1.0));
-    for (index, cached) in buckets.iter().enumerate() {
-        let x = rect.left() + index as f32 * bucket_w;
-        if x > rect.right() {
-            break;
+    clip_painter.rect_filled(
+        strip_rect,
+        0.0,
+        Color32::from_rgba_unmultiplied(95, 58, 42, 85),
+    );
+
+    let bucket_count = buckets.len() as f32;
+    let cached_color = Color32::from_rgba_unmultiplied(45, 220, 165, 175);
+    let mut run_start: Option<usize> = None;
+    for (index, cached) in buckets
+        .iter()
+        .copied()
+        .chain(std::iter::once(false))
+        .enumerate()
+    {
+        match (cached, run_start) {
+            (true, None) => run_start = Some(index),
+            (false, Some(start)) => {
+                let x0 = rect.left() + rect.width() * start as f32 / bucket_count;
+                let x1 = rect.left() + rect.width() * index as f32 / bucket_count;
+                if x1 > x0 {
+                    clip_painter.rect_filled(
+                        Rect::from_min_max(
+                            Pos2::new(x0, y),
+                            Pos2::new(x1.min(rect.right()), rect.bottom() - 1.0),
+                        ),
+                        0.0,
+                        cached_color,
+                    );
+                }
+                run_start = None;
+            }
+            _ => {}
         }
-        let color = if *cached {
-            Color32::from_rgba_unmultiplied(45, 220, 165, 175)
-        } else {
-            Color32::from_rgba_unmultiplied(95, 58, 42, 85)
-        };
-        clip_painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(x, y),
-                Pos2::new((x + bucket_w - 0.5).min(rect.right()), rect.bottom() - 1.0),
-            ),
-            0.0,
-            color,
-        );
     }
 }
 
@@ -8527,6 +9456,7 @@ fn provider_template_label(kind: ProviderTemplateKind) -> &'static str {
         ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",
         ProviderTemplateKind::OpenAiImage => "OpenAI Image",
         ProviderTemplateKind::XaiImage => "xAI Image",
+        ProviderTemplateKind::XaiVideo => "xAI Grok Video",
     }
 }
 

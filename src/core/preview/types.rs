@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use image::{Rgba, RgbaImage};
 use serde::Serialize;
+use uuid::Uuid;
 
 pub const FFMPEG_TIME_EPSILON: f64 = 0.001;
 #[allow(dead_code)]
@@ -75,6 +76,7 @@ pub struct PreviewLayerPlacement {
 
 #[derive(Clone, Debug)]
 pub struct PreviewLayerGpu {
+    pub clip_id: Option<Uuid>,
     pub texture_key: u64,
     pub image: Arc<RgbaImage>,
     pub placement: PreviewLayerPlacement,

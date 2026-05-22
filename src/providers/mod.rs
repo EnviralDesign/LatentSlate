@@ -110,9 +110,19 @@ pub async fn execute_generation(
         )
         .await
         .map_err(ProviderExecutionError::Error),
-        ProviderConnection::XaiVideo { .. } => Err(ProviderExecutionError::Error(
-            "xAI video providers are planned but not implemented yet.".to_string(),
-        )),
+        ProviderConnection::XaiVideo {
+            credential_id,
+            model,
+            base_url,
+        } => xai::generate_video(
+            &credential_id,
+            &model,
+            base_url.as_deref(),
+            inputs,
+            progress_tx,
+        )
+        .await
+        .map_err(ProviderExecutionError::Error),
         ProviderConnection::CustomHttp { .. } => Err(ProviderExecutionError::Error(
             "Custom HTTP providers are planned but not implemented yet.".to_string(),
         )),

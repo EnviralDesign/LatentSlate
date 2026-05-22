@@ -260,6 +260,7 @@ impl PreviewRenderer {
                 rotation_deg: 0.0,
             };
             gpu_layers.push(PreviewLayerGpu {
+                clip_id: None,
                 texture_key: plate_texture_key(canvas_w, canvas_h),
                 image: plate_fill,
                 placement,
@@ -280,6 +281,7 @@ impl PreviewRenderer {
                 canvas_h_f,
             ) {
                 gpu_layers.push(PreviewLayerGpu {
+                    clip_id: Some(layer.clip_id),
                     texture_key: layer.texture_key,
                     image: layer.image,
                     placement,
@@ -369,6 +371,7 @@ impl PreviewRenderer {
                 if let Some(cached) = cache.get(&cache_key) {
                     stats.cache_hits += 1;
                     layers.push(PreviewLayer {
+                        clip_id: clip.id,
                         texture_key: preview_texture_key(&cache_key),
                         track_index,
                         start_time: clip.start_time,
@@ -400,6 +403,7 @@ impl PreviewRenderer {
                         );
                     }
                     layers.push(PreviewLayer {
+                        clip_id: clip.id,
                         texture_key,
                         track_index,
                         start_time: clip.start_time,
@@ -413,6 +417,7 @@ impl PreviewRenderer {
             }
 
             pending.push(PendingDecode {
+                clip_id: clip.id,
                 track_index,
                 start_time: clip.start_time,
                 path,
@@ -463,6 +468,7 @@ impl PreviewRenderer {
                             stats.sw_decode_frames += 1;
                         }
                         layers.push(PreviewLayer {
+                            clip_id: item.clip_id,
                             texture_key,
                             track_index: item.track_index,
                             start_time: item.start_time,

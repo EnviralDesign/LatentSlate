@@ -12,8 +12,8 @@ use crate::core::provider_store::{
 };
 use crate::core::thumbnailer::Thumbnailer;
 use crate::state::{
-    generative_video_duration_seconds, next_generative_index, Asset, AssetKind, GenerationJob,
-    Project, ProjectSettings, ProviderEntry, SelectionState, DEFAULT_GENERATIVE_VIDEO_FPS,
+    next_generative_index, Asset, AssetKind, GenerationJob, Project, ProjectSettings,
+    ProviderEntry, SelectionState, DEFAULT_GENERATIVE_VIDEO_FPS,
     DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
@@ -582,11 +582,6 @@ pub fn default_generative_video_fps() -> f64 {
 
 pub fn default_generative_video_frames() -> u32 {
     DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT
-}
-
-pub fn generative_video_duration_label(fps: f64, frame_count: u32) -> String {
-    let duration = generative_video_duration_seconds(fps, frame_count).unwrap_or(0.0);
-    format!("{duration:.2}s")
 }
 
 fn is_generative_image(kind: &AssetKind) -> bool {

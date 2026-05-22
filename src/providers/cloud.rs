@@ -26,6 +26,19 @@ pub fn string_input(inputs: &HashMap<String, Value>, name: &str, fallback: &str)
         .to_string()
 }
 
+pub fn integer_input(inputs: &HashMap<String, Value>, name: &str, fallback: i64) -> i64 {
+    inputs
+        .get(name)
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().map(|value| value as i64))
+                .or_else(|| value.as_f64().map(|value| value.round() as i64))
+                .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        })
+        .unwrap_or(fallback)
+}
+
 pub fn send_progress(tx: &Option<mpsc::UnboundedSender<ProviderProgress>>, value: f32) {
     if let Some(tx) = tx {
         let _ = tx.send(ProviderProgress::overall(value.clamp(0.0, 1.0)));
