@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -30,8 +30,7 @@ use crate::core::generation::{
     next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
     update_seed_inputs,
 };
-use crate::core::preview::{PreviewDecodeMode, PreviewFrameInfo, PreviewStats};
-use crate::core::preview_store;
+use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};
 use crate::core::timeline_snap::{
     best_snap_delta_frames, frames_from_seconds, seconds_from_frames, snap_time_to_frame,
     SnapTarget,
@@ -51,6 +50,7 @@ use crate::state::{
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
+use serde::Serialize;
 
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
@@ -68,6 +68,16 @@ const TIMELINE_MAX_PX_PER_FRAME: f32 = 8.0;
 const TIMELINE_SNAP_THRESHOLD_PX: f64 = 6.0;
 const TIMELINE_THUMB_TILE_W: f32 = 60.0;
 const TIMELINE_MAX_THUMB_TILES: usize = 120;
+const PREVIEW_PERF_HISTORY_LIMIT: usize = 256;
+const PREVIEW_LAYER_TEXTURE_LIMIT: usize = 512;
+const PREVIEW_PREFETCH_SCRUB_SECONDS: f64 = 0.5;
+const PREVIEW_PREFETCH_PLAYBACK_SECONDS: f64 = 3.0;
+const PREVIEW_IDLE_PREFETCH_DELAY_MS: u64 = 800;
+const PREVIEW_IDLE_PREFETCH_AHEAD_SECONDS: f64 = 5.0;
+const PREVIEW_IDLE_PREFETCH_BEHIND_SECONDS: f64 = 1.0;
+const PREVIEW_RENDER_RETRY_MS: u64 = 16;
+const AUTOMATION_SCRUB_MAX_STEPS: usize = 240;
+const AUTOMATION_SCRUB_MAX_REPEATS: usize = 20;
 const TIMELINE_MIN_CLIP_W: f32 = 2.0;
 const TIMELINE_HANDLE_W: f32 = 8.0;
 const TIMELINE_MARKER_HIT_W: f32 = 22.0;
@@ -175,7 +185,22 @@ pub fn run() -> eframe::Result<()> {
 
 pub struct NlaEguiApp {
     editor: EditorState,
-    preview_texture: Option<TextureHandle>,
+    preview_layers: Option<PreviewLayerStack>,
+    preview_layer_textures: HashMap<u64, PreviewLayerTexture>,
+    preview_layer_texture_sequence: u64,
+    preview_last_render_time: Option<f64>,
+    preview_last_interaction: Instant,
+    preview_idle_prefetched_time: Option<f64>,
+    preview_render_tx: mpsc::Sender<PreviewRenderResult>,
+    preview_render_rx: mpsc::Receiver<PreviewRenderResult>,
+    preview_render_in_flight: Arc<AtomicBool>,
+    preview_render_request_id: Arc<AtomicU64>,
+    preview_render_busy_since: Option<Instant>,
+    preview_render_completed_count: u64,
+    preview_render_stale_count: u64,
+    preview_render_last_worker_ms: Option<f64>,
+    preview_render_last_delivery_ms: Option<f64>,
+    preview_prefetch_in_flight: Arc<AtomicBool>,
     asset_thumbnails: HashMap<Uuid, AssetThumbnail>,
     asset_thumbnail_misses: HashSet<Uuid>,
     timeline_thumbnails: HashMap<TimelineThumbnailKey, AssetThumbnail>,
@@ -190,8 +215,9 @@ pub struct NlaEguiApp {
     timeline_drag: Option<TimelineDrag>,
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
-    preview_frame: Option<PreviewFrameInfo>,
     preview_stats: Option<PreviewStats>,
+    preview_perf_samples: VecDeque<PreviewPerfSample>,
+    preview_perf_sequence: u64,
     last_tick: Instant,
     new_project_name: String,
     new_project_parent: PathBuf,
@@ -232,12 +258,68 @@ struct PendingAutomationScreenshot {
     envelope: crate::core::automation::AutomationEnvelope,
 }
 
+struct PreviewLayerTexture {
+    texture: TextureHandle,
+    size: [usize; 2],
+    last_used: u64,
+}
+
+struct PreviewRenderResult {
+    request_id: u64,
+    time_seconds: f64,
+    decode_mode: PreviewDecodeMode,
+    requested_at: Instant,
+    finished_at: Instant,
+    output: RenderOutput,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PreviewPerfSample {
+    sequence: u64,
+    request_id: Option<u64>,
+    captured_at_ms: i64,
+    playhead_seconds: f64,
+    render_worker_ms: Option<f64>,
+    delivery_ms: Option<f64>,
+    stats: PreviewStats,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct PreviewPerfSummary {
+    samples: usize,
+    total_ms_min: f64,
+    total_ms_avg: f64,
+    total_ms_max: f64,
+    collect_ms_avg: f64,
+    composite_ms_avg: f64,
+    encode_ms_avg: f64,
+    video_decode_ms_avg: f64,
+    video_decode_seek_ms_avg: f64,
+    still_load_ms_avg: f64,
+    layers_avg: f64,
+    cache_hits: usize,
+    cache_misses: usize,
+    cache_hit_rate: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ScrubProfileSample {
+    repeat: usize,
+    step: usize,
+    requested_time: f64,
+    actual_time: f64,
+    seek_ms: f64,
+    render_wall_ms: f64,
+    stats: PreviewStats,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ApiKeyModalState {
     credential_id: String,
     label: String,
     value: String,
     saved: bool,
+    masked_existing: bool,
     error: Option<String>,
 }
 
@@ -477,11 +559,28 @@ impl NlaEguiApp {
         };
         let (generation_events_tx, generation_events_rx) = mpsc::channel();
         let (export_events_tx, export_events_rx) = mpsc::channel();
+        let (preview_render_tx, preview_render_rx) = mpsc::channel();
         let export_modal = ExportModalState::for_project(&editor.project);
+        let now = Instant::now();
         Self {
             project_settings: editor.project.settings.clone(),
             editor,
-            preview_texture: None,
+            preview_layers: None,
+            preview_layer_textures: HashMap::new(),
+            preview_layer_texture_sequence: 0,
+            preview_last_render_time: None,
+            preview_last_interaction: now,
+            preview_idle_prefetched_time: None,
+            preview_render_tx,
+            preview_render_rx,
+            preview_render_in_flight: Arc::new(AtomicBool::new(false)),
+            preview_render_request_id: Arc::new(AtomicU64::new(0)),
+            preview_render_busy_since: None,
+            preview_render_completed_count: 0,
+            preview_render_stale_count: 0,
+            preview_render_last_worker_ms: None,
+            preview_render_last_delivery_ms: None,
+            preview_prefetch_in_flight: Arc::new(AtomicBool::new(false)),
             asset_thumbnails: HashMap::new(),
             asset_thumbnail_misses: HashSet::new(),
             timeline_thumbnails: HashMap::new(),
@@ -496,9 +595,10 @@ impl NlaEguiApp {
             timeline_drag: None,
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
-            preview_frame: None,
             preview_stats: None,
-            last_tick: Instant::now(),
+            preview_perf_samples: VecDeque::new(),
+            preview_perf_sequence: 0,
+            last_tick: now,
             new_project_name: "My New Project".to_string(),
             new_project_parent: default_projects_dir(),
             gen_video_fps: default_generative_video_fps(),
@@ -547,6 +647,28 @@ impl NlaEguiApp {
                 }
                 crate::core::automation::AutomationCommand::Screenshot { name } => {
                     self.queue_automation_screenshot(ctx, envelope, name.as_deref());
+                }
+                crate::core::automation::AutomationCommand::GetPerformanceDiagnostics => {
+                    envelope.respond(self.performance_diagnostics_response());
+                }
+                crate::core::automation::AutomationCommand::ScrubTimelineProfile {
+                    start_time,
+                    end_time,
+                    steps,
+                    repeats,
+                    scrub_audio,
+                    settle_ms,
+                } => {
+                    let response = self.run_automation_scrub_profile(
+                        ctx,
+                        start_time,
+                        end_time,
+                        steps,
+                        repeats,
+                        scrub_audio,
+                        settle_ms,
+                    );
+                    envelope.respond(response);
                 }
                 crate::core::automation::AutomationCommand::OpenExportVideo => {
                     self.open_export_modal();
@@ -675,10 +797,149 @@ impl NlaEguiApp {
         ctx.request_repaint();
     }
 
+    fn performance_diagnostics_response(&self) -> crate::core::automation::AutomationResponse {
+        let samples: Vec<PreviewPerfSample> = self.preview_perf_samples.iter().cloned().collect();
+        let recent_summary = summarize_preview_perf_samples(&samples);
+        crate::core::automation::AutomationResponse::ok(serde_json::json!({
+            "current_time": self.editor.current_time,
+            "is_playing": self.editor.is_playing,
+            "preview_dirty": self.editor.preview_dirty,
+            "project_loaded": self.editor.project.project_path.is_some(),
+            "latest_stats": self.preview_stats.clone(),
+            "cache": self.editor.previewer.cache_stats(),
+            "render": {
+                "in_flight": self.preview_render_in_flight.load(Ordering::Relaxed),
+                "latest_request_id": self.preview_render_request_id.load(Ordering::Relaxed),
+                "busy_ms": self.preview_render_busy_since.map(|start| start.elapsed().as_secs_f64() * 1000.0),
+                "completed": self.preview_render_completed_count,
+                "stale": self.preview_render_stale_count,
+                "last_worker_ms": self.preview_render_last_worker_ms,
+                "last_delivery_ms": self.preview_render_last_delivery_ms,
+            },
+            "recent_summary": recent_summary,
+            "recent_samples": samples,
+        }))
+    }
+
+    fn run_automation_scrub_profile(
+        &mut self,
+        ctx: &Context,
+        start_time: f64,
+        end_time: f64,
+        steps: usize,
+        repeats: usize,
+        scrub_audio: bool,
+        settle_ms: u64,
+    ) -> crate::core::automation::AutomationResponse {
+        if self.editor.project.project_path.is_none() {
+            return crate::core::automation::AutomationResponse::conflict(
+                "Open a project before running a scrub profile.",
+            );
+        }
+
+        let duration = self.editor.project.duration();
+        let start_time = start_time.clamp(0.0, duration);
+        let end_time = end_time.clamp(0.0, duration);
+        let steps = steps.clamp(1, AUTOMATION_SCRUB_MAX_STEPS);
+        let repeats = repeats.clamp(1, AUTOMATION_SCRUB_MAX_REPEATS);
+        let settle_ms = settle_ms.min(500);
+        let was_playing = self.editor.is_playing;
+        if scrub_audio {
+            self.timeline_scrub_was_playing = was_playing;
+        }
+
+        let profile_start = Instant::now();
+        let mut samples = Vec::with_capacity(steps.saturating_mul(repeats));
+        for repeat in 0..repeats {
+            for step in 0..steps {
+                let alpha = if steps <= 1 {
+                    0.0
+                } else {
+                    step as f64 / (steps - 1) as f64
+                };
+                let requested_time = start_time + (end_time - start_time) * alpha;
+                let seek_start = Instant::now();
+                self.seek_editor(requested_time, scrub_audio);
+                let seek_ms = seek_start.elapsed().as_secs_f64() * 1000.0;
+
+                let render_start = Instant::now();
+                let stats = self.render_preview_sync_for_profile(ctx);
+                let render_wall_ms = render_start.elapsed().as_secs_f64() * 1000.0;
+
+                samples.push(ScrubProfileSample {
+                    repeat,
+                    step,
+                    requested_time,
+                    actual_time: self.editor.current_time,
+                    seek_ms,
+                    render_wall_ms,
+                    stats,
+                });
+
+                if settle_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(settle_ms));
+                }
+            }
+        }
+
+        if scrub_audio {
+            self.timeline_scrub_was_playing = was_playing;
+            self.finish_timeline_scrub();
+        }
+
+        ctx.request_repaint();
+        let summary = summarize_scrub_profile_samples(&samples);
+        crate::core::automation::AutomationResponse::ok(serde_json::json!({
+            "profile": {
+                "start_time": start_time,
+                "end_time": end_time,
+                "steps": steps,
+                "repeats": repeats,
+                "scrub_audio": scrub_audio,
+                "settle_ms": settle_ms,
+                "wall_ms": profile_start.elapsed().as_secs_f64() * 1000.0,
+                "summary": summary,
+                "samples": samples,
+                "cache": self.editor.previewer.cache_stats(),
+            }
+        }))
+    }
+
+    fn record_preview_perf_sample(
+        &mut self,
+        playhead_seconds: f64,
+        stats: PreviewStats,
+        request_id: Option<u64>,
+        render_worker_ms: Option<f64>,
+        delivery_ms: Option<f64>,
+    ) {
+        self.preview_perf_sequence = self.preview_perf_sequence.wrapping_add(1);
+        self.preview_perf_samples.push_back(PreviewPerfSample {
+            sequence: self.preview_perf_sequence,
+            request_id,
+            captured_at_ms: chrono::Utc::now().timestamp_millis(),
+            playhead_seconds,
+            render_worker_ms,
+            delivery_ms,
+            stats,
+        });
+        while self.preview_perf_samples.len() > PREVIEW_PERF_HISTORY_LIMIT {
+            self.preview_perf_samples.pop_front();
+        }
+    }
+
     fn clear_project_runtime_cache(&mut self) {
-        self.preview_texture = None;
-        self.preview_frame = None;
+        self.preview_layers = None;
+        self.preview_layer_textures.clear();
+        self.preview_layer_texture_sequence = 0;
+        self.preview_last_render_time = None;
+        self.preview_last_interaction = Instant::now();
+        self.preview_idle_prefetched_time = None;
+        self.preview_prefetch_in_flight
+            .store(false, Ordering::Relaxed);
         self.preview_stats = None;
+        self.preview_perf_samples.clear();
+        self.preview_perf_sequence = 0;
         self.asset_thumbnails.clear();
         self.asset_thumbnail_misses.clear();
         self.timeline_thumbnails.clear();
@@ -1002,43 +1263,342 @@ impl NlaEguiApp {
     }
 
     fn update_preview_texture(&mut self, ctx: &Context) {
-        if !self.editor.preview_dirty && self.preview_texture.is_some() {
+        self.poll_preview_render_results(ctx);
+        if !self.editor.preview_dirty && self.preview_layers.is_some() {
             return;
         }
         if self.editor.project.project_path.is_none() {
-            self.preview_texture = None;
-            self.preview_frame = None;
+            self.preview_layers = None;
             return;
         }
 
-        let output = self.editor.previewer.render_frame(
+        self.schedule_preview_render(ctx);
+    }
+
+    fn render_preview_sync_for_profile(&mut self, ctx: &Context) -> PreviewStats {
+        self.invalidate_preview_render_jobs();
+        let decode_mode = if self.editor.is_playing {
+            PreviewDecodeMode::Sequential
+        } else {
+            PreviewDecodeMode::Seek
+        };
+        let output = self.editor.previewer.render_layers(
             &self.editor.project,
             self.editor.current_time,
-            PreviewDecodeMode::Seek,
+            decode_mode,
             self.editor.layout.hardware_decode,
         );
-        self.preview_stats = Some(output.stats);
-        let Some(frame) = output.frame else {
-            self.preview_texture = None;
-            self.preview_frame = None;
+        let mut stats = output.stats;
+        let Some(layers) = output.layers else {
+            self.preview_layers = None;
+            self.preview_stats = Some(stats.clone());
+            self.record_preview_perf_sample(
+                self.editor.current_time,
+                stats.clone(),
+                None,
+                None,
+                None,
+            );
+            self.editor.preview_dirty = false;
+            return stats;
+        };
+
+        let upload_start = Instant::now();
+        self.prepare_preview_layer_textures(ctx, &layers);
+        stats.encode_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
+        stats.total_ms += stats.encode_ms;
+        self.record_preview_perf_sample(self.editor.current_time, stats.clone(), None, None, None);
+        self.preview_stats = Some(stats);
+        let direction = self.preview_render_direction(self.editor.current_time);
+        self.preview_last_interaction = Instant::now();
+        self.preview_idle_prefetched_time = None;
+        self.preview_layers = Some(layers);
+        self.editor.preview_dirty = false;
+        self.schedule_preview_prefetch(direction, decode_mode);
+        if !self.editor.is_playing {
+            ctx.request_repaint_after(Duration::from_millis(PREVIEW_IDLE_PREFETCH_DELAY_MS + 25));
+        }
+        self.preview_stats.clone().unwrap_or_default()
+    }
+
+    fn poll_preview_render_results(&mut self, ctx: &Context) {
+        let mut latest = None;
+        while let Ok(result) = self.preview_render_rx.try_recv() {
+            latest = Some(result);
+        }
+
+        let Some(result) = latest else {
+            return;
+        };
+
+        self.preview_render_busy_since = None;
+        let latest_id = self.preview_render_request_id.load(Ordering::Relaxed);
+        let time_matches = (result.time_seconds - self.editor.current_time).abs() < 0.0001;
+        if result.request_id != latest_id
+            || !time_matches
+            || self.editor.project.project_path.is_none()
+        {
+            self.preview_render_stale_count = self.preview_render_stale_count.saturating_add(1);
+            self.editor.preview_dirty = true;
+            ctx.request_repaint();
+            return;
+        }
+
+        let worker_ms = result
+            .finished_at
+            .saturating_duration_since(result.requested_at)
+            .as_secs_f64()
+            * 1000.0;
+        let delivery_ms = result.requested_at.elapsed().as_secs_f64() * 1000.0;
+        let mut stats = result.output.stats;
+        let Some(layers) = result.output.layers else {
+            self.preview_layers = None;
+            self.preview_stats = Some(stats.clone());
+            self.preview_render_completed_count =
+                self.preview_render_completed_count.saturating_add(1);
+            self.preview_render_last_worker_ms = Some(worker_ms);
+            self.preview_render_last_delivery_ms = Some(delivery_ms);
+            self.record_preview_perf_sample(
+                result.time_seconds,
+                stats,
+                Some(result.request_id),
+                Some(worker_ms),
+                Some(delivery_ms),
+            );
             self.editor.preview_dirty = false;
             return;
         };
-        let Some(bytes) = preview_store::get_preview_bytes(frame.version) else {
-            return;
-        };
-        let image = ColorImage::from_rgba_unmultiplied(
-            [frame.width as usize, frame.height as usize],
-            &bytes,
+
+        let upload_start = Instant::now();
+        self.prepare_preview_layer_textures(ctx, &layers);
+        stats.encode_ms = upload_start.elapsed().as_secs_f64() * 1000.0;
+        stats.total_ms += stats.encode_ms;
+        self.preview_stats = Some(stats.clone());
+        self.preview_layers = Some(layers);
+        self.preview_render_completed_count = self.preview_render_completed_count.saturating_add(1);
+        self.preview_render_last_worker_ms = Some(worker_ms);
+        self.preview_render_last_delivery_ms = Some(delivery_ms);
+        self.record_preview_perf_sample(
+            result.time_seconds,
+            stats,
+            Some(result.request_id),
+            Some(worker_ms),
+            Some(delivery_ms),
         );
-        if let Some(texture) = self.preview_texture.as_mut() {
-            texture.set(image, TextureOptions::LINEAR);
-        } else {
-            self.preview_texture =
-                Some(ctx.load_texture("preview-frame", image, TextureOptions::LINEAR));
-        }
-        self.preview_frame = Some(frame);
+        let direction = self.preview_render_direction(result.time_seconds);
         self.editor.preview_dirty = false;
+        self.schedule_preview_prefetch(direction, result.decode_mode);
+        if !self.editor.is_playing {
+            ctx.request_repaint_after(Duration::from_millis(PREVIEW_IDLE_PREFETCH_DELAY_MS + 25));
+        }
+    }
+
+    fn schedule_preview_render(&mut self, ctx: &Context) {
+        if self
+            .preview_render_in_flight
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            ctx.request_repaint_after(Duration::from_millis(PREVIEW_RENDER_RETRY_MS));
+            return;
+        }
+
+        let request_id = self
+            .preview_render_request_id
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        let time_seconds = self.editor.current_time;
+        let decode_mode = if self.editor.is_playing {
+            PreviewDecodeMode::Sequential
+        } else {
+            PreviewDecodeMode::Seek
+        };
+        let project = self.editor.project.clone();
+        let renderer = Arc::clone(&self.editor.previewer);
+        let allow_hw_decode = self.editor.layout.hardware_decode;
+        let tx = self.preview_render_tx.clone();
+        let flag = Arc::clone(&self.preview_render_in_flight);
+        let repaint_ctx = ctx.clone();
+        let requested_at = Instant::now();
+        self.preview_render_busy_since = Some(requested_at);
+        self.preview_last_interaction = requested_at;
+        self.preview_idle_prefetched_time = None;
+
+        std::thread::spawn(move || {
+            let output =
+                renderer.render_layers(&project, time_seconds, decode_mode, allow_hw_decode);
+            let finished_at = Instant::now();
+            let _ = tx.send(PreviewRenderResult {
+                request_id,
+                time_seconds,
+                decode_mode,
+                requested_at,
+                finished_at,
+                output,
+            });
+            flag.store(false, Ordering::Relaxed);
+            repaint_ctx.request_repaint();
+        });
+    }
+
+    fn invalidate_preview_render_jobs(&mut self) {
+        self.preview_render_request_id
+            .fetch_add(1, Ordering::Relaxed);
+        self.preview_render_in_flight
+            .store(false, Ordering::Relaxed);
+        self.preview_render_busy_since = None;
+        while self.preview_render_rx.try_recv().is_ok() {}
+    }
+
+    fn preview_render_direction(&mut self, time: f64) -> i32 {
+        let direction = match self.preview_last_render_time {
+            Some(last) if time > last + 0.0001 => 1,
+            Some(last) if time < last - 0.0001 => -1,
+            _ => 0,
+        };
+        self.preview_last_render_time = Some(time);
+        direction
+    }
+
+    fn schedule_preview_prefetch(&mut self, direction: i32, decode_mode: PreviewDecodeMode) {
+        if direction == 0 || self.editor.project.project_path.is_none() {
+            return;
+        }
+        let seconds = if self.editor.is_playing {
+            PREVIEW_PREFETCH_PLAYBACK_SECONDS
+        } else {
+            PREVIEW_PREFETCH_SCRUB_SECONDS
+        };
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let frames = (fps * seconds).round().max(1.0) as u32;
+        self.schedule_preview_prefetch_windows(vec![(direction, frames)], decode_mode);
+    }
+
+    fn schedule_preview_prefetch_windows(
+        &mut self,
+        windows: Vec<(i32, u32)>,
+        decode_mode: PreviewDecodeMode,
+    ) -> bool {
+        if windows.is_empty() || self.editor.project.project_path.is_none() {
+            return false;
+        }
+        if self
+            .preview_prefetch_in_flight
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+
+        let project = self.editor.project.clone();
+        let renderer = Arc::clone(&self.editor.previewer);
+        let time = self.editor.current_time;
+        let allow_hw_decode = self.editor.layout.hardware_decode;
+        let flag = Arc::clone(&self.preview_prefetch_in_flight);
+        std::thread::spawn(move || {
+            for (direction, frames) in windows {
+                renderer.prefetch_frames(
+                    &project,
+                    time,
+                    direction,
+                    frames,
+                    decode_mode,
+                    allow_hw_decode,
+                );
+            }
+            flag.store(false, Ordering::Relaxed);
+        });
+        true
+    }
+
+    fn service_preview_idle_prefetch(&mut self, ctx: &Context) {
+        if self.editor.project.project_path.is_none()
+            || self.editor.is_playing
+            || self.editor.preview_dirty
+            || self.preview_layers.is_none()
+        {
+            return;
+        }
+
+        let elapsed = self.preview_last_interaction.elapsed();
+        let delay = Duration::from_millis(PREVIEW_IDLE_PREFETCH_DELAY_MS);
+        if elapsed < delay {
+            ctx.request_repaint_after(delay - elapsed);
+            return;
+        }
+
+        let time = self.editor.current_time;
+        if self
+            .preview_idle_prefetched_time
+            .map(|last| (last - time).abs() < 0.0001)
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let ahead_frames = (fps * PREVIEW_IDLE_PREFETCH_AHEAD_SECONDS).round().max(1.0) as u32;
+        let behind_frames = (fps * PREVIEW_IDLE_PREFETCH_BEHIND_SECONDS)
+            .round()
+            .max(1.0) as u32;
+        let scheduled = self.schedule_preview_prefetch_windows(
+            vec![(1, ahead_frames), (-1, behind_frames)],
+            PreviewDecodeMode::Sequential,
+        );
+        if scheduled {
+            self.preview_idle_prefetched_time = Some(time);
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(80));
+        }
+    }
+
+    fn prepare_preview_layer_textures(&mut self, ctx: &Context, layers: &PreviewLayerStack) {
+        self.preview_layer_texture_sequence = self.preview_layer_texture_sequence.wrapping_add(1);
+        let sequence = self.preview_layer_texture_sequence;
+
+        for layer in layers.layers.iter() {
+            let size = [
+                layer.image.width().max(1) as usize,
+                layer.image.height().max(1) as usize,
+            ];
+            if let Some(existing) = self.preview_layer_textures.get_mut(&layer.texture_key) {
+                if existing.size == size {
+                    existing.last_used = sequence;
+                    continue;
+                }
+            }
+
+            let image = ColorImage::from_rgba_unmultiplied(size, layer.image.as_raw());
+            let texture = ctx.load_texture(
+                format!("preview-layer-{}", layer.texture_key),
+                image,
+                TextureOptions::LINEAR,
+            );
+            self.preview_layer_textures.insert(
+                layer.texture_key,
+                PreviewLayerTexture {
+                    texture,
+                    size,
+                    last_used: sequence,
+                },
+            );
+        }
+
+        if self.preview_layer_textures.len() > PREVIEW_LAYER_TEXTURE_LIMIT {
+            let mut entries: Vec<(u64, u64)> = self
+                .preview_layer_textures
+                .iter()
+                .map(|(key, texture)| (*key, texture.last_used))
+                .collect();
+            entries.sort_by_key(|(_, last_used)| *last_used);
+            let evict_count = entries
+                .len()
+                .saturating_sub(PREVIEW_LAYER_TEXTURE_LIMIT)
+                .max(PREVIEW_LAYER_TEXTURE_LIMIT / 8);
+            for (key, _) in entries.into_iter().take(evict_count) {
+                self.preview_layer_textures.remove(&key);
+            }
+        }
     }
 
     fn asset_thumbnail(&mut self, ctx: &Context, asset: &Asset) -> Option<(egui::TextureId, Vec2)> {
@@ -2356,18 +2916,45 @@ impl NlaEguiApp {
 
     fn paint_preview(&mut self, ui: &mut Ui, rect: Rect) {
         let painter = ui.painter().with_clip_rect(rect);
-        if let (Some(texture), Some(frame)) = (&self.preview_texture, self.preview_frame) {
-            let scale = (rect.width() / frame.width as f32)
-                .min(rect.height() / frame.height as f32)
+        if let Some(layers) = &self.preview_layers {
+            let scale = (rect.width() / layers.canvas_width.max(1) as f32)
+                .min(rect.height() / layers.canvas_height.max(1) as f32)
                 .max(0.01);
-            let size = Vec2::new(frame.width as f32 * scale, frame.height as f32 * scale);
-            let image_rect = Rect::from_center_size(rect.center(), size);
-            painter.image(
-                texture.id(),
-                image_rect,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
+            let canvas_size = Vec2::new(
+                layers.canvas_width as f32 * scale,
+                layers.canvas_height as f32 * scale,
             );
+            let canvas_rect = Rect::from_center_size(rect.center(), canvas_size);
+            let layer_painter = painter.with_clip_rect(canvas_rect.intersect(rect));
+            for layer in layers.layers.iter() {
+                let Some(texture) = self.preview_layer_textures.get(&layer.texture_key) else {
+                    continue;
+                };
+                let placement = layer.placement;
+                let layer_rect = Rect::from_min_size(
+                    canvas_rect.min
+                        + Vec2::new(placement.offset_x * scale, placement.offset_y * scale),
+                    Vec2::new(placement.scaled_w * scale, placement.scaled_h * scale),
+                );
+                let alpha = (placement.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let tint = Color32::from_white_alpha(alpha);
+                if placement.rotation_deg.abs() <= 0.01 {
+                    layer_painter.image(
+                        texture.texture.id(),
+                        layer_rect,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        tint,
+                    );
+                } else {
+                    paint_rotated_texture(
+                        &layer_painter,
+                        texture.texture.id(),
+                        layer_rect,
+                        placement.rotation_deg,
+                        tint,
+                    );
+                }
+            }
         } else {
             painter.text(
                 rect.center(),
@@ -2380,19 +2967,67 @@ impl NlaEguiApp {
 
         if self.editor.layout.preview_stats {
             if let Some(stats) = &self.preview_stats {
+                let cache = self.editor.previewer.cache_stats();
+                let cache_mb = cache.total_bytes as f64 / (1024.0 * 1024.0);
+                let cache_max_mb = cache.max_bytes as f64 / (1024.0 * 1024.0);
+                let render_state = if self.preview_render_in_flight.load(Ordering::Relaxed) {
+                    format!(
+                        "busy {:.1}ms",
+                        self.preview_render_busy_since
+                            .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+                            .unwrap_or_default()
+                    )
+                } else {
+                    "idle".to_string()
+                };
+                let hit_total = stats.cache_hits + stats.cache_misses;
+                let hit_rate = if hit_total > 0 {
+                    stats.cache_hits as f64 / hit_total as f64 * 100.0
+                } else {
+                    0.0
+                };
                 let text = format!(
-                    "total {:.1}ms\nscan {:.1}ms\ncomp {:.1}ms\nstill {:.1}ms\nhit {}\nmiss {}\nlayers {}",
+                    concat!(
+                        "async {}\n",
+                        "worker {:.1}ms  delivery {:.1}ms\n",
+                        "total {:.1}ms  upload {:.1}ms\n",
+                        "scan {:.1}ms  comp {:.1}ms\n",
+                        "vdec {:.1}ms  still {:.1}ms\n",
+                        "  seek {:.1}  pkt {:.1}\n",
+                        "  xfer {:.1}  scale {:.1}  copy {:.1}\n",
+                        "cache {:.0}/{:.0}MB  entries {}\n",
+                        "hit {} miss {} ({:.0}%)\n",
+                        "indexed assets {} frames {}\n",
+                        "layers {}  stale {}"
+                    ),
+                    render_state,
+                    self.preview_render_last_worker_ms.unwrap_or_default(),
+                    self.preview_render_last_delivery_ms.unwrap_or_default(),
                     stats.total_ms,
+                    stats.encode_ms,
                     stats.collect_ms,
                     stats.composite_ms,
+                    stats.video_decode_ms,
                     stats.still_load_ms,
+                    stats.video_decode_seek_ms,
+                    stats.video_decode_packet_ms,
+                    stats.video_decode_transfer_ms,
+                    stats.video_decode_scale_ms,
+                    stats.video_decode_copy_ms,
+                    cache_mb,
+                    cache_max_mb,
+                    cache.entry_count,
                     stats.cache_hits,
                     stats.cache_misses,
+                    hit_rate,
+                    cache.indexed_asset_count,
+                    cache.indexed_frame_count,
                     stats.layers,
+                    self.preview_render_stale_count,
                 );
                 let stats_rect = Rect::from_min_size(
-                    rect.right_top() + Vec2::new(-188.0, 12.0),
-                    Vec2::new(172.0, 106.0),
+                    rect.right_top() + Vec2::new(-274.0, 12.0),
+                    Vec2::new(258.0, 176.0),
                 );
                 ui.painter().rect_filled(
                     stats_rect,
@@ -2634,6 +3269,15 @@ impl NlaEguiApp {
         let content_viewport =
             Rect::from_min_max(rects.ruler.left_top(), rects.tracks.right_bottom());
         self.handle_timeline_shift_scroll(ui, content_viewport, content_w, viewport_w);
+        let cache_buckets = if self.editor.layout.preview_stats {
+            let bucket_hint_seconds = ((6.0 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR)) as f64)
+                .max(1.0 / self.editor.project.settings.fps.max(1.0));
+            self.editor
+                .previewer
+                .cached_buckets_for_project(&self.editor.project, bucket_hint_seconds)
+        } else {
+            HashMap::new()
+        };
 
         let painter = ui.painter_at(outer);
         let content_clip = Rect::from_min_max(
@@ -2773,6 +3417,7 @@ impl NlaEguiApp {
                     selected,
                     &thumbnail_tiles,
                     waveform.as_ref(),
+                    cache_buckets.get(&clip.id).map(Vec::as_slice),
                 );
             }
 
@@ -3054,6 +3699,7 @@ impl NlaEguiApp {
         selected: bool,
         thumbnail_tiles: &[TimelineThumbTile],
         waveform: Option<&PeakCache>,
+        cache_buckets: Option<&[bool]>,
     ) {
         let fill = if selected {
             Color32::from_rgb(18, 50, 36)
@@ -3079,6 +3725,9 @@ impl NlaEguiApp {
         }
         if let Some(cache) = waveform {
             paint_clip_waveform(painter, rect.shrink2(Vec2::new(2.0, 4.0)), clip, cache);
+        }
+        if let Some(buckets) = cache_buckets {
+            paint_clip_cache_buckets(painter, rect, buckets);
         }
         painter.rect_stroke(
             rect,
@@ -4978,12 +5627,26 @@ impl NlaEguiApp {
     }
 
     fn open_api_key_modal(&mut self, credential_id: &str, label: &str) {
+        let saved = crate::core::credentials::has_secret(credential_id);
+        let mut error = None;
+        let value = if saved {
+            match crate::core::credentials::secret_char_count(credential_id) {
+                Ok(count) => "*".repeat(count.max(1)),
+                Err(err) => {
+                    error = Some(err);
+                    String::new()
+                }
+            }
+        } else {
+            String::new()
+        };
         self.api_key_modal = ApiKeyModalState {
             credential_id: credential_id.to_string(),
             label: label.to_string(),
-            value: String::new(),
-            saved: crate::core::credentials::has_secret(credential_id),
-            error: None,
+            value,
+            saved,
+            masked_existing: saved && error.is_none(),
+            error,
         };
         self.editor.overlays.api_keys = true;
     }
@@ -5028,12 +5691,25 @@ impl NlaEguiApp {
                                 ui.label(kit::caption(
                                     "Keys are stored locally with Windows user-level encryption.",
                                 ));
+                                if self.api_key_modal.masked_existing {
+                                    ui.add_space(kit::FORM_ROW_GAP);
+                                    ui.label(kit::caption(
+                                        "The saved key is shown as a length-matched placeholder.",
+                                    ));
+                                }
                                 ui.add_space(kit::ACTION_GAP);
-                                kit::labeled_password_field(
+                                let response = kit::labeled_password_field(
                                     ui,
                                     "API Key",
                                     &mut self.api_key_modal.value,
                                 );
+                                if self.api_key_modal.masked_existing
+                                    && (response.changed()
+                                        || response.has_focus()
+                                            && self.api_key_modal.value.chars().any(|ch| ch != '*'))
+                                {
+                                    self.api_key_modal.masked_existing = false;
+                                }
                             });
                         },
                         |ui| {
@@ -5075,6 +5751,11 @@ impl NlaEguiApp {
     }
 
     fn save_api_key_modal(&mut self) {
+        if self.api_key_modal.masked_existing {
+            self.editor.status = format!("Kept existing {} API key.", self.api_key_modal.label);
+            self.editor.overlays.api_keys = false;
+            return;
+        }
         if self.api_key_modal.value.trim().is_empty() {
             self.api_key_modal.error = Some("Enter an API key before saving.".to_string());
             return;
@@ -5214,21 +5895,6 @@ impl NlaEguiApp {
             });
         });
         self.provider_template_kind = selected_kind;
-
-        if let Some((credential_id, label)) =
-            provider_template_credential(self.provider_template_kind)
-        {
-            ui.add_space(kit::FORM_ROW_GAP);
-            ui.horizontal(|ui| {
-                let status = cloud_key_status(credential_id);
-                ui.label(kit::caption(format!("{label} API key: {status}")));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if kit::field_button(ui, "API Key", 86.0).clicked() {
-                        self.open_api_key_modal(credential_id, label);
-                    }
-                });
-            });
-        }
     }
 
     fn provider_template_unavailable(&self, kind: ProviderTemplateKind) -> bool {
@@ -6080,6 +6746,112 @@ impl NlaEguiApp {
     }
 }
 
+fn paint_rotated_texture(
+    painter: &egui::Painter,
+    texture_id: TextureId,
+    rect: Rect,
+    rotation_deg: f32,
+    color: Color32,
+) {
+    let center = rect.center();
+    let radians = rotation_deg.to_radians();
+    let (sin, cos) = radians.sin_cos();
+    let rotate = |pos: Pos2| {
+        let offset = pos - center;
+        Pos2::new(
+            center.x + offset.x * cos - offset.y * sin,
+            center.y + offset.x * sin + offset.y * cos,
+        )
+    };
+
+    let corners = [
+        rotate(rect.left_top()),
+        rotate(rect.right_top()),
+        rotate(rect.right_bottom()),
+        rotate(rect.left_bottom()),
+    ];
+    let uvs = [
+        Pos2::new(0.0, 0.0),
+        Pos2::new(1.0, 0.0),
+        Pos2::new(1.0, 1.0),
+        Pos2::new(0.0, 1.0),
+    ];
+
+    let mut mesh = egui::epaint::Mesh::with_texture(texture_id);
+    let base = mesh.vertices.len() as u32;
+    for index in 0..4 {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: corners[index],
+            uv: uvs[index],
+            color,
+        });
+    }
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn summarize_preview_perf_samples(samples: &[PreviewPerfSample]) -> PreviewPerfSummary {
+    summarize_preview_stats(samples.iter().map(|sample| &sample.stats))
+}
+
+fn summarize_scrub_profile_samples(samples: &[ScrubProfileSample]) -> PreviewPerfSummary {
+    summarize_preview_stats(samples.iter().map(|sample| &sample.stats))
+}
+
+fn summarize_preview_stats<'a>(
+    stats_iter: impl IntoIterator<Item = &'a PreviewStats>,
+) -> PreviewPerfSummary {
+    let mut summary = PreviewPerfSummary::default();
+    let mut total_sum = 0.0;
+    let mut collect_sum = 0.0;
+    let mut composite_sum = 0.0;
+    let mut encode_sum = 0.0;
+    let mut video_decode_sum = 0.0;
+    let mut video_decode_seek_sum = 0.0;
+    let mut still_load_sum = 0.0;
+    let mut layers_sum = 0.0;
+    summary.total_ms_min = f64::INFINITY;
+
+    for stats in stats_iter {
+        summary.samples += 1;
+        summary.total_ms_min = summary.total_ms_min.min(stats.total_ms);
+        summary.total_ms_max = summary.total_ms_max.max(stats.total_ms);
+        total_sum += stats.total_ms;
+        collect_sum += stats.collect_ms;
+        composite_sum += stats.composite_ms;
+        encode_sum += stats.encode_ms;
+        video_decode_sum += stats.video_decode_ms;
+        video_decode_seek_sum += stats.video_decode_seek_ms;
+        still_load_sum += stats.still_load_ms;
+        layers_sum += stats.layers as f64;
+        summary.cache_hits += stats.cache_hits;
+        summary.cache_misses += stats.cache_misses;
+    }
+
+    if summary.samples == 0 {
+        summary.total_ms_min = 0.0;
+        return summary;
+    }
+
+    let count = summary.samples as f64;
+    summary.total_ms_avg = total_sum / count;
+    summary.collect_ms_avg = collect_sum / count;
+    summary.composite_ms_avg = composite_sum / count;
+    summary.encode_ms_avg = encode_sum / count;
+    summary.video_decode_ms_avg = video_decode_sum / count;
+    summary.video_decode_seek_ms_avg = video_decode_seek_sum / count;
+    summary.still_load_ms_avg = still_load_sum / count;
+    summary.layers_avg = layers_sum / count;
+
+    let cache_total = summary.cache_hits + summary.cache_misses;
+    if cache_total > 0 {
+        summary.cache_hit_rate = summary.cache_hits as f64 / cache_total as f64;
+    }
+
+    summary
+}
+
 impl eframe::App for NlaEguiApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -6091,6 +6863,7 @@ impl eframe::App for NlaEguiApp {
         self.service_generation_queue(&ctx);
         self.service_export_events(&ctx);
         self.update_preview_texture(&ctx);
+        self.service_preview_idle_prefetch(&ctx);
 
         self.top_bar(ui);
         // App-wide bars claim root space first; docked editor panels sit above the status bar.
@@ -6729,6 +7502,34 @@ fn paint_clip_thumbnail_strip(painter: &egui::Painter, rect: Rect, tiles: &[Time
             image_rect,
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::from_white_alpha(145),
+        );
+    }
+}
+
+fn paint_clip_cache_buckets(painter: &egui::Painter, rect: Rect, buckets: &[bool]) {
+    if buckets.is_empty() || rect.width() <= 2.0 {
+        return;
+    }
+    let bucket_w = (rect.width() / buckets.len() as f32).max(1.0);
+    let y = rect.bottom() - 4.0;
+    let clip_painter = painter.with_clip_rect(rect.shrink(1.0));
+    for (index, cached) in buckets.iter().enumerate() {
+        let x = rect.left() + index as f32 * bucket_w;
+        if x > rect.right() {
+            break;
+        }
+        let color = if *cached {
+            Color32::from_rgba_unmultiplied(45, 220, 165, 175)
+        } else {
+            Color32::from_rgba_unmultiplied(95, 58, 42, 85)
+        };
+        clip_painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x, y),
+                Pos2::new((x + bucket_w - 0.5).min(rect.right()), rect.bottom() - 1.0),
+            ),
+            0.0,
+            color,
         );
     }
 }
@@ -7726,28 +8527,6 @@ fn provider_template_label(kind: ProviderTemplateKind) -> &'static str {
         ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",
         ProviderTemplateKind::OpenAiImage => "OpenAI Image",
         ProviderTemplateKind::XaiImage => "xAI Image",
-    }
-}
-
-fn provider_template_credential(
-    kind: ProviderTemplateKind,
-) -> Option<(&'static str, &'static str)> {
-    match kind {
-        ProviderTemplateKind::ComfyUi => None,
-        ProviderTemplateKind::OpenAiImage => {
-            Some((crate::core::credentials::OPENAI_CREDENTIAL_ID, "OpenAI"))
-        }
-        ProviderTemplateKind::XaiImage => {
-            Some((crate::core::credentials::XAI_CREDENTIAL_ID, "xAI"))
-        }
-    }
-}
-
-fn cloud_key_status(credential_id: &str) -> &'static str {
-    if crate::core::credentials::has_secret(credential_id) {
-        "Key stored"
-    } else {
-        "Key missing"
     }
 }
 

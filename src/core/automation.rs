@@ -22,6 +22,7 @@ use crate::state::ProjectSettings;
 
 const DEFAULT_AUTOMATION_PORT: u16 = 47_890;
 const RESPONSE_TIMEOUT_SECONDS: u64 = 20;
+const PROFILE_RESPONSE_TIMEOUT_SECONDS: u64 = 120;
 
 static CONFIG: OnceLock<AutomationConfig> = OnceLock::new();
 static COMMAND_TX: OnceLock<Sender<AutomationEnvelope>> = OnceLock::new();
@@ -79,6 +80,21 @@ pub enum AutomationCommand {
     },
     /// Seek the playhead to a timestamp in seconds.
     Seek { time: f64 },
+    /// Return current preview cache/timing diagnostics and recent render samples.
+    GetPerformanceDiagnostics,
+    /// Drive the real egui seek path repeatedly and return preview timing samples.
+    ScrubTimelineProfile {
+        start_time: f64,
+        end_time: f64,
+        #[serde(default = "default_scrub_profile_steps")]
+        steps: usize,
+        #[serde(default = "default_scrub_profile_repeats")]
+        repeats: usize,
+        #[serde(default)]
+        scrub_audio: bool,
+        #[serde(default)]
+        settle_ms: u64,
+    },
     /// Select a clip by ID or by timeline index.
     SelectClip {
         #[serde(default)]
@@ -327,6 +343,14 @@ struct ScreenshotRequest {
 
 fn default_text_replace() -> bool {
     true
+}
+
+fn default_scrub_profile_steps() -> usize {
+    24
+}
+
+fn default_scrub_profile_repeats() -> usize {
+    1
 }
 
 /// Parse automation configuration from CLI args and environment variables.
@@ -689,6 +713,10 @@ fn dispatch_command(command: AutomationCommand) -> AutomationResponse {
     };
 
     let (response_tx, response_rx) = mpsc::channel::<AutomationResponse>();
+    let timeout_seconds = match &command {
+        AutomationCommand::ScrubTimelineProfile { .. } => PROFILE_RESPONSE_TIMEOUT_SECONDS,
+        _ => RESPONSE_TIMEOUT_SECONDS,
+    };
     let envelope = AutomationEnvelope {
         command,
         responder: response_tx,
@@ -698,7 +726,7 @@ fn dispatch_command(command: AutomationCommand) -> AutomationResponse {
     }
 
     response_rx
-        .recv_timeout(Duration::from_secs(RESPONSE_TIMEOUT_SECONDS))
+        .recv_timeout(Duration::from_secs(timeout_seconds))
         .unwrap_or_else(|_| AutomationResponse::error("Timed out waiting for app command result."))
 }
 

@@ -86,6 +86,10 @@ pub fn load_secret(id: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|err| format!("Credential value is not UTF-8: {err}"))
 }
 
+pub fn secret_char_count(id: &str) -> Result<usize, String> {
+    load_secret(id).map(|secret| secret.chars().count())
+}
+
 fn app_config_root() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))

@@ -27,6 +27,7 @@ pub(crate) struct DecodedFrame {
 }
 
 pub(crate) struct PreviewLayer {
+    pub(crate) texture_key: u64,
     pub(crate) track_index: usize,
     pub(crate) start_time: f64,
     pub(crate) image: Arc<RgbaImage>,

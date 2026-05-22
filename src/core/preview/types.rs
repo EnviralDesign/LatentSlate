@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use image::{Rgba, RgbaImage};
+use serde::Serialize;
 
 pub const FFMPEG_TIME_EPSILON: f64 = 0.001;
 #[allow(dead_code)]
@@ -11,7 +12,7 @@ pub const MAX_CACHE_BUCKETS: usize = 120;
 pub const PLATE_BORDER_WIDTH: u32 = 1;
 pub const PLATE_BORDER_COLOR: Rgba<u8> = Rgba([0x27, 0x27, 0x2a, 255]);
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PreviewStats {
     pub total_ms: f64,
     pub collect_ms: f64,
@@ -31,19 +32,19 @@ pub struct PreviewStats {
     pub cache_misses: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PreviewDecodeMode {
-    Seek,
-    #[allow(dead_code)]
-    // Preserved for the playback-oriented sequential decode path.
-    Sequential,
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct PreviewCacheStats {
+    pub max_bytes: usize,
+    pub total_bytes: usize,
+    pub entry_count: usize,
+    pub indexed_asset_count: usize,
+    pub indexed_frame_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PreviewFrameInfo {
-    pub version: u64,
-    pub width: u32,
-    pub height: u32,
+pub enum PreviewDecodeMode {
+    Seek,
+    Sequential,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +57,9 @@ pub struct PreviewRgbaFrame {
 #[derive(Clone, Debug)]
 pub struct RenderRgbaOutput {
     pub frame: Option<PreviewRgbaFrame>,
+    #[allow(dead_code)]
+    // Export may ignore this today, but retaining it keeps the renderer's RGBA
+    // path observable when export diagnostics are added.
     pub stats: PreviewStats,
 }
 
@@ -70,16 +74,13 @@ pub struct PreviewLayerPlacement {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
-// Output contract for the staged GPU compositor path.
 pub struct PreviewLayerGpu {
+    pub texture_key: u64,
     pub image: Arc<RgbaImage>,
     pub placement: PreviewLayerPlacement,
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
-// Output contract for the staged GPU compositor path.
 pub struct PreviewLayerStack {
     pub canvas_width: u32,
     pub canvas_height: u32,
@@ -88,9 +89,6 @@ pub struct PreviewLayerStack {
 
 #[derive(Clone, Debug)]
 pub struct RenderOutput {
-    pub frame: Option<PreviewFrameInfo>,
-    #[allow(dead_code)]
-    // Filled by the staged GPU compositor path.
     pub layers: Option<PreviewLayerStack>,
     pub stats: PreviewStats,
 }
@@ -109,12 +107,8 @@ pub struct CachedFrame {
 }
 
 pub(crate) struct PlateCache {
-    #[allow(dead_code)]
     pub width: u32,
-    #[allow(dead_code)]
     pub height: u32,
-    #[allow(dead_code)]
     pub fill: Arc<RgbaImage>,
-    #[allow(dead_code)]
     pub border: Arc<RgbaImage>,
 }

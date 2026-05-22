@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -6,7 +8,6 @@ use std::time::Instant;
 use image::{Rgba, RgbaImage};
 
 use crate::core::media::probe_duration_seconds;
-use crate::core::preview_store;
 use crate::core::video_decode::{DecodeMode, VideoDecodeWorker};
 use crate::state::{Asset, AssetKind, Project, TrackType};
 
@@ -17,7 +18,7 @@ use super::{
         PreviewLayer,
     },
     types::{
-        FrameKey, PlateCache, PreviewDecodeMode, PreviewFrameInfo, PreviewLayerGpu,
+        FrameKey, PlateCache, PreviewCacheStats, PreviewDecodeMode, PreviewLayerGpu,
         PreviewLayerPlacement, PreviewLayerStack, PreviewRgbaFrame, PreviewStats, RenderOutput,
         RenderRgbaOutput, MAX_CACHE_BUCKETS, PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH,
     },
@@ -26,6 +27,20 @@ use super::{
         scale_image_to_fit, time_to_frame_index, track_lane_id,
     },
 };
+
+fn preview_texture_key(key: &FrameKey) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn plate_texture_key(width: u32, height: u32) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    "preview-plate".hash(&mut hasher);
+    width.hash(&mut hasher);
+    height.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Generates composited preview frames for the current timeline time.
 pub struct PreviewRenderer {
@@ -68,6 +83,13 @@ impl PreviewRenderer {
         if let Ok(mut cache) = self.frame_cache.lock() {
             cache.invalidate_folder(folder);
         }
+    }
+
+    pub fn cache_stats(&self) -> PreviewCacheStats {
+        self.frame_cache
+            .lock()
+            .map(|cache| cache.stats())
+            .unwrap_or_default()
     }
 
     fn cached_video_duration(&self, path: &Path) -> Option<f64> {
@@ -178,35 +200,7 @@ impl PreviewRenderer {
         }
     }
 
-    /// Render a preview frame for the given time and store it in the live preview store.
-    pub fn render_frame(
-        &self,
-        project: &Project,
-        time_seconds: f64,
-        decode_mode: PreviewDecodeMode,
-        allow_hw_decode: bool,
-    ) -> RenderOutput {
-        let output = self.render_frame_rgba(project, time_seconds, decode_mode, allow_hw_decode);
-        let frame = output.frame.and_then(|rgba| {
-            preview_store::store_preview_frame(rgba.width, rgba.height, rgba.bytes).map(|version| {
-                PreviewFrameInfo {
-                    version,
-                    width: rgba.width,
-                    height: rgba.height,
-                }
-            })
-        });
-        RenderOutput {
-            frame,
-            layers: None,
-            stats: output.stats,
-        }
-    }
-
-    /// Render the per-layer stack for GPU compositing.
-    #[allow(dead_code)]
-    // Preserved for the future GPU compositor; the egui path currently consumes
-    // encoded preview frames.
+    /// Render the per-layer stack consumed by the interactive egui preview.
     pub fn render_layers(
         &self,
         project: &Project,
@@ -249,7 +243,6 @@ impl PreviewRenderer {
         if layers.is_empty() && !has_visual_assets {
             stats.total_ms = elapsed_ms(render_start);
             return RenderOutput {
-                frame: None,
                 layers: None,
                 stats,
             };
@@ -267,6 +260,7 @@ impl PreviewRenderer {
                 rotation_deg: 0.0,
             };
             gpu_layers.push(PreviewLayerGpu {
+                texture_key: plate_texture_key(canvas_w, canvas_h),
                 image: plate_fill,
                 placement,
             });
@@ -286,6 +280,7 @@ impl PreviewRenderer {
                 canvas_h_f,
             ) {
                 gpu_layers.push(PreviewLayerGpu {
+                    texture_key: layer.texture_key,
                     image: layer.image,
                     placement,
                 });
@@ -294,7 +289,6 @@ impl PreviewRenderer {
 
         stats.total_ms = elapsed_ms(render_start);
         RenderOutput {
-            frame: None,
             layers: Some(PreviewLayerStack {
                 canvas_width: canvas_w,
                 canvas_height: canvas_h,
@@ -375,6 +369,7 @@ impl PreviewRenderer {
                 if let Some(cached) = cache.get(&cache_key) {
                     stats.cache_hits += 1;
                     layers.push(PreviewLayer {
+                        texture_key: preview_texture_key(&cache_key),
                         track_index,
                         start_time: clip.start_time,
                         image: cached.image,
@@ -395,6 +390,7 @@ impl PreviewRenderer {
                 stats.still_load_ms += decode_ms;
                 if let Some(decoded) = decoded {
                     let image = Arc::new(decoded.image);
+                    let texture_key = preview_texture_key(&cache_key);
                     if let Ok(mut cache) = self.frame_cache.lock() {
                         cache.insert(
                             cache_key,
@@ -404,6 +400,7 @@ impl PreviewRenderer {
                         );
                     }
                     layers.push(PreviewLayer {
+                        texture_key,
                         track_index,
                         start_time: clip.start_time,
                         image,
@@ -451,6 +448,7 @@ impl PreviewRenderer {
                     stats.video_decode_copy_ms += timings.copy_ms;
                     if let Some(image) = response.image {
                         let image = Arc::new(image);
+                        let texture_key = preview_texture_key(&item.cache_key);
                         if let Ok(mut cache) = self.frame_cache.lock() {
                             cache.insert(
                                 item.cache_key,
@@ -465,6 +463,7 @@ impl PreviewRenderer {
                             stats.sw_decode_frames += 1;
                         }
                         layers.push(PreviewLayer {
+                            texture_key,
                             track_index: item.track_index,
                             start_time: item.start_time,
                             image,
@@ -488,9 +487,6 @@ impl PreviewRenderer {
         layers
     }
 
-    #[allow(dead_code)]
-    // Preview prefetch remains staged until playback/scrub scheduling is
-    // promoted out of the immediate UI pass.
     pub fn prefetch_frames(
         &self,
         project: &Project,
@@ -619,8 +615,6 @@ impl PreviewRenderer {
         result
     }
 
-    #[allow(dead_code)]
-    // Used by the staged GPU layer renderer path.
     fn load_clip_frame(
         &self,
         project_root: &Path,
@@ -749,8 +743,6 @@ impl PreviewRenderer {
 }
 
 impl PreviewRenderer {
-    #[allow(dead_code)]
-    // Used by the staged GPU layer renderer path.
     fn plate_images(&self, width: u32, height: u32) -> Option<(Arc<RgbaImage>, Arc<RgbaImage>)> {
         if width == 0 || height == 0 {
             return None;

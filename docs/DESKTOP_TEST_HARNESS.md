@@ -75,6 +75,8 @@ Current commands:
 - `import_asset`
 - `add_asset_to_timeline`
 - `seek`
+- `get_performance_diagnostics`
+- `scrub_timeline_profile`
 - `select_clip`
 - `select_asset`
 - `select_track`
@@ -95,6 +97,26 @@ Current commands:
 - `close_all_overlays`
 
 The UI-level endpoints are also accepted through `POST /command` as `get_ui`, `click_ui`, `text_ui`, and `screenshot`.
+
+Preview performance diagnostics are exposed through the same command endpoint:
+
+```powershell
+$base = "http://127.0.0.1:47890"
+Invoke-RestMethod "$base/command" -Method Post -ContentType "application/json" -Body (@{
+    type = "get_performance_diagnostics"
+} | ConvertTo-Json)
+
+Invoke-RestMethod "$base/command" -Method Post -ContentType "application/json" -Depth 4 -Body (@{
+    type = "scrub_timeline_profile"
+    start_time = 75.0
+    end_time = 90.0
+    steps = 48
+    repeats = 2
+    scrub_audio = $true
+} | ConvertTo-Json)
+```
+
+`scrub_timeline_profile` drives the same egui-side seek path used by ruler/playhead dragging, then uses the direct renderer for each requested sample so stage timings are deterministic. It is intended for repeatable renderer/cache optimization passes, not for pixel-click simulation. To measure the non-blocking async UI path, issue repeated `seek` commands and read `get_performance_diagnostics`; the diagnostics include async render state, stale result count, worker time, delivery time, cache occupancy, and recent accepted render samples.
 
 Example UI-level flow:
 

@@ -150,26 +150,26 @@ Provider entries are the pluggable backends that execute generation tasks. Key p
 
 ## 🎥 Rendering & Preview Strategy
 
-### 1. Robust Compositor (egui texture-based)
-The current preview path renders composited RGBA frames into an egui texture inside the same native UI pass as panels, modals, and timeline controls. This keeps the desktop shell coherent while preserving a path toward a deeper GPU compositor later.
+### 1. Robust Compositor (egui layer-texture based)
+The current interactive preview path asks the Rust renderer for a per-layer stack, uploads cached source frames as reusable egui textures, and lets the egui paint pass place/scale/rotate those layers inside the same native UI composition path as panels, modals, and timeline controls. This keeps the desktop shell coherent while preserving the old WGPU-era layer-stack architecture without reintroducing the split overlay window.
 
 #### Architecture
-1.  **Frame Server (Rust)**
-    - Managed by a background thread (Tokio).
-    - Responsible for fetching or decoding frame data for the current timestamp.
-    - **Caching Strategy**: To ensure smooth scrubbing, we will employ a hybrid strategy:
-        - **Images**: Loaded fast from disk/memory.
-        - **Video**: decoded on demand or pre-cached as low-res proxy image sequences for performance.
-2.  **Compositor (Rust)**
-    - Takes raw frame buffers from the Frame Server.
-    - Applies a "Render Graph" of operations:
-        - **Transform**: Scale, Rotate, Translate (Project Canvas coordinates).
-        - **Composite**: Layering using standard blending modes (Source Over).
-    - Outputs a single raw RGBA buffer for the viewport.
+1.  **Frame Decode + Cache (Rust)**
+    - Responsible for resolving active timeline clips, fetching stills, decoding video frames, and storing source frames in the preview frame cache.
+    - Directional and idle prefetch use the preserved sequential decode path to warm frames ahead/behind the playhead.
+    - Interactive preview render requests run on a background worker with latest-wins request IDs. Stale results are discarded rather than blocking or rewinding the UI.
+2.  **Layer Stack (Rust)**
+    - Converts active clips into project-canvas placements:
+        - **Transform**: Scale, Rotate, Translate (project canvas coordinates).
+        - **Opacity**: Carried with each layer for the display pass.
+    - Exports layer texture keys so cached frame textures can be reused across scrubs and transform edits.
 3.  **Display (egui/eframe)**
-    - The egui preview panel uploads the composited RGBA buffer to an egui texture.
+    - The egui preview panel uploads source layers as textures and paints them clipped inside the preview canvas.
+    - Texture upload and result acceptance happen on the egui thread; decode/scan/layer collection happen off the UI thread.
     - Modals, panels, preview, and timeline now share one native window composition path.
     - This removes the previous split-surface layering issue where UI overlays could not appear above the preview.
+4.  **Export (Rust + FFmpeg)**
+    - Export still uses the RGBA compositor path so rendered frames can be written to the selected intermediate cache format before FFmpeg muxing.
 
 ### 2. Thumbnail Generation
 Visual feedback on the timeline.
@@ -818,7 +818,11 @@ src/
 ```
 
 ### Recent Changes (Session Log)
-- **2026-05-22:** Reworked the AI Providers modal left panel around a compact Add Provider dropdown plus square green create button. Installed providers now stay in the scrollable list below, cloud provider types are disabled once already installed, API-key editing opens a focused single-key modal for the relevant provider, and provider deletion moved into the selected-provider action area.
+- **2026-05-22:** Restored old-preview-style async orchestration in the egui shell. Interactive preview rendering now runs off the UI thread behind a one-job render gate with latest-wins request IDs, stale render discard, background worker/delivery timing diagnostics, and richer View → Preview Stats output. The stats overlay now exposes detailed decode/cache timings, async state, stale counts, and timeline cache bucket strips so cold/warm cache behavior can be inspected visually and through the automation API.
+- **2026-05-22:** Added preview optimization observability to the Rust-native automation API. `get_performance_diagnostics` now returns recent preview render samples, aggregate stage timings, and frame-cache occupancy; `scrub_timeline_profile` drives the real egui seek/scrub path over a repeatable time range and returns per-sample timing/cache diagnostics so preview and timeline optimizations can be tested in a closed loop.
+- **2026-05-22:** Reconnected the old WGPU-era preview layer-stack strategy inside the egui shell. Interactive preview now renders cached source frames as reusable egui layer textures instead of CPU-compositing every cached frame into a new RGBA buffer, and directional plus idle prefetch once again warms frames around playback/scrub motion. The automation scrub profile over `projects/test` improved from a warm average of ~158ms before this pass to ~0.05ms after cached textures are resident, with CPU composite time dropping to 0ms in the interactive preview path.
+- **2026-05-22:** Improved API-key editor feedback by showing saved keys as length-matched masked placeholders. Leaving the placeholder unchanged keeps the existing encrypted key, while focusing the field auto-selects the mask so typing a replacement follows the normal field behavior.
+- **2026-05-22:** Reworked the AI Providers modal left panel around a compact Add Provider dropdown plus square green create button. Installed providers now stay in the scrollable list below, cloud provider types are disabled once already installed, API-key editing is anchored to the selected provider action area, and provider deletion moved there as well.
 - **2026-05-22:** Added the first cloud-provider foundation. ComfyUI generation now runs behind a generic provider executor, OpenAI image and xAI image provider templates/adapters were added, and API keys can be stored through an in-app API Keys modal backed by a Windows DPAPI-protected local credential file instead of OS environment variables.
 - **2026-05-22:** Added an export intermediate-frame format option. Exports still default to PNG frame cache files, with a new BMP (Fast) lossless option that writes much larger temporary frames but avoids PNG compression overhead for performance testing.
 - **2026-05-22:** Added a shared weighted field-grid row helper to `ui_kit` and moved the export modal's grouped fields onto it. Export video fields now use equal thirds, codec/quality uses a one-third/two-thirds split, and range uses an even split instead of modal-local row sizing.

@@ -1128,7 +1128,7 @@ fn password_text_field(
     child.skip_ahead_auto_ids(1);
 
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
-    let output = egui::TextEdit::singleline(value)
+    let mut output = egui::TextEdit::singleline(value)
         .id(field_id)
         .password(true)
         .desired_width(rect.width())
@@ -1139,6 +1139,8 @@ fn password_text_field(
         .font(FontId::proportional(FIELD_TEXT_SIZE))
         .frame(field_text_frame())
         .show(&mut child);
+    let selected_text = value.clone();
+    select_all_on_focus(&mut output, &selected_text);
     let mut response = output.response.response.clone();
     crate::core::automation::apply_pending_text(&mut response, value);
     ui.painter().rect_stroke(

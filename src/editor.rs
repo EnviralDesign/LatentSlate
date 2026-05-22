@@ -331,7 +331,9 @@ impl EditorState {
             AutomationCommand::GetUi
             | AutomationCommand::ClickUi { .. }
             | AutomationCommand::TextUi { .. }
-            | AutomationCommand::Screenshot { .. } => AutomationResponse::with_status(
+            | AutomationCommand::Screenshot { .. }
+            | AutomationCommand::GetPerformanceDiagnostics
+            | AutomationCommand::ScrubTimelineProfile { .. } => AutomationResponse::with_status(
                 "UI automation commands must be handled by the egui runtime.",
                 500,
             ),

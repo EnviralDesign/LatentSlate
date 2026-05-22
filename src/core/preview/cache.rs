@@ -5,7 +5,7 @@ use image::RgbaImage;
 use std::sync::Arc;
 
 use super::utils::image_size_bytes;
-use super::{CachedFrame, FrameKey};
+use super::{CachedFrame, FrameKey, PreviewCacheStats};
 
 struct CacheEntry {
     image: Arc<RgbaImage>,
@@ -33,6 +33,16 @@ impl FrameCache {
             entries: HashMap::new(),
             lru_order: VecDeque::new(),
             asset_index: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn stats(&self) -> PreviewCacheStats {
+        PreviewCacheStats {
+            max_bytes: self.max_bytes,
+            total_bytes: self.total_bytes,
+            entry_count: self.entries.len(),
+            indexed_asset_count: self.asset_index.len(),
+            indexed_frame_count: self.asset_index.values().map(HashSet::len).sum(),
         }
     }
 

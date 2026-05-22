@@ -7,7 +7,6 @@ pub mod generation;
 pub mod media;
 pub mod paths;
 pub mod preview;
-pub mod preview_store;
 pub mod provider_store;
 pub mod thumbnailer;
 pub mod timeline_snap;
