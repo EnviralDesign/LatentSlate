@@ -339,6 +339,65 @@ pub fn body_with_footer(
         });
 }
 
+pub fn field_grid_row(ui: &mut Ui, weights: &[f32], add_cell: impl FnMut(&mut Ui, usize)) {
+    field_grid_row_with_height(
+        ui,
+        weights,
+        labeled_field_height(FIELD_H),
+        FORM_ROW_GAP,
+        add_cell,
+    );
+}
+
+pub fn field_grid_row_with_height(
+    ui: &mut Ui,
+    weights: &[f32],
+    height: f32,
+    gap: f32,
+    mut add_cell: impl FnMut(&mut Ui, usize),
+) {
+    if weights.is_empty() {
+        return;
+    }
+
+    let width = ui.available_width().max(0.0);
+    let gap = gap.max(0.0).min(width);
+    let total_gap = gap * weights.len().saturating_sub(1) as f32;
+    let cell_area_w = (width - total_gap).max(0.0);
+    let total_weight = weights
+        .iter()
+        .copied()
+        .map(|weight| weight.max(0.0))
+        .sum::<f32>()
+        .max(1.0);
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let mut left = row_rect.left();
+
+    for (index, weight) in weights.iter().copied().enumerate() {
+        let is_last = index + 1 == weights.len();
+        let cell_w = if is_last {
+            (row_rect.right() - left).max(0.0)
+        } else {
+            cell_area_w * weight.max(0.0) / total_weight
+        };
+        let cell_rect = Rect::from_min_size(
+            Pos2::new(left, row_rect.top()),
+            Vec2::new(cell_w, row_rect.height()),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(cell_rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        child.shrink_clip_rect(cell_rect);
+        child.set_width(cell_rect.width());
+        child.set_max_width(cell_rect.width());
+        child.set_height(cell_rect.height());
+        add_cell(&mut child, index);
+        left = cell_rect.right() + gap;
+    }
+}
+
 pub fn scroll_body(ui: &mut Ui, add_body: impl FnOnce(&mut Ui)) {
     let id_salt = ui.next_auto_id();
     ui.skip_ahead_auto_ids(1);
@@ -662,11 +721,14 @@ pub fn combo_field<R>(
     child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
 
-    let combo_id = child.make_persistent_id(("combo_field", id_salt));
-    if crate::core::automation::consume_pending_click_for_egui_id(combo_id) {
-        egui::Popup::toggle_id(child.ctx(), combo_id.with("popup"));
+    let combo_salt = egui::Id::new(("combo_field", id_salt));
+    let combo_button_id = child.make_persistent_id(combo_salt);
+    if crate::core::automation::consume_pending_click_for_egui_id(response.id)
+        || crate::core::automation::consume_pending_click_for_egui_id(combo_button_id)
+    {
+        egui::Popup::open_id(child.ctx(), combo_button_id.with("popup"));
     }
-    let inner = egui::ComboBox::from_id_salt(combo_id)
+    let inner = egui::ComboBox::from_id_salt(combo_salt)
         .selected_text(
             RichText::new(selected_text.clone())
                 .color(TEXT)
@@ -675,13 +737,14 @@ pub fn combo_field<R>(
         .width(rect.width())
         .show_ui(&mut child, add_contents);
 
-    crate::core::automation::instrument_response(
-        response.union(inner.response),
+    let combo_response = crate::core::automation::instrument_response(
+        inner.response,
         "combo",
         Some(selected_text),
         true,
         false,
-    )
+    );
+    response.union(combo_response)
 }
 
 pub fn labeled_combo_field<R>(
@@ -1297,9 +1360,20 @@ pub fn modal_scrim(ctx: &Context, id: &'static str) -> Response {
         ui.painter()
             .rect_filled(local_rect, 0.0, MODAL_SCRIM_SOFT_WASH);
         paint_modal_vignette(ui.painter(), local_rect);
-        response
+        crate::core::automation::instrument_response(
+            response,
+            "modal_scrim",
+            Some(id.to_string()),
+            true,
+            false,
+        )
     })
     .inner
+}
+
+pub fn dismissible_modal_scrim(ctx: &Context, id: &'static str, close_enabled: bool) -> bool {
+    let response = modal_scrim(ctx, id);
+    close_enabled && response.clicked()
 }
 
 fn paint_modal_vignette(painter: &egui::Painter, rect: Rect) {

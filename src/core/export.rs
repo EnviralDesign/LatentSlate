@@ -5,12 +5,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::thread;
 use std::time::Duration;
 
-use image::{imageops::FilterType, RgbaImage};
+use ab_glyph::{FontArc, PxScale};
+use image::{imageops::FilterType, Rgba, RgbaImage};
+use imageproc::drawing::{draw_text_mut, text_size};
 use uuid::Uuid;
 
 use crate::constants::PREVIEW_CACHE_BUDGET_BYTES;
@@ -29,41 +31,84 @@ const EXPORT_PREVIEW_MAX_W: u32 = 260;
 const EXPORT_PREVIEW_MAX_H: u32 = 150;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoExportCodec {
+    H264,
+    H265,
+}
+
+impl VideoExportCodec {
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoExportCodec::H264 => "H.264",
+            VideoExportCodec::H265 => "H.265",
+        }
+    }
+
+    fn encoder(self) -> &'static str {
+        match self {
+            VideoExportCodec::H264 => "libx264",
+            VideoExportCodec::H265 => "libx265",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VideoExportQuality {
-    Draft,
-    Standard,
+    Compact,
+    Balanced,
     High,
+    NearLossless,
 }
 
 impl VideoExportQuality {
     pub fn label(self) -> &'static str {
         match self {
-            VideoExportQuality::Draft => "Draft",
-            VideoExportQuality::Standard => "Standard",
-            VideoExportQuality::High => "High",
+            VideoExportQuality::Compact => "Compact",
+            VideoExportQuality::Balanced => "Balanced",
+            VideoExportQuality::High => "High Quality",
+            VideoExportQuality::NearLossless => "Near Lossless",
         }
     }
 
-    fn crf(self) -> &'static str {
-        match self {
-            VideoExportQuality::Draft => "28",
-            VideoExportQuality::Standard => "23",
-            VideoExportQuality::High => "18",
+    fn crf(self, codec: VideoExportCodec) -> &'static str {
+        match (codec, self) {
+            (VideoExportCodec::H264, VideoExportQuality::Compact) => "28",
+            (VideoExportCodec::H264, VideoExportQuality::Balanced) => "23",
+            (VideoExportCodec::H264, VideoExportQuality::High) => "18",
+            (VideoExportCodec::H264, VideoExportQuality::NearLossless) => "14",
+            (VideoExportCodec::H265, VideoExportQuality::Compact) => "32",
+            (VideoExportCodec::H265, VideoExportQuality::Balanced) => "28",
+            (VideoExportCodec::H265, VideoExportQuality::High) => "24",
+            (VideoExportCodec::H265, VideoExportQuality::NearLossless) => "18",
         }
     }
+}
 
-    fn preset(self) -> &'static str {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimestampOverlayPosition {
+    TopCenter,
+    BottomCenter,
+}
+
+impl TimestampOverlayPosition {
+    pub fn label(self) -> &'static str {
         match self {
-            VideoExportQuality::Draft => "veryfast",
-            VideoExportQuality::Standard => "medium",
-            VideoExportQuality::High => "slow",
+            TimestampOverlayPosition::TopCenter => "Top Center",
+            TimestampOverlayPosition::BottomCenter => "Bottom Center",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TimestampOverlaySettings {
+    pub enabled: bool,
+    pub position: TimestampOverlayPosition,
 }
 
 #[derive(Clone, Debug)]
 pub struct VideoExportSettings {
     pub output_path: PathBuf,
+    pub codec: VideoExportCodec,
     pub width: u32,
     pub height: u32,
     pub fps: f64,
@@ -71,6 +116,7 @@ pub struct VideoExportSettings {
     pub duration_seconds: f64,
     pub include_audio: bool,
     pub quality: VideoExportQuality,
+    pub timestamp_overlay: TimestampOverlaySettings,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +150,7 @@ pub enum VideoExportEvent {
 #[derive(Clone, Debug)]
 pub struct VideoExportSummary {
     pub output_path: PathBuf,
+    pub codec: VideoExportCodec,
     pub frame_count: usize,
     pub duration_seconds: f64,
     pub audio_included: bool,
@@ -188,7 +235,7 @@ fn export_video_inner(
         check_cancel(cancel)?;
         emit(VideoExportEvent::Progress {
             stage: "encode",
-            message: "Encoding MP4".to_string(),
+            message: format!("Encoding {} MP4", job.settings.codec.label()),
             progress: EXPORT_ENCODE_PROGRESS,
             frame_index: None,
             total_frames: None,
@@ -203,6 +250,7 @@ fn export_video_inner(
 
         Ok(VideoExportSummary {
             output_path: job.settings.output_path.clone(),
+            codec: job.settings.codec,
             frame_count,
             duration_seconds: job.settings.duration_seconds,
             audio_included,
@@ -228,7 +276,7 @@ fn validate_export_settings(settings: &VideoExportSettings) -> ExportResult<()> 
     }
     if settings.width % 2 != 0 || settings.height % 2 != 0 {
         return Err(ExportFailure::Error(
-            "Export width and height must be even for MP4/H.264.".to_string(),
+            "Export width and height must be even for MP4/H.264/H.265.".to_string(),
         ));
     }
     if !(settings.fps.is_finite() && settings.fps > 0.0 && settings.fps <= 240.0) {
@@ -282,9 +330,17 @@ fn render_video_frames(
         let time = job.settings.start_seconds + frame_index as f64 / job.settings.fps;
         let output =
             renderer.render_frame_rgba(&export_project, time, PreviewDecodeMode::Seek, false);
-        let frame = output
+        let mut frame = output
             .frame
             .unwrap_or_else(|| black_frame(job.settings.width, job.settings.height));
+        if job.settings.timestamp_overlay.enabled {
+            burn_timestamp_overlay(
+                &mut frame,
+                time,
+                job.settings.fps,
+                job.settings.timestamp_overlay.position,
+            );
+        }
         let frame_path = frame_dir.join(format!("frame_{frame_index:06}.png"));
         image::save_buffer_with_format(
             &frame_path,
@@ -491,15 +547,18 @@ fn encode_mp4(
     }
     command
         .arg("-c:v")
-        .arg("libx264")
+        .arg(job.settings.codec.encoder())
         .arg("-preset")
-        .arg(job.settings.quality.preset())
+        .arg("medium")
         .arg("-crf")
-        .arg(job.settings.quality.crf())
+        .arg(job.settings.quality.crf(job.settings.codec))
         .arg("-pix_fmt")
         .arg("yuv420p")
         .arg("-movflags")
         .arg("+faststart");
+    if job.settings.codec == VideoExportCodec::H265 {
+        command.arg("-tag:v").arg("hvc1");
+    }
     if audio_path.is_some() {
         command
             .arg("-c:a")
@@ -633,6 +692,101 @@ fn black_frame(width: u32, height: u32) -> PreviewRgbaFrame {
         height,
         bytes,
     }
+}
+
+fn burn_timestamp_overlay(
+    frame: &mut PreviewRgbaFrame,
+    time_seconds: f64,
+    fps: f64,
+    position: TimestampOverlayPosition,
+) {
+    let Some(font) = timestamp_font() else {
+        return;
+    };
+    let Some(mut image) = RgbaImage::from_raw(frame.width, frame.height, frame.bytes.clone())
+    else {
+        return;
+    };
+
+    let label = export_timecode(time_seconds, fps);
+    let font_size = (frame.height as f32 * 0.022).clamp(14.0, 30.0);
+    let scale = PxScale::from(font_size);
+    let (text_w, text_h) = text_size(scale, &font, &label);
+    let pad_x = (font_size * 0.8).round() as u32;
+    let pad_y = (font_size * 0.38).round() as u32;
+    let margin = (frame.height as f32 * 0.028).round().max(8.0) as u32;
+    let box_w = text_w.saturating_add(pad_x * 2).min(frame.width);
+    let box_h = text_h.saturating_add(pad_y * 2).min(frame.height);
+    let left = frame.width.saturating_sub(box_w) / 2;
+    let top = match position {
+        TimestampOverlayPosition::TopCenter => margin.min(frame.height.saturating_sub(box_h)),
+        TimestampOverlayPosition::BottomCenter => frame.height.saturating_sub(box_h + margin),
+    };
+    blend_black_rect(&mut image, left, top, box_w, box_h, 0.78);
+    let text_x = left + box_w.saturating_sub(text_w) / 2;
+    let text_y = top + box_h.saturating_sub(text_h) / 2;
+    draw_text_mut(
+        &mut image,
+        Rgba([236, 239, 243, 255]),
+        text_x as i32,
+        text_y as i32,
+        scale,
+        &font,
+        &label,
+    );
+    frame.bytes = image.into_raw();
+}
+
+fn timestamp_font() -> Option<FontArc> {
+    static FONT: OnceLock<Option<FontArc>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        for path in [
+            r"C:\Windows\Fonts\seguisb.ttf",
+            r"C:\Windows\Fonts\segoeuib.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
+        ] {
+            if let Ok(bytes) = fs::read(path) {
+                if let Ok(font) = FontArc::try_from_vec(bytes) {
+                    return Some(font);
+                }
+            }
+        }
+        None
+    })
+    .clone()
+}
+
+fn blend_black_rect(
+    image: &mut RgbaImage,
+    left: u32,
+    top: u32,
+    width: u32,
+    height: u32,
+    alpha: f32,
+) {
+    let right = left.saturating_add(width).min(image.width());
+    let bottom = top.saturating_add(height).min(image.height());
+    let keep = (1.0 - alpha.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    for y in top..bottom {
+        for x in left..right {
+            let pixel = image.get_pixel_mut(x, y);
+            pixel.0[0] = (pixel.0[0] as f32 * keep).round() as u8;
+            pixel.0[1] = (pixel.0[1] as f32 * keep).round() as u8;
+            pixel.0[2] = (pixel.0[2] as f32 * keep).round() as u8;
+            pixel.0[3] = 255;
+        }
+    }
+}
+
+fn export_timecode(time_seconds: f64, fps: f64) -> String {
+    let fps_int = fps.round().max(1.0) as u64;
+    let total_frames = (time_seconds.max(0.0) * fps).round().max(0.0) as u64;
+    let total_seconds = total_frames / fps_int;
+    let frames = total_frames % fps_int;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}:{frames:02}")
 }
 
 fn preview_from_frame(frame: &PreviewRgbaFrame) -> VideoExportPreview {

@@ -22,8 +22,9 @@ use crate::core::audio::waveform::{
     PeakBuildConfig,
 };
 use crate::core::export::{
-    export_video, VideoExportEvent, VideoExportJob, VideoExportPreview, VideoExportQuality,
-    VideoExportSettings, VideoExportSummary,
+    export_video, TimestampOverlayPosition, TimestampOverlaySettings, VideoExportCodec,
+    VideoExportEvent, VideoExportJob, VideoExportPreview, VideoExportQuality, VideoExportSettings,
+    VideoExportSummary,
 };
 use crate::core::generation::{
     next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
@@ -320,6 +321,7 @@ enum ExportRunStatus {
 #[derive(Clone, Debug)]
 struct ExportModalState {
     output_path: String,
+    codec: VideoExportCodec,
     width: String,
     height: String,
     fps: String,
@@ -327,6 +329,8 @@ struct ExportModalState {
     duration_seconds: String,
     include_audio: bool,
     quality: VideoExportQuality,
+    timestamp_overlay_enabled: bool,
+    timestamp_overlay_position: TimestampOverlayPosition,
     status: ExportRunStatus,
     progress: f32,
     stage: String,
@@ -3736,7 +3740,7 @@ impl NlaEguiApp {
         let close_enabled = !startup && self.editor.project_root().is_some();
         let mut close_clicked = false;
         let wizard_size = project_wizard_size(ctx);
-        kit::modal_scrim(ctx, "new_project");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "new_project", close_enabled);
         egui::Window::new(if startup {
             "Create Project"
         } else {
@@ -3759,7 +3763,7 @@ impl NlaEguiApp {
             );
             kit::modal_body(ui, |ui| self.new_project_modal_contents(ui, startup));
         });
-        if close_clicked || (!open && close_enabled) {
+        if close_clicked || outside_clicked || (!open && close_enabled) {
             self.editor.overlays.new_project = false;
         }
     }
@@ -3917,7 +3921,7 @@ impl NlaEguiApp {
     fn project_settings_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
-        kit::modal_scrim(ctx, "project_settings");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "project_settings", true);
         egui::Window::new("Project Settings")
             .title_bar(false)
             .order(egui::Order::Foreground)
@@ -3951,7 +3955,7 @@ impl NlaEguiApp {
                     });
                 });
             });
-        if close_clicked || !open {
+        if close_clicked || outside_clicked || !open {
             self.editor.overlays.project_settings = false;
         }
     }
@@ -3959,7 +3963,7 @@ impl NlaEguiApp {
     fn generative_video_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
-        kit::modal_scrim(ctx, "generative_video");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "generative_video", true);
         egui::Window::new("New Generative Video")
             .title_bar(false)
             .order(egui::Order::Foreground)
@@ -4011,7 +4015,7 @@ impl NlaEguiApp {
                     });
                 });
             });
-        if close_clicked || !open {
+        if close_clicked || outside_clicked || !open {
             self.editor.overlays.generative_video = false;
         }
     }
@@ -4020,7 +4024,7 @@ impl NlaEguiApp {
         let mut open = true;
         let mut close_clicked = false;
         let size = modal_size(ctx, EXPORT_MODAL_SIZE, [580.0, 500.0]);
-        kit::modal_scrim(ctx, "export_video");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "export_video", true);
         egui::Window::new("Export Video")
             .title_bar(false)
             .order(egui::Order::Foreground)
@@ -4040,7 +4044,7 @@ impl NlaEguiApp {
                 kit::modal_body(ui, |ui| self.export_video_modal_contents(ui));
             });
 
-        if close_clicked || !open {
+        if close_clicked || outside_clicked || !open {
             self.close_or_cancel_export_modal();
         }
     }
@@ -4095,109 +4099,159 @@ impl NlaEguiApp {
 
     fn export_settings_card(&mut self, ui: &mut Ui) {
         let running = self.export_cancel.is_some();
-        kit::card_frame().show(ui, |ui| {
+        kit::card_panel(ui, ui.available_height(), |ui| {
             ui.add_enabled_ui(!running, |ui| {
-                ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-                kit::field_label(ui, "Output");
-                let initial_dir = self
-                    .editor
-                    .project
-                    .project_path
-                    .as_ref()
-                    .map(|root| root.join("exports"))
-                    .unwrap_or_else(|| default_projects_dir().join("exports"));
-                let options = kit::BrowseFileOptions::new()
-                    .button_label("Browse")
-                    .initial_dir(initial_dir.as_path())
-                    .remember_last_dir()
-                    .id_salt("export_output_file")
-                    .filters(MP4_FILE_FILTERS);
-                if let Some(path) = kit::labeled_save_file_field(
-                    ui,
-                    "Output File",
-                    &mut self.export_modal.output_path,
-                    options,
-                ) {
-                    self.export_modal.output_path =
-                        ensure_mp4_extension(path).display().to_string();
-                }
-                ui.add_space(kit::ACTION_GAP);
+                kit::scroll_body(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                    kit::field_label(ui, "Output");
+                    let initial_dir = self
+                        .editor
+                        .project
+                        .project_path
+                        .as_ref()
+                        .map(|root| root.join("exports"))
+                        .unwrap_or_else(|| default_projects_dir().join("exports"));
+                    let options = kit::BrowseFileOptions::new()
+                        .button_label("Browse")
+                        .initial_dir(initial_dir.as_path())
+                        .remember_last_dir()
+                        .id_salt("export_output_file")
+                        .filters(MP4_FILE_FILTERS);
+                    if let Some(path) = kit::labeled_save_file_field(
+                        ui,
+                        "Output File",
+                        &mut self.export_modal.output_path,
+                        options,
+                    ) {
+                        self.export_modal.output_path =
+                            ensure_mp4_extension(path).display().to_string();
+                    }
+                    ui.add_space(kit::ACTION_GAP);
 
-                kit::field_label(ui, "Video");
-                StripBuilder::new(ui)
-                    .clip(true)
-                    .size(Size::remainder().at_least(80.0))
-                    .size(Size::exact(kit::FORM_ROW_GAP))
-                    .size(Size::remainder().at_least(80.0))
-                    .size(Size::exact(kit::FORM_ROW_GAP))
-                    .size(Size::remainder().at_least(70.0))
-                    .horizontal(|mut strip| {
-                        strip.cell(|ui| {
+                    kit::field_label(ui, "Video");
+                    kit::field_grid_row(ui, &[1.0, 1.0, 1.0], |ui, index| match index {
+                        0 => {
                             kit::labeled_text_field(ui, "Width", &mut self.export_modal.width);
-                        });
-                        strip.empty();
-                        strip.cell(|ui| {
+                        }
+                        1 => {
                             kit::labeled_text_field(ui, "Height", &mut self.export_modal.height);
-                        });
-                        strip.empty();
-                        strip.cell(|ui| {
+                        }
+                        _ => {
                             kit::labeled_text_field(ui, "FPS", &mut self.export_modal.fps);
-                        });
+                        }
                     });
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::labeled_combo_field(
-                    ui,
-                    "Quality",
-                    "export_quality",
-                    self.export_modal.quality.label(),
-                    |ui| {
-                        automation_selectable_value(
-                            ui,
-                            &mut self.export_modal.quality,
-                            VideoExportQuality::Draft,
-                            "Draft",
-                        );
-                        automation_selectable_value(
-                            ui,
-                            &mut self.export_modal.quality,
-                            VideoExportQuality::Standard,
-                            "Standard",
-                        );
-                        automation_selectable_value(
-                            ui,
-                            &mut self.export_modal.quality,
-                            VideoExportQuality::High,
-                            "High",
-                        );
-                    },
-                );
-                ui.add_space(kit::ACTION_GAP);
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    kit::field_grid_row(ui, &[1.0, 2.0], |ui, index| match index {
+                        0 => {
+                            kit::labeled_combo_field(
+                                ui,
+                                "Codec",
+                                "export_codec",
+                                self.export_modal.codec.label(),
+                                |ui| {
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.export_modal.codec,
+                                        VideoExportCodec::H264,
+                                        "H.264",
+                                    );
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.export_modal.codec,
+                                        VideoExportCodec::H265,
+                                        "H.265",
+                                    );
+                                },
+                            );
+                        }
+                        _ => {
+                            kit::labeled_combo_field(
+                                ui,
+                                "Perceptual Quality",
+                                "export_quality",
+                                self.export_modal.quality.label(),
+                                |ui| {
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.export_modal.quality,
+                                        VideoExportQuality::Compact,
+                                        "Compact",
+                                    );
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.export_modal.quality,
+                                        VideoExportQuality::Balanced,
+                                        "Balanced",
+                                    );
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.export_modal.quality,
+                                        VideoExportQuality::High,
+                                        "High Quality",
+                                    );
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.export_modal.quality,
+                                        VideoExportQuality::NearLossless,
+                                        "Near Lossless",
+                                    );
+                                },
+                            );
+                        }
+                    });
+                    ui.add_space(kit::ACTION_GAP);
 
-                kit::field_label(ui, "Range");
-                StripBuilder::new(ui)
-                    .clip(true)
-                    .size(Size::remainder().at_least(100.0))
-                    .size(Size::exact(kit::FORM_ROW_GAP))
-                    .size(Size::remainder().at_least(100.0))
-                    .horizontal(|mut strip| {
-                        strip.cell(|ui| {
+                    kit::field_label(ui, "Range");
+                    kit::field_grid_row(ui, &[1.0, 1.0], |ui, index| match index {
+                        0 => {
                             kit::labeled_text_field(
                                 ui,
                                 "Start Seconds",
                                 &mut self.export_modal.start_seconds,
                             );
-                        });
-                        strip.empty();
-                        strip.cell(|ui| {
+                        }
+                        _ => {
                             kit::labeled_text_field(
                                 ui,
                                 "Duration Seconds",
                                 &mut self.export_modal.duration_seconds,
                             );
-                        });
+                        }
                     });
-                ui.add_space(kit::FORM_ROW_GAP);
-                automation_checkbox(ui, &mut self.export_modal.include_audio, "Include audio");
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    automation_checkbox(ui, &mut self.export_modal.include_audio, "Include audio");
+                    ui.add_space(kit::ACTION_GAP);
+
+                    kit::field_label(ui, "Burn In");
+                    automation_checkbox(
+                        ui,
+                        &mut self.export_modal.timestamp_overlay_enabled,
+                        "Timestamp overlay",
+                    );
+                    ui.add_enabled_ui(self.export_modal.timestamp_overlay_enabled, |ui| {
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        kit::labeled_combo_field(
+                            ui,
+                            "Timestamp Position",
+                            "export_timestamp_position",
+                            self.export_modal.timestamp_overlay_position.label(),
+                            |ui| {
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.export_modal.timestamp_overlay_position,
+                                    TimestampOverlayPosition::TopCenter,
+                                    "Top Center",
+                                );
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.export_modal.timestamp_overlay_position,
+                                    TimestampOverlayPosition::BottomCenter,
+                                    "Bottom Center",
+                                );
+                            },
+                        );
+                    });
+                });
             });
         });
     }
@@ -4227,7 +4281,9 @@ impl NlaEguiApp {
             if let Some(summary) = &self.export_modal.summary {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(kit::caption(format!(
-                    "{} frames, {:.2}s{}",
+                    "{} {}, {} frames, {:.2}s{}",
+                    summary.codec.label(),
+                    self.export_modal.quality.label(),
                     summary.frame_count,
                     summary.duration_seconds,
                     if summary.audio_included {
@@ -4862,7 +4918,7 @@ impl NlaEguiApp {
         let mut open = true;
         let mut close_clicked = false;
         let modal_size = modal_size(ctx, PROVIDERS_MODAL_SIZE, [620.0, 460.0]);
-        kit::modal_scrim(ctx, "providers");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "providers", true);
         egui::Window::new("AI Providers (Global)")
             .title_bar(false)
             .order(egui::Order::Foreground)
@@ -4898,7 +4954,7 @@ impl NlaEguiApp {
                         });
                 });
             });
-        if close_clicked || !open {
+        if close_clicked || outside_clicked || !open {
             self.editor.overlays.providers = false;
         }
     }
@@ -5045,7 +5101,7 @@ impl NlaEguiApp {
         let mut save_clicked = false;
         let size = modal_size(ctx, PROVIDER_JSON_MODAL_SIZE, [680.0, 520.0]);
 
-        kit::modal_scrim(ctx, "provider_json_editor");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "provider_json_editor", true);
         egui::Window::new("Edit Provider JSON")
             .title_bar(false)
             .order(egui::Order::Foreground)
@@ -5096,7 +5152,7 @@ impl NlaEguiApp {
         if save_clicked {
             self.save_provider_json_editor(&path);
         }
-        if close_clicked || !open {
+        if close_clicked || outside_clicked || !open {
             self.provider_json_editor_path = None;
             self.provider_json_error = None;
         }
@@ -5176,7 +5232,7 @@ impl NlaEguiApp {
         let mut save_clicked = false;
         let size = modal_size(ctx, PROVIDER_BUILDER_MODAL_SIZE, [780.0, 560.0]);
 
-        kit::modal_scrim(ctx, "provider_builder");
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "provider_builder", true);
         egui::Window::new("Provider Builder")
             .title_bar(false)
             .order(egui::Order::Foreground)
@@ -5225,7 +5281,7 @@ impl NlaEguiApp {
         if save_clicked {
             self.save_provider_builder();
         }
-        if close_clicked || !open {
+        if close_clicked || outside_clicked || !open {
             self.provider_builder_open = false;
             self.provider_builder.error = None;
             self.provider_builder.workflow_error = None;
@@ -7269,13 +7325,16 @@ impl ExportModalState {
         let duration = settings.duration_seconds.max(1.0);
         Self {
             output_path: export_default_output_path(project).display().to_string(),
+            codec: VideoExportCodec::H264,
             width: settings.width.to_string(),
             height: settings.height.to_string(),
             fps: format_export_number(settings.fps),
             start_seconds: "0".to_string(),
             duration_seconds: format_export_number(duration),
             include_audio: true,
-            quality: VideoExportQuality::Standard,
+            quality: VideoExportQuality::Balanced,
+            timestamp_overlay_enabled: false,
+            timestamp_overlay_position: TimestampOverlayPosition::BottomCenter,
             status: ExportRunStatus::Idle,
             progress: 0.0,
             stage: "ready".to_string(),
@@ -7296,6 +7355,7 @@ impl ExportModalState {
         let duration_seconds = parse_export_f64("Duration Seconds", &self.duration_seconds)?;
         Ok(VideoExportSettings {
             output_path,
+            codec: self.codec,
             width,
             height,
             fps,
@@ -7303,6 +7363,10 @@ impl ExportModalState {
             duration_seconds,
             include_audio: self.include_audio,
             quality: self.quality,
+            timestamp_overlay: TimestampOverlaySettings {
+                enabled: self.timestamp_overlay_enabled,
+                position: self.timestamp_overlay_position,
+            },
         })
     }
 }
