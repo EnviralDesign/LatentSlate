@@ -23,8 +23,8 @@ use crate::core::audio::waveform::{
 };
 use crate::core::export::{
     export_video, TimestampOverlayPosition, TimestampOverlaySettings, VideoExportCodec,
-    VideoExportEvent, VideoExportJob, VideoExportPreview, VideoExportQuality, VideoExportSettings,
-    VideoExportSummary,
+    VideoExportEvent, VideoExportFrameFormat, VideoExportJob, VideoExportPreview,
+    VideoExportQuality, VideoExportSettings, VideoExportSummary,
 };
 use crate::core::generation::{
     next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
@@ -329,6 +329,7 @@ struct ExportModalState {
     duration_seconds: String,
     include_audio: bool,
     quality: VideoExportQuality,
+    frame_format: VideoExportFrameFormat,
     timestamp_overlay_enabled: bool,
     timestamp_overlay_position: TimestampOverlayPosition,
     status: ExportRunStatus,
@@ -4199,6 +4200,29 @@ impl NlaEguiApp {
                             );
                         }
                     });
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    kit::field_grid_row(ui, &[1.0], |ui, _index| {
+                        kit::labeled_combo_field(
+                            ui,
+                            "Intermediate Format",
+                            "export_frame_format",
+                            self.export_modal.frame_format.label(),
+                            |ui| {
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.export_modal.frame_format,
+                                    VideoExportFrameFormat::Png,
+                                    "PNG",
+                                );
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.export_modal.frame_format,
+                                    VideoExportFrameFormat::Bmp,
+                                    "BMP (Fast)",
+                                );
+                            },
+                        );
+                    });
                     ui.add_space(kit::ACTION_GAP);
 
                     kit::field_label(ui, "Range");
@@ -4281,9 +4305,10 @@ impl NlaEguiApp {
             if let Some(summary) = &self.export_modal.summary {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(kit::caption(format!(
-                    "{} {}, {} frames, {:.2}s{}",
+                    "{} {}, {}, {} frames, {:.2}s{}",
                     summary.codec.label(),
                     self.export_modal.quality.label(),
+                    summary.frame_format.label(),
                     summary.frame_count,
                     summary.duration_seconds,
                     if summary.audio_included {
@@ -7333,6 +7358,7 @@ impl ExportModalState {
             duration_seconds: format_export_number(duration),
             include_audio: true,
             quality: VideoExportQuality::Balanced,
+            frame_format: VideoExportFrameFormat::Png,
             timestamp_overlay_enabled: false,
             timestamp_overlay_position: TimestampOverlayPosition::BottomCenter,
             status: ExportRunStatus::Idle,
@@ -7363,6 +7389,7 @@ impl ExportModalState {
             duration_seconds,
             include_audio: self.include_audio,
             quality: self.quality,
+            frame_format: self.frame_format,
             timestamp_overlay: TimestampOverlaySettings {
                 enabled: self.timestamp_overlay_enabled,
                 position: self.timestamp_overlay_position,

@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use ab_glyph::{FontArc, PxScale};
-use image::{imageops::FilterType, Rgba, RgbaImage};
+use image::{imageops::FilterType, ImageFormat, Rgba, RgbaImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use uuid::Uuid;
 
@@ -85,6 +85,28 @@ impl VideoExportQuality {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoExportFrameFormat {
+    Png,
+    Bmp,
+}
+
+impl VideoExportFrameFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoExportFrameFormat::Png => "PNG",
+            VideoExportFrameFormat::Bmp => "BMP (Fast)",
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            VideoExportFrameFormat::Png => "png",
+            VideoExportFrameFormat::Bmp => "bmp",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimestampOverlayPosition {
     TopCenter,
     BottomCenter,
@@ -116,6 +138,7 @@ pub struct VideoExportSettings {
     pub duration_seconds: f64,
     pub include_audio: bool,
     pub quality: VideoExportQuality,
+    pub frame_format: VideoExportFrameFormat,
     pub timestamp_overlay: TimestampOverlaySettings,
 }
 
@@ -154,6 +177,7 @@ pub struct VideoExportSummary {
     pub frame_count: usize,
     pub duration_seconds: f64,
     pub audio_included: bool,
+    pub frame_format: VideoExportFrameFormat,
     pub warnings: Vec<String>,
 }
 
@@ -254,6 +278,7 @@ fn export_video_inner(
             frame_count,
             duration_seconds: job.settings.duration_seconds,
             audio_included,
+            frame_format: job.settings.frame_format,
             warnings,
         })
     })();
@@ -341,21 +366,11 @@ fn render_video_frames(
                 job.settings.timestamp_overlay.position,
             );
         }
-        let frame_path = frame_dir.join(format!("frame_{frame_index:06}.png"));
-        image::save_buffer_with_format(
-            &frame_path,
-            &frame.bytes,
-            frame.width,
-            frame.height,
-            image::ColorType::Rgba8,
-            image::ImageFormat::Png,
-        )
-        .map_err(|err| {
-            ExportFailure::Error(format!(
-                "Failed to write frame {}: {err}",
-                frame_path.display()
-            ))
-        })?;
+        let frame_path = frame_dir.join(format!(
+            "frame_{frame_index:06}.{}",
+            job.settings.frame_format.extension()
+        ));
+        save_frame_cache_image(&frame_path, &frame, job.settings.frame_format)?;
 
         let frame_number = frame_index + 1;
         let should_preview =
@@ -371,6 +386,41 @@ fn render_video_frames(
     }
 
     Ok(())
+}
+
+fn save_frame_cache_image(
+    path: &Path,
+    frame: &PreviewRgbaFrame,
+    format: VideoExportFrameFormat,
+) -> ExportResult<()> {
+    let result = match format {
+        VideoExportFrameFormat::Png => image::save_buffer_with_format(
+            path,
+            &frame.bytes,
+            frame.width,
+            frame.height,
+            image::ColorType::Rgba8,
+            ImageFormat::Png,
+        ),
+        VideoExportFrameFormat::Bmp => {
+            let mut rgb = Vec::with_capacity(frame.width as usize * frame.height as usize * 3);
+            for pixel in frame.bytes.chunks_exact(4) {
+                rgb.extend_from_slice(&pixel[..3]);
+            }
+            image::save_buffer_with_format(
+                path,
+                &rgb,
+                frame.width,
+                frame.height,
+                image::ColorType::Rgb8,
+                ImageFormat::Bmp,
+            )
+        }
+    };
+
+    result.map_err(|err| {
+        ExportFailure::Error(format!("Failed to write frame {}: {err}", path.display()))
+    })
 }
 
 fn render_audio_mix(
@@ -531,7 +581,10 @@ fn encode_mp4(
     audio_path: Option<&Path>,
     cancel: &Arc<AtomicBool>,
 ) -> ExportResult<()> {
-    let frame_pattern = frame_dir.join("frame_%06d.png");
+    let frame_pattern = frame_dir.join(format!(
+        "frame_%06d.{}",
+        job.settings.frame_format.extension()
+    ));
     let mut command = Command::new("ffmpeg");
     command
         .arg("-y")

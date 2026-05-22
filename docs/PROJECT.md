@@ -823,6 +823,7 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-22:** Added an export intermediate-frame format option. Exports still default to PNG frame cache files, with a new BMP (Fast) lossless option that writes much larger temporary frames but avoids PNG compression overhead for performance testing.
 - **2026-05-22:** Added a shared weighted field-grid row helper to `ui_kit` and moved the export modal's grouped fields onto it. Export video fields now use equal thirds, codec/quality uses a one-third/two-thirds split, and range uses an even split instead of modal-local row sizing.
 - **2026-05-22:** Fixed the export settings card layout so bounded field rows no longer consume the remaining card height. Codec, perceptual quality, range, audio, and timestamp options now live inside the card's clipped scroll body instead of being pushed below the visible modal area.
 - **2026-05-22:** Made modal outside-click dismissal a reusable scrim behavior. Any modal with an enabled top-right close button now treats clicking the dimmed background as the same close/cancel action, the scrim is exposed through `/ui` as a real clickable element for automation, and startup remains non-dismissible until a project is created or opened.
