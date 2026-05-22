@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod automation;
 pub mod comfyui_workflow;
+pub mod export;
 pub mod generation;
 pub mod media;
 pub mod paths;

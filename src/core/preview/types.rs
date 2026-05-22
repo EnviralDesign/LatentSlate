@@ -46,6 +46,19 @@ pub struct PreviewFrameInfo {
     pub height: u32,
 }
 
+#[derive(Clone, Debug)]
+pub struct PreviewRgbaFrame {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderRgbaOutput {
+    pub frame: Option<PreviewRgbaFrame>,
+    pub stats: PreviewStats,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PreviewLayerPlacement {
     pub offset_x: f32,

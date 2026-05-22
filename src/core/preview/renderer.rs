@@ -18,8 +18,8 @@ use super::{
     },
     types::{
         FrameKey, PlateCache, PreviewDecodeMode, PreviewFrameInfo, PreviewLayerGpu,
-        PreviewLayerPlacement, PreviewLayerStack, PreviewStats, RenderOutput, MAX_CACHE_BUCKETS,
-        PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH,
+        PreviewLayerPlacement, PreviewLayerStack, PreviewRgbaFrame, PreviewStats, RenderOutput,
+        RenderRgbaOutput, MAX_CACHE_BUCKETS, PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH,
     },
     utils::{
         clamp_time, draw_border, elapsed_ms, frame_index_to_time, resolve_asset_source,
@@ -103,14 +103,14 @@ impl PreviewRenderer {
         (source_time, declared_duration)
     }
 
-    /// Render a preview frame for the given time and store the encoded PNG in memory.
-    pub fn render_frame(
+    /// Render a preview frame for the given time as raw RGBA bytes.
+    pub fn render_frame_rgba(
         &self,
         project: &Project,
         time_seconds: f64,
         decode_mode: PreviewDecodeMode,
         allow_hw_decode: bool,
-    ) -> RenderOutput {
+    ) -> RenderRgbaOutput {
         let render_start = Instant::now();
         let mut stats = PreviewStats::default();
         let project_root = project.project_path.as_ref().unwrap_or(&self.project_root);
@@ -145,11 +145,7 @@ impl PreviewRenderer {
 
         if layers.is_empty() && !has_visual_assets {
             stats.total_ms = elapsed_ms(render_start);
-            return RenderOutput {
-                frame: None,
-                layers: None,
-                stats,
-            };
+            return RenderRgbaOutput { frame: None, stats };
         }
 
         let mut canvas = RgbaImage::from_pixel(canvas_w, canvas_h, Rgba([0, 0, 0, 255]));
@@ -169,19 +165,41 @@ impl PreviewRenderer {
 
         let encode_start = Instant::now();
         let bytes = canvas.into_raw();
-        let saved = preview_store::store_preview_frame(canvas_w, canvas_h, bytes);
         stats.encode_ms = elapsed_ms(encode_start);
         stats.total_ms = elapsed_ms(render_start);
 
-        let frame = saved.map(|version| PreviewFrameInfo {
-            version,
-            width: canvas_w,
-            height: canvas_h,
+        RenderRgbaOutput {
+            frame: Some(PreviewRgbaFrame {
+                width: canvas_w,
+                height: canvas_h,
+                bytes,
+            }),
+            stats,
+        }
+    }
+
+    /// Render a preview frame for the given time and store it in the live preview store.
+    pub fn render_frame(
+        &self,
+        project: &Project,
+        time_seconds: f64,
+        decode_mode: PreviewDecodeMode,
+        allow_hw_decode: bool,
+    ) -> RenderOutput {
+        let output = self.render_frame_rgba(project, time_seconds, decode_mode, allow_hw_decode);
+        let frame = output.frame.and_then(|rgba| {
+            preview_store::store_preview_frame(rgba.width, rgba.height, rgba.bytes).map(|version| {
+                PreviewFrameInfo {
+                    version,
+                    width: rgba.width,
+                    height: rgba.height,
+                }
+            })
         });
         RenderOutput {
             frame,
             layers: None,
-            stats,
+            stats: output.stats,
         }
     }
 

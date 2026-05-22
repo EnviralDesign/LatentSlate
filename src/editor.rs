@@ -56,6 +56,7 @@ pub struct EditorOverlays {
     pub new_project: bool,
     pub queue: bool,
     pub generative_video: bool,
+    pub export_video: bool,
 }
 
 pub struct EditorState {
@@ -473,6 +474,14 @@ impl EditorState {
                 self.overlays.generative_video = false;
                 AutomationResponse::empty_ok()
             }
+            AutomationCommand::OpenExportVideo => {
+                self.overlays.export_video = true;
+                AutomationResponse::empty_ok()
+            }
+            AutomationCommand::CloseExportVideo => {
+                self.overlays.export_video = false;
+                AutomationResponse::empty_ok()
+            }
             AutomationCommand::SetLayout {
                 left_collapsed,
                 right_collapsed,
@@ -537,6 +546,7 @@ impl EditorState {
                 "new_project_open": self.overlays.new_project,
                 "queue_open": self.overlays.queue,
                 "generative_video_open": self.overlays.generative_video,
+                "export_video_open": self.overlays.export_video,
             },
             "layout": {
                 "left_collapsed": self.layout.left_collapsed,

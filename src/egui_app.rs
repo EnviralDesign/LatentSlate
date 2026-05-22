@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -17,6 +20,10 @@ use crate::core::audio::playback::{AudioPlaybackEngine, PlaybackItem};
 use crate::core::audio::waveform::{
     build_and_store_peak_cache, resolve_audio_or_video_source, resolve_audio_source,
     PeakBuildConfig,
+};
+use crate::core::export::{
+    export_video, VideoExportEvent, VideoExportJob, VideoExportPreview, VideoExportQuality,
+    VideoExportSettings, VideoExportSummary,
 };
 use crate::core::generation::{
     next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
@@ -79,6 +86,7 @@ const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi"];
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
 const JSON_EXTENSIONS: &[&str] = &["json"];
+const MP4_EXTENSIONS: &[&str] = &["mp4"];
 const ASSET_IMPORT_FILTERS: &[kit::FileExtensionFilter<'static>] = &[
     kit::FileExtensionFilter {
         name: "Media",
@@ -101,9 +109,14 @@ const JSON_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExten
     name: "JSON",
     extensions: JSON_EXTENSIONS,
 }];
+const MP4_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExtensionFilter {
+    name: "MP4 Video",
+    extensions: MP4_EXTENSIONS,
+}];
 const PROVIDERS_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
+const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
 const QUEUE_PANEL_W: f32 = 320.0;
 const QUEUE_PANEL_MIN_H: f32 = 132.0;
 const QUEUE_PANEL_PAD: f32 = 12.0;
@@ -193,6 +206,11 @@ pub struct NlaEguiApp {
     generation_events_tx: mpsc::Sender<GenerationEvent>,
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
     generation_active: Option<Uuid>,
+    export_modal: ExportModalState,
+    export_events_tx: mpsc::Sender<VideoExportEvent>,
+    export_events_rx: mpsc::Receiver<VideoExportEvent>,
+    export_cancel: Option<Arc<AtomicBool>>,
+    export_preview_texture: Option<TextureHandle>,
     queue_button_rect: Option<Rect>,
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
@@ -288,6 +306,35 @@ struct TimelineMarkerGeom {
 #[derive(Clone, Copy, Debug)]
 struct AssetTimelineDragPayload {
     asset_id: Uuid,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ExportRunStatus {
+    Idle,
+    Running,
+    Finished,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+struct ExportModalState {
+    output_path: String,
+    width: String,
+    height: String,
+    fps: String,
+    start_seconds: String,
+    duration_seconds: String,
+    include_audio: bool,
+    quality: VideoExportQuality,
+    status: ExportRunStatus,
+    progress: f32,
+    stage: String,
+    message: String,
+    frame_label: String,
+    error: Option<String>,
+    summary: Option<VideoExportSummary>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -391,6 +438,8 @@ impl NlaEguiApp {
             }
         };
         let (generation_events_tx, generation_events_rx) = mpsc::channel();
+        let (export_events_tx, export_events_rx) = mpsc::channel();
+        let export_modal = ExportModalState::for_project(&editor.project);
         Self {
             project_settings: editor.project.settings.clone(),
             editor,
@@ -426,6 +475,11 @@ impl NlaEguiApp {
             generation_events_tx,
             generation_events_rx,
             generation_active: None,
+            export_modal,
+            export_events_tx,
+            export_events_rx,
+            export_cancel: None,
+            export_preview_texture: None,
             queue_button_rect: None,
             pending_automation_ui_actions: Vec::new(),
             pending_automation_screenshot: None,
@@ -453,6 +507,14 @@ impl NlaEguiApp {
                 }
                 crate::core::automation::AutomationCommand::Screenshot { name } => {
                     self.queue_automation_screenshot(ctx, envelope, name.as_deref());
+                }
+                crate::core::automation::AutomationCommand::OpenExportVideo => {
+                    self.open_export_modal();
+                    envelope.respond(crate::core::automation::AutomationResponse::empty_ok());
+                }
+                crate::core::automation::AutomationCommand::CloseExportVideo => {
+                    self.close_or_cancel_export_modal();
+                    envelope.respond(crate::core::automation::AutomationResponse::empty_ok());
                 }
                 _ => {
                     let previous_project_path = self.editor.project.project_path.clone();
@@ -609,6 +671,8 @@ impl NlaEguiApp {
         match self.editor.open_project(folder) {
             Ok(_) => {
                 self.project_settings = self.editor.project.settings.clone();
+                self.export_modal = ExportModalState::for_project(&self.editor.project);
+                self.export_preview_texture = None;
                 self.clear_project_runtime_cache();
                 self.warm_audio_playback_cache();
                 true
@@ -617,6 +681,24 @@ impl NlaEguiApp {
                 self.editor.status = err;
                 false
             }
+        }
+    }
+
+    fn open_export_modal(&mut self) {
+        if self.export_cancel.is_none() {
+            self.export_modal = ExportModalState::for_project(&self.editor.project);
+            self.export_preview_texture = None;
+        }
+        self.editor.overlays.export_video = true;
+    }
+
+    fn close_or_cancel_export_modal(&mut self) {
+        if let Some(cancel) = &self.export_cancel {
+            cancel.store(true, Ordering::Relaxed);
+            self.export_modal.message = "Cancelling export...".to_string();
+            self.export_modal.status = ExportRunStatus::Running;
+        } else {
+            self.editor.overlays.export_video = false;
         }
     }
 
@@ -1071,7 +1153,21 @@ impl NlaEguiApp {
                                     }
                                     ui.close();
                                 }
+                                if automation_button(
+                                    ui.button("Export Video..."),
+                                    "Export Video...",
+                                )
+                                .clicked()
+                                {
+                                    this.open_export_modal();
+                                    ui.close();
+                                }
                             });
+                            ui.separator();
+                            if automation_button(ui.button("Quit"), "Quit").clicked() {
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                                ui.close();
+                            }
                         },
                         self,
                     );
@@ -3597,6 +3693,9 @@ impl NlaEguiApp {
         if self.editor.overlays.generative_video {
             self.generative_video_modal(ctx);
         }
+        if self.editor.overlays.export_video {
+            self.export_video_modal(ctx);
+        }
         if self.editor.overlays.queue {
             self.queue_panel(ctx);
         }
@@ -3806,6 +3905,8 @@ impl NlaEguiApp {
             ) {
                 Ok(_) => {
                     self.clear_project_runtime_cache();
+                    self.export_modal = ExportModalState::for_project(&self.editor.project);
+                    self.export_preview_texture = None;
                     self.editor.overlays.new_project = false;
                 }
                 Err(err) => self.editor.status = err,
@@ -3912,6 +4013,413 @@ impl NlaEguiApp {
             });
         if close_clicked || !open {
             self.editor.overlays.generative_video = false;
+        }
+    }
+
+    fn export_video_modal(&mut self, ctx: &Context) {
+        let mut open = true;
+        let mut close_clicked = false;
+        let size = modal_size(ctx, EXPORT_MODAL_SIZE, [580.0, 500.0]);
+        kit::modal_scrim(ctx, "export_video");
+        egui::Window::new("Export Video")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Export Video",
+                    Some("Render the current timeline to an MP4 file."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| self.export_video_modal_contents(ui));
+            });
+
+        if close_clicked || !open {
+            self.close_or_cancel_export_modal();
+        }
+    }
+
+    fn export_video_modal_contents(&mut self, ui: &mut Ui) {
+        let footer_h = kit::PRIMARY_BUTTON_H;
+        let full_rect = ui.available_rect_before_wrap();
+        let (rect, _) = ui.allocate_exact_size(full_rect.size(), Sense::hover());
+        let footer_rect = Rect::from_min_max(
+            Pos2::new(rect.left(), rect.bottom() - footer_h),
+            rect.right_bottom(),
+        );
+        let body_rect =
+            Rect::from_min_max(rect.left_top(), Pos2::new(rect.right(), footer_rect.top()));
+
+        let mut body_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(body_rect)
+                .layout(Layout::left_to_right(Align::Min)),
+        );
+        body_ui.shrink_clip_rect(body_rect);
+        let available_w = body_ui.available_width();
+        let gap = 12.0;
+        let left_w = ((available_w - gap) * 0.58).max(300.0);
+        let right_w = (available_w - gap - left_w).max(220.0);
+        body_ui.spacing_mut().item_spacing.x = gap;
+        body_ui.allocate_ui_with_layout(
+            Vec2::new(left_w, body_rect.height()),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_width(left_w);
+                self.export_settings_card(ui);
+            },
+        );
+        body_ui.allocate_ui_with_layout(
+            Vec2::new(right_w, body_rect.height()),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_width(right_w);
+                self.export_progress_card(ui);
+            },
+        );
+
+        let mut footer_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(footer_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        footer_ui.shrink_clip_rect(footer_rect);
+        self.export_footer(&mut footer_ui);
+    }
+
+    fn export_settings_card(&mut self, ui: &mut Ui) {
+        let running = self.export_cancel.is_some();
+        kit::card_frame().show(ui, |ui| {
+            ui.add_enabled_ui(!running, |ui| {
+                ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                kit::field_label(ui, "Output");
+                let initial_dir = self
+                    .editor
+                    .project
+                    .project_path
+                    .as_ref()
+                    .map(|root| root.join("exports"))
+                    .unwrap_or_else(|| default_projects_dir().join("exports"));
+                let options = kit::BrowseFileOptions::new()
+                    .button_label("Browse")
+                    .initial_dir(initial_dir.as_path())
+                    .remember_last_dir()
+                    .id_salt("export_output_file")
+                    .filters(MP4_FILE_FILTERS);
+                if let Some(path) = kit::labeled_save_file_field(
+                    ui,
+                    "Output File",
+                    &mut self.export_modal.output_path,
+                    options,
+                ) {
+                    self.export_modal.output_path =
+                        ensure_mp4_extension(path).display().to_string();
+                }
+                ui.add_space(kit::ACTION_GAP);
+
+                kit::field_label(ui, "Video");
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::remainder().at_least(80.0))
+                    .size(Size::exact(kit::FORM_ROW_GAP))
+                    .size(Size::remainder().at_least(80.0))
+                    .size(Size::exact(kit::FORM_ROW_GAP))
+                    .size(Size::remainder().at_least(70.0))
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| {
+                            kit::labeled_text_field(ui, "Width", &mut self.export_modal.width);
+                        });
+                        strip.empty();
+                        strip.cell(|ui| {
+                            kit::labeled_text_field(ui, "Height", &mut self.export_modal.height);
+                        });
+                        strip.empty();
+                        strip.cell(|ui| {
+                            kit::labeled_text_field(ui, "FPS", &mut self.export_modal.fps);
+                        });
+                    });
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::labeled_combo_field(
+                    ui,
+                    "Quality",
+                    "export_quality",
+                    self.export_modal.quality.label(),
+                    |ui| {
+                        automation_selectable_value(
+                            ui,
+                            &mut self.export_modal.quality,
+                            VideoExportQuality::Draft,
+                            "Draft",
+                        );
+                        automation_selectable_value(
+                            ui,
+                            &mut self.export_modal.quality,
+                            VideoExportQuality::Standard,
+                            "Standard",
+                        );
+                        automation_selectable_value(
+                            ui,
+                            &mut self.export_modal.quality,
+                            VideoExportQuality::High,
+                            "High",
+                        );
+                    },
+                );
+                ui.add_space(kit::ACTION_GAP);
+
+                kit::field_label(ui, "Range");
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::remainder().at_least(100.0))
+                    .size(Size::exact(kit::FORM_ROW_GAP))
+                    .size(Size::remainder().at_least(100.0))
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| {
+                            kit::labeled_text_field(
+                                ui,
+                                "Start Seconds",
+                                &mut self.export_modal.start_seconds,
+                            );
+                        });
+                        strip.empty();
+                        strip.cell(|ui| {
+                            kit::labeled_text_field(
+                                ui,
+                                "Duration Seconds",
+                                &mut self.export_modal.duration_seconds,
+                            );
+                        });
+                    });
+                ui.add_space(kit::FORM_ROW_GAP);
+                automation_checkbox(ui, &mut self.export_modal.include_audio, "Include audio");
+            });
+        });
+    }
+
+    fn export_progress_card(&mut self, ui: &mut Ui) {
+        kit::card_frame().show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+            kit::field_label(ui, "Progress");
+            ui.label(kit::body(&self.export_modal.message));
+            ui.add(
+                egui::ProgressBar::new(self.export_modal.progress.clamp(0.0, 1.0))
+                    .show_percentage()
+                    .animate(self.export_cancel.is_some())
+                    .desired_width(ui.available_width()),
+            );
+            if !self.export_modal.frame_label.is_empty() {
+                ui.label(kit::caption(&self.export_modal.frame_label));
+            } else {
+                ui.label(kit::caption(&self.export_modal.stage));
+            }
+            ui.add_space(kit::FORM_ROW_GAP);
+            self.export_preview(ui);
+            if let Some(error) = &self.export_modal.error {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(RichText::new(error).color(kit::DANGER).size(11.0));
+            }
+            if let Some(summary) = &self.export_modal.summary {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(format!(
+                    "{} frames, {:.2}s{}",
+                    summary.frame_count,
+                    summary.duration_seconds,
+                    if summary.audio_included {
+                        ", audio"
+                    } else {
+                        ""
+                    }
+                )));
+                ui.label(kit::caption(path_label(&summary.output_path)));
+            }
+            if !self.export_modal.warnings.is_empty() {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(format!(
+                    "{} warning{}",
+                    self.export_modal.warnings.len(),
+                    if self.export_modal.warnings.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )));
+            }
+        });
+    }
+
+    fn export_preview(&mut self, ui: &mut Ui) {
+        let size = Vec2::new(ui.available_width(), 150.0);
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        ui.painter()
+            .rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+        ui.painter().rect_stroke(
+            rect,
+            kit::field_radius(),
+            Stroke::new(1.0, kit::BORDER_SOFT),
+            egui::StrokeKind::Inside,
+        );
+        let Some(texture) = &self.export_preview_texture else {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Preview appears during export",
+                FontId::proportional(11.0),
+                kit::TEXT_DIM,
+            );
+            return;
+        };
+        let texture_size = texture.size_vec2();
+        let scale = (rect.width() / texture_size.x.max(1.0))
+            .min(rect.height() / texture_size.y.max(1.0))
+            .min(1.0);
+        let image_size = texture_size * scale;
+        let image_rect = Rect::from_center_size(rect.center(), image_size);
+        ui.painter().image(
+            texture.id(),
+            image_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+
+    fn export_footer(&mut self, ui: &mut Ui) {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if self.export_cancel.is_some() {
+                if kit::danger_button(ui, "Cancel Export", 150.0).clicked() {
+                    self.close_or_cancel_export_modal();
+                }
+                return;
+            }
+            if matches!(self.export_modal.status, ExportRunStatus::Finished) {
+                if kit::primary_button(ui, "Close", 120.0).clicked() {
+                    self.editor.overlays.export_video = false;
+                }
+                if kit::secondary_button(ui, "Export Again", 130.0).clicked() {
+                    self.start_export_video();
+                }
+                return;
+            }
+            if kit::primary_button(ui, "Export Video", 150.0).clicked() {
+                self.start_export_video();
+            }
+            if kit::secondary_button(ui, "Cancel", 110.0).clicked() {
+                self.editor.overlays.export_video = false;
+            }
+        });
+    }
+
+    fn start_export_video(&mut self) {
+        let settings = match self.export_modal.to_settings() {
+            Ok(settings) => settings,
+            Err(err) => {
+                self.export_modal.status = ExportRunStatus::Failed;
+                self.export_modal.error = Some(err);
+                self.export_modal.message = "Export settings need attention.".to_string();
+                self.export_modal.progress = 0.0;
+                return;
+            }
+        };
+        let project = self.editor.project.clone();
+        let job = VideoExportJob { project, settings };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_for_thread = Arc::clone(&cancel);
+        let events = self.export_events_tx.clone();
+
+        self.export_modal.status = ExportRunStatus::Running;
+        self.export_modal.progress = 0.0;
+        self.export_modal.stage = "preparing".to_string();
+        self.export_modal.message = "Preparing export".to_string();
+        self.export_modal.frame_label.clear();
+        self.export_modal.error = None;
+        self.export_modal.summary = None;
+        self.export_modal.warnings.clear();
+        self.export_preview_texture = None;
+        self.export_cancel = Some(cancel);
+        self.editor.status = "Export started".to_string();
+
+        std::thread::spawn(move || {
+            export_video(job, cancel_for_thread, |event| {
+                let _ = events.send(event);
+            });
+        });
+    }
+
+    fn service_export_events(&mut self, ctx: &Context) {
+        while let Ok(event) = self.export_events_rx.try_recv() {
+            match event {
+                VideoExportEvent::Progress {
+                    stage,
+                    message,
+                    progress,
+                    frame_index,
+                    total_frames,
+                    preview,
+                } => {
+                    self.export_modal.stage = stage.to_string();
+                    self.export_modal.message = message;
+                    self.export_modal.progress = progress.clamp(0.0, 1.0);
+                    self.export_modal.frame_label = match (frame_index, total_frames) {
+                        (Some(frame), Some(total)) => format!("Frame {frame} of {total}"),
+                        _ => self.export_modal.stage.clone(),
+                    };
+                    if let Some(preview) = preview {
+                        self.update_export_preview_texture(ctx, preview);
+                    }
+                }
+                VideoExportEvent::Finished(summary) => {
+                    self.export_cancel = None;
+                    self.export_modal.status = ExportRunStatus::Finished;
+                    self.export_modal.progress = 1.0;
+                    self.export_modal.stage = "complete".to_string();
+                    self.export_modal.message = "Export complete".to_string();
+                    self.export_modal.frame_label.clear();
+                    self.export_modal.warnings = summary.warnings.clone();
+                    self.editor.status = format!("Exported {}", path_label(&summary.output_path));
+                    self.export_modal.summary = Some(summary);
+                }
+                VideoExportEvent::Cancelled => {
+                    self.export_cancel = None;
+                    self.export_modal.status = ExportRunStatus::Cancelled;
+                    self.export_modal.stage = "cancelled".to_string();
+                    self.export_modal.message = "Export cancelled".to_string();
+                    self.export_modal.error = None;
+                    self.editor.status = "Export cancelled".to_string();
+                }
+                VideoExportEvent::Failed(err) => {
+                    self.export_cancel = None;
+                    self.export_modal.status = ExportRunStatus::Failed;
+                    self.export_modal.stage = "failed".to_string();
+                    self.export_modal.message = "Export failed".to_string();
+                    self.export_modal.error = Some(err.clone());
+                    self.editor.status = format!("Export failed: {err}");
+                }
+            }
+        }
+
+        if self.export_cancel.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
+    }
+
+    fn update_export_preview_texture(&mut self, ctx: &Context, preview: VideoExportPreview) {
+        if preview.width == 0 || preview.height == 0 || preview.rgba.is_empty() {
+            return;
+        }
+        let image = ColorImage::from_rgba_unmultiplied(
+            [preview.width as usize, preview.height as usize],
+            &preview.rgba,
+        );
+        if let Some(texture) = self.export_preview_texture.as_mut() {
+            texture.set(image, TextureOptions::LINEAR);
+        } else {
+            self.export_preview_texture =
+                Some(ctx.load_texture("export-preview", image, TextureOptions::LINEAR));
         }
     }
 
@@ -5249,6 +5757,7 @@ impl eframe::App for NlaEguiApp {
         crate::core::automation::begin_ui_frame();
         self.tick_playback(&ctx);
         self.service_generation_queue(&ctx);
+        self.service_export_events(&ctx);
         self.update_preview_texture(&ctx);
 
         self.top_bar(ui);
@@ -6751,6 +7260,116 @@ impl ProviderBuilderInput {
                 title: None,
             },
         }
+    }
+}
+
+impl ExportModalState {
+    fn for_project(project: &Project) -> Self {
+        let settings = &project.settings;
+        let duration = settings.duration_seconds.max(1.0);
+        Self {
+            output_path: export_default_output_path(project).display().to_string(),
+            width: settings.width.to_string(),
+            height: settings.height.to_string(),
+            fps: format_export_number(settings.fps),
+            start_seconds: "0".to_string(),
+            duration_seconds: format_export_number(duration),
+            include_audio: true,
+            quality: VideoExportQuality::Standard,
+            status: ExportRunStatus::Idle,
+            progress: 0.0,
+            stage: "ready".to_string(),
+            message: "Ready to export".to_string(),
+            frame_label: String::new(),
+            error: None,
+            summary: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn to_settings(&self) -> Result<VideoExportSettings, String> {
+        let output_path = ensure_mp4_extension(PathBuf::from(self.output_path.trim()));
+        let width = parse_export_u32("Width", &self.width)?;
+        let height = parse_export_u32("Height", &self.height)?;
+        let fps = parse_export_f64("FPS", &self.fps)?;
+        let start_seconds = parse_export_f64("Start Seconds", &self.start_seconds)?;
+        let duration_seconds = parse_export_f64("Duration Seconds", &self.duration_seconds)?;
+        Ok(VideoExportSettings {
+            output_path,
+            width,
+            height,
+            fps,
+            start_seconds,
+            duration_seconds,
+            include_audio: self.include_audio,
+            quality: self.quality,
+        })
+    }
+}
+
+fn export_default_output_path(project: &Project) -> PathBuf {
+    let file_name = format!("{}.mp4", sanitize_export_stem(&project.name));
+    project
+        .project_path
+        .as_ref()
+        .map(|root| root.join("exports").join(&file_name))
+        .unwrap_or_else(|| default_projects_dir().join("exports").join(file_name))
+}
+
+fn sanitize_export_stem(value: &str) -> String {
+    let stem = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if stem.is_empty() {
+        "export".to_string()
+    } else {
+        stem
+    }
+}
+
+fn ensure_mp4_extension(mut path: PathBuf) -> PathBuf {
+    let needs_extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| !extension.eq_ignore_ascii_case("mp4"))
+        .unwrap_or(true);
+    if needs_extension {
+        path.set_extension("mp4");
+    }
+    path
+}
+
+fn parse_export_u32(label: &str, value: &str) -> Result<u32, String> {
+    value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("{label} must be a whole number."))
+}
+
+fn parse_export_f64(label: &str, value: &str) -> Result<f64, String> {
+    value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| format!("{label} must be a number."))
+}
+
+fn format_export_number(value: f64) -> String {
+    if (value - value.round()).abs() < 0.0001 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 

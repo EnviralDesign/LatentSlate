@@ -792,6 +792,7 @@ v1.0 - Public Release
 | **Window Config** | ✅ Complete | Custom title, no default menu bar |
 | **Asset Panel** | ✅ Complete | Display assets, import files via native dialog |
 | **File Copy** | ✅ Complete | Imported assets are copied into the project folder |
+| **Video Export** | ✅ First Pass | Modal settings/progress/cancel workflow with MP4 encode and timeline audio mixdown |
 
 ### In Progress 🔄
 | Area | Status | Next Steps |
@@ -811,6 +812,7 @@ src/
 ├── constants.rs     # Shared editor constants
 ├── core/            # Core logic (preview renderer, automation, media helpers)
 │   ├── automation.rs # Loopback automation API for desktop scenarios
+│   ├── export.rs     # Export-video render, audio mixdown, and FFmpeg encode path
 │   ├── preview/     # Preview renderer/cache/layer/util split
 │   └── media.rs     # Import/probe helpers
 ├── state/
@@ -821,6 +823,9 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-22:** Added a standard File -> Quit menu item that closes the eframe viewport through the native app command path and is registered with the UI automation layer.
+- **2026-05-21:** Added the first export-video workflow. File → Export Video opens a polished blocking modal with output path, resolution, FPS, range, quality, include-audio, progress bar, rendered preview thumbnail, cancel handling, and completion/error states. The core export path reuses the existing preview compositor for raw RGBA frames, mixes timeline audio/video clip audio into a temporary WAV, and invokes FFmpeg to write MP4/H.264 + AAC output.
+- **2026-05-21:** Extended the automation/UI-kit surface for export validation. Labeled shared text fields now expose their labels through `/ui`, the export modal can be opened by automation, and smoke validation rendered `projects/test` to a 2.000s 640×360 MP4 with video and audio streams plus a separate cancel-path check that leaves no partial output.
 - **2026-05-21:** Added a Rust-native UI-level automation layer on top of the existing loopback harness. Shared egui kit widgets now register a current-frame `/ui` control registry, `/ui/click` and `/ui/text` queue actions for real widgets to consume during the normal render pass, and `/screenshot` captures the application viewport directly to `.tmp/automation-screenshots/` through eframe's native screenshot command.
 - **2026-05-21:** Restored the Add Assets/New Generative card height budget so the media-type buttons have a normal bottom gutter and no longer clip against the card edge in the Assets panel.
 - **2026-05-21:** Rebuilt the egui Generation Queue as a custom anchored popover instead of a stock window. The queue now closes from its scrim, scales vertically with job count up to the available app height, keeps Clear All/Close controls in a compact header, shows Dioxus-style status pills plus Workflow/Node progress bars, and uses an active-count QUE badge with a slow orange pulse without auto-opening the popover when jobs are enqueued.

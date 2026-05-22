@@ -639,7 +639,7 @@ pub fn labeled_text_field(ui: &mut Ui, label: &str, value: &mut String) -> Respo
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
         field_label(ui, label);
-        singleline_text_field(ui, value, ui.available_width())
+        singleline_text_field_labeled(ui, value, ui.available_width(), Some(label.to_string()))
     })
     .inner
 }
@@ -736,6 +736,21 @@ pub fn labeled_browse_file_field(
     .inner
 }
 
+/// Shows a labeled editable save-file field.
+pub fn labeled_save_file_field(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut String,
+    options: BrowseFileOptions<'_>,
+) -> Option<PathBuf> {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+        field_label(ui, label);
+        save_file_field_with_id(ui, value, options, ("save_file_field", label), label)
+    })
+    .inner
+}
+
 #[allow(dead_code)]
 pub fn labeled_browse_value_row(
     ui: &mut Ui,
@@ -815,6 +830,73 @@ fn pick_file_dialog_with_id(
         remember_dialog_dir(ui, memory_id, options.path, remembered_dir);
     }
     picked
+}
+
+fn save_file_dialog_with_id(
+    ui: &Ui,
+    options: BrowseFileOptions<'_>,
+    fallback_id: impl Hash,
+) -> Option<PathBuf> {
+    let memory_id = browse_dialog_memory_id(ui, options.path, "save_file", fallback_id);
+    let start_dir = browse_start_dir(ui, memory_id, options.path);
+    let mut dialog = with_dialog_directory(rfd::FileDialog::new(), start_dir.as_deref());
+    for filter in options
+        .filters
+        .iter()
+        .filter(|filter| !filter.extensions.is_empty())
+    {
+        dialog = dialog.add_filter(filter.name, filter.extensions);
+    }
+    let picked = dialog.save_file();
+    if let Some(file) = picked.as_ref() {
+        let remembered_dir = file.parent().unwrap_or(file);
+        remember_dialog_dir(ui, memory_id, options.path, remembered_dir);
+    }
+    picked
+}
+
+fn save_file_field_with_id(
+    ui: &mut Ui,
+    value: &mut String,
+    options: BrowseFileOptions<'_>,
+    fallback_id: impl Hash,
+    automation_label: &str,
+) -> Option<PathBuf> {
+    let row_w = ui.available_width();
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_w, VALUE_FIELD_H), Sense::hover());
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(row_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    row_ui.set_min_size(row_rect.size());
+    row_ui.spacing_mut().item_spacing.x = FIELD_COMPOUND_GAP;
+
+    let mut clicked = false;
+    StripBuilder::new(&mut row_ui)
+        .clip(true)
+        .size(Size::remainder().at_least(90.0))
+        .size(Size::exact(BROWSE_BUTTON_W))
+        .horizontal(|mut strip| {
+            strip.cell(|ui| {
+                singleline_text_field_labeled(
+                    ui,
+                    value,
+                    ui.available_width(),
+                    Some(automation_label.to_string()),
+                );
+            });
+            strip.cell(|ui| {
+                clicked =
+                    field_button(ui, options.path.button_label, ui.available_width()).clicked();
+            });
+        });
+
+    if clicked {
+        save_file_dialog_with_id(ui, options, fallback_id)
+    } else {
+        None
+    }
 }
 
 fn with_dialog_directory(dialog: rfd::FileDialog, dir: Option<&Path>) -> rfd::FileDialog {
@@ -951,6 +1033,15 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
 }
 
 pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Response {
+    singleline_text_field_labeled(ui, value, width, None)
+}
+
+fn singleline_text_field_labeled(
+    ui: &mut Ui,
+    value: &mut String,
+    width: f32,
+    automation_label: Option<String>,
+) -> Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TEXT_FIELD_H), Sense::hover());
     let mut output = field_text_edit(ui, value, rect);
     let selected_text = value.clone();
@@ -963,7 +1054,13 @@ pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Res
         field_stroke(&output),
         StrokeKind::Inside,
     );
-    crate::core::automation::instrument_response(response, "text_field", None, true, true)
+    crate::core::automation::instrument_response(
+        response,
+        "text_field",
+        automation_label,
+        true,
+        true,
+    )
 }
 
 #[derive(Clone, Copy, Debug)]

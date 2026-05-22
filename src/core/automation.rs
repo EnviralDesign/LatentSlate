@@ -134,6 +134,10 @@ pub enum AutomationCommand {
     OpenGenerativeVideo,
     /// Close the generative video creation modal.
     CloseGenerativeVideo,
+    /// Open the export-video modal.
+    OpenExportVideo,
+    /// Close the export-video modal.
+    CloseExportVideo,
     /// Set collapsible layout and preview flags for reference screenshots.
     SetLayout {
         #[serde(default)]
