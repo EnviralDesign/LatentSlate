@@ -325,6 +325,32 @@ impl EditorState {
         self.selection.primary_track()
     }
 
+    pub fn delete_selected_clips(&mut self) -> usize {
+        let clip_ids = self.selection.clip_ids.clone();
+        if clip_ids.is_empty() {
+            return 0;
+        }
+
+        let mut deleted = 0usize;
+        for clip_id in clip_ids {
+            if self.project.remove_clip(clip_id) {
+                deleted += 1;
+            }
+        }
+
+        if deleted > 0 {
+            self.selection.clear();
+            self.preview_dirty = true;
+            self.status = if deleted == 1 {
+                "Deleted clip".to_string()
+            } else {
+                format!("Deleted {deleted} clips")
+            };
+        }
+
+        deleted
+    }
+
     pub fn apply_automation_command(&mut self, command: &AutomationCommand) -> AutomationResponse {
         match command {
             AutomationCommand::GetState => AutomationResponse::ok(self.state_json()),

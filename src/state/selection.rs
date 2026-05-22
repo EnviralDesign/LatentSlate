@@ -33,6 +33,18 @@ impl SelectionState {
         self.clip_ids.push(clip_id);
     }
 
+    /// Toggle a clip in the current clip selection, clearing other selection kinds.
+    pub fn toggle_clip(&mut self, clip_id: Uuid) {
+        self.asset_ids.clear();
+        self.track_ids.clear();
+        self.marker_ids.clear();
+        if self.clip_ids.contains(&clip_id) {
+            self.clip_ids.retain(|id| *id != clip_id);
+        } else {
+            self.clip_ids.push(clip_id);
+        }
+    }
+
     /// Remove a clip from selection, if present.
     #[allow(dead_code)]
     // Kept for multi-select editing actions; current egui interactions replace
@@ -44,6 +56,27 @@ impl SelectionState {
     /// Return the primary selected clip, if any.
     pub fn primary_clip(&self) -> Option<Uuid> {
         self.clip_ids.first().copied()
+    }
+
+    /// Replace the selection with a single asset.
+    pub fn select_asset(&mut self, asset_id: Uuid) {
+        self.clip_ids.clear();
+        self.asset_ids.clear();
+        self.track_ids.clear();
+        self.marker_ids.clear();
+        self.asset_ids.push(asset_id);
+    }
+
+    /// Toggle an asset in the current asset selection, clearing other selection kinds.
+    pub fn toggle_asset(&mut self, asset_id: Uuid) {
+        self.clip_ids.clear();
+        self.track_ids.clear();
+        self.marker_ids.clear();
+        if self.asset_ids.contains(&asset_id) {
+            self.asset_ids.retain(|id| *id != asset_id);
+        } else {
+            self.asset_ids.push(asset_id);
+        }
     }
 
     /// Replace the selection with a single track.

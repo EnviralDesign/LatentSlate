@@ -403,6 +403,15 @@ This makes the workflow intuitive:
 2. Lay out generative video clips overlapping those images
 3. Open a generative clip's Attributes—the overlapping images are right there
 
+### Pinned vs. Automatic Timeline References
+
+Bridge-style creation actions may store the source timeline clip ID alongside the
+referenced asset ID. This gives deterministic "start image" / "end image"
+bindings after the app creates a generative video span from selected keyframes.
+The UI must also expose an unpin action for these media-input fields. Once
+unpinned, the field returns to the normal timeline-proximity resolver while
+keeping the last asset as a fallback when no timeline context is available.
+
 ### Duration Inference
 
 If the generative provider supports a `duration` input:

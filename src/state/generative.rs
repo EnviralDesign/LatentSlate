@@ -14,8 +14,20 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputValue {
-    AssetRef { asset_id: Uuid },
-    Literal { value: serde_json::Value },
+    AssetRef {
+        asset_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_clip_id: Option<Uuid>,
+        #[serde(default = "default_asset_ref_pinned")]
+        pinned: bool,
+    },
+    Literal {
+        value: serde_json::Value,
+    },
+}
+
+fn default_asset_ref_pinned() -> bool {
+    true
 }
 
 /// Strategy for adjusting seeds across batch generations.
@@ -93,6 +105,8 @@ pub struct GenerativeConfig {
     #[serde(default)]
     pub inputs: HashMap<String, InputValue>,
     #[serde(default)]
+    pub reference_slots: HashMap<String, InputValue>,
+    #[serde(default)]
     pub batch: BatchSettings,
     #[serde(default)]
     pub versions: Vec<GenerationRecord>,
@@ -105,6 +119,7 @@ impl Default for GenerativeConfig {
         Self {
             provider_id: None,
             inputs: HashMap::new(),
+            reference_slots: HashMap::new(),
             batch: BatchSettings::default(),
             versions: Vec::new(),
             active_version: None,
@@ -276,7 +291,7 @@ pub struct GenerationJob {
     pub provider: ProviderEntry,
     pub output_type: ProviderOutputType,
     pub asset_id: Uuid,
-    pub clip_id: Uuid,
+    pub clip_id: Option<Uuid>,
     pub asset_label: String,
     pub folder_path: PathBuf,
     pub inputs: HashMap<String, serde_json::Value>,

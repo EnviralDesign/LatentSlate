@@ -457,21 +457,23 @@ workflows/
   - [x] **Audio scrubbing** - hear audio while dragging playhead (critical for usability)
 
 - [ ] **Selection & Attribute Editor**
-  - [x] Clip selection state (single)
+  - [x] Clip selection state
   - [x] Attribute panel for clip transforms (position/scale/rotation/opacity)
   - [x] Track selection state
-  - [ ] Asset selection state
-  - [ ] Multi-select support for same-type items
+  - [x] Asset selection state
+  - [x] Basic multi-select support for clips/assets
   - [x] For generative clips: provider picker
   - [x] For generative clips: generate button
   - [x] For generative clips: dynamic input fields (schema-driven)
   - [x] For generative clips: version selector (active version)
   - [x] For generative clips: status/progress line (queued/running/done)
+  - [x] For generative assets: provider/version/input/generate controls outside the timeline
 
 - [ ] **Smart Input Suggestions** (Timeline as Implicit Wiring)
-  - [ ] When configuring generative clip inputs, auto-surface overlapping assets
-  - [ ] "In Time Range" section at top of asset picker
-  - [ ] "Other Assets" section below
+  - [x] When configuring generative clip media inputs, auto-surface timeline-context assets
+  - [x] Timeline context section at top of asset picker
+  - [x] Other project assets section below
+  - [x] Pinned/unpinned source clip references for bridge-created generative assets
   - [ ] Duration defaults to clip duration on timeline
 
 - [x] **Provider System**
@@ -820,6 +822,9 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-22:** Added timeline-context marker creation and refined clip spacing semantics. Right-clicking the timeline can now add a marker at the clicked time, and selected-clip spacing now treats image clips as point anchors while video/audio clips anchor from their end time so mixed image-to-video and video-to-image spacing behaves naturally.
+- **2026-05-22:** Re-exposed clip deletion in the egui timeline. Selected clips can now be removed from the timeline through the right-click context menu or the Delete/Backspace keys, both using the shared editor deletion path so multi-selected clips are removed together and preview state is invalidated consistently. Shift-click now joins Ctrl/Cmd-click as a multi-select modifier for asset and timeline clip selection.
+- **2026-05-22:** Added the first timeline-to-generation bridge UX. Clip and asset lists now support basic multi-select, the Attributes panel exposes spacing tools for selected clips, generative assets can be configured/generated directly from the Assets selection without requiring a timeline clip, provider media inputs now render as asset-reference pickers with timeline-context and project-asset sections, and selected image clips can create a normal generative video asset/clip bridge with pinned start/end image source-clip references that can later be unpinned back to timeline proximity.
 - **2026-05-22:** Restored and extended timeline hotkeys in the egui shell. The original Dioxus bindings covered `+`, `-`, `Space`, and `Ctrl/Cmd+S`; egui now supports global Space play/pause, ArrowLeft/ArrowRight one-frame playhead nudges, Ctrl/Cmd+ArrowLeft/ArrowRight jumps to the previous/next natural snap point, and Ctrl/Cmd+S project save while suppressing these shortcuts during text entry and modal workflows.
 - **2026-05-22:** Restored old-style timeline scrub-audio decay. Holding the mouse still during playhead scrubbing no longer retriggers the same audio slice every frame; scrub preview now plays a short forward-moving audio moment once and then returns to silence until the playhead moves again.
 - **2026-05-22:** Added first-pass on-canvas transform controls for selected visual clips. The Preview header now has an Auto fit toggle; scroll zoom and right-drag pan switch to manual view mode, selected active clips get move/scale/rotate handles, default resizing is aspect-constrained, Shift temporarily switches resize/rotation to free mode, Alt temporarily bypasses snapping, and live edits write directly to the shared clip transform so the Attributes inspector stays in sync. Move and resize snapping now cover plate edges/centers plus active clip edges/centers, with guide lines rendered in the preview overlay.

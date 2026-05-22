@@ -27,8 +27,8 @@ use crate::core::export::{
     VideoExportQuality, VideoExportSettings, VideoExportSummary,
 };
 use crate::core::generation::{
-    next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
-    update_seed_inputs,
+    compatible_asset_for_provider_input, next_version_label, random_seed_i64,
+    resolve_provider_inputs, resolve_seed_field, semantic_reference_slot, update_seed_inputs,
 };
 use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};
 use crate::core::timeline_snap::{
@@ -222,6 +222,9 @@ pub struct NlaEguiApp {
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
     timeline_last_scrub_audio_time: Option<f64>,
+    clip_spacing_seconds: f64,
+    clip_spacing_frames: i64,
+    clip_spacing_set_duration: bool,
     preview_auto_fit: bool,
     preview_zoom: f32,
     preview_pan: Vec2,
@@ -373,6 +376,16 @@ struct TimelineThumbnailKey {
 struct TimelineThumbTile {
     texture_id: TextureId,
     size: Vec2,
+}
+
+#[derive(Clone)]
+struct AssetInputCandidate {
+    asset_id: Uuid,
+    source_clip_id: Option<Uuid>,
+    label: String,
+    detail: String,
+    contextual: bool,
+    score: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -670,6 +683,10 @@ impl NlaEguiApp {
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
             timeline_last_scrub_audio_time: None,
+            clip_spacing_seconds: default_generative_video_frames() as f64
+                / default_generative_video_fps(),
+            clip_spacing_frames: default_generative_video_frames() as i64,
+            clip_spacing_set_duration: false,
             preview_auto_fit: true,
             preview_zoom: 1.0,
             preview_pan: Vec2::ZERO,
@@ -1109,9 +1126,14 @@ impl NlaEguiApp {
             return;
         }
 
-        let (save, play_pause, left, right, command_down) = ctx.input(|input| {
+        let (save, delete, play_pause, left, right, command_down) = ctx.input(|input| {
             (
                 input.modifiers.command && input.key_pressed(egui::Key::S),
+                !input.modifiers.command
+                    && !input.modifiers.ctrl
+                    && !input.modifiers.mac_cmd
+                    && (input.key_pressed(egui::Key::Delete)
+                        || input.key_pressed(egui::Key::Backspace)),
                 !input.modifiers.command
                     && !input.modifiers.alt
                     && !input.modifiers.ctrl
@@ -1127,6 +1149,12 @@ impl NlaEguiApp {
             if let Err(err) = self.editor.save() {
                 self.editor.status = err;
             }
+            ctx.request_repaint();
+            return;
+        }
+
+        if delete && !self.editor.selection.clip_ids.is_empty() {
+            self.editor.delete_selected_clips();
             ctx.request_repaint();
             return;
         }
@@ -2199,8 +2227,11 @@ impl NlaEguiApp {
                 let response = asset_row(ui, &asset, selected, thumbnail);
                 response.dnd_set_drag_payload(AssetTimelineDragPayload { asset_id: asset.id });
                 if response.clicked() {
-                    self.editor.selection.clear();
-                    self.editor.selection.asset_ids.push(asset.id);
+                    if multi_select_modifier(ui) {
+                        self.editor.selection.toggle_asset(asset.id);
+                    } else {
+                        self.editor.selection.select_asset(asset.id);
+                    }
                 }
                 response.context_menu(|ui| {
                     if automation_button(ui.button("Add to timeline"), "Add to timeline").clicked()
@@ -2269,8 +2300,12 @@ impl NlaEguiApp {
 
         kit::scroll_body(ui, |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-            if let Some(clip_id) = self.editor.selected_clip_id() {
+            if self.editor.selection.clip_ids.len() > 1 {
+                self.multi_clip_attributes(ui);
+            } else if let Some(clip_id) = self.editor.selected_clip_id() {
                 self.clip_attributes(ui, clip_id);
+            } else if self.editor.selection.asset_ids.len() > 1 {
+                self.multi_asset_attributes(ui);
             } else if let Some(asset_id) = self.editor.selected_asset_id() {
                 self.asset_attributes(ui, asset_id);
             } else if let Some(marker_id) = self.editor.selected_marker_id() {
@@ -2287,6 +2322,264 @@ impl NlaEguiApp {
                 });
             }
         });
+    }
+
+    fn multi_clip_attributes(&mut self, ui: &mut Ui) {
+        let selected_ids = self.editor.selection.clip_ids.clone();
+        let mut clips: Vec<Clip> = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .filter(|clip| selected_ids.contains(&clip.id))
+            .cloned()
+            .collect();
+        clips.sort_by(|a, b| {
+            a.start_time
+                .partial_cmp(&b.start_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
+        inspector_card(ui, "Selection", |ui| {
+            ui.label(kit::value(format!("{} clips selected", clips.len())));
+            if clips.len() >= 2 {
+                let first = clips.first().map(|clip| clip.start_time).unwrap_or(0.0);
+                let last = clips.last().map(|clip| clip.start_time).unwrap_or(first);
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(format!(
+                    "Start span {} - {}",
+                    timecode(first),
+                    timecode(last)
+                )));
+            }
+        });
+
+        ui.add_space(kit::FORM_ROW_GAP);
+        let mut apply_spacing = false;
+        let mut create_bridge = false;
+        inspector_card(ui, "Spacing", |ui| {
+            let fps = self.editor.project.settings.fps.max(1.0);
+            let mut seconds = self.clip_spacing_seconds.max(0.0);
+            let mut frames = self.clip_spacing_frames.max(1);
+            let (left_rect, right_rect) = inspector_numeric_pair_rects(ui);
+            if inspector_drag_f64_in_rect(ui, left_rect, "Seconds", &mut seconds, 0.05) {
+                self.clip_spacing_seconds = seconds.max(0.0);
+                self.clip_spacing_frames = frames_from_seconds(self.clip_spacing_seconds, fps)
+                    .round()
+                    .max(1.0) as i64;
+            }
+            if inspector_drag_i64_in_rect(ui, right_rect, "Frames", &mut frames, 1.0) {
+                self.clip_spacing_frames = frames.max(1);
+                self.clip_spacing_seconds =
+                    seconds_from_frames(self.clip_spacing_frames as f64, fps);
+            }
+            ui.add_space(kit::FORM_ROW_GAP);
+            automation_checkbox(
+                ui,
+                &mut self.clip_spacing_set_duration,
+                "Set clip duration to interval",
+            );
+            ui.add_space(kit::ACTION_GAP);
+            if kit::primary_button(ui, "Space Selected Clips", ui.available_width()).clicked() {
+                apply_spacing = true;
+            }
+        });
+
+        let image_clip_ids: Vec<Uuid> = clips
+            .iter()
+            .filter_map(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .filter(|asset| asset.is_image())
+                    .map(|_| clip.id)
+            })
+            .collect();
+        if image_clip_ids.len() >= 2 {
+            ui.add_space(kit::FORM_ROW_GAP);
+            inspector_card(ui, "Generation", |ui| {
+                ui.label(kit::caption(
+                    "Create a new generative video asset using the first and last selected image clips as pinned references.",
+                ));
+                ui.add_space(kit::ACTION_GAP);
+                if kit::primary_button(ui, "Generate Between Keyframes", ui.available_width())
+                    .clicked()
+                {
+                    create_bridge = true;
+                }
+            });
+        }
+
+        if apply_spacing && clips.len() >= 2 {
+            self.space_selected_clips(&clips);
+        }
+        if create_bridge {
+            self.create_bridge_video_from_selected_clips(&clips);
+        }
+    }
+
+    fn multi_asset_attributes(&mut self, ui: &mut Ui) {
+        let count = self.editor.selection.asset_ids.len();
+        inspector_card(ui, "Selection", |ui| {
+            ui.label(kit::value(format!("{count} assets selected")));
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.label(kit::caption(
+                "Timeline and generation actions are available after placing assets as clips.",
+            ));
+        });
+    }
+
+    fn space_selected_clips(&mut self, clips: &[Clip]) {
+        let interval = self.clip_spacing_seconds.max(0.0);
+        if clips.len() < 2 || interval <= 0.0 {
+            self.editor.status =
+                "Select at least two clips and use a positive interval.".to_string();
+            return;
+        }
+
+        let mut previous_anchor = None;
+        for clip in clips.iter() {
+            let start_time = previous_anchor
+                .map(|anchor| anchor + interval)
+                .unwrap_or(clip.start_time);
+            let duration = if self.clip_spacing_set_duration {
+                interval.max(0.1)
+            } else {
+                clip.duration
+            };
+            if self.clip_spacing_set_duration {
+                self.editor
+                    .project
+                    .resize_clip(clip.id, start_time, duration);
+            } else {
+                self.editor.project.move_clip(clip.id, start_time);
+            }
+            previous_anchor = if self.clip_spacing_uses_point_anchor(clip.asset_id) {
+                Some(start_time)
+            } else {
+                Some(start_time + duration)
+            };
+        }
+        self.editor.preview_dirty = true;
+        self.editor.status = format!(
+            "Spaced {} clips by {}",
+            clips.len(),
+            format_duration(interval)
+        );
+    }
+
+    fn clip_spacing_uses_point_anchor(&self, asset_id: Uuid) -> bool {
+        self.editor
+            .project
+            .find_asset(asset_id)
+            .is_some_and(|asset| asset.is_image())
+    }
+
+    fn create_bridge_video_from_selected_clips(&mut self, clips: &[Clip]) {
+        let image_clips: Vec<Clip> = clips
+            .iter()
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .is_some_and(|asset| asset.is_image())
+            })
+            .cloned()
+            .collect();
+        let (Some(first), Some(last)) = (image_clips.first(), image_clips.last()) else {
+            self.editor.status = "Select at least two image clips first.".to_string();
+            return;
+        };
+        if first.id == last.id {
+            self.editor.status = "Select two different image clips.".to_string();
+            return;
+        }
+
+        let fallback_duration =
+            default_generative_video_frames() as f64 / default_generative_video_fps();
+        let duration = (last.start_time - first.start_time)
+            .abs()
+            .max(fallback_duration);
+        let fps = default_generative_video_fps();
+        let frame_count = frames_from_seconds(duration, fps).round().max(1.0) as u32;
+        let start_time = first.start_time.min(last.start_time);
+        let target_track_id = self.bridge_target_track_id(first.track_id);
+
+        let asset_id = match self.editor.create_generative_video(fps, frame_count) {
+            Ok(asset_id) => asset_id,
+            Err(err) => {
+                self.editor.status = err;
+                return;
+            }
+        };
+
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.reference_slots.insert(
+                    "start_image".to_string(),
+                    InputValue::AssetRef {
+                        asset_id: first.asset_id,
+                        source_clip_id: Some(first.id),
+                        pinned: true,
+                    },
+                );
+                config.reference_slots.insert(
+                    "end_image".to_string(),
+                    InputValue::AssetRef {
+                        asset_id: last.asset_id,
+                        source_clip_id: Some(last.id),
+                        pinned: true,
+                    },
+                );
+            });
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Bridge created, but config save failed: {err}");
+        }
+
+        let mut clip = Clip::new(asset_id, target_track_id, start_time, duration);
+        clip.label = Some("I2V bridge".to_string());
+        let clip_id = self.editor.project.add_clip(clip);
+        self.editor.selection.select_clip(clip_id);
+        self.editor.preview_dirty = true;
+        self.editor.status = "Created generative video bridge from selected keyframes.".to_string();
+    }
+
+    fn bridge_target_track_id(&mut self, source_track_id: Uuid) -> Uuid {
+        let source_index = self
+            .editor
+            .project
+            .tracks
+            .iter()
+            .position(|track| track.id == source_track_id)
+            .unwrap_or(0);
+        if let Some(track) = self
+            .editor
+            .project
+            .tracks
+            .iter()
+            .take(source_index)
+            .rev()
+            .find(|track| track.track_type == TrackType::Video)
+        {
+            return track.id;
+        }
+
+        let track_id = self.editor.project.add_video_track();
+        while self
+            .editor
+            .project
+            .tracks
+            .iter()
+            .position(|track| track.id == track_id)
+            .is_some_and(|index| index > source_index)
+        {
+            if !self.editor.project.move_track_up(track_id) {
+                break;
+            }
+        }
+        track_id
     }
 
     fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid) {
@@ -2344,7 +2637,7 @@ impl NlaEguiApp {
         if let Some(asset_id) = clip_asset_id {
             if generative_output_for_asset(&self.editor.project, asset_id).is_some() {
                 ui.add_space(kit::FORM_ROW_GAP);
-                self.generative_clip_attributes(ui, clip_id, asset_id);
+                self.generative_asset_attributes(ui, asset_id, Some(clip_id));
             }
         }
         if preview_dirty {
@@ -2352,7 +2645,12 @@ impl NlaEguiApp {
         }
     }
 
-    fn generative_clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid, asset_id: Uuid) {
+    fn generative_asset_attributes(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+    ) {
         let Some((folder, output_type)) =
             generative_output_for_asset(&self.editor.project, asset_id)
         else {
@@ -2664,8 +2962,13 @@ impl NlaEguiApp {
         });
 
         ui.add_space(kit::FORM_ROW_GAP);
-        let input_updates =
-            self.provider_inputs_card(ui, asset_id, selected_provider.clone(), &config_snapshot);
+        let input_updates = self.provider_inputs_card(
+            ui,
+            asset_id,
+            context_clip_id,
+            selected_provider.clone(),
+            &config_snapshot,
+        );
 
         let mut config_dirty = false;
         let mut preview_dirty = false;
@@ -2724,7 +3027,7 @@ impl NlaEguiApp {
                 .project
                 .update_generative_config(asset_id, |config| {
                     for (name, value) in input_updates {
-                        config.inputs.insert(name, InputValue::Literal { value });
+                        config.inputs.insert(name, value);
                     }
                 });
             config_dirty = true;
@@ -2773,7 +3076,7 @@ impl NlaEguiApp {
             };
             match self.enqueue_generation_jobs(
                 asset_id,
-                clip_id,
+                context_clip_id,
                 provider,
                 config_for_generation,
                 folder_path,
@@ -2791,9 +3094,10 @@ impl NlaEguiApp {
         &mut self,
         ui: &mut Ui,
         asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
         selected_provider: Option<ProviderEntry>,
         config_snapshot: &GenerativeConfig,
-    ) -> Vec<(String, serde_json::Value)> {
+    ) -> Vec<(String, InputValue)> {
         let mut updates = Vec::new();
         inspector_card(ui, "Provider Inputs", |ui| {
             let Some(provider) = selected_provider else {
@@ -2834,7 +3138,12 @@ impl NlaEguiApp {
                             inspector_text_field(ui, &label, &mut value)
                         };
                         if changed {
-                            updates.push((input.name.clone(), serde_json::Value::String(value)));
+                            updates.push((
+                                input.name.clone(),
+                                InputValue::Literal {
+                                    value: serde_json::Value::String(value),
+                                },
+                            ));
                         }
                     }
                     ProviderInputType::Number => {
@@ -2846,8 +3155,12 @@ impl NlaEguiApp {
                         let width = ui.available_width();
                         if inspector_drag_f64(ui, &label, &mut value, step, width) {
                             if let Some(number) = serde_json::Number::from_f64(value) {
-                                updates
-                                    .push((input.name.clone(), serde_json::Value::Number(number)));
+                                updates.push((
+                                    input.name.clone(),
+                                    InputValue::Literal {
+                                        value: serde_json::Value::Number(number),
+                                    },
+                                ));
                             }
                         }
                     }
@@ -2860,7 +3173,9 @@ impl NlaEguiApp {
                         if inspector_drag_i64(ui, &label, &mut value, 1.0, width) {
                             updates.push((
                                 input.name.clone(),
-                                serde_json::Value::Number(value.into()),
+                                InputValue::Literal {
+                                    value: serde_json::Value::Number(value.into()),
+                                },
                             ));
                         }
                     }
@@ -2870,7 +3185,12 @@ impl NlaEguiApp {
                             .and_then(input_value_as_bool)
                             .unwrap_or(false);
                         if inspector_bool_field(ui, &label, &mut value) {
-                            updates.push((input.name.clone(), serde_json::Value::Bool(value)));
+                            updates.push((
+                                input.name.clone(),
+                                InputValue::Literal {
+                                    value: serde_json::Value::Bool(value),
+                                },
+                            ));
                         }
                     }
                     ProviderInputType::Enum { options } => {
@@ -2897,18 +3217,310 @@ impl NlaEguiApp {
                             },
                         );
                         if value != before {
-                            updates.push((input.name.clone(), serde_json::Value::String(value)));
+                            updates.push((
+                                input.name.clone(),
+                                InputValue::Literal {
+                                    value: serde_json::Value::String(value),
+                                },
+                            ));
                         }
                     }
                     ProviderInputType::Image
                     | ProviderInputType::Video
                     | ProviderInputType::Audio => {
-                        ui.label(kit::caption(format!("{label}: asset inputs not wired yet")));
+                        if let Some(update) =
+                            self.provider_asset_input_field(ui, asset_id, context_clip_id, input)
+                        {
+                            updates.push((input.name.clone(), update));
+                        }
                     }
                 }
             }
         });
         updates
+    }
+
+    fn provider_asset_input_field(
+        &self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        input: &ProviderInputField,
+    ) -> Option<InputValue> {
+        let config = self.editor.project.generative_config(asset_id);
+        let field_value = config
+            .and_then(|config| config.inputs.get(&input.name))
+            .cloned();
+        let reference_slot = semantic_reference_slot(input);
+        let slot_value = reference_slot.and_then(|slot| {
+            config
+                .and_then(|config| config.reference_slots.get(slot))
+                .cloned()
+        });
+        let current_binding = field_value.clone().or(slot_value.clone());
+        let candidates = self.asset_input_candidates(input, context_clip_id);
+        let auto_candidate = candidates
+            .iter()
+            .find(|candidate| candidate.contextual)
+            .cloned();
+        let resolved_binding = match current_binding.clone() {
+            Some(InputValue::AssetRef { pinned: false, .. }) => auto_candidate
+                .as_ref()
+                .map(|candidate| InputValue::AssetRef {
+                    asset_id: candidate.asset_id,
+                    source_clip_id: candidate.source_clip_id,
+                    pinned: false,
+                })
+                .or(current_binding.clone()),
+            Some(value) => Some(value),
+            None => auto_candidate
+                .as_ref()
+                .map(|candidate| InputValue::AssetRef {
+                    asset_id: candidate.asset_id,
+                    source_clip_id: candidate.source_clip_id,
+                    pinned: false,
+                }),
+        };
+
+        let current_label = resolved_binding
+            .as_ref()
+            .and_then(|value| self.asset_input_label(value, context_clip_id))
+            .unwrap_or_else(|| {
+                if context_clip_id.is_some() {
+                    "Auto: no match".to_string()
+                } else {
+                    "None selected".to_string()
+                }
+            });
+        let combo_id = ("provider_asset_input", asset_id, &input.name);
+        let before = current_binding.clone();
+        let mut next = current_binding.clone();
+
+        kit::labeled_combo_field(ui, &input.label, combo_id, current_label, |ui| {
+            if let Some(candidate) = auto_candidate.as_ref() {
+                let label = format!("Auto: {}", candidate.label);
+                if ui
+                    .selectable_label(
+                        matches!(next, Some(InputValue::AssetRef { pinned: false, .. })),
+                        label,
+                    )
+                    .clicked()
+                {
+                    next = Some(InputValue::AssetRef {
+                        asset_id: candidate.asset_id,
+                        source_clip_id: candidate.source_clip_id,
+                        pinned: false,
+                    });
+                    ui.close();
+                }
+                ui.separator();
+            } else if context_clip_id.is_some() {
+                ui.label(kit::caption("No timeline match"));
+                ui.separator();
+            }
+
+            let mut drew_context_header = false;
+            let mut drew_other_header = false;
+            for candidate in candidates.iter() {
+                if candidate.contextual && !drew_context_header {
+                    ui.label(kit::caption("Timeline context"));
+                    drew_context_header = true;
+                } else if !candidate.contextual && !drew_other_header {
+                    if drew_context_header {
+                        ui.separator();
+                    }
+                    ui.label(kit::caption("Other project assets"));
+                    drew_other_header = true;
+                }
+                let selected = binding_matches_candidate(next.as_ref(), candidate, true);
+                if ui
+                    .selectable_label(
+                        selected,
+                        format!("{}  {}", candidate.label, candidate.detail),
+                    )
+                    .clicked()
+                {
+                    next = Some(InputValue::AssetRef {
+                        asset_id: candidate.asset_id,
+                        source_clip_id: candidate.source_clip_id,
+                        pinned: true,
+                    });
+                    ui.close();
+                }
+            }
+        });
+
+        if let Some(InputValue::AssetRef {
+            asset_id,
+            source_clip_id,
+            pinned,
+        }) = resolved_binding.as_ref()
+        {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let hint = if *pinned {
+                    if source_clip_id.is_some() {
+                        "Pinned to timeline clip"
+                    } else {
+                        "Pinned to asset"
+                    }
+                } else if context_clip_id.is_some() {
+                    "Auto from timeline proximity"
+                } else {
+                    "No timeline context; using saved asset"
+                };
+                ui.label(kit::caption(hint));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let action = if *pinned { "Unpin" } else { "Pin" };
+                    if ui.small_button(action).clicked() {
+                        next = Some(InputValue::AssetRef {
+                            asset_id: *asset_id,
+                            source_clip_id: *source_clip_id,
+                            pinned: !*pinned,
+                        });
+                    }
+                });
+            });
+        }
+
+        if next != before {
+            next
+        } else {
+            None
+        }
+    }
+
+    fn asset_input_label(
+        &self,
+        value: &InputValue,
+        context_clip_id: Option<Uuid>,
+    ) -> Option<String> {
+        let InputValue::AssetRef {
+            asset_id,
+            source_clip_id,
+            pinned,
+        } = value
+        else {
+            return None;
+        };
+        let asset = self.editor.project.find_asset(*asset_id)?;
+        let prefix = if *pinned {
+            "Pinned"
+        } else if context_clip_id.is_some() {
+            "Auto"
+        } else {
+            "Saved"
+        };
+        let clip_suffix = source_clip_id
+            .and_then(|clip_id| {
+                self.editor
+                    .project
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == clip_id)
+            })
+            .map(|clip| format!(" @ {}", timecode(clip.start_time)))
+            .unwrap_or_default();
+        Some(format!(
+            "{prefix}: {}{}",
+            asset_display_name(asset),
+            clip_suffix
+        ))
+    }
+
+    fn asset_input_candidates(
+        &self,
+        input: &ProviderInputField,
+        context_clip_id: Option<Uuid>,
+    ) -> Vec<AssetInputCandidate> {
+        let mut candidates = Vec::new();
+        let context_clip = context_clip_id
+            .and_then(|id| self.editor.project.clips.iter().find(|clip| clip.id == id));
+        let slot = semantic_reference_slot(input).unwrap_or("asset");
+        let target_time = context_clip.map(|clip| {
+            if slot.starts_with("end") {
+                clip.end_time()
+            } else {
+                clip.start_time
+            }
+        });
+        let context_track_index = context_clip.and_then(|clip| {
+            self.editor
+                .project
+                .tracks
+                .iter()
+                .position(|track| track.id == clip.track_id)
+        });
+
+        for clip in self.editor.project.clips.iter() {
+            if Some(clip.id) == context_clip_id {
+                continue;
+            }
+            let Some(asset) = self.editor.project.find_asset(clip.asset_id) else {
+                continue;
+            };
+            if !compatible_asset_for_provider_input(asset, &input.input_type) {
+                continue;
+            }
+            let distance = target_time
+                .map(|target| (clip.start_time - target).abs())
+                .unwrap_or(0.0);
+            let track_score = match (
+                context_track_index,
+                self.editor
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|track| track.id == clip.track_id),
+            ) {
+                (Some(context_index), Some(index)) if index > context_index => 0.0,
+                (Some(context_index), Some(index)) => {
+                    (context_index as f64 - index as f64).abs() * 0.25
+                }
+                _ => 0.0,
+            };
+            candidates.push(AssetInputCandidate {
+                asset_id: asset.id,
+                source_clip_id: Some(clip.id),
+                label: asset_display_name(asset),
+                detail: timecode(clip.start_time),
+                contextual: context_clip_id.is_some(),
+                score: distance + track_score,
+            });
+        }
+
+        let mut seen_assets: HashSet<Uuid> = candidates
+            .iter()
+            .map(|candidate| candidate.asset_id)
+            .collect();
+        for asset in self.editor.project.assets.iter() {
+            if seen_assets.contains(&asset.id)
+                || !compatible_asset_for_provider_input(asset, &input.input_type)
+            {
+                continue;
+            }
+            seen_assets.insert(asset.id);
+            candidates.push(AssetInputCandidate {
+                asset_id: asset.id,
+                source_clip_id: None,
+                label: asset_display_name(asset),
+                detail: asset_kind_label(&asset.kind).to_string(),
+                contextual: false,
+                score: f64::MAX / 2.0,
+            });
+        }
+
+        candidates.sort_by(|a, b| {
+            b.contextual
+                .cmp(&a.contextual)
+                .then_with(|| {
+                    a.score
+                        .partial_cmp(&b.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| a.label.cmp(&b.label))
+        });
+        candidates
     }
 
     fn asset_attributes(&mut self, ui: &mut Ui, asset_id: Uuid) {
@@ -2972,6 +3584,13 @@ impl NlaEguiApp {
             if let Err(err) = self.editor.add_asset_to_timeline(asset_id, None) {
                 self.editor.status = err;
             }
+        }
+        if asset_snapshot
+            .as_ref()
+            .is_some_and(|asset| asset.is_generative())
+        {
+            ui.add_space(kit::FORM_ROW_GAP);
+            self.generative_asset_attributes(ui, asset_id, None);
         }
     }
 
@@ -4404,6 +5023,111 @@ impl NlaEguiApp {
                 self.drop_asset_on_timeline(payload.asset_id, pos, rects, &tracks, duration, zoom);
             }
         }
+        response.context_menu(|ui| {
+            let context_pos = ui
+                .ctx()
+                .pointer_interact_pos()
+                .or_else(|| ui.ctx().pointer_hover_pos());
+            let marker_time = context_pos
+                .map(|pos| {
+                    if pos.x >= rects.tracks.left() {
+                        let raw_time =
+                            ((pos.x - rects.tracks.left() + self.editor.layout.timeline_scroll_x)
+                                / zoom)
+                                .clamp(0.0, duration as f32) as f64;
+                        snap_time_to_frame(raw_time, self.editor.project.settings.fps.max(1.0))
+                    } else {
+                        self.editor.current_time
+                    }
+                })
+                .unwrap_or(self.editor.current_time);
+
+            if let Some(pos) = context_pos {
+                match timeline_hit(pos, rects, &tracks, &clip_geoms, &marker_geoms) {
+                    TimelineHit::ClipBody(id)
+                    | TimelineHit::ClipLeftEdge(id)
+                    | TimelineHit::ClipRightEdge(id) => {
+                        if !self.editor.selection.clip_ids.contains(&id) {
+                            self.editor.selection.select_clip(id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if automation_button(ui.button("Add Marker Here"), "Add Marker Here").clicked() {
+                self.editor.add_marker(Some(marker_time));
+                ui.close();
+                return;
+            }
+
+            let mut selected_clips: Vec<Clip> = self
+                .editor
+                .project
+                .clips
+                .iter()
+                .filter(|clip| self.editor.selection.clip_ids.contains(&clip.id))
+                .cloned()
+                .collect();
+            selected_clips.sort_by(|a, b| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            let can_space = selected_clips.len() >= 2;
+            if automation_button(
+                ui.add_enabled(can_space, egui::Button::new("Space Selected Clips")),
+                "Space Selected Clips",
+            )
+            .clicked()
+            {
+                self.space_selected_clips(&selected_clips);
+                ui.close();
+            }
+            let image_count = selected_clips
+                .iter()
+                .filter(|clip| {
+                    self.editor
+                        .project
+                        .find_asset(clip.asset_id)
+                        .is_some_and(|asset| asset.is_image())
+                })
+                .count();
+            if automation_button(
+                ui.add_enabled(
+                    image_count >= 2,
+                    egui::Button::new("Generate Between Keyframes"),
+                ),
+                "Generate Between Keyframes",
+            )
+            .clicked()
+            {
+                let mut sorted = selected_clips.clone();
+                sorted.sort_by(|a, b| {
+                    a.start_time
+                        .partial_cmp(&b.start_time)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                self.create_bridge_video_from_selected_clips(&sorted);
+                ui.close();
+            }
+            if !selected_clips.is_empty() {
+                ui.separator();
+            }
+            if automation_button(
+                ui.add_enabled(
+                    !selected_clips.is_empty(),
+                    egui::Button::new("Delete Clip(s)"),
+                ),
+                "Delete Clip(s)",
+            )
+            .clicked()
+            {
+                self.editor.delete_selected_clips();
+                ui.close();
+            }
+        });
         self.handle_timeline_pointer(
             ui,
             &response,
@@ -4941,6 +5665,7 @@ impl NlaEguiApp {
 
         if response.drag_started() {
             if let Some(pos) = response.interact_pointer_pos() {
+                let toggle_select = multi_select_modifier(ui);
                 match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
                     TimelineHit::Ruler => {
                         self.timeline_scrub_was_playing = self.editor.is_playing;
@@ -4960,7 +5685,9 @@ impl NlaEguiApp {
                     }
                     TimelineHit::ClipLeftEdge(id) => {
                         if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
-                            self.editor.selection.select_clip(id);
+                            if !self.editor.selection.clip_ids.contains(&id) {
+                                self.editor.selection.select_clip(id);
+                            }
                             self.timeline_drag = Some(TimelineDrag::ClipResizeLeft {
                                 clip_id: id,
                                 start_time: clip.start_time,
@@ -4970,7 +5697,9 @@ impl NlaEguiApp {
                     }
                     TimelineHit::ClipRightEdge(id) => {
                         if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
-                            self.editor.selection.select_clip(id);
+                            if !self.editor.selection.clip_ids.contains(&id) {
+                                self.editor.selection.select_clip(id);
+                            }
                             self.timeline_drag = Some(TimelineDrag::ClipResizeRight {
                                 clip_id: id,
                                 start_time: clip.start_time,
@@ -4980,7 +5709,11 @@ impl NlaEguiApp {
                     }
                     TimelineHit::ClipBody(id) => {
                         if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
-                            self.editor.selection.select_clip(id);
+                            if toggle_select {
+                                self.editor.selection.toggle_clip(id);
+                            } else if !self.editor.selection.clip_ids.contains(&id) {
+                                self.editor.selection.select_clip(id);
+                            }
                             self.timeline_drag = Some(TimelineDrag::ClipMove {
                                 clip_id: id,
                                 start_time: clip.start_time,
@@ -5038,6 +5771,7 @@ impl NlaEguiApp {
 
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
+                let toggle_select = multi_select_modifier(ui);
                 match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
                     TimelineHit::Ruler => self.seek_from_timeline_pos(
                         pos,
@@ -5049,7 +5783,13 @@ impl NlaEguiApp {
                     ),
                     TimelineHit::ClipLeftEdge(id)
                     | TimelineHit::ClipRightEdge(id)
-                    | TimelineHit::ClipBody(id) => self.editor.selection.select_clip(id),
+                    | TimelineHit::ClipBody(id) => {
+                        if toggle_select {
+                            self.editor.selection.toggle_clip(id);
+                        } else {
+                            self.editor.selection.select_clip(id);
+                        }
+                    }
                     TimelineHit::Marker(id) => self.editor.selection.select_marker(id),
                     TimelineHit::TrackLabel(id) => self.editor.selection.select_track(id),
                     TimelineHit::EmptyTrack => self.editor.selection.clear(),
@@ -6500,7 +7240,7 @@ impl NlaEguiApp {
     fn enqueue_generation_jobs(
         &mut self,
         asset_id: Uuid,
-        clip_id: Uuid,
+        context_clip_id: Option<Uuid>,
         provider: ProviderEntry,
         config_snapshot: GenerativeConfig,
         folder_path: PathBuf,
@@ -6510,7 +7250,12 @@ impl NlaEguiApp {
             return Err("Audio generation is not supported in the queue yet.".to_string());
         }
 
-        let resolved = resolve_provider_inputs(&provider, &config_snapshot);
+        let resolved = resolve_provider_inputs(
+            &self.editor.project,
+            context_clip_id,
+            &provider,
+            &config_snapshot,
+        );
         if !resolved.missing_required.is_empty() {
             return Err(format!(
                 "Missing inputs: {}",
@@ -6560,7 +7305,7 @@ impl NlaEguiApp {
                 provider: provider.clone(),
                 output_type: provider.output_type,
                 asset_id,
-                clip_id,
+                clip_id: context_clip_id,
                 asset_label: asset_label.clone(),
                 folder_path: folder_path.clone(),
                 inputs,
@@ -8333,6 +9078,32 @@ fn measured_text_width(ui: &Ui, text: &str, font_id: FontId) -> f32 {
 
 fn timeline_snapping_enabled(ui: &Ui) -> bool {
     ui.input(|input| !input.modifiers.alt)
+}
+
+fn multi_select_modifier(ui: &Ui) -> bool {
+    ui.input(|input| {
+        input.modifiers.shift
+            || input.modifiers.command
+            || input.modifiers.ctrl
+            || input.modifiers.mac_cmd
+    })
+}
+
+fn binding_matches_candidate(
+    value: Option<&InputValue>,
+    candidate: &AssetInputCandidate,
+    pinned: bool,
+) -> bool {
+    matches!(
+        value,
+        Some(InputValue::AssetRef {
+            asset_id,
+            source_clip_id,
+            pinned: value_pinned,
+        }) if *asset_id == candidate.asset_id
+            && *source_clip_id == candidate.source_clip_id
+            && *value_pinned == pinned
+    )
 }
 
 fn timeline_clip_title(clip: &Clip, asset: Option<&Asset>) -> String {
