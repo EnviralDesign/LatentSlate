@@ -137,9 +137,10 @@ A **Generation Task** is a request to an AI provider:
 Provider entries are the pluggable backends that execute generation tasks. Key principles:
 - **Single-purpose** — Each entry does ONE thing (image gen, I2V, etc.). If a service supports multiple capabilities, the user adds separate entries for each.
 - Configured via simple JSON/config
-- Can be a commercial API, local ComfyUI instance, or custom HTTP endpoint
+- Can be an opinionated cloud provider adapter, local ComfyUI instance, or custom HTTP endpoint
 - ComfyUI entries reference an API workflow JSON via `workflow_path` (relative to repo/app or absolute path; MVP default: `workflows/sdxl_simple_example_API.json`)
-- Details of the adapter interface will be discovered during implementation—we're keeping this intentionally vague until we experiment with real ComfyUI workflows.
+- Cloud provider entries store credential IDs, not raw API keys. API keys live in the app-managed encrypted local credential store.
+- The current generic executor dispatches ComfyUI, OpenAI image, and xAI image providers through the same generation queue/output-version path.
 
 ---
 
@@ -586,13 +587,7 @@ The desktop application is **open source under MIT**:
 
 ### Secrets / API Keys
 
-Provider API keys and secrets are stored in a `.env` file at the project root (git-ignored). Users running locally manage their own `.env`.
-
-```env
-# Example .env
-FAL_API_KEY=your_fal_key_here
-REPLICATE_API_TOKEN=your_replicate_token_here
-```
+Provider API keys are managed through the app (`Settings -> API Keys`) so users do not need to configure OS environment variables. On Windows, the local credential file is protected with user-scoped DPAPI encryption and provider configs store only credential IDs. macOS Keychain and Linux Secret Service backends should plug into the same `core::credentials` interface before those platforms are treated as supported for cloud providers.
 
 ### Getting Started
 
@@ -823,6 +818,8 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-22:** Reworked the AI Providers modal left panel around a compact Add Provider dropdown plus square green create button. Installed providers now stay in the scrollable list below, cloud provider types are disabled once already installed, API-key editing opens a focused single-key modal for the relevant provider, and provider deletion moved into the selected-provider action area.
+- **2026-05-22:** Added the first cloud-provider foundation. ComfyUI generation now runs behind a generic provider executor, OpenAI image and xAI image provider templates/adapters were added, and API keys can be stored through an in-app API Keys modal backed by a Windows DPAPI-protected local credential file instead of OS environment variables.
 - **2026-05-22:** Added an export intermediate-frame format option. Exports still default to PNG frame cache files, with a new BMP (Fast) lossless option that writes much larger temporary frames but avoids PNG compression overhead for performance testing.
 - **2026-05-22:** Added a shared weighted field-grid row helper to `ui_kit` and moved the export modal's grouped fields onto it. Export video fields now use equal thirds, codec/quality uses a one-third/two-thirds split, and range uses an even split instead of modal-local row sizing.
 - **2026-05-22:** Fixed the export settings card layout so bounded field rows no longer consume the remaining card height. Codec, perceptual quality, range, audio, and timestamp options now live inside the card's clipped scroll body instead of being pushed below the visible modal area.
@@ -1154,7 +1151,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-05-21*
+*Last updated: 2026-05-22*
 
 
 

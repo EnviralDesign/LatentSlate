@@ -57,6 +57,7 @@ pub struct EditorOverlays {
     pub queue: bool,
     pub generative_video: bool,
     pub export_video: bool,
+    pub api_keys: bool,
 }
 
 pub struct EditorState {

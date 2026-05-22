@@ -10,6 +10,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::core::paths;
+use crate::providers::ProviderProgress;
 use crate::state::{
     input_value_as_bool, input_value_as_f64, input_value_as_i64, BindingTransform, ManifestInput,
     NodeSelector, ProviderInputType, ProviderManifest, ProviderOutputType,
@@ -23,28 +24,6 @@ const DEFAULT_OUTPUT_KEY: &str = "images";
 pub struct ComfyUiOutput {
     pub bytes: Vec<u8>,
     pub extension: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ComfyUiProgress {
-    pub overall: Option<f32>,
-    pub node: Option<f32>,
-}
-
-impl ComfyUiProgress {
-    fn overall(value: f32) -> Self {
-        Self {
-            overall: Some(value),
-            node: None,
-        }
-    }
-
-    fn node(value: f32) -> Self {
-        Self {
-            overall: None,
-            node: Some(value),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -168,7 +147,7 @@ pub async fn generate_output(
     inputs: &HashMap<String, Value>,
     manifest_path: Option<&Path>,
     output_type: ProviderOutputType,
-    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ComfyUiProgress>>,
+    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProviderProgress>>,
 ) -> Result<ComfyUiOutput, String> {
     let mut workflow = load_workflow(workflow_path)?;
     let total_nodes = workflow.as_object().map(|map| map.len()).unwrap_or(0);
@@ -589,7 +568,7 @@ async fn listen_progress_ws(
     base_url: &str,
     prompt_id: &str,
     total_nodes: usize,
-    progress_tx: tokio::sync::mpsc::UnboundedSender<ComfyUiProgress>,
+    progress_tx: tokio::sync::mpsc::UnboundedSender<ProviderProgress>,
 ) -> Result<(), String> {
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
@@ -641,7 +620,7 @@ async fn listen_progress_ws(
                             continue;
                         }
                     }
-                    if progress_tx.send(ComfyUiProgress::node(ratio)).is_err() {
+                    if progress_tx.send(ProviderProgress::node(ratio)).is_err() {
                         break;
                     }
                     last_node = Some(ratio);
@@ -654,7 +633,7 @@ async fn listen_progress_ws(
                             continue;
                         }
                     }
-                    if progress_tx.send(ComfyUiProgress::overall(ratio)).is_err() {
+                    if progress_tx.send(ProviderProgress::overall(ratio)).is_err() {
                         break;
                     }
                     last_overall = Some(ratio);

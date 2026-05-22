@@ -7,6 +7,13 @@ Cargo.lock
 .env
 .env.local
 .env.*.local
+credentials.json
+**/credentials.json
+*credentials*.json
+*.secret
+*.secrets
+*.key
+*.apikey
 
 # IDE / Editor
 .idea/

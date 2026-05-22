@@ -5,7 +5,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::state::ProviderEntry;
+use crate::core::credentials::{OPENAI_CREDENTIAL_ID, XAI_CREDENTIAL_ID};
+use crate::state::{
+    InputUi, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
+    ProviderOutputType,
+};
 
 pub fn load_provider_entries(project_root: &Path) -> io::Result<Vec<ProviderEntry>> {
     load_provider_entries_from(&providers_root(project_root))
@@ -77,8 +81,8 @@ pub fn provider_path_for_entry(entry: &ProviderEntry) -> PathBuf {
 pub fn default_provider_entry() -> ProviderEntry {
     let mut entry = ProviderEntry::new(
         "New Provider",
-        crate::state::ProviderOutputType::Image,
-        crate::state::ProviderConnection::ComfyUi {
+        ProviderOutputType::Image,
+        ProviderConnection::ComfyUi {
             base_url: "http://127.0.0.1:8188".to_string(),
             workflow_path: Some("workflows/sdxl_simple_example_API.json".to_string()),
             manifest_path: None,
@@ -86,6 +90,114 @@ pub fn default_provider_entry() -> ProviderEntry {
     );
     entry.inputs = Vec::new();
     entry
+}
+
+pub fn default_openai_image_provider_entry() -> ProviderEntry {
+    let mut entry = ProviderEntry::new(
+        "OpenAI Image",
+        ProviderOutputType::Image,
+        ProviderConnection::OpenAiImage {
+            credential_id: OPENAI_CREDENTIAL_ID.to_string(),
+            model: "gpt-image-2".to_string(),
+            base_url: None,
+        },
+    );
+    entry.inputs = vec![
+        text_input(
+            "prompt",
+            "Prompt",
+            Some("Describe the image to generate.".to_string()),
+            None,
+            true,
+        ),
+        enum_input(
+            "size",
+            "Size",
+            &["1024x1024", "1536x1024", "1024x1536", "auto"],
+            Some("1024x1024"),
+        ),
+        enum_input(
+            "quality",
+            "Quality",
+            &["auto", "low", "medium", "high"],
+            Some("auto"),
+        ),
+        enum_input(
+            "output_format",
+            "Output Format",
+            &["png", "jpeg", "webp"],
+            Some("png"),
+        ),
+    ];
+    entry
+}
+
+pub fn default_xai_image_provider_entry() -> ProviderEntry {
+    let mut entry = ProviderEntry::new(
+        "xAI Imagine Image",
+        ProviderOutputType::Image,
+        ProviderConnection::XaiImage {
+            credential_id: XAI_CREDENTIAL_ID.to_string(),
+            model: "grok-imagine-image-quality".to_string(),
+            base_url: None,
+        },
+    );
+    entry.inputs = vec![
+        text_input(
+            "prompt",
+            "Prompt",
+            Some("Describe the image to generate.".to_string()),
+            None,
+            true,
+        ),
+        enum_input(
+            "aspect_ratio",
+            "Aspect Ratio",
+            &["1:1", "16:9", "9:16", "4:3", "3:4"],
+            Some("1:1"),
+        ),
+        enum_input("resolution", "Resolution", &["1k", "2k"], Some("1k")),
+    ];
+    entry
+}
+
+fn text_input(
+    name: &str,
+    label: &str,
+    placeholder: Option<String>,
+    default: Option<String>,
+    required: bool,
+) -> ProviderInputField {
+    ProviderInputField {
+        name: name.to_string(),
+        label: label.to_string(),
+        input_type: ProviderInputType::Text,
+        required,
+        default: default.map(serde_json::Value::String),
+        ui: Some(InputUi {
+            placeholder,
+            multiline: true,
+            ..InputUi::default()
+        }),
+    }
+}
+
+fn enum_input(
+    name: &str,
+    label: &str,
+    options: &[&str],
+    default: Option<&str>,
+) -> ProviderInputField {
+    ProviderInputField {
+        name: name.to_string(),
+        label: label.to_string(),
+        input_type: ProviderInputType::Enum {
+            options: options.iter().map(|value| value.to_string()).collect(),
+        },
+        required: true,
+        default: default.map(|value| serde_json::Value::String(value.to_string())),
+        ui: None,
+    }
 }
 
 fn providers_root(project_root: &Path) -> PathBuf {

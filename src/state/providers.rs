@@ -54,6 +54,24 @@ pub enum ProviderConnection {
         #[serde(default)]
         manifest_path: Option<String>,
     },
+    OpenAiImage {
+        credential_id: String,
+        model: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    XaiImage {
+        credential_id: String,
+        model: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    XaiVideo {
+        credential_id: String,
+        model: String,
+        #[serde(default)]
+        base_url: Option<String>,
+    },
     CustomHttp {
         base_url: String,
         api_key: Option<String>,
@@ -182,6 +200,21 @@ pub struct InputUi {
     pub advanced: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
+}
+
+impl Default for InputUi {
+    fn default() -> Self {
+        Self {
+            min: None,
+            max: None,
+            step: None,
+            placeholder: None,
+            multiline: false,
+            group: None,
+            advanced: false,
+            unit: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

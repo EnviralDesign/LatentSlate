@@ -40,7 +40,7 @@ use crate::editor::{
     default_generative_video_fps, default_generative_video_frames, default_projects_dir,
     generative_video_duration_label, EditorState,
 };
-use crate::providers::comfyui;
+use crate::providers::ProviderProgress;
 use crate::state::{
     asset_display_name, input_value_as_bool, input_value_as_f64, input_value_as_i64,
     input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipTransform,
@@ -115,6 +115,7 @@ const MP4_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExtens
     extensions: MP4_EXTENSIONS,
 }];
 const PROVIDERS_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
+const API_KEYS_MODAL_SIZE: [f32; 2] = [480.0, 280.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
@@ -203,6 +204,8 @@ pub struct NlaEguiApp {
     provider_json_error: Option<String>,
     provider_builder_open: bool,
     provider_builder: ProviderBuilderState,
+    api_key_modal: ApiKeyModalState,
+    provider_template_kind: ProviderTemplateKind,
     generation_runtime: Option<tokio::runtime::Runtime>,
     generation_events_tx: mpsc::Sender<GenerationEvent>,
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
@@ -227,6 +230,36 @@ struct PendingAutomationScreenshot {
     path: PathBuf,
     requested_at: Instant,
     envelope: crate::core::automation::AutomationEnvelope,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ApiKeyModalState {
+    credential_id: String,
+    label: String,
+    value: String,
+    saved: bool,
+    error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderTemplateKind {
+    ComfyUi,
+    OpenAiImage,
+    XaiImage,
+}
+
+impl Default for ProviderTemplateKind {
+    fn default() -> Self {
+        ProviderTemplateKind::ComfyUi
+    }
+}
+
+impl ProviderTemplateKind {
+    const ALL: [ProviderTemplateKind; 3] = [
+        ProviderTemplateKind::ComfyUi,
+        ProviderTemplateKind::OpenAiImage,
+        ProviderTemplateKind::XaiImage,
+    ];
 }
 
 struct AssetThumbnail {
@@ -476,6 +509,8 @@ impl NlaEguiApp {
             provider_json_error: None,
             provider_builder_open: false,
             provider_builder: ProviderBuilderState::default(),
+            api_key_modal: ApiKeyModalState::default(),
+            provider_template_kind: ProviderTemplateKind::default(),
             generation_runtime,
             generation_events_tx,
             generation_events_rx,
@@ -3707,6 +3742,9 @@ impl NlaEguiApp {
         if self.editor.overlays.providers {
             self.providers_modal(ctx);
         }
+        if self.editor.overlays.api_keys {
+            self.api_keys_modal(ctx);
+        }
         if self.provider_json_editor_path.is_some() {
             self.provider_json_editor_modal(ctx);
         }
@@ -4663,7 +4701,7 @@ impl NlaEguiApp {
         let events = self.generation_events_tx.clone();
         runtime.spawn(async move {
             let (progress_tx, mut progress_rx) =
-                tokio::sync::mpsc::unbounded_channel::<comfyui::ComfyUiProgress>();
+                tokio::sync::mpsc::unbounded_channel::<ProviderProgress>();
             let progress_job_id = job.id;
             let progress_events = events.clone();
             tokio::spawn(async move {
@@ -4939,6 +4977,125 @@ impl NlaEguiApp {
         Ok(status)
     }
 
+    fn open_api_key_modal(&mut self, credential_id: &str, label: &str) {
+        self.api_key_modal = ApiKeyModalState {
+            credential_id: credential_id.to_string(),
+            label: label.to_string(),
+            value: String::new(),
+            saved: crate::core::credentials::has_secret(credential_id),
+            error: None,
+        };
+        self.editor.overlays.api_keys = true;
+    }
+
+    fn api_keys_modal(&mut self, ctx: &Context) {
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut save_clicked = false;
+        let mut remove_clicked = false;
+        let size = modal_size(ctx, API_KEYS_MODAL_SIZE, [420.0, 300.0]);
+        let title = format!("{} API Key", self.api_key_modal.label);
+        let subtitle = if self.api_key_modal.saved {
+            "Stored. Enter a new key to replace it."
+        } else {
+            "Not stored yet."
+        };
+
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "api_keys", true);
+        egui::Window::new("API Key")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(ui, &title, Some(subtitle), true);
+                kit::modal_body(ui, |ui| {
+                    if let Some(error) = &self.api_key_modal.error {
+                        ui.label(RichText::new(error).color(kit::DANGER).size(12.0));
+                        ui.add_space(kit::FORM_ROW_GAP);
+                    }
+
+                    kit::body_with_footer(
+                        ui,
+                        132.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| {
+                            kit::card_panel(ui, ui.available_height(), |ui| {
+                                ui.label(kit::caption(
+                                    "Keys are stored locally with Windows user-level encryption.",
+                                ));
+                                ui.add_space(kit::ACTION_GAP);
+                                kit::labeled_password_field(
+                                    ui,
+                                    "API Key",
+                                    &mut self.api_key_modal.value,
+                                );
+                            });
+                        },
+                        |ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if kit::primary_button(ui, "Save Key", 120.0).clicked() {
+                                    save_clicked = true;
+                                }
+                                if kit::secondary_button(ui, "Close", 110.0).clicked() {
+                                    close_clicked = true;
+                                }
+                                if self.api_key_modal.saved
+                                    && kit::danger_button(ui, "Remove", 100.0).clicked()
+                                {
+                                    remove_clicked = true;
+                                }
+                            });
+                        },
+                    );
+                });
+            });
+
+        if remove_clicked {
+            match crate::core::credentials::delete_secret(&self.api_key_modal.credential_id) {
+                Ok(()) => {
+                    self.editor.status = format!("Removed {} API key.", self.api_key_modal.label);
+                    self.editor.overlays.api_keys = false;
+                }
+                Err(err) => self.api_key_modal.error = Some(err),
+            }
+        }
+        if save_clicked {
+            self.save_api_key_modal();
+        }
+        if close_clicked || outside_clicked || !open {
+            self.api_key_modal.value.clear();
+            self.api_key_modal.error = None;
+            self.editor.overlays.api_keys = false;
+        }
+    }
+
+    fn save_api_key_modal(&mut self) {
+        if self.api_key_modal.value.trim().is_empty() {
+            self.api_key_modal.error = Some("Enter an API key before saving.".to_string());
+            return;
+        }
+        let storage_label = format!("{} API Key", self.api_key_modal.label);
+        if let Err(err) = crate::core::credentials::save_secret(
+            &self.api_key_modal.credential_id,
+            &storage_label,
+            &self.api_key_modal.value,
+        ) {
+            self.api_key_modal.error = Some(err);
+            return;
+        }
+
+        self.editor.status = format!("Saved {} API key.", self.api_key_modal.label);
+        self.api_key_modal.value.clear();
+        self.api_key_modal.error = None;
+        self.api_key_modal.saved = true;
+        self.editor.overlays.api_keys = false;
+    }
+
     fn providers_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
@@ -4961,12 +5118,6 @@ impl NlaEguiApp {
                     true,
                 );
                 kit::modal_body(ui, |ui| {
-                    ui.label(kit::caption(
-                        crate::core::provider_store::global_providers_root()
-                            .display()
-                            .to_string(),
-                    ));
-                    ui.add_space(12.0);
                     StripBuilder::new(ui)
                         .clip(true)
                         .size(Size::exact(300.0))
@@ -4987,80 +5138,125 @@ impl NlaEguiApp {
     fn provider_list_card(&mut self, ui: &mut Ui) {
         let card_h = ui.available_height();
         kit::card_panel(ui, card_h, |ui| {
-            let mut top_action = None;
-            kit::equal_secondary_button_row(ui, &["New", "Reload"], |index| {
-                top_action = Some(index);
-            });
-            match top_action {
-                Some(0) => self.open_provider_builder(None),
-                Some(1) => self.refresh_provider_files(),
-                _ => {}
-            }
+            self.add_provider_controls(ui);
 
-            ui.add_space(kit::FORM_ROW_GAP);
+            ui.add_space(kit::ACTION_GAP);
             let selected = self.selected_provider_file.clone();
             let provider_files = self.editor.provider_files.clone();
-            let footer_h = if selected.is_some() {
-                kit::ACTION_GAP + kit::SECONDARY_BUTTON_H
-            } else {
-                0.0
-            };
             let mut next_selection: Option<PathBuf> = None;
-            let mut delete_clicked = false;
 
-            kit::body_with_footer(
-                ui,
-                120.0,
-                footer_h,
-                |ui| {
-                    kit::scroll_body(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-                        if provider_files.is_empty() {
-                            kit::empty_state(
-                                ui,
-                                "No providers yet",
-                                "Create a provider or reload the global provider folder.",
-                            );
-                        }
-                        for path in provider_files.iter() {
-                            let summary = provider_file_summary(path);
-                            let selected = self.selected_provider_file.as_ref() == Some(path);
-                            let response = provider_row(ui, path, &summary, selected);
-                            if response.clicked() {
-                                next_selection = Some(path.clone());
-                            }
-                        }
-                    });
-                },
-                |ui| {
-                    if selected.is_some() {
-                        ui.add_space(kit::ACTION_GAP);
-                        if kit::danger_button(ui, "Delete", ui.available_width()).clicked() {
-                            delete_clicked = true;
-                        }
+            ui.horizontal(|ui| {
+                ui.label(kit::section_label("Installed"));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::secondary_button(ui, "Reload", 76.0).clicked() {
+                        self.editor.refresh_providers();
                     }
-                },
-            );
+                });
+            });
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::scroll_body(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                if provider_files.is_empty() {
+                    kit::empty_state(
+                        ui,
+                        "No providers yet",
+                        "Create a provider or reload the global provider folder.",
+                    );
+                }
+                for path in provider_files.iter() {
+                    let summary = provider_file_summary(path);
+                    let is_selected = selected.as_ref() == Some(path);
+                    let response = provider_row(ui, path, &summary, is_selected);
+                    if response.clicked() {
+                        next_selection = Some(path.clone());
+                    }
+                }
+            });
 
             if let Some(path) = next_selection {
                 self.selected_provider_file = Some(path);
             }
-            if delete_clicked {
-                if let Some(path) = selected {
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => {
-                            self.editor.status = format!("Deleted provider {}", path_label(&path));
-                            self.selected_provider_file = None;
-                            self.refresh_provider_files();
-                        }
-                        Err(err) => {
-                            self.editor.status =
-                                format!("Failed to delete provider {}: {err}", path_label(&path));
-                        }
-                    }
-                }
-            }
         });
+    }
+
+    fn add_provider_controls(&mut self, ui: &mut Ui) {
+        kit::field_label(ui, "Add Provider");
+        ui.add_space(kit::FORM_ROW_GAP);
+
+        let selected_label = provider_template_dropdown_label(
+            self.provider_template_kind,
+            self.provider_template_unavailable(self.provider_template_kind),
+        );
+        let mut selected_kind = self.provider_template_kind;
+        ui.horizontal(|ui| {
+            let button_w = kit::FIELD_H;
+            let combo_w = (ui.available_width() - kit::FIELD_COMPOUND_GAP - button_w).max(80.0);
+            kit::combo_field(
+                ui,
+                "provider_template_kind",
+                selected_label,
+                combo_w,
+                |ui| {
+                    for kind in ProviderTemplateKind::ALL {
+                        let unavailable = self.provider_template_unavailable(kind);
+                        let label = provider_template_dropdown_label(kind, unavailable);
+                        ui.add_enabled_ui(!unavailable, |ui| {
+                            automation_selectable_value(ui, &mut selected_kind, kind, &label);
+                        });
+                    }
+                },
+            );
+            let unavailable = self.provider_template_unavailable(self.provider_template_kind);
+            ui.add_enabled_ui(!unavailable, |ui| {
+                if kit::primary_button(ui, "+", button_w).clicked() {
+                    self.create_selected_provider_template();
+                }
+            });
+        });
+        self.provider_template_kind = selected_kind;
+
+        if let Some((credential_id, label)) =
+            provider_template_credential(self.provider_template_kind)
+        {
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.horizontal(|ui| {
+                let status = cloud_key_status(credential_id);
+                ui.label(kit::caption(format!("{label} API key: {status}")));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::field_button(ui, "API Key", 86.0).clicked() {
+                        self.open_api_key_modal(credential_id, label);
+                    }
+                });
+            });
+        }
+    }
+
+    fn provider_template_unavailable(&self, kind: ProviderTemplateKind) -> bool {
+        match kind {
+            ProviderTemplateKind::ComfyUi => false,
+            ProviderTemplateKind::OpenAiImage => self
+                .editor
+                .provider_entries
+                .iter()
+                .any(|entry| matches!(entry.connection, ProviderConnection::OpenAiImage { .. })),
+            ProviderTemplateKind::XaiImage => self
+                .editor
+                .provider_entries
+                .iter()
+                .any(|entry| matches!(entry.connection, ProviderConnection::XaiImage { .. })),
+        }
+    }
+
+    fn create_selected_provider_template(&mut self) {
+        match self.provider_template_kind {
+            ProviderTemplateKind::ComfyUi => self.open_provider_builder(None),
+            ProviderTemplateKind::OpenAiImage => self.save_provider_template(
+                crate::core::provider_store::default_openai_image_provider_entry(),
+            ),
+            ProviderTemplateKind::XaiImage => self.save_provider_template(
+                crate::core::provider_store::default_xai_image_provider_entry(),
+            ),
+        }
     }
 
     fn provider_editor_choice_card(&mut self, ui: &mut Ui) {
@@ -5070,7 +5266,7 @@ impl NlaEguiApp {
                 kit::empty_state(
                     ui,
                     "Select a provider",
-                    "Choose a provider from the list to edit it.",
+                    "Choose an installed provider to edit, or add one from the cloud provider catalog.",
                 );
                 return;
             };
@@ -5085,8 +5281,12 @@ impl NlaEguiApp {
             }
 
             let summary = provider_file_summary(&path);
+            let supports_builder = provider_file_supports_comfy_builder(&path);
+            let credential = provider_file_credential(&path);
             let mut open_builder = false;
             let mut open_json = false;
+            let mut open_key = false;
+            let mut delete_clicked = false;
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -5096,14 +5296,30 @@ impl NlaEguiApp {
                             .size(15.0),
                     );
                     ui.add_space(4.0);
-                    ui.label(kit::caption("Select an editor:"));
+                    ui.label(kit::caption(if supports_builder {
+                        "Select an editor:"
+                    } else {
+                        "Cloud providers use direct settings and app API keys."
+                    }));
                     ui.add_space(24.0);
-                    if kit::secondary_button(ui, "Edit in Builder", 250.0).clicked() {
-                        open_builder = true;
+                    if supports_builder {
+                        if kit::secondary_button(ui, "Edit in Builder", 250.0).clicked() {
+                            open_builder = true;
+                        }
+                        ui.add_space(8.0);
                     }
-                    ui.add_space(8.0);
                     if kit::secondary_button(ui, "Edit as JSON", 250.0).clicked() {
                         open_json = true;
+                    }
+                    if credential.is_some() {
+                        ui.add_space(8.0);
+                        if kit::secondary_button(ui, "API Key", 250.0).clicked() {
+                            open_key = true;
+                        }
+                    }
+                    ui.add_space(8.0);
+                    if kit::danger_button(ui, "Delete Provider", 250.0).clicked() {
+                        delete_clicked = true;
                     }
                 });
             });
@@ -5112,9 +5328,31 @@ impl NlaEguiApp {
                 self.open_provider_builder(Some(path.clone()));
             }
             if open_json {
-                self.open_provider_json_editor(path);
+                self.open_provider_json_editor(path.clone());
+            }
+            if open_key {
+                if let Some((credential_id, label)) = credential {
+                    self.open_api_key_modal(credential_id, label);
+                }
+            }
+            if delete_clicked {
+                self.delete_provider_file(path);
             }
         });
+    }
+
+    fn delete_provider_file(&mut self, path: PathBuf) {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                self.editor.status = format!("Deleted provider {}", path_label(&path));
+                self.selected_provider_file = None;
+                self.refresh_provider_files();
+            }
+            Err(err) => {
+                self.editor.status =
+                    format!("Failed to delete provider {}: {err}", path_label(&path));
+            }
+        }
     }
 
     fn provider_json_editor_modal(&mut self, ctx: &Context) {
@@ -5193,6 +5431,19 @@ impl NlaEguiApp {
                 .any(|path| path == selected)
             {
                 self.selected_provider_file = None;
+            }
+        }
+    }
+
+    fn save_provider_template(&mut self, entry: ProviderEntry) {
+        match crate::core::provider_store::save_global_provider_entry(&entry) {
+            Ok(path) => {
+                self.selected_provider_file = Some(path.clone());
+                self.refresh_provider_files();
+                self.editor.status = format!("Created provider {}", path_label(&path));
+            }
+            Err(err) => {
+                self.editor.status = format!("Failed to create provider: {err}");
             }
         }
     }
@@ -5936,7 +6187,7 @@ where
 async fn execute_generation_job_async(
     job: GenerationJob,
     version: String,
-    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<comfyui::ComfyUiProgress>>,
+    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProviderProgress>>,
 ) -> Result<GenerationOutput, GenerationFailure> {
     if job.output_type == ProviderOutputType::Audio {
         return Err(GenerationFailure::Error(
@@ -5944,45 +6195,17 @@ async fn execute_generation_job_async(
         ));
     }
 
-    let output = match job.provider.connection.clone() {
-        ProviderConnection::ComfyUi {
-            base_url,
-            workflow_path,
-            manifest_path,
-        } => {
-            let workflow_path = comfyui::resolve_workflow_path(workflow_path.as_deref());
-            let manifest_path = comfyui::resolve_manifest_path(manifest_path.as_deref());
-            if let Err(err) = comfyui::check_health(&base_url).await {
-                return Err(GenerationFailure::Offline(err));
-            }
-            comfyui::generate_output(
-                &base_url,
-                &workflow_path,
-                &job.inputs,
-                manifest_path.as_deref(),
-                job.output_type,
-                progress_tx,
-            )
-            .await
-            .map_err(GenerationFailure::Error)
-        }
-        ProviderConnection::CustomHttp { .. } => Err(GenerationFailure::Error(
-            "Provider connection not supported yet.".to_string(),
-        )),
-    };
-
-    let output = match output {
-        Ok(output) => output,
-        Err(GenerationFailure::Error(err)) => {
-            if let ProviderConnection::ComfyUi { base_url, .. } = job.provider.connection.clone() {
-                if let Err(health_err) = comfyui::check_health(&base_url).await {
-                    return Err(GenerationFailure::Offline(health_err));
-                }
-            }
-            return Err(GenerationFailure::Error(err));
-        }
-        Err(err) => return Err(err),
-    };
+    let output = crate::providers::execute_generation(
+        &job.provider,
+        &job.inputs,
+        job.output_type,
+        progress_tx,
+    )
+    .await
+    .map_err(|err| match err {
+        crate::providers::ProviderExecutionError::Offline(err) => GenerationFailure::Offline(err),
+        crate::providers::ProviderExecutionError::Error(err) => GenerationFailure::Error(err),
+    })?;
 
     std::fs::create_dir_all(&job.folder_path).map_err(|err| {
         GenerationFailure::Error(format!("Failed to create output folder: {err}"))
@@ -6944,6 +7167,11 @@ impl ProviderBuilderState {
                 workflow_path.as_ref().map(PathBuf::from),
                 manifest_path.as_ref().map(PathBuf::from),
             ),
+            ProviderConnection::OpenAiImage { base_url, .. }
+            | ProviderConnection::XaiImage { base_url, .. }
+            | ProviderConnection::XaiVideo { base_url, .. } => {
+                (base_url.clone().unwrap_or_default(), None, None)
+            }
             ProviderConnection::CustomHttp { base_url, .. } => (base_url.clone(), None, None),
         };
 
@@ -7485,6 +7713,61 @@ fn provider_row(
     })
 }
 
+fn provider_template_dropdown_label(kind: ProviderTemplateKind, unavailable: bool) -> String {
+    if unavailable {
+        format!("{} (already added)", provider_template_label(kind))
+    } else {
+        provider_template_label(kind).to_string()
+    }
+}
+
+fn provider_template_label(kind: ProviderTemplateKind) -> &'static str {
+    match kind {
+        ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",
+        ProviderTemplateKind::OpenAiImage => "OpenAI Image",
+        ProviderTemplateKind::XaiImage => "xAI Image",
+    }
+}
+
+fn provider_template_credential(
+    kind: ProviderTemplateKind,
+) -> Option<(&'static str, &'static str)> {
+    match kind {
+        ProviderTemplateKind::ComfyUi => None,
+        ProviderTemplateKind::OpenAiImage => {
+            Some((crate::core::credentials::OPENAI_CREDENTIAL_ID, "OpenAI"))
+        }
+        ProviderTemplateKind::XaiImage => {
+            Some((crate::core::credentials::XAI_CREDENTIAL_ID, "xAI"))
+        }
+    }
+}
+
+fn cloud_key_status(credential_id: &str) -> &'static str {
+    if crate::core::credentials::has_secret(credential_id) {
+        "Key stored"
+    } else {
+        "Key missing"
+    }
+}
+
+fn provider_file_credential(path: &Path) -> Option<(&'static str, &'static str)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let entry = serde_json::from_str::<ProviderEntry>(&text).ok()?;
+    match entry.connection {
+        ProviderConnection::OpenAiImage { .. } => {
+            Some((crate::core::credentials::OPENAI_CREDENTIAL_ID, "OpenAI"))
+        }
+        ProviderConnection::XaiImage { .. } => {
+            Some((crate::core::credentials::XAI_CREDENTIAL_ID, "xAI"))
+        }
+        ProviderConnection::XaiVideo { .. } => {
+            Some((crate::core::credentials::XAI_CREDENTIAL_ID, "xAI"))
+        }
+        ProviderConnection::ComfyUi { .. } | ProviderConnection::CustomHttp { .. } => None,
+    }
+}
+
 fn paint_text_button_row(ui: &mut Ui, rect: Rect, title: &str, subtitle: &str) {
     let text_width = rect.width().max(24.0);
     paint_truncated_row_text_top(
@@ -7534,6 +7817,16 @@ fn provider_file_summary(path: &Path) -> ProviderFileSummary {
         ),
         output_type: Some(entry.output_type),
     }
+}
+
+fn provider_file_supports_comfy_builder(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(entry) = serde_json::from_str::<ProviderEntry>(&text) else {
+        return false;
+    };
+    matches!(entry.connection, ProviderConnection::ComfyUi { .. })
 }
 
 fn provider_output_color(output_type: ProviderOutputType) -> Color32 {
