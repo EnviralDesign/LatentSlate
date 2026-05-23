@@ -90,6 +90,7 @@ const TIMELINE_MARKER_HIT_W: f32 = 22.0;
 const TIMELINE_MARKER_LABEL_W: f32 = 96.0;
 const TIMELINE_MARKER_LABEL_H: f32 = 18.0;
 const TIMELINE_SCRUB_PREVIEW_SECONDS: f64 = 0.03;
+const TIMELINE_WHEEL_ZOOM_SENSITIVITY: f32 = 0.01;
 const TIMELINE_HEADER_PAD_X: f32 = 4.0;
 const TIMELINE_HEADER_LEFT_W: f32 = 286.0;
 const TIMELINE_HEADER_RIGHT_W: f32 = 102.0;
@@ -4637,19 +4638,11 @@ impl NlaEguiApp {
             if !collapsed {
                 ui.add_space(8.0);
                 if kit::timeline_tool_icon_button(ui, "−").clicked() {
-                    self.set_timeline_zoom_anchored(
-                        self.editor.layout.timeline_zoom * 0.8,
-                        duration,
-                        viewport_w,
-                    );
+                    self.set_timeline_zoom_to_next_coarse(-1, duration, viewport_w);
                 }
                 ui.label(kit::caption(&zoom_label));
                 if kit::timeline_tool_icon_button(ui, "+").clicked() {
-                    self.set_timeline_zoom_anchored(
-                        self.editor.layout.timeline_zoom * 1.25,
-                        duration,
-                        viewport_w,
-                    );
+                    self.set_timeline_zoom_to_next_coarse(1, duration, viewport_w);
                 }
                 let fit_active = (zoom - fit_zoom).abs() <= 0.5;
                 let frames_active = (zoom - max_zoom).abs() <= 0.5;
@@ -4771,7 +4764,7 @@ impl NlaEguiApp {
         self.clamp_timeline_scroll(content_w, viewport_w);
         let content_viewport =
             Rect::from_min_max(rects.ruler.left_top(), rects.tracks.right_bottom());
-        self.handle_timeline_shift_scroll(ui, content_viewport, content_w, viewport_w);
+        self.handle_timeline_wheel(ui, content_viewport, duration, content_w, viewport_w);
         let cache_buckets = if self.editor.layout.preview_stats {
             let bucket_hint_seconds = ((6.0 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR)) as f64)
                 .max(1.0 / self.editor.project.settings.fps.max(1.0));
@@ -5198,6 +5191,46 @@ impl NlaEguiApp {
         self.clamp_timeline_scroll(content_w, viewport_w);
     }
 
+    fn set_timeline_zoom_at_view_x(
+        &mut self,
+        zoom: f32,
+        duration: f64,
+        viewport_w: f32,
+        anchor_x: f32,
+    ) {
+        let fps = self.editor.project.settings.fps.max(1.0) as f32;
+        let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
+        let next_zoom = zoom.clamp(fit_zoom, max_zoom);
+        let old_zoom = self
+            .editor
+            .layout
+            .timeline_zoom
+            .max(TIMELINE_MIN_ZOOM_FLOOR);
+        if (next_zoom - old_zoom).abs() < f32::EPSILON {
+            return;
+        }
+
+        let anchor_x = anchor_x.clamp(0.0, viewport_w.max(0.0));
+        let anchor_time = ((self.editor.layout.timeline_scroll_x + anchor_x) / old_zoom)
+            .clamp(0.0, duration as f32);
+        self.editor.layout.timeline_scroll_x = anchor_time * next_zoom - anchor_x;
+        self.editor.layout.timeline_zoom = next_zoom;
+        let content_w = (duration as f32 * next_zoom).max(viewport_w);
+        self.clamp_timeline_scroll(content_w, viewport_w);
+    }
+
+    fn set_timeline_zoom_to_next_coarse(&mut self, direction: i32, duration: f64, viewport_w: f32) {
+        let fps = self.editor.project.settings.fps.max(1.0) as f32;
+        let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
+        let next_zoom = next_timeline_coarse_zoom(
+            self.editor.layout.timeline_zoom,
+            direction,
+            fit_zoom,
+            max_zoom,
+        );
+        self.set_timeline_zoom_anchored(next_zoom, duration, viewport_w);
+    }
+
     fn clamp_timeline_scroll(&mut self, content_w: f32, viewport_w: f32) {
         let max_scroll = (content_w - viewport_w).max(0.0);
         if !self.editor.layout.timeline_scroll_x.is_finite() {
@@ -5217,25 +5250,18 @@ impl NlaEguiApp {
         });
         let zoom_out = ui.input(|input| input.key_pressed(egui::Key::Minus));
         if zoom_in {
-            self.set_timeline_zoom_anchored(
-                self.editor.layout.timeline_zoom * 1.25,
-                duration,
-                viewport_w,
-            );
+            self.set_timeline_zoom_to_next_coarse(1, duration, viewport_w);
         }
         if zoom_out {
-            self.set_timeline_zoom_anchored(
-                self.editor.layout.timeline_zoom * 0.8,
-                duration,
-                viewport_w,
-            );
+            self.set_timeline_zoom_to_next_coarse(-1, duration, viewport_w);
         }
     }
 
-    fn handle_timeline_shift_scroll(
+    fn handle_timeline_wheel(
         &mut self,
         ui: &mut Ui,
         viewport_rect: Rect,
+        duration: f64,
         content_w: f32,
         viewport_w: f32,
     ) {
@@ -5245,23 +5271,56 @@ impl NlaEguiApp {
         if !viewport_rect.contains(pointer) {
             return;
         }
-        let (shift, smooth_delta, wheel_delta) = ui.input(|input| {
-            let wheel_delta = input
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::MouseWheel {
-                        delta, modifiers, ..
-                    } if modifiers.shift => Some(*delta),
-                    _ => None,
-                })
-                .fold(Vec2::ZERO, |sum, delta| sum + delta);
+        let (ctrl_down, ctrl_zoom_delta, shift, smooth_delta, wheel_delta) = ui.input(|input| {
+            let mut ctrl_zoom_delta = 0.0;
+            let mut shift_wheel_delta = Vec2::ZERO;
+            for event in input.events.iter() {
+                if let egui::Event::MouseWheel {
+                    delta, modifiers, ..
+                } = event
+                {
+                    if modifiers.command || modifiers.ctrl || modifiers.mac_cmd {
+                        ctrl_zoom_delta += if delta.y.abs() > 0.0 {
+                            delta.y
+                        } else {
+                            delta.x
+                        };
+                    } else if modifiers.shift {
+                        shift_wheel_delta += *delta;
+                    }
+                }
+            }
             (
+                input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd,
+                ctrl_zoom_delta,
                 input.modifiers.shift,
                 input.smooth_scroll_delta,
-                wheel_delta,
+                shift_wheel_delta,
             )
         });
+
+        let ctrl_zoom_delta = if ctrl_zoom_delta.abs() > 0.0 {
+            ctrl_zoom_delta
+        } else if ctrl_down && smooth_delta.y.abs() > 0.0 {
+            smooth_delta.y
+        } else {
+            0.0
+        };
+        if ctrl_zoom_delta.abs() > 0.0 {
+            let zoom_factor = (ctrl_zoom_delta * TIMELINE_WHEEL_ZOOM_SENSITIVITY)
+                .exp()
+                .clamp(0.5, 2.0);
+            let anchor_x = pointer.x - viewport_rect.left();
+            self.set_timeline_zoom_at_view_x(
+                self.editor.layout.timeline_zoom * zoom_factor,
+                duration,
+                viewport_w,
+                anchor_x,
+            );
+            ui.ctx().request_repaint();
+            return;
+        }
+
         let content_delta = if wheel_delta.x.abs() > 0.0 {
             wheel_delta.x
         } else if wheel_delta.y.abs() > 0.0 {
@@ -9175,6 +9234,45 @@ fn timeline_zoom_bounds(duration: f32, viewport_w: f32, fps: f32) -> (f32, f32) 
     let min_zoom = (viewport_w / duration).max(TIMELINE_MIN_ZOOM_FLOOR);
     let max_zoom = (fps.max(1.0) * TIMELINE_MAX_PX_PER_FRAME).max(min_zoom);
     (min_zoom, max_zoom)
+}
+
+fn next_timeline_coarse_zoom(current: f32, direction: i32, fit_zoom: f32, max_zoom: f32) -> f32 {
+    let fit_zoom = fit_zoom.max(TIMELINE_MIN_ZOOM_FLOOR);
+    let max_zoom = max_zoom.max(fit_zoom);
+    if (max_zoom - fit_zoom).abs() <= f32::EPSILON {
+        return fit_zoom;
+    }
+
+    let current = current.clamp(fit_zoom, max_zoom);
+    let mut stops = vec![fit_zoom, max_zoom];
+    const MANTISSAS: &[f32] = &[1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0];
+    let min_exp = fit_zoom.log10().floor() as i32 - 1;
+    let max_exp = max_zoom.log10().ceil() as i32 + 1;
+    for exp in min_exp..=max_exp {
+        let decade = 10_f32.powi(exp);
+        for mantissa in MANTISSAS {
+            let stop = mantissa * decade;
+            if stop >= fit_zoom * 0.999 && stop <= max_zoom * 1.001 {
+                stops.push(stop.clamp(fit_zoom, max_zoom));
+            }
+        }
+    }
+    stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    stops.dedup_by(|a, b| (*a - *b).abs() <= ((*a).max(*b) * 0.002).max(0.25));
+
+    let epsilon = (current.abs() * 0.00001).max(0.001);
+    if direction >= 0 {
+        stops
+            .into_iter()
+            .find(|stop| *stop > current + epsilon)
+            .unwrap_or(max_zoom)
+    } else {
+        stops
+            .into_iter()
+            .rev()
+            .find(|stop| *stop < current - epsilon)
+            .unwrap_or(fit_zoom)
+    }
 }
 
 fn nice_timeline_step(target_seconds: f64) -> f64 {
