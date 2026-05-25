@@ -280,6 +280,12 @@ pub enum GenerationJobStatus {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct GenerationSeedAdvance {
+    pub field: String,
+    pub next_seed: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct GenerationJob {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
@@ -296,6 +302,7 @@ pub struct GenerationJob {
     pub folder_path: PathBuf,
     pub inputs: HashMap<String, serde_json::Value>,
     pub inputs_snapshot: HashMap<String, InputValue>,
+    pub seed_advance: Option<GenerationSeedAdvance>,
     pub version: Option<String>,
     pub error: Option<String>,
 }

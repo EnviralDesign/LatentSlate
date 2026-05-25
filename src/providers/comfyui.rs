@@ -6,7 +6,7 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::core::paths;
@@ -19,6 +19,9 @@ use crate::state::{
 const DEFAULT_WORKFLOW_PATH: &str = "workflows/sdxl_simple_example_API.json";
 const OUTPUT_NODE_ID: &str = "53";
 const DEFAULT_OUTPUT_KEY: &str = "images";
+const COMFY_HISTORY_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const COMFY_IMAGE_AUDIO_HISTORY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const COMFY_VIDEO_HISTORY_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct ComfyUiOutput {
@@ -192,7 +195,7 @@ pub async fn generate_output(
             let _ = listen_progress_ws(&base_url, &prompt_id, total_nodes, tx).await;
         })
     });
-    let outputs = poll_history(&client, base_url, &prompt_id).await?;
+    let outputs = poll_history(&client, base_url, &prompt_id, output_type).await?;
     if let Some(task) = ws_task {
         task.abort();
     }
@@ -285,87 +288,50 @@ fn resolve_node_id_internal(
         return Err("Workflow JSON must be an object.".to_string());
     };
 
-    let mut candidates = Vec::new();
-    let mut preferred = Vec::new();
-    for (node_id, node_value) in map.iter() {
-        let Some(node_obj) = node_value.as_object() else {
-            continue;
-        };
-        let class_type = node_obj
-            .get("class_type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        if class_type != selector.class_type {
-            continue;
-        }
-
-        if let Some(tag) = selector.tag.as_ref() {
-            let node_tag = node_obj
-                .get("_meta")
-                .and_then(|meta| meta.get("nla_tag"))
-                .and_then(|value| value.as_str());
-            if node_tag != Some(tag.as_str()) {
-                continue;
-            }
-        }
-
-        let inputs = node_obj.get("inputs").and_then(|value| value.as_object());
-        let has_input_key = inputs
-            .map(|map| map.contains_key(&selector.input_key))
-            .unwrap_or(false);
-
-        if require_input_key && !has_input_key {
-            continue;
-        }
-
-        let title = node_obj
-            .get("_meta")
-            .and_then(|meta| meta.get("title"))
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string());
-
-        if has_input_key {
-            preferred.push((node_id.clone(), title.clone()));
-        }
-        candidates.push((node_id.clone(), title));
-    }
-
-    if candidates.is_empty() {
+    let node_id = selector
+        .node_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "ComfyUI selector is missing node_id. Re-save this provider in the Provider Builder ({})",
+                selector_label(selector)
+            )
+        })?;
+    let Some(node_value) = map.get(node_id) else {
         return Err(format!(
-            "No workflow node matched selector ({})",
+            "Workflow missing node_id {} for selector ({})",
+            node_id,
             selector_label(selector)
         ));
-    }
-
-    if !preferred.is_empty() {
-        candidates = preferred;
-    }
-
-    if let Some(title) = selector.title.as_ref() {
-        let filtered: Vec<(String, Option<String>)> = candidates
-            .iter()
-            .filter(|(_, node_title)| node_title.as_ref() == Some(title))
-            .cloned()
-            .collect();
-        if !filtered.is_empty() {
-            candidates = filtered;
-        }
-    }
-
-    if candidates.len() > 1 {
-        let ids = candidates
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
+    };
+    let Some(node_obj) = node_value.as_object() else {
+        return Err(format!("Workflow node {} is not an object.", node_id));
+    };
+    let class_type = node_obj
+        .get("class_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if class_type != selector.class_type {
         return Err(format!(
-            "Multiple workflow nodes matched selector ({}): {}",
-            selector_label(selector),
-            ids
+            "Workflow node_id {} class changed from {} to {}.",
+            node_id, selector.class_type, class_type
         ));
     }
-
-    Ok(candidates.pop().map(|(id, _)| id).unwrap_or_default())
+    if require_input_key {
+        let has_input_key = node_obj
+            .get("inputs")
+            .and_then(|value| value.as_object())
+            .map(|inputs| inputs.contains_key(&selector.input_key))
+            .unwrap_or(false);
+        if !has_input_key {
+            return Err(format!(
+                "Workflow node_id {} no longer has input '{}'.",
+                node_id, selector.input_key
+            ));
+        }
+    }
+    Ok(node_id.clone())
 }
 
 fn selector_label(selector: &NodeSelector) -> String {
@@ -373,6 +339,9 @@ fn selector_label(selector: &NodeSelector) -> String {
         format!("class_type={}", selector.class_type),
         format!("input_key={}", selector.input_key),
     ];
+    if let Some(node_id) = selector.node_id.as_ref() {
+        parts.push(format!("node_id={}", node_id));
+    }
     if let Some(tag) = selector.tag.as_ref() {
         parts.push(format!("tag={}", tag));
     }
@@ -526,9 +495,12 @@ async fn poll_history(
     client: &reqwest::Client,
     base_url: &str,
     prompt_id: &str,
+    output_type: ProviderOutputType,
 ) -> Result<Value, String> {
     let url = format!("{}/history/{}", base_url.trim_end_matches('/'), prompt_id);
-    for _ in 0..240 {
+    let timeout = comfy_history_timeout(output_type);
+    let start = Instant::now();
+    while start.elapsed() < timeout {
         let response = client
             .get(&url)
             .send()
@@ -543,10 +515,21 @@ async fn poll_history(
             return Ok(outputs.clone());
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(COMFY_HISTORY_POLL_INTERVAL).await;
     }
 
-    Err("Timed out waiting for ComfyUI output.".to_string())
+    Err(format!(
+        "Timed out waiting for ComfyUI {} output after {} minutes.",
+        output_type_label(output_type),
+        timeout.as_secs() / 60
+    ))
+}
+
+fn comfy_history_timeout(output_type: ProviderOutputType) -> Duration {
+    match output_type {
+        ProviderOutputType::Video => COMFY_VIDEO_HISTORY_TIMEOUT,
+        ProviderOutputType::Image | ProviderOutputType::Audio => COMFY_IMAGE_AUDIO_HISTORY_TIMEOUT,
+    }
 }
 
 fn build_ws_url(base_url: &str, client_id: &str) -> String {
@@ -709,23 +692,23 @@ fn find_output_ref(
 ) -> Option<OutputRef> {
     if let Some(node_id) = output_node_id {
         if let Some(output) = outputs.get(node_id) {
+            if let Some(item) = extract_output_ref_any(output, output_type, index) {
+                return Some(item);
+            }
             if let Some(key) = output_key {
                 if let Some(item) = extract_output_ref(output, key, index, Some(output_type)) {
                     return Some(item);
                 }
             }
-            if let Some(item) = extract_output_ref_any(output, output_type, index) {
-                return Some(item);
-            }
         }
     } else if let Some(output) = outputs.get(OUTPUT_NODE_ID) {
+        if let Some(item) = extract_output_ref_any(output, output_type, index) {
+            return Some(item);
+        }
         if let Some(key) = output_key {
             if let Some(item) = extract_output_ref(output, key, index, Some(output_type)) {
                 return Some(item);
             }
-        }
-        if let Some(item) = extract_output_ref_any(output, output_type, index) {
-            return Some(item);
         }
     }
 

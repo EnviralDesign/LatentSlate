@@ -67,7 +67,7 @@ Right panel:
 
 Actions:
 - **Expose Input** button next to each input key
-- **Set Output** button for output nodes
+- **Use as Output** button for saver/output nodes
 
 ## Step 4: Exposed Inputs Editor
 
@@ -86,8 +86,11 @@ For each exposed input:
 
 **Goal:** Define provider output.
 
-- Choose a node output and index.
+- Choose a saver/output node.
 - Show output_type picker (image/video/audio).
+- Hide ComfyUI history output keys from normal UX. The builder auto-fills
+  the manifest key for compatibility, and runtime detection scans all file
+  arrays on the selected node for a file matching the provider output type.
 
 ## Step 6: Review & Save
 
@@ -104,12 +107,12 @@ Review panel:
 
 ## Node Linking UX (ComfyUI)
 
-Bindings never show node IDs. Use dropdowns/search:
+Bindings do not require manual node ID editing. Use dropdowns/search:
 
-- **Node dropdown** (filtered by class type/title)
+- **Node dropdown** (filtered by class type/title; stores workflow node ID)
 - **Input dropdown** (keys for the node)
-- **Tag field** (optional, for stable binding; TODO: expose with auto-tagging)
-- **Conflict warning** if selector matches multiple nodes
+- **Tag field** (optional metadata)
+- **Stale binding warning** if the saved node ID is missing or no longer has the selected input
 
 ## Workflow Drift Handling
 

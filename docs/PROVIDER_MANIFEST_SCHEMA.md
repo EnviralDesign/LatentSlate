@@ -47,6 +47,7 @@ load it consistently.
   "inputs": [ ... ],
   "output": {
     "selector": {
+      "node_id": "53",
       "class_type": "PreviewImage",
       "input_key": "images",
       "tag": "final_output"
@@ -56,8 +57,12 @@ load it consistently.
 }
 ```
 
-Note: `output.selector.input_key` maps to the output list key in ComfyUI history
-(usually `images`).
+Note: `output.selector.input_key` is retained for manifest compatibility and
+best-effort lookup, but normal builder UX does not expose it. At runtime the
+adapter first inspects every file list reported by the selected output node and
+chooses the first file whose extension matches `output_type`. This avoids making
+users know ComfyUI history internals such as video saver nodes reporting mp4s
+under an `images` key.
 
 ### Input schema
 
@@ -76,6 +81,7 @@ Note: `output.selector.input_key` maps to the output list key in ComfyUI history
   },
   "bind": {
     "selector": {
+      "node_id": "6",
       "tag": "prompt_text",
       "class_type": "CLIPTextEncode",
       "input_key": "text",
@@ -88,14 +94,15 @@ Note: `output.selector.input_key` maps to the output list key in ComfyUI history
 
 ### Selector rules
 
-Selectors resolve without node IDs:
+Selectors resolve by ComfyUI API workflow node ID:
 
-1. If `tag` is present, it must match `_meta.nla_tag` in the workflow JSON.
-2. `class_type + input_key` must match a node input.
-3. `title` is used to disambiguate when multiple nodes match.
-4. If still ambiguous, the adapter errors with a selector mismatch.
+1. `node_id` is required for ComfyUI provider execution.
+2. For exposed inputs, `input_key` must exist on that node.
+3. `class_type`, `title`, and `tag` are retained as builder/display metadata and stale-binding diagnostics.
+4. Output selectors require `node_id` but do not require users to manage `input_key`; the builder auto-fills it for JSON/back-compat.
+5. If the node ID is missing, deleted, or no longer has the selected input, the adapter errors and the provider should be re-saved from the Provider Builder.
 
-Tags are optional. The current builder UI does not expose tagging (TODO: auto-tagging).
+Tags are optional metadata. The current builder UI does not expose tagging.
 
 ### UI hints
 

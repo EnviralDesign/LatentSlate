@@ -25,10 +25,10 @@ The Provider Builder UI is now available for ComfyUI workflows:
 1. `Settings > AI Providers...` -> **Build**.
 2. Pick a ComfyUI API workflow JSON file.
 3. Use search + dropdowns to select node inputs to expose.
-4. Choose a single output node (image/video/audio).
+4. Choose a single saver/output node and output type (image/video/audio).
 5. Save: the builder writes a manifest and creates the provider entry.
 
-No node ID editing required. The builder uses selectors/tags under the hood.
+No manual node ID editing is required. The builder records the selected ComfyUI node ID under the hood.
 
 ## Where Provider Files Live
 
@@ -94,7 +94,7 @@ Open the Providers dialog:
 - `workflow_path`: Optional. If omitted, the app uses the default
   `workflows/sdxl_simple_example_API.json`.
 - `manifest_path`: Optional but recommended. When provided, the adapter binds
-  inputs/outputs via selectors instead of legacy node IDs.
+  inputs/outputs via node IDs captured from the workflow browser.
 
 ## ComfyUI Workflow Setup
 
@@ -107,39 +107,44 @@ Recommended flow:
 3. Make your edits (swap model, sampler, etc.).
 4. Export as **API** JSON and save over your file.
 
-This preserves the workflow structure and node titles that selector matching
-uses (tags are optional but recommended for stability).
+This preserves the workflow structure and node IDs that provider bindings use.
 
 ### Input Mapping (Builder / Manifest)
 
 The ComfyUI adapter now reads the **manifest** (if present) and binds inputs by
-selector instead of node ID. Each exposed input maps to:
+node ID and input key. Each exposed input maps to:
 
 ```
-selector: { tag?, class_type, input_key, title? }
+selector: { node_id, class_type, input_key, title?, tag? }
 ```
 
 Selector matching behavior:
 
-- `tag` (if present) must match `_meta.nla_tag` inside the workflow JSON.
-- `class_type + input_key` must match a node input.
-- `title` is used to disambiguate when multiple nodes match.
+- `node_id + input_key` must match a node input.
+- `class_type` is verified as a stale-binding guard.
+- `title` and `tag` are retained as metadata.
 
 If you don't provide a manifest (or omit `manifest_path` in the provider entry),
 the adapter falls back to the legacy node-ID bindings in the SDXL example.
 
 ### Output Expectations
 
-- With a manifest: the output selector identifies the node and the output key.
-- Without a manifest: the adapter looks for an image output on node `53`
-  (PreviewImage) and falls back to the first image output it can find.
-- Only the first image output (or the `index` if specified) is used.
+- With a manifest: the output selector identifies the output node. The manifest
+  keeps an `input_key` for compatibility, but normal users do not need to know
+  or edit it.
+- At runtime the adapter checks the selected node's ComfyUI history and picks
+  the first file whose extension matches the provider output type. This handles
+  confusing ComfyUI cases where video saver nodes report mp4 files under a key
+  named `images`.
+- Without a manifest: the adapter uses the legacy SDXL image fallback on node
+  `53` (PreviewImage) and then scans for the first matching output.
+- Only the first matching output (or the `index` if specified) is used.
 
 ### Builder Binding (Current)
 
-The builder lets you bind inputs by **selector** (class type + input key + optional tag),
-so node IDs are no longer required. See `docs/PROVIDER_MANIFEST_SCHEMA.md`.
-Tags are optional and not exposed in the builder UI yet (TODO: auto-tagging).
+The builder lets you select workflow nodes visually, then stores the node ID under
+the hood so users do not edit node IDs by hand. See
+`docs/PROVIDER_MANIFEST_SCHEMA.md`. Tags are optional metadata.
 
 ## Using Your Provider in the App
 
@@ -157,16 +162,15 @@ Tags are optional and not exposed in the builder UI yet (TODO: auto-tagging).
   then from the executable directory. Use absolute paths if in doubt.
 - **Provider ID changes** will break existing generative assets that reference it.
 - **Manual JSON without a manifest** uses the legacy node ID bindings.
-- **Manifest-based binding** requires selector matches; mismatches will error.
+- **Manifest-based binding** requires valid node IDs; missing/deleted nodes will error.
 
 ## Troubleshooting
 
 - "Missing inputs: ..." -> Required fields are not set in the Attributes panel.
-- "No workflow node matched selector (...)" -> The manifest selector doesn't
-  match your workflow. Check `_meta.nla_tag`, class type, input key, and title.
-- "Multiple workflow nodes matched selector (...)" -> Add a tag or title to
-  narrow the match.
+- "Workflow missing node_id ..." -> The manifest references a node that no longer
+  exists. Re-open the provider in the builder and expose that input/output again.
 - "ComfyUI rejected prompt ..." -> Base URL is wrong or ComfyUI is not running.
-- "Timed out waiting for ComfyUI output." -> Workflow stalled or produced no image.
-- "ComfyUI history did not include image outputs." -> Ensure your workflow
-  ends with an image output node.
+- "Timed out waiting for ComfyUI image/video/audio output..." -> Workflow is
+  still running, stalled, or produced no matching output before the timeout.
+- "ComfyUI history did not include image/video/audio outputs." -> Ensure your
+  provider output type matches the selected saver/output node.

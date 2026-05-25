@@ -133,7 +133,7 @@ The clip's duration on the timeline serves as the **target duration** for genera
 1. Build and test **any** ComfyUI workflow in isolation.
 2. Attach that workflow as a provider without hand-editing JSON.
 3. Expose only a **small, curated set** of inputs in the editor UI.
-4. Keep providers stable even if ComfyUI **node IDs change**.
+4. Keep provider bindings explicit and predictable for repeated ComfyUI node classes.
 
 ### Provider Entry (Global)
 
@@ -240,23 +240,24 @@ Notes:
 - Tags (like `prompt_text`) are optional; if present, they should live in
   `_meta.nla_tag` inside the workflow JSON.
 
-### Binding Resolution (No Node IDs)
+### Binding Resolution (ComfyUI Node IDs)
 
-Bindings resolve workflow inputs using a **selector**, not raw node IDs.
-Selectors are intentionally flexible:
+Bindings resolve workflow inputs using the ComfyUI API workflow **node ID** plus the selected input key.
+Selectors store:
 
+- `node_id` (required)
 - `class_type` (required)
 - `input_key` (required)
 - `title` (optional, from `_meta.title`)
-- `tag` (optional, a stable identifier written into workflow metadata)
+- `tag` (optional metadata)
 
 Resolution strategy (current):
-1. If `tag` is present, it must match `_meta.nla_tag`.
-2. Match by `class_type + input_key`.
-3. Use `title` to disambiguate if multiple nodes match.
-4. If still ambiguous, the adapter errors and the binding needs attention.
+1. Match by `node_id`.
+2. For inputs, verify the node still has `input_key`.
+3. Verify `class_type` so stale bindings fail loudly if a node ID was reused.
+4. If the node ID is missing or stale, the adapter errors and the provider should be re-saved from the builder.
 
-The app may store a **last-seen node ID** for speed, but it is never the source of truth.
+`class_type`, title, and optional tags are retained as builder metadata and stale-binding diagnostics, but execution is keyed by node ID.
 
 ### Tagging Nodes (Optional)
 
@@ -702,7 +703,7 @@ struct GenerationRecord {
 | Generative assets | Explicit creation, version history, active version |
 | Input wiring | Timeline overlap = smart suggestions, no explicit linking |
 | Provider taxonomy | Grouped by output type; input schema is dynamic |
-| Provider bindings | Resolve via selectors/tags, not node IDs |
+| Provider bindings | Resolve ComfyUI inputs by node ID plus input key; resolve outputs by selected node plus media-file detection |
 | Provider builder UI | Workflow picker + node browser for binding exposed inputs |
 | Track types | Video, Audio, Markers |
 | Track duplication | Video/Audio can be duplicated; Markers is singular |

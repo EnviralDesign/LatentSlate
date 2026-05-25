@@ -9,6 +9,7 @@
   "inputs": [],
   "output": {
     "selector": {
+      "node_id": "53",
       "class_type": "PreviewImage",
       "input_key": "images",
       "title": "preview image RESULT"

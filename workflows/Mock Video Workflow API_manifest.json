@@ -17,6 +17,7 @@
       "default": 42,
       "bind": {
         "selector": {
+          "node_id": "4",
           "class_type": "SeedGenerator",
           "input_key": "seed",
           "title": "SeedGenerator"
@@ -26,6 +27,7 @@
   ],
   "output": {
     "selector": {
+      "node_id": "2",
       "class_type": "VHS_VideoCombine",
       "input_key": "images",
       "title": "Video Combine 🎥🅥🅗🅢"

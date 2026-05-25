@@ -44,9 +44,9 @@ use crate::state::{
     asset_display_name, input_value_as_bool, input_value_as_f64, input_value_as_i64,
     input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipTransform,
     ComfyOutputSelector, ComfyWorkflowRef, GenerationJob, GenerationJobStatus, GenerationRecord,
-    GenerativeConfig, InputBinding, InputUi, InputValue, ManifestInput, NodeSelector, Project,
-    ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
-    ProviderManifest, ProviderOutputType, SeedStrategy, TrackType,
+    GenerationSeedAdvance, GenerativeConfig, InputBinding, InputUi, InputValue, ManifestInput,
+    NodeSelector, Project, ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField,
+    ProviderInputType, ProviderManifest, ProviderOutputType, SeedStrategy, TrackType,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
@@ -258,6 +258,8 @@ pub struct NlaEguiApp {
     export_cancel: Option<Arc<AtomicBool>>,
     export_preview_texture: Option<TextureHandle>,
     queue_button_rect: Option<Rect>,
+    asset_drop_target_rect: Option<Rect>,
+    asset_drop_target_hovered: bool,
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
 }
@@ -599,12 +601,14 @@ struct ProviderBuilderState {
 
 #[derive(Clone, Debug)]
 struct ProviderOutputNodeDraft {
+    node_id: Option<String>,
     class_type: String,
     title: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 struct ProviderNodeSelectorDraft {
+    node_id: Option<String>,
     class_type: String,
     input_key: String,
     title: Option<String>,
@@ -719,6 +723,8 @@ impl NlaEguiApp {
             export_cancel: None,
             export_preview_texture: None,
             queue_button_rect: None,
+            asset_drop_target_rect: None,
+            asset_drop_target_hovered: false,
             pending_automation_ui_actions: Vec::new(),
             pending_automation_screenshot: None,
         }
@@ -2138,6 +2144,8 @@ impl NlaEguiApp {
                         self.editor.layout.left_collapsed = false;
                     }
                 });
+            self.asset_drop_target_rect = Some(response.response.rect);
+            self.asset_drop_target_hovered = response.response.hovered();
             kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Right);
             return;
         }
@@ -2150,6 +2158,8 @@ impl NlaEguiApp {
             .show_inside(root, |ui| {
                 kit::fixed_panel_body(ui, |ui| self.assets_panel(ui));
             });
+        self.asset_drop_target_rect = Some(response.response.rect);
+        self.asset_drop_target_hovered = response.response.hovered();
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Right);
     }
 
@@ -2178,10 +2188,7 @@ impl NlaEguiApp {
                     .remember_last_dir()
                     .filters(ASSET_IMPORT_FILTERS);
                 if let Some(path) = kit::pick_file_dialog(ui, options) {
-                    match self.editor.import_asset(path) {
-                        Ok(asset_id) => self.editor.selection.asset_ids = vec![asset_id],
-                        Err(err) => self.editor.status = err,
-                    }
+                    self.import_asset_files(vec![path]);
                 }
             }
 
@@ -2265,6 +2272,95 @@ impl NlaEguiApp {
         });
         if clear_selection {
             self.editor.selection.clear();
+        }
+    }
+
+    fn handle_asset_file_drops(&mut self, ctx: &Context) {
+        let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
+        if dropped_files.is_empty() {
+            return;
+        }
+
+        let pointer_pos =
+            ctx.input(|input| input.pointer.interact_pos().or(input.pointer.hover_pos()));
+        let drop_in_assets = self
+            .asset_drop_target_rect
+            .is_some_and(|rect| pointer_pos.is_some_and(|pos| rect.contains(pos)))
+            || self.asset_drop_target_hovered;
+        if !drop_in_assets {
+            return;
+        }
+
+        if self.editor.project_root().is_none() {
+            self.editor.status =
+                "Open or create a project before dropping media files to import.".to_string();
+            return;
+        }
+
+        let paths: Vec<PathBuf> = dropped_files
+            .into_iter()
+            .filter_map(|file| file.path)
+            .collect();
+        if paths.is_empty() {
+            self.editor.status = "Dropped data did not include filesystem paths.".to_string();
+            return;
+        }
+
+        self.import_asset_files(paths);
+        if self.editor.layout.left_collapsed {
+            self.editor.layout.left_collapsed = false;
+        }
+    }
+
+    fn import_asset_files(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if self.editor.project_root().is_none() {
+            self.editor.status =
+                "Open or create a project before importing media files.".to_string();
+            return;
+        }
+
+        let mut imported = Vec::new();
+        let mut failures = Vec::new();
+        for path in paths {
+            match self.editor.import_asset(&path) {
+                Ok(asset_id) => imported.push(asset_id),
+                Err(err) => failures.push(format!("{}: {err}", path.display())),
+            }
+        }
+
+        let imported_count = imported.len();
+        if imported_count > 0 {
+            self.editor.selection.asset_ids = imported;
+            self.editor.selection.clip_ids.clear();
+            self.editor.selection.marker_ids.clear();
+            self.editor.selection.track_ids.clear();
+        }
+
+        match (imported_count, failures.len()) {
+            (0, 0) => {}
+            (imported_count, 0) => {
+                self.editor.status = if imported_count == 1 {
+                    "Asset imported".to_string()
+                } else {
+                    format!("Imported {imported_count} assets")
+                };
+            }
+            (0, failed_count) => {
+                self.editor.status = if failed_count == 1 {
+                    failures
+                        .pop()
+                        .unwrap_or_else(|| "Failed to import dropped file.".to_string())
+                } else {
+                    format!("Failed to import {failed_count} files")
+                };
+            }
+            (imported_count, failed_count) => {
+                self.editor.status =
+                    format!("Imported {imported_count} assets; {failed_count} files failed");
+            }
         }
     }
 
@@ -7178,7 +7274,11 @@ impl NlaEguiApp {
                                 entry.progress_node = Some(1.0);
                                 entry.error = None;
                             }
-                            self.finish_generation_success(job, output);
+                            self.finish_generation_success(job.clone(), output);
+                            if let Err(err) = self.advance_generation_seed_after_attempt(&job) {
+                                self.editor.status =
+                                    format!("Generated, but seed advance save failed: {err}");
+                            }
                         }
                     }
                     Err(err) => {
@@ -7197,11 +7297,44 @@ impl NlaEguiApp {
                             entry.progress_node = None;
                             entry.error = Some(message.clone());
                         }
-                        self.editor.status = message;
+                        let seed_save_error = job_snapshot
+                            .as_ref()
+                            .and_then(|job| self.advance_generation_seed_after_attempt(job).err());
+                        self.editor.status = if let Some(err) = seed_save_error {
+                            format!("{message} (seed advance save failed: {err})")
+                        } else {
+                            message
+                        };
                     }
                 }
             }
         }
+    }
+
+    fn advance_generation_seed_after_attempt(&mut self, job: &GenerationJob) -> Result<(), String> {
+        let Some(seed_advance) = job.seed_advance.as_ref() else {
+            return Ok(());
+        };
+        if self.editor.project.find_asset(job.asset_id).is_none() {
+            return Ok(());
+        }
+
+        let next_seed_value = serde_json::Value::Number(seed_advance.next_seed.into());
+        self.editor
+            .project
+            .update_generative_config(job.asset_id, |config| {
+                config.inputs.insert(
+                    seed_advance.field.clone(),
+                    InputValue::Literal {
+                        value: next_seed_value,
+                    },
+                );
+            });
+
+        self.editor
+            .project
+            .save_generative_config(job.asset_id)
+            .map_err(|err| err.to_string())
     }
 
     fn finish_generation_success(&mut self, job: GenerationJob, output: GenerationOutput) {
@@ -7339,19 +7472,31 @@ impl NlaEguiApp {
         }
 
         for index in 0..batch_count {
-            let (inputs, inputs_snapshot) = match (batch.seed_strategy, seed_field.as_ref()) {
-                (SeedStrategy::Keep, _) | (_, None) => {
-                    (resolved.values.clone(), resolved.snapshot.clone())
-                }
-                (SeedStrategy::Increment, Some(field)) => {
-                    let seed = seed_base.unwrap_or(0) + index as i64;
-                    update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed)
-                }
-                (SeedStrategy::Random, Some(field)) => {
-                    let seed = random_seed_i64();
-                    update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed)
-                }
-            };
+            let (inputs, inputs_snapshot, seed_advance) =
+                match (batch.seed_strategy, seed_field.as_ref()) {
+                    (SeedStrategy::Keep, _) | (_, None) => {
+                        (resolved.values.clone(), resolved.snapshot.clone(), None)
+                    }
+                    (SeedStrategy::Increment, Some(field)) => {
+                        let seed = seed_base.unwrap_or(0) + index as i64;
+                        let (inputs, inputs_snapshot) =
+                            update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed);
+                        (
+                            inputs,
+                            inputs_snapshot,
+                            Some(GenerationSeedAdvance {
+                                field: field.clone(),
+                                next_seed: seed.saturating_add(1),
+                            }),
+                        )
+                    }
+                    (SeedStrategy::Random, Some(field)) => {
+                        let seed = random_seed_i64();
+                        let (inputs, inputs_snapshot) =
+                            update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed);
+                        (inputs, inputs_snapshot, None)
+                    }
+                };
 
             self.editor.generation_queue.push(GenerationJob {
                 id: Uuid::new_v4(),
@@ -7369,6 +7514,7 @@ impl NlaEguiApp {
                 folder_path: folder_path.clone(),
                 inputs,
                 inputs_snapshot,
+                seed_advance,
                 version: None,
                 error: None,
             });
@@ -8168,9 +8314,24 @@ impl NlaEguiApp {
                     let use_output_w = ui.available_width();
                     if kit::secondary_button(ui, "Use as Output", use_output_w).clicked() {
                         self.provider_builder.output_node = Some(ProviderOutputNodeDraft {
+                            node_id: Some(node.id),
                             class_type: node.class_type,
                             title: node.title,
                         });
+                        self.provider_builder.output_key = self
+                            .provider_builder
+                            .output_node
+                            .as_ref()
+                            .map(|node| {
+                                inferred_output_key_for_node(
+                                    node,
+                                    self.provider_builder.output_type,
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                default_output_key(self.provider_builder.output_type).to_string()
+                            });
+                        self.provider_builder.output_tag = "output".to_string();
                         self.provider_builder.error = None;
                     }
                 }
@@ -8183,28 +8344,23 @@ impl NlaEguiApp {
             kit::card_frame().show(ui, |ui| {
                 kit::field_label(ui, "Provider Settings");
                 ui.add_space(kit::FORM_ROW_GAP);
-                StripBuilder::new(ui)
-                    .clip(true)
-                    .size(Size::remainder().at_least(180.0))
-                    .size(Size::exact(kit::FORM_ROW_GAP))
-                    .size(Size::exact(120.0))
-                    .horizontal(|mut strip| {
-                        strip.cell(|ui| {
-                            kit::labeled_text_field(
-                                ui,
-                                "Name",
-                                &mut self.provider_builder.provider_name,
-                            );
-                        });
-                        strip.empty();
-                        strip.cell(|ui| {
-                            provider_output_type_field(
-                                ui,
-                                "Type",
-                                &mut self.provider_builder.output_type,
-                            );
-                        });
-                    });
+                kit::field_grid_row(ui, &[1.0, 0.46], |ui, index| match index {
+                    0 => {
+                        kit::labeled_text_field(
+                            ui,
+                            "Name",
+                            &mut self.provider_builder.provider_name,
+                        );
+                    }
+                    1 => {
+                        provider_output_type_field(
+                            ui,
+                            "Type",
+                            &mut self.provider_builder.output_type,
+                        );
+                    }
+                    _ => {}
+                });
                 ui.add_space(kit::FORM_ROW_GAP);
                 kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
                 ui.add_space(kit::FORM_ROW_GAP);
@@ -8282,13 +8438,6 @@ impl NlaEguiApp {
                     ui,
                     &format!("Exposed Inputs ({})", self.provider_builder.inputs.len()),
                 );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if kit::field_button(ui, "Add Input", 86.0).clicked() {
-                        self.provider_builder
-                            .inputs
-                            .push(ProviderBuilderInput::blank());
-                    }
-                });
             });
             ui.add_space(kit::FORM_ROW_GAP);
             if self.provider_builder.inputs.is_empty() {
@@ -8322,40 +8471,27 @@ impl NlaEguiApp {
         kit::card_frame().show(ui, |ui| {
             kit::field_label(ui, "Output Configuration");
             ui.add_space(kit::FORM_ROW_GAP);
-            let output_label = self
-                .provider_builder
-                .output_node
-                .as_ref()
-                .map(|node| {
-                    node.title
-                        .clone()
-                        .unwrap_or_else(|| node.class_type.clone())
-                })
-                .unwrap_or_else(|| "No output node selected".to_string());
-            ui.label(kit::caption(format!("Node: {output_label}")));
-            ui.add_space(kit::FORM_ROW_GAP);
-            StripBuilder::new(ui)
-                .clip(true)
-                .size(Size::remainder().at_least(120.0))
-                .size(Size::exact(kit::FORM_ROW_GAP))
-                .size(Size::remainder().at_least(120.0))
-                .horizontal(|mut strip| {
-                    strip.cell(|ui| {
-                        kit::labeled_text_field(
-                            ui,
-                            "Output Key",
-                            &mut self.provider_builder.output_key,
-                        );
-                    });
-                    strip.empty();
-                    strip.cell(|ui| {
-                        kit::labeled_text_field(
-                            ui,
-                            "Output Tag",
-                            &mut self.provider_builder.output_tag,
-                        );
-                    });
-                });
+            if let Some(node) = self.provider_builder.output_node.as_ref() {
+                let output_label = node
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| node.class_type.clone());
+                ui.label(kit::value(output_label));
+                ui.label(kit::caption(format!(
+                    "Node {} / {}",
+                    node.node_id.as_deref().unwrap_or("-"),
+                    node.class_type
+                )));
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(format!(
+                    "The app will read the selected node's ComfyUI history and pick the first {} file it produced.",
+                    provider_output_type_label(self.provider_builder.output_type)
+                )));
+            } else {
+                ui.label(kit::caption(
+                    "Select a saver/output node, then click Use as Output.",
+                ));
+            }
         });
     }
 
@@ -8408,18 +8544,23 @@ impl NlaEguiApp {
         node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
         input_key: &str,
     ) {
-        if self
-            .provider_builder
-            .inputs
-            .iter()
-            .any(|input| input.name == input_key)
-        {
+        if self.provider_builder.inputs.iter().any(|input| {
+            input.selector.node_id.as_deref() == Some(node.id.as_str())
+                && input.selector.input_key == input_key
+        }) {
             self.provider_builder.error = Some("Input already exposed.".to_string());
             return;
         }
+        let (name, label) = provider_input_name_and_label(
+            node.title.as_deref(),
+            input_key,
+            &self.provider_builder.inputs,
+        );
         self.provider_builder
             .inputs
-            .push(ProviderBuilderInput::from_node(node, input_key));
+            .push(ProviderBuilderInput::from_node(
+                node, input_key, name, label,
+            ));
         self.provider_builder.error = None;
     }
 
@@ -8899,6 +9040,7 @@ impl eframe::App for NlaEguiApp {
         // App-wide bars claim root space first; docked editor panels sit above the status bar.
         self.status_bar(ui);
         self.left_panel(ui);
+        self.handle_asset_file_drops(&ctx);
         self.right_panel(ui);
         self.timeline_panel(ui);
         self.central_preview(ui);
@@ -10195,6 +10337,7 @@ impl ProviderBuilderState {
                 };
                 self.output_tag = output.selector.tag.unwrap_or_default();
                 self.output_node = Some(ProviderOutputNodeDraft {
+                    node_id: output.selector.node_id,
                     class_type: output.selector.class_type,
                     title: output.selector.title,
                 });
@@ -10274,10 +10417,7 @@ impl ProviderBuilderState {
             .output_node
             .clone()
             .ok_or_else(|| "Select an output node.".to_string())?;
-        let output_key = self.output_key.trim();
-        if output_key.is_empty() {
-            return Err("Output key is required.".to_string());
-        }
+        let output_key = inferred_output_key_for_node(&output_node, self.output_type);
 
         let mut manifest_inputs = Vec::new();
         let mut provider_inputs = Vec::new();
@@ -10286,6 +10426,7 @@ impl ProviderBuilderState {
             let default = parse_provider_default_value(&input_type, &input.default_text)?;
             let tag = input.tag.trim();
             let selector = NodeSelector {
+                node_id: input.selector.node_id.clone(),
                 tag: if tag.is_empty() {
                     None
                 } else {
@@ -10295,9 +10436,14 @@ impl ProviderBuilderState {
                 input_key: input.selector.input_key.clone(),
                 title: input.selector.title.clone(),
             };
-            if selector.class_type.trim().is_empty() || selector.input_key.trim().is_empty() {
+            if selector
+                .node_id
+                .as_ref()
+                .is_none_or(|node_id| node_id.trim().is_empty())
+                || selector.input_key.trim().is_empty()
+            {
                 return Err(format!(
-                    "Input '{}' needs a workflow binding. Select a node and expose the input again.",
+                    "Input '{}' needs a node_id workflow binding. Select a node and expose the input again.",
                     input.name
                 ));
             }
@@ -10327,15 +10473,25 @@ impl ProviderBuilderState {
 
         let output_tag = self.output_tag.trim();
         let output_selector = NodeSelector {
+            node_id: output_node.node_id,
             tag: if output_tag.is_empty() {
                 None
             } else {
                 Some(output_tag.to_string())
             },
             class_type: output_node.class_type,
-            input_key: output_key.to_string(),
+            input_key: output_key,
             title: output_node.title,
         };
+        if output_selector
+            .node_id
+            .as_ref()
+            .is_none_or(|node_id| node_id.trim().is_empty())
+        {
+            return Err(
+                "Output node needs a node_id binding. Select the output node again.".to_string(),
+            );
+        }
 
         let manifest_path = self
             .manifest_path
@@ -10393,35 +10549,24 @@ impl ProviderBuilderState {
 }
 
 impl ProviderBuilderInput {
-    fn blank() -> Self {
+    fn from_node(
+        node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+        input_key: &str,
+        name: String,
+        label: String,
+    ) -> Self {
+        let (input_type_key, multiline) = infer_provider_input_from_workflow_node(node, input_key);
         Self {
-            name: "input".to_string(),
-            label: "Input".to_string(),
-            input_type_key: "text".to_string(),
+            name,
+            label,
+            input_type_key,
             required: false,
             default_text: String::new(),
             enum_options: String::new(),
             tag: String::new(),
-            multiline: false,
+            multiline,
             selector: ProviderNodeSelectorDraft {
-                class_type: String::new(),
-                input_key: String::new(),
-                title: None,
-            },
-        }
-    }
-
-    fn from_node(node: &crate::core::comfyui_workflow::ComfyWorkflowNode, input_key: &str) -> Self {
-        Self {
-            name: input_key.to_string(),
-            label: friendly_provider_label(input_key),
-            input_type_key: "text".to_string(),
-            required: false,
-            default_text: String::new(),
-            enum_options: String::new(),
-            tag: String::new(),
-            multiline: false,
-            selector: ProviderNodeSelectorDraft {
+                node_id: Some(node.id.clone()),
                 class_type: node.class_type.clone(),
                 input_key: input_key.to_string(),
                 title: node.title.clone(),
@@ -10441,6 +10586,7 @@ impl ProviderBuilderInput {
             tag: String::new(),
             multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
             selector: ProviderNodeSelectorDraft {
+                node_id: None,
                 class_type: String::new(),
                 input_key: input.name.clone(),
                 title: None,
@@ -10460,6 +10606,7 @@ impl ProviderBuilderInput {
             tag: input.bind.selector.tag.unwrap_or_default(),
             multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
             selector: ProviderNodeSelectorDraft {
+                node_id: input.bind.selector.node_id,
                 class_type: input.bind.selector.class_type,
                 input_key: input.bind.selector.input_key,
                 title: input.bind.selector.title,
@@ -10479,6 +10626,7 @@ impl ProviderBuilderInput {
             tag: String::new(),
             multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
             selector: ProviderNodeSelectorDraft {
+                node_id: None,
                 class_type: String::new(),
                 input_key: String::new(),
                 title: None,
@@ -10778,68 +10926,54 @@ fn provider_builder_input_editor(
     action: &mut Option<ProviderInputAction>,
 ) {
     kit::sunken_frame().show(ui, |ui| {
-        StripBuilder::new(ui)
-            .clip(true)
-            .size(Size::remainder().at_least(120.0))
-            .size(Size::exact(kit::FORM_ROW_GAP))
-            .size(Size::remainder().at_least(120.0))
-            .horizontal(|mut strip| {
-                strip.cell(|ui| {
-                    kit::labeled_text_field(ui, "Name", &mut input.name);
-                });
-                strip.empty();
-                strip.cell(|ui| {
-                    kit::labeled_text_field(ui, "Label", &mut input.label);
-                });
-            });
+        kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
+            0 => {
+                kit::labeled_text_field(ui, "Name", &mut input.name);
+            }
+            1 => {
+                kit::labeled_text_field(ui, "Label", &mut input.label);
+            }
+            _ => {}
+        });
         ui.add_space(kit::FORM_ROW_GAP);
-        StripBuilder::new(ui)
-            .clip(true)
-            .size(Size::exact(124.0))
-            .size(Size::exact(kit::FORM_ROW_GAP))
-            .size(Size::remainder().at_least(120.0))
-            .horizontal(|mut strip| {
-                strip.cell(|ui| {
-                    provider_input_type_field(ui, "Type", &mut input.input_type_key);
-                });
-                strip.empty();
-                strip.cell(|ui| {
-                    kit::labeled_text_field(ui, "Default", &mut input.default_text);
-                });
-            });
+        kit::field_grid_row(ui, &[0.44, 1.0], |ui, column| match column {
+            0 => {
+                provider_input_type_field(ui, "Type", &mut input.input_type_key);
+            }
+            1 => {
+                kit::labeled_text_field(ui, "Default", &mut input.default_text);
+            }
+            _ => {}
+        });
         ui.add_space(kit::FORM_ROW_GAP);
         if input.input_type_key == "enum" {
             kit::labeled_text_field(ui, "Enum Options", &mut input.enum_options);
             ui.add_space(kit::FORM_ROW_GAP);
         }
-        StripBuilder::new(ui)
-            .clip(true)
-            .size(Size::remainder().at_least(130.0))
-            .size(Size::exact(kit::FORM_ROW_GAP))
-            .size(Size::remainder().at_least(130.0))
-            .horizontal(|mut strip| {
-                strip.cell(|ui| {
-                    kit::labeled_text_field(ui, "Tag", &mut input.tag);
+        kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
+            0 => {
+                kit::labeled_text_field(ui, "Tag", &mut input.tag);
+            }
+            1 => {
+                ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
+                ui.horizontal(|ui| {
+                    automation_checkbox(ui, &mut input.required, "Required");
+                    if input.input_type_key == "text" {
+                        automation_checkbox(ui, &mut input.multiline, "Multiline");
+                    } else {
+                        input.multiline = false;
+                    }
                 });
-                strip.empty();
-                strip.cell(|ui| {
-                    ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
-                    ui.horizontal(|ui| {
-                        automation_checkbox(ui, &mut input.required, "Required");
-                        if input.input_type_key == "text" {
-                            automation_checkbox(ui, &mut input.multiline, "Multiline");
-                        } else {
-                            input.multiline = false;
-                        }
-                    });
-                });
-            });
+            }
+            _ => {}
+        });
         ui.add_space(kit::FORM_ROW_GAP);
         ui.horizontal(|ui| {
             ui.add_sized(
                 [(ui.available_width() - 178.0).max(80.0), 18.0],
                 egui::Label::new(kit::caption(format!(
-                    "-> {}.{}",
+                    "-> node {} / {}.{}",
+                    input.selector.node_id.as_deref().unwrap_or("-"),
                     empty_dash(&input.selector.class_type),
                     empty_dash(&input.selector.input_key)
                 )))
@@ -11048,12 +11182,149 @@ fn friendly_provider_label(name: &str) -> String {
         .join(" ")
 }
 
+fn provider_input_name_and_label(
+    node_title: Option<&str>,
+    input_key: &str,
+    inputs: &[ProviderBuilderInput],
+) -> (String, String) {
+    let existing = inputs
+        .iter()
+        .map(|input| input.name.as_str())
+        .collect::<HashSet<_>>();
+    let key_base = sanitize_provider_input_name(input_key).unwrap_or_else(|| "input".to_string());
+    let use_title = is_generic_provider_input_key(input_key)
+        || existing.contains(key_base.as_str())
+        || input_key.trim().is_empty();
+    let title_base = node_title
+        .and_then(sanitize_provider_input_name)
+        .filter(|value| !value.is_empty());
+    let base = if use_title {
+        title_base.unwrap_or(key_base)
+    } else {
+        key_base
+    };
+    if !existing.contains(base.as_str()) {
+        let label_source = if use_title {
+            node_title.unwrap_or(input_key)
+        } else {
+            input_key
+        };
+        return (base, friendly_provider_label(label_source));
+    }
+    for index in 2.. {
+        let candidate = format!("{base}_{index}");
+        if !existing.contains(candidate.as_str()) {
+            let label_source = if use_title {
+                node_title.unwrap_or(input_key)
+            } else {
+                input_key
+            };
+            return (candidate, friendly_provider_label(label_source));
+        }
+    }
+    unreachable!()
+}
+
+fn is_generic_provider_input_key(input_key: &str) -> bool {
+    matches!(
+        input_key.trim().to_ascii_lowercase().as_str(),
+        "text" | "image" | "video" | "audio" | "value" | "filename" | "file"
+    )
+}
+
+fn sanitize_provider_input_name(value: &str) -> Option<String> {
+    let mut output = String::new();
+    let mut last_was_separator = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator && !output.is_empty() {
+            output.push('_');
+            last_was_separator = true;
+        }
+    }
+    while output.ends_with('_') {
+        output.pop();
+    }
+    if output.is_empty() {
+        None
+    } else if output
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_digit())
+    {
+        Some(format!("input_{output}"))
+    } else {
+        Some(output)
+    }
+}
+
+fn infer_provider_input_from_workflow_node(
+    node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+    input_key: &str,
+) -> (String, bool) {
+    let key = input_key.to_ascii_lowercase();
+    let class_type = node.class_type.to_ascii_lowercase();
+    let title = node.title.as_deref().unwrap_or("").to_ascii_lowercase();
+    if key.contains("image") || class_type.contains("loadimage") {
+        return ("image".to_string(), false);
+    }
+    if key.contains("video") || class_type.contains("loadvideo") {
+        return ("video".to_string(), false);
+    }
+    if key.contains("audio") || class_type.contains("loadaudio") {
+        return ("audio".to_string(), false);
+    }
+    if key.contains("seed")
+        || matches!(
+            key.as_str(),
+            "steps" | "width" | "height" | "batch_size" | "frames" | "frame_load_cap"
+        )
+    {
+        return ("integer".to_string(), false);
+    }
+    if key.contains("cfg")
+        || key.contains("denoise")
+        || key.contains("duration")
+        || key.contains("rate")
+        || key.contains("crf")
+    {
+        return ("number".to_string(), false);
+    }
+    if class_type.contains("boolean") || matches!(key.as_str(), "enabled" | "save_output") {
+        return ("boolean".to_string(), false);
+    }
+    let multiline =
+        class_type.contains("multiline") || title.contains("prompt") || key.contains("prompt");
+    ("text".to_string(), multiline)
+}
+
 fn default_output_key(output_type: ProviderOutputType) -> &'static str {
     match output_type {
         ProviderOutputType::Image => "images",
-        ProviderOutputType::Video => "videos",
+        ProviderOutputType::Video => "images",
         ProviderOutputType::Audio => "audio",
     }
+}
+
+fn inferred_output_key_for_node(
+    node: &ProviderOutputNodeDraft,
+    output_type: ProviderOutputType,
+) -> String {
+    let class_type = node.class_type.to_ascii_lowercase();
+    if class_type.contains("savevideo") || class_type.contains("videocombine") {
+        // ComfyUI video saver/combine nodes commonly report downloadable mp4s
+        // under the historical `images` output key.
+        return "images".to_string();
+    }
+    if class_type.contains("saveimage") {
+        return "images".to_string();
+    }
+    if class_type.contains("saveaudio") || class_type.contains("audio") {
+        return "audio".to_string();
+    }
+    default_output_key(output_type).to_string()
 }
 
 fn empty_dash(value: &str) -> &str {

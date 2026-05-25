@@ -17,6 +17,7 @@
       "default": 42,
       "bind": {
         "selector": {
+          "node_id": "3",
           "class_type": "KSampler",
           "input_key": "seed",
           "title": "KSampler"
@@ -37,6 +38,7 @@
       },
       "bind": {
         "selector": {
+          "node_id": "6",
           "class_type": "CLIPTextEncode",
           "input_key": "text",
           "title": "prompt positive"
@@ -57,6 +59,7 @@
       },
       "bind": {
         "selector": {
+          "node_id": "7",
           "class_type": "CLIPTextEncode",
           "input_key": "text",
           "title": "prompt negative"
@@ -73,6 +76,7 @@
       "default": 1024,
       "bind": {
         "selector": {
+          "node_id": "5",
           "class_type": "EmptyLatentImage",
           "input_key": "width",
           "title": "Empty Latent Image"
@@ -89,6 +93,7 @@
       "default": 1024,
       "bind": {
         "selector": {
+          "node_id": "5",
           "class_type": "EmptyLatentImage",
           "input_key": "height",
           "title": "Empty Latent Image"
@@ -105,6 +110,7 @@
       "default": 20,
       "bind": {
         "selector": {
+          "node_id": "3",
           "class_type": "KSampler",
           "input_key": "steps",
           "title": "KSampler"
@@ -114,6 +120,7 @@
   ],
   "output": {
     "selector": {
+      "node_id": "9",
       "class_type": "SaveImage",
       "input_key": "images",
       "title": "Save Image"

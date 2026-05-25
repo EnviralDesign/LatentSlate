@@ -704,7 +704,7 @@ This allows:
 | Timeline as Implicit Wiring | Overlapping assets auto-surface as input suggestions; no explicit linking required | ✅ Decided |
 | Audio stack v1 | Use ffmpeg-next for decode/resample, cpal for playback, and project-local peak cache for waveforms | ✅ Decided |
 | Providers Grouped by Output Type | Video/Image/Audio; input requirements vary per provider via dynamic schema | ✅ Decided |
-| Provider Bindings via Selectors | Bind workflow inputs by selector/tag instead of node IDs | ✅ Decided |
+| Provider Bindings via Node IDs | Bind ComfyUI inputs by node ID plus input key; bind outputs by selected node plus media-file detection | ✅ Decided |
 | Provider Builder UI | Workflow picker + node browser for exposed inputs | ✅ Decided |
 | Adapter-Agnostic Manifests | Use a versioned manifest per adapter type for provider bindings | ✅ Decided |
 | No Separate Keyframe Track | Images are clips on Video tracks; "keyframes" are just overlapping reference images | ✅ Decided |
@@ -822,6 +822,13 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-24:** Hardened batch seed advancement so `Increment` persists the next seed after every generation attempt, including failed or cached/no-output ComfyUI runs. Queued jobs now carry the seed field and next seed they should advance to, preventing repeated identical prompts from getting stuck in a self-reinforcing cache miss loop.
+- **2026-05-24:** Simplified ComfyUI Provider Builder output UX. Users now choose a saver/output node and output type; the confusing ComfyUI history output key is hidden from normal UI, auto-filled in manifests for compatibility, and runtime output resolution prioritizes extension-based detection across all file arrays on the selected output node.
+- **2026-05-22:** Extended ComfyUI provider history polling for real video generation workflows. Image/audio providers now wait up to 10 minutes, video providers wait up to 60 minutes, timeout errors include the media type and duration, and new video provider manifests default their output history key to Comfy's `images` key used by `SaveVideo`/video-combine nodes.
+- **2026-05-22:** Added OS file drag-and-drop import for the assets pane. Dropping image, video, or audio files onto the left assets area now imports them into the open project through the same media import path as the file picker, selects the imported assets, and reports partial failures in the status bar.
+- **2026-05-22:** Added a small shared guard band to labeled field-grid row height so templated text/combo fields do not clip their bottom stroke in dense Provider Builder cards.
+- **2026-05-22:** Simplified ComfyUI Provider Builder bindings around workflow node IDs. New exposed inputs/output selections save `node_id` as the primary binding key, repeated nodes like `LoadImage.image` can now be exposed separately with unique names derived from node titles, generic image/video/audio slots infer the correct provider input type, and the default bundled manifests were retrofitted with node IDs.
+- **2026-05-22:** Fixed the egui Provider Builder right-column panels so exposed inputs and output configuration remain visible after selecting/exposing workflow nodes. The provider settings and input/output editor rows now use bounded shared field-grid layout instead of horizontal remainder strips that could consume the whole right column.
 - **2026-05-22:** Switched `workflows/` to deny-by-default git tracking. Only the bundled Mock Video Workflow, SDXL simple example, and SDXL Vanilla API workflow/manifest pairs are explicitly opted in; local personal workflows remain ignored unless deliberately added later.
 - **2026-05-22:** Added timeline fine zoom via Ctrl/Cmd + mouse wheel over the timeline, with a faster pointer-anchored response for smoother inspection. The existing +/- controls now snap from any fine zoom value to the next coarse "nice" timeline zoom stop; Shift-wheel horizontal scrolling is preserved.
 - **2026-05-22:** Added timeline-context marker creation and refined clip spacing semantics. Right-clicking the timeline can now add a marker at the clicked time, and selected-clip spacing now treats image clips as point anchors while video/audio clips anchor from their end time so mixed image-to-video and video-to-image spacing behaves naturally.
@@ -992,8 +999,7 @@ src/
 - **2026-01-08:** Provider input fields now remount on version switch to reflect saved input snapshots immediately.
 - **2026-01-08:** Switching generative versions now restores the saved inputs (and provider) from that version’s snapshot.
 - **2026-01-08:** Added multiline text inputs (builder toggle + textarea rendering) for provider inputs.
-- **2026-01-08:** Output key placeholder now follows the selected output type in the Provider Builder.
-- **2026-01-08:** Added a dynamic output key hint in the Provider Builder Output tab.
+- **2026-01-08:** Earlier Provider Builder versions exposed output key hints; this was superseded by the 2026-05-24 node-first output UX.
 - **2026-01-08:** Split Provider Builder into Inputs/Output tabs with a three-column layout (browser, inspector, config).
 - **2026-01-08:** Clicking the provider list background now clears selection (same as clicking the selected item).
 - **2026-01-08:** Providers modal now supports deselection and updates the Build button label based on selection.
@@ -1007,7 +1013,7 @@ src/
 - **2026-01-08:** Added provider manifest schema + provider builder spec docs; refreshed setup guide for multi-adapter roadmap.
 - **2026-01-08:** Added example ComfyUI manifest `workflows/sdxl_simple_example_manifest.json`.
 - **2026-01-08:** Expanded provider architecture doc with ComfyUI workflow picker + node binding UI details.
-- **2026-01-08:** Revised provider architecture doc to use selector/tag bindings and a provider builder UI (no node ID reliance).
+- **2026-01-08:** Earlier provider architecture pass explored selector/tag bindings and a provider builder UI; this was superseded by the 2026-05-22 ComfyUI node-ID binding decision.
 - **2026-01-08:** Added end-user provider setup guide `docs/PROVIDER_SETUP_GUIDE.md` covering ComfyUI workflow setup and provider JSON.
 - **2026-01-08:** Extracted Providers modal, New Project modal, and track context menu into smaller UI modules.
 - **2026-01-08:** Split Attributes panel UI into `generative_controls` and `provider_inputs` helpers.

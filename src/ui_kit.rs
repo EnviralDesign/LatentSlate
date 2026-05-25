@@ -92,6 +92,7 @@ pub const BROWSE_BUTTON_W: f32 = 76.0;
 pub const FIELD_COMPOUND_GAP: f32 = 8.0;
 pub const FIELD_TEXT_ALIGN: Align = Align::Center;
 pub const FIELD_LABEL_GAP: f32 = 6.0;
+pub const FIELD_GRID_ROW_CLIP_GUARD: f32 = 3.0;
 pub const FORM_ROW_GAP: f32 = 8.0;
 pub const ACTION_GAP: f32 = 12.0;
 pub const MEDIA_PILL_H: f32 = 24.0;
@@ -636,7 +637,7 @@ pub fn pick_file_dialog(ui: &Ui, options: BrowseFileOptions<'_>) -> Option<PathB
 }
 
 pub fn labeled_field_height(control_height: f32) -> f32 {
-    FIELD_LABEL_H + FIELD_LABEL_GAP + control_height
+    FIELD_LABEL_H + FIELD_LABEL_GAP + control_height + FIELD_GRID_ROW_CLIP_GUARD
 }
 
 #[derive(Clone, Copy, Debug)]
