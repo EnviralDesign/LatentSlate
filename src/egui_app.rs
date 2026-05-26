@@ -136,6 +136,7 @@ const API_KEYS_MODAL_SIZE: [f32; 2] = [480.0, 280.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
+const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
 const QUEUE_PANEL_W: f32 = 320.0;
 const QUEUE_PANEL_MIN_H: f32 = 132.0;
 const QUEUE_PANEL_PAD: f32 = 12.0;
@@ -248,6 +249,7 @@ pub struct NlaEguiApp {
     provider_builder: ProviderBuilderState,
     api_key_modal: ApiKeyModalState,
     provider_template_kind: ProviderTemplateKind,
+    asset_delete_confirmation: Option<AssetDeleteConfirmation>,
     generation_runtime: Option<tokio::runtime::Runtime>,
     generation_events_tx: mpsc::Sender<GenerationEvent>,
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
@@ -572,6 +574,14 @@ enum GenerationFailure {
     Error(String),
 }
 
+#[derive(Clone, Debug)]
+struct AssetDeleteConfirmation {
+    asset_ids: Vec<Uuid>,
+    asset_count: usize,
+    clip_count: usize,
+    sample_names: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProviderBuilderTab {
     Inputs,
@@ -713,6 +723,7 @@ impl NlaEguiApp {
             provider_builder: ProviderBuilderState::default(),
             api_key_modal: ApiKeyModalState::default(),
             provider_template_kind: ProviderTemplateKind::default(),
+            asset_delete_confirmation: None,
             generation_runtime,
             generation_events_tx,
             generation_events_rx,
@@ -1124,6 +1135,7 @@ impl NlaEguiApp {
             || self.editor.overlays.providers
             || self.editor.overlays.api_keys
             || self.editor.overlays.queue
+            || self.asset_delete_confirmation.is_some()
             || self.provider_json_editor_path.is_some()
             || self.provider_builder_open
     }
@@ -1162,6 +1174,12 @@ impl NlaEguiApp {
 
         if delete && !self.editor.selection.clip_ids.is_empty() {
             self.editor.delete_selected_clips();
+            ctx.request_repaint();
+            return;
+        }
+
+        if delete && !self.editor.selection.asset_ids.is_empty() {
+            self.request_delete_selected_assets();
             ctx.request_repaint();
             return;
         }
@@ -2250,11 +2268,12 @@ impl NlaEguiApp {
                         ui.close();
                     }
                     if automation_button(ui.button("Delete"), "Delete").clicked() {
-                        self.editor.project.remove_asset(asset.id);
-                        self.editor.selection.clear();
-                        self.asset_thumbnails.remove(&asset.id);
-                        self.asset_thumbnail_misses.remove(&asset.id);
-                        self.editor.preview_dirty = true;
+                        let asset_ids = if selected && self.editor.selection.asset_ids.len() > 1 {
+                            self.editor.selection.asset_ids.clone()
+                        } else {
+                            vec![asset.id]
+                        };
+                        self.request_delete_assets(&asset_ids);
                         ui.close();
                     }
                 });
@@ -2275,25 +2294,68 @@ impl NlaEguiApp {
         }
     }
 
+    fn request_delete_selected_assets(&mut self) {
+        let asset_ids = self.editor.selection.asset_ids.clone();
+        self.request_delete_assets(&asset_ids);
+    }
+
+    fn request_delete_assets(&mut self, asset_ids: &[Uuid]) {
+        if let Some(confirmation) = self.asset_delete_confirmation(asset_ids) {
+            self.asset_delete_confirmation = Some(confirmation);
+        }
+    }
+
+    fn asset_delete_confirmation(&self, asset_ids: &[Uuid]) -> Option<AssetDeleteConfirmation> {
+        let unique_asset_ids = unique_uuid_list(asset_ids);
+        if unique_asset_ids.is_empty() {
+            return None;
+        }
+
+        let existing_asset_ids: Vec<Uuid> = unique_asset_ids
+            .into_iter()
+            .filter(|asset_id| self.editor.project.find_asset(*asset_id).is_some())
+            .collect();
+        if existing_asset_ids.is_empty() {
+            return None;
+        }
+
+        let clip_count = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .filter(|clip| existing_asset_ids.contains(&clip.asset_id))
+            .count();
+        let sample_names = existing_asset_ids
+            .iter()
+            .filter_map(|asset_id| self.editor.project.find_asset(*asset_id))
+            .take(3)
+            .map(|asset| asset.name.clone())
+            .collect();
+
+        Some(AssetDeleteConfirmation {
+            asset_count: existing_asset_ids.len(),
+            asset_ids: existing_asset_ids,
+            clip_count,
+            sample_names,
+        })
+    }
+
+    fn perform_delete_assets(&mut self, asset_ids: &[Uuid]) -> (usize, usize) {
+        let unique_asset_ids = unique_uuid_list(asset_ids);
+        let result = self.editor.delete_assets(&unique_asset_ids);
+        if result.0 > 0 {
+            for asset_id in unique_asset_ids {
+                self.invalidate_asset_visual_cache(asset_id);
+            }
+            self.editor.preview_dirty = true;
+        }
+        result
+    }
+
     fn handle_asset_file_drops(&mut self, ctx: &Context) {
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         if dropped_files.is_empty() {
-            return;
-        }
-
-        let pointer_pos =
-            ctx.input(|input| input.pointer.interact_pos().or(input.pointer.hover_pos()));
-        let drop_in_assets = self
-            .asset_drop_target_rect
-            .is_some_and(|rect| pointer_pos.is_some_and(|pos| rect.contains(pos)))
-            || self.asset_drop_target_hovered;
-        if !drop_in_assets {
-            return;
-        }
-
-        if self.editor.project_root().is_none() {
-            self.editor.status =
-                "Open or create a project before dropping media files to import.".to_string();
             return;
         }
 
@@ -2303,6 +2365,26 @@ impl NlaEguiApp {
             .collect();
         if paths.is_empty() {
             self.editor.status = "Dropped data did not include filesystem paths.".to_string();
+            return;
+        }
+
+        let pointer_pos =
+            ctx.input(|input| input.pointer.interact_pos().or(input.pointer.hover_pos()));
+        let drop_in_assets = self
+            .asset_drop_target_rect
+            .is_some_and(|rect| pointer_pos.is_some_and(|pos| rect.contains(pos)))
+            || self.asset_drop_target_hovered;
+        let supported_media_drop = paths
+            .iter()
+            .any(|path| is_supported_asset_import_path(path));
+        let fallback_media_drop = pointer_pos.is_none() && supported_media_drop;
+        if !drop_in_assets && !fallback_media_drop {
+            return;
+        }
+
+        if self.editor.project_root().is_none() {
+            self.editor.status =
+                "Open or create a project before dropping media files to import.".to_string();
             return;
         }
 
@@ -6232,11 +6314,116 @@ impl NlaEguiApp {
         if self.editor.overlays.api_keys {
             self.api_keys_modal(ctx);
         }
+        if self.asset_delete_confirmation.is_some() {
+            self.asset_delete_confirmation_modal(ctx);
+        }
         if self.provider_json_editor_path.is_some() {
             self.provider_json_editor_modal(ctx);
         }
         if self.provider_builder_open {
             self.provider_builder_modal(ctx);
+        }
+    }
+
+    fn asset_delete_confirmation_modal(&mut self, ctx: &Context) {
+        let Some(confirmation) = self.asset_delete_confirmation.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut cancel_clicked = false;
+        let mut delete_clicked = false;
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "asset_delete", true);
+        let size = modal_size(ctx, ASSET_DELETE_MODAL_SIZE, [380.0, 260.0]);
+        egui::Window::new("Delete Assets")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Delete Assets?",
+                    Some("Remove selected project assets and dependent timeline clips."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    kit::body_with_footer(
+                        ui,
+                        120.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| {
+                            let asset_word = if confirmation.asset_count == 1 {
+                                "asset"
+                            } else {
+                                "assets"
+                            };
+                            let clip_context = match confirmation.clip_count {
+                                0 => "No timeline clips reference this selection.".to_string(),
+                                1 => "1 timeline clip references this selection.".to_string(),
+                                count => {
+                                    format!("{count} timeline clips reference this selection.")
+                                }
+                            };
+                            ui.label(
+                                RichText::new(format!(
+                                    "You are about to delete {} {}.",
+                                    confirmation.asset_count, asset_word
+                                ))
+                                .color(kit::TEXT)
+                                .strong(),
+                            );
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            ui.label(RichText::new(clip_context).color(kit::TEXT_MUTED));
+                            ui.label(
+                                RichText::new(
+                                    "Timeline clip instances will be removed. Source media files on disk are left in place.",
+                                )
+                                .color(kit::TEXT_MUTED),
+                            );
+                            if !confirmation.sample_names.is_empty() {
+                                ui.add_space(kit::ACTION_GAP);
+                                kit::field_label(ui, "Assets");
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                for name in confirmation.sample_names.iter() {
+                                    ui.label(RichText::new(name).color(kit::TEXT));
+                                }
+                                let remaining =
+                                    confirmation.asset_count.saturating_sub(confirmation.sample_names.len());
+                                if remaining > 0 {
+                                    ui.label(
+                                        RichText::new(format!("+ {remaining} more"))
+                                            .color(kit::TEXT_MUTED),
+                                    );
+                                }
+                            }
+                        },
+                        |ui| {
+                            let gap = kit::ACTION_GAP;
+                            let button_w = ((ui.available_width() - gap) / 2.0).max(120.0);
+                            ui.horizontal(|ui| {
+                                cancel_clicked = kit::secondary_button(ui, "Cancel", button_w)
+                                    .clicked();
+                                ui.add_space(gap);
+                                delete_clicked =
+                                    kit::danger_button(ui, "Delete Assets", button_w).clicked();
+                            });
+                        },
+                    );
+                });
+            });
+
+        if delete_clicked {
+            let asset_ids = confirmation.asset_ids.clone();
+            self.asset_delete_confirmation = None;
+            self.perform_delete_assets(&asset_ids);
+        } else if cancel_clicked || close_clicked || outside_clicked || !open {
+            self.asset_delete_confirmation = None;
         }
     }
 
@@ -11373,6 +11560,39 @@ fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
             .map_err(|err| format!("Failed to open folder: {err}"))?;
         Ok(())
     }
+}
+
+fn is_supported_asset_import_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "mp4"
+            | "mov"
+            | "avi"
+            | "mkv"
+            | "webm"
+            | "mp3"
+            | "wav"
+            | "ogg"
+            | "flac"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+    )
+}
+
+fn unique_uuid_list(ids: &[Uuid]) -> Vec<Uuid> {
+    let mut unique = Vec::new();
+    for id in ids {
+        if !unique.contains(id) {
+            unique.push(*id);
+        }
+    }
+    unique
 }
 
 fn generative_output_for_asset(

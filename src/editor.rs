@@ -351,6 +351,41 @@ impl EditorState {
         deleted
     }
 
+    pub fn delete_assets(&mut self, asset_ids: &[Uuid]) -> (usize, usize) {
+        if asset_ids.is_empty() {
+            return (0, 0);
+        }
+
+        let mut unique_asset_ids = Vec::new();
+        for asset_id in asset_ids {
+            if !unique_asset_ids.contains(asset_id) {
+                unique_asset_ids.push(*asset_id);
+            }
+        }
+
+        let removed_clips = self
+            .project
+            .clips
+            .iter()
+            .filter(|clip| unique_asset_ids.contains(&clip.asset_id))
+            .count();
+
+        let mut removed_assets = 0usize;
+        for asset_id in unique_asset_ids {
+            if self.project.remove_asset(asset_id) {
+                removed_assets += 1;
+            }
+        }
+
+        if removed_assets > 0 {
+            self.selection.clear();
+            self.preview_dirty = true;
+            self.status = deleted_assets_status(removed_assets, removed_clips);
+        }
+
+        (removed_assets, removed_clips)
+    }
+
     pub fn apply_automation_command(&mut self, command: &AutomationCommand) -> AutomationResponse {
         match command {
             AutomationCommand::GetState => AutomationResponse::ok(self.state_json()),
@@ -616,6 +651,21 @@ fn is_generative_image(kind: &AssetKind) -> bool {
 
 fn is_generative_audio(kind: &AssetKind) -> bool {
     matches!(kind, AssetKind::GenerativeAudio { .. })
+}
+
+fn deleted_assets_status(assets: usize, clips: usize) -> String {
+    let asset_label = if assets == 1 {
+        "Deleted asset".to_string()
+    } else {
+        format!("Deleted {assets} assets")
+    };
+    if clips == 0 {
+        asset_label
+    } else if clips == 1 {
+        format!("{asset_label} and 1 timeline clip")
+    } else {
+        format!("{asset_label} and {clips} timeline clips")
+    }
 }
 
 fn is_generative_video(kind: &AssetKind) -> bool {

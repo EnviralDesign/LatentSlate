@@ -822,6 +822,8 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-25:** Added keyboard deletion and a confirmation modal for multi-selected Assets panel items. Asset deletion now previews how many source assets and timeline clip instances will be removed, then runs through a shared editor helper that reports the final removal counts; source media files on disk are left in place.
+- **2026-05-25:** Hardened Windows Explorer media drops into the egui Assets pane. The drop handler now falls back to supported-media detection when the OS file-drop event does not provide a normal egui pointer coordinate, so PNG/JPEG/image/video/audio drops are imported instead of silently ignored.
 - **2026-05-24:** Hardened batch seed advancement so `Increment` persists the next seed after every generation attempt, including failed or cached/no-output ComfyUI runs. Queued jobs now carry the seed field and next seed they should advance to, preventing repeated identical prompts from getting stuck in a self-reinforcing cache miss loop.
 - **2026-05-24:** Simplified ComfyUI Provider Builder output UX. Users now choose a saver/output node and output type; the confusing ComfyUI history output key is hidden from normal UI, auto-filled in manifests for compatibility, and runtime output resolution prioritizes extension-based detection across all file arrays on the selected output node.
 - **2026-05-22:** Extended ComfyUI provider history polling for real video generation workflows. Image/audio providers now wait up to 10 minutes, video providers wait up to 60 minutes, timeout errors include the media type and duration, and new video provider manifests default their output history key to Comfy's `images` key used by `SaveVideo`/video-combine nodes.
