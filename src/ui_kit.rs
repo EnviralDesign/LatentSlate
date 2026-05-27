@@ -1214,37 +1214,62 @@ pub fn multiline_text_field(
     let rows = options.rows.max(1);
     let height = multiline_text_field_height(rows);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let field_id = ui.next_auto_id();
+    ui.skip_ahead_auto_ids(1);
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Min)),
+            .layout(Layout::top_down(Align::Min)),
     );
     child.set_min_size(rect.size());
     child.shrink_clip_rect(rect);
+    child.set_width(rect.width());
+    child.set_height(rect.height());
+    child.spacing_mut().scroll.fade.strength = 0.0;
     configure_field_widget_style(&mut child, rect.width());
 
-    let field_id = child.next_auto_id();
-    child.skip_ahead_auto_ids(1);
-
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
-    let output = egui::TextEdit::multiline(value)
-        .id(field_id)
-        .desired_width(rect.width())
-        .desired_rows(rows)
-        .min_size(rect.size())
-        .lock_focus(true)
-        .text_color(TEXT)
-        .font(FontId::proportional(FIELD_TEXT_SIZE))
-        .frame(field_text_frame())
-        .show(&mut child);
-    let mut response = output.response.response.clone();
+    let mut text_response: Option<Response> = None;
+    egui::ScrollArea::vertical()
+        .id_salt(field_id.with("scroll"))
+        .max_width(rect.width())
+        .max_height(rect.height())
+        .scroll_bar_rect(rect.shrink(1.0))
+        .auto_shrink([false, false])
+        .show_viewport(&mut child, |ui, _viewport| {
+            ui.shrink_clip_rect(rect);
+            ui.set_width(rect.width());
+            ui.set_min_width(rect.width());
+            ui.set_max_width(rect.width());
+            let output = egui::TextEdit::multiline(value)
+                .id(field_id)
+                .desired_width(rect.width())
+                .desired_rows(rows)
+                .lock_focus(true)
+                .text_color(TEXT)
+                .font(FontId::proportional(FIELD_TEXT_SIZE))
+                .frame(field_text_frame())
+                .show(ui);
+            text_response = Some(output.response.response);
+        });
+
+    let mut response = text_response.unwrap_or_else(|| {
+        ui.interact(
+            rect,
+            field_id.with("multiline_fallback"),
+            Sense::click_and_drag(),
+        )
+    });
     crate::core::automation::apply_pending_text(&mut response, value);
-    ui.painter().rect_stroke(
-        rect,
-        field_radius(),
-        field_stroke(&output),
-        StrokeKind::Inside,
-    );
+    let stroke = if response.has_focus() {
+        Stroke::new(1.0, BORDER_FOCUS)
+    } else if response.hovered() {
+        Stroke::new(1.0, BORDER)
+    } else {
+        Stroke::new(1.0, BORDER_SOFT)
+    };
+    ui.painter()
+        .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
     crate::core::automation::instrument_response(response, "multiline_text_field", None, true, true)
 }
 

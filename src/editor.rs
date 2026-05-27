@@ -29,6 +29,7 @@ pub struct EditorLayout {
     pub timeline_height: f32,
     pub timeline_zoom: f32,
     pub timeline_scroll_x: f32,
+    pub timeline_scroll_y: f32,
 }
 
 impl Default for EditorLayout {
@@ -44,6 +45,7 @@ impl Default for EditorLayout {
             timeline_height: 220.0,
             timeline_zoom: 4.0,
             timeline_scroll_x: 0.0,
+            timeline_scroll_y: 0.0,
         }
     }
 }
@@ -232,8 +234,25 @@ impl EditorState {
     }
 
     pub fn add_marker(&mut self, time: Option<f64>) -> Uuid {
+        self.add_marker_to_track(time, None)
+    }
+
+    pub fn add_marker_to_track(&mut self, time: Option<f64>, track_id: Option<Uuid>) -> Uuid {
         let time = time.unwrap_or(self.current_time);
-        let marker = crate::state::Marker::new(time.clamp(0.0, self.project.duration()));
+        let mut marker = crate::state::Marker::new(time.clamp(0.0, self.project.duration()));
+        marker.track_id = track_id
+            .filter(|id| {
+                self.project.tracks.iter().any(|track| {
+                    track.id == *id && track.track_type == crate::state::TrackType::Marker
+                })
+            })
+            .or_else(|| {
+                self.selection.primary_track().filter(|id| {
+                    self.project.tracks.iter().any(|track| {
+                        track.id == *id && track.track_type == crate::state::TrackType::Marker
+                    })
+                })
+            });
         let id = self.project.add_marker(marker);
         self.selection.select_marker(id);
         self.preview_dirty = true;
@@ -618,6 +637,7 @@ impl EditorState {
                 "timeline_collapsed": self.layout.timeline_collapsed,
                 "timeline_zoom": self.layout.timeline_zoom,
                 "timeline_scroll_x": self.layout.timeline_scroll_x,
+                "timeline_scroll_y": self.layout.timeline_scroll_y,
                 "preview_stats": self.layout.preview_stats,
                 "hardware_decode": self.layout.hardware_decode,
             },

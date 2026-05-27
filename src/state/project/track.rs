@@ -8,7 +8,7 @@ pub enum TrackType {
     Video,
     /// Audio track - holds audio clips, generative audio content
     Audio,
-    /// Marker track - holds point-in-time markers (singular, not duplicatable)
+    /// Marker track - holds point-in-time markers
     Marker,
 }
 
@@ -24,6 +24,9 @@ pub struct Track {
     /// Track volume (applies to audio playback for audio/video clips).
     #[serde(default = "default_volume")]
     pub volume: f32,
+    /// Whether this track is muted. Video tracks hide visual clips and silence embedded audio.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 impl Track {
@@ -34,6 +37,7 @@ impl Track {
             name: name.into(),
             track_type,
             volume: 1.0,
+            muted: false,
         }
     }
 

@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use super::{Clip, ClipTransform, Marker, ProjectSettings, Track, TrackType};
+use super::{Clip, ClipImageMode, ClipTransform, Marker, ProjectSettings, Track, TrackType};
 use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 
 /// The main project container
@@ -67,10 +67,31 @@ impl Project {
 
     /// Get the project duration (end of last clip or marker)
     pub fn duration(&self) -> f64 {
-        let clip_end = self.clips.iter().map(|c| c.end_time()).fold(0.0, f64::max);
+        let clip_end = self
+            .clips
+            .iter()
+            .map(|clip| self.effective_clip_end_time(clip))
+            .fold(0.0, f64::max);
         let marker_end = self.markers.iter().map(|m| m.time).fold(0.0, f64::max);
         let configured = self.settings.duration_seconds.max(0.0);
         clip_end.max(marker_end).max(configured)
+    }
+
+    /// True when an image clip is displayed as a point-in-time keyframe reference.
+    pub fn is_keyframe_reference_clip(&self, clip: &Clip) -> bool {
+        clip.image_mode == ClipImageMode::Keyframe
+            && self
+                .find_asset(clip.asset_id)
+                .is_some_and(|asset| asset.is_image())
+    }
+
+    /// Timeline end used by duration and navigation. Keyframe references are points.
+    pub fn effective_clip_end_time(&self, clip: &Clip) -> f64 {
+        if self.is_keyframe_reference_clip(clip) {
+            clip.start_time
+        } else {
+            clip.end_time()
+        }
     }
 
     /// Find a track by ID
@@ -149,7 +170,13 @@ impl Project {
     pub fn clips_in_range(&self, start: f64, end: f64) -> Vec<&Clip> {
         self.clips
             .iter()
-            .filter(|c| c.overlaps(start, end))
+            .filter(|clip| {
+                if self.is_keyframe_reference_clip(clip) {
+                    clip.start_time >= start && clip.start_time < end
+                } else {
+                    clip.overlaps(start, end)
+                }
+            })
             .collect()
     }
 
@@ -193,17 +220,80 @@ impl Project {
         id
     }
 
-    /// Remove a track by ID (cannot remove the Markers track)
+    /// Add a new marker track.
+    pub fn add_marker_track(&mut self) -> Uuid {
+        let count = self
+            .tracks
+            .iter()
+            .filter(|t| t.track_type == TrackType::Marker)
+            .count();
+        let name = if count == 0 {
+            "Markers".to_string()
+        } else {
+            format!("Markers {}", count + 1)
+        };
+        let track = Track::new(name, TrackType::Marker);
+        let id = track.id;
+        self.tracks.push(track);
+        id
+    }
+
+    /// Return the first marker track, used for legacy unassigned markers.
+    pub fn first_marker_track_id(&self) -> Option<Uuid> {
+        self.tracks
+            .iter()
+            .find(|track| track.track_type == TrackType::Marker)
+            .map(|track| track.id)
+    }
+
+    /// Return the first marker track, creating it if the project has none.
+    pub fn ensure_marker_track(&mut self) -> Uuid {
+        self.first_marker_track_id()
+            .unwrap_or_else(|| self.add_marker_track())
+    }
+
+    /// True if a marker should render on the given marker track.
+    pub fn marker_belongs_to_track(&self, marker: &Marker, track_id: Uuid) -> bool {
+        marker_belongs_to_track_id(marker, track_id, self.first_marker_track_id())
+    }
+
+    /// Count timeline clips and markers that would be removed with a track.
+    pub fn track_delete_counts(&self, id: Uuid) -> (usize, usize) {
+        let clip_count = self.clips.iter().filter(|clip| clip.track_id == id).count();
+        let marker_count = self
+            .tracks
+            .iter()
+            .find(|track| track.id == id)
+            .filter(|track| track.track_type == TrackType::Marker)
+            .map(|_| {
+                let first_marker_track_id = self.first_marker_track_id();
+                self.markers
+                    .iter()
+                    .filter(|marker| marker_belongs_to_track_id(marker, id, first_marker_track_id))
+                    .count()
+            })
+            .unwrap_or(0);
+        (clip_count, marker_count)
+    }
+
+    /// Remove a track by ID, including timeline items owned by that track.
     pub fn remove_track(&mut self, id: Uuid) -> bool {
-        // Find the track and check if it's the Markers track
-        if let Some(track) = self.tracks.iter().find(|t| t.id == id) {
-            if track.track_type == TrackType::Marker {
-                return false; // Cannot remove the Markers track
-            }
-        }
+        let Some(track_type) = self
+            .tracks
+            .iter()
+            .find(|track| track.id == id)
+            .map(|track| track.track_type)
+        else {
+            return false;
+        };
 
         // Remove any clips on this track
         self.clips.retain(|c| c.track_id != id);
+        if track_type == TrackType::Marker {
+            let first_marker_track_id = self.first_marker_track_id();
+            self.markers
+                .retain(|marker| !marker_belongs_to_track_id(marker, id, first_marker_track_id));
+        }
 
         // Remove the track
         let len = self.tracks.len();
@@ -378,9 +468,21 @@ impl Project {
         false
     }
 
+    /// Update image timeline display mode for a clip instance.
+    pub fn set_clip_image_mode(&mut self, id: Uuid, mode: ClipImageMode) -> bool {
+        if let Some(clip) = self.clips.iter_mut().find(|clip| clip.id == id) {
+            clip.image_mode = mode;
+            return true;
+        }
+        false
+    }
+
     /// Add a marker to the project
-    pub fn add_marker(&mut self, marker: Marker) -> Uuid {
+    pub fn add_marker(&mut self, mut marker: Marker) -> Uuid {
         let id = marker.id;
+        if marker.track_id.is_none() {
+            marker.track_id = Some(self.ensure_marker_track());
+        }
         self.markers.push(marker);
         // Keep markers sorted by time
         self.markers
@@ -572,6 +674,15 @@ fn asset_matches_track_type(asset: &Asset, track_type: TrackType) -> bool {
         TrackType::Audio => asset.is_audio(),
         TrackType::Marker => false,
     }
+}
+
+fn marker_belongs_to_track_id(
+    marker: &Marker,
+    track_id: Uuid,
+    first_marker_track_id: Option<Uuid>,
+) -> bool {
+    marker.track_id == Some(track_id)
+        || (marker.track_id.is_none() && first_marker_track_id == Some(track_id))
 }
 
 #[cfg(test)]

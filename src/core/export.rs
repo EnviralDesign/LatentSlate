@@ -454,6 +454,12 @@ fn render_audio_mix(
         .iter()
         .map(|track| (track.id, track.track_type))
         .collect();
+    let muted_tracks: HashMap<_, _> = job
+        .project
+        .tracks
+        .iter()
+        .map(|track| (track.id, track.muted))
+        .collect();
     let track_volumes: HashMap<_, _> = job
         .project
         .tracks
@@ -473,6 +479,9 @@ fn render_audio_mix(
             continue;
         };
         if !matches!(track_type, TrackType::Audio | TrackType::Video) {
+            continue;
+        }
+        if muted_tracks.get(&clip.track_id).copied().unwrap_or(false) {
             continue;
         }
         let Some(asset) = job.project.find_asset(clip.asset_id) else {

@@ -106,7 +106,7 @@ The timeline consists of layered tracks:
 |------------|---------|--------------|
 | **Video Track** | Holds video clips, image clips (stills with duration), and generative visual content | Yes |
 | **Audio Track** | Holds audio clips and generative audio content | Yes |
-| **Marker Track** | Holds point-in-time markers (beat markers, scene breaks, notes) | No |
+| **Marker Track** | Holds point-in-time markers (beat markers, scene breaks, notes) | Yes |
 
 > **Note:** Images are placed on Video tracks as stills with duration, following standard NLE conventions. There is no separate "Keyframe" track—reference images for generation are simply clips that overlap generative clips in time.
 > 
@@ -395,9 +395,10 @@ workflows/
 - [x] **Track System** (Revised Architecture) ✓
   - [x] Video tracks — hold video clips, image clips (stills), generative clips
   - [x] Audio tracks — hold audio clips, generative audio clips
-  - [x] Marker track — point-in-time markers (single, non-duplicatable)
+- [x] Marker tracks — point-in-time markers
   - [x] Default new project: Video 1, Audio 1, Markers
-  - [x] User can add additional Video/Audio tracks
+  - [x] User can add additional Video/Audio/Marker tracks
+  - [x] Track rename/delete/move controls use the same track selection model
   - [x] Track selection now drives Attributes panel for track-level controls
 
 - [x] **Clip System**
@@ -822,6 +823,14 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-26:** Improved Provider Builder exposed-input cards. Default values now render with type-aware controls instead of a universal text box: booleans use a checkbox-style toggle, numeric defaults use drag fields, enums use a dropdown, and image/video/audio inputs show that defaults are runtime asset bindings. Exposed-input cards now use bounded-width, content-height layout and bounded action rows so lower cards cannot progressively drift wider or push Delete buttons past the right edge of the editor column.
+- **2026-05-26:** Made shared multiline text fields internally scrollable. Provider prompt fields, marker descriptions, and other reusable multiline inputs now keep their configured visible row count while long text scrolls inside the field instead of painting or clipping awkwardly at the field boundary.
+- **2026-05-26:** Tightened timeline body clipping after the sticky header/footer restructure. The ruler now has its own clip, track rows and their clip/marker contents are clipped strictly to the scrollable track viewport, and only overlay elements such as the playhead may span the ruler plus working area.
+- **2026-05-26:** Restructured the egui timeline body into a sticky header/body/footer shape. The add-track toolbar now occupies the full footer band with no reserved empty scrollbar gap, while track rows scroll vertically inside the working area when they overflow instead of forcing the bottom panel to grow with every added track. A subtle vertical scrollbar appears only when the timeline track stack exceeds the viewport.
+- **2026-05-26:** Extended timeline track management so marker tracks are duplicatable/manageable like video and audio tracks. Markers now store an optional owning marker-track id, with legacy unassigned markers mapped to the first marker track for backward compatibility. The timeline add-track toolbar now includes `+ Marker`, track labels can move/delete any track from the context menu, the Attributes panel exposes track deletion, and delete-track confirmation reports dependent clip/marker counts before removing timeline contents. Timeline grid markers are now painted as a fainter overlay so timing guides stay useful without competing with clips.
+- **2026-05-25:** Added track mute state and timeline context-menu toggles for video/audio tracks. Muted video tracks hide their visual preview/export layers and silence embedded audio; muted audio tracks silence playback/export audio. Timeline rows now show a subdued muted treatment, and track mute can also be edited from the Attributes panel.
+- **2026-05-25:** Fixed timeline track-label selection. Video, audio, and marker tracks now select on normal left-click as well as right-click context menus, while clip, asset, marker, and empty-track clicks continue to clear competing selection kinds so the inspector reflects the active object type.
+- **2026-05-25:** Added per-clip image timeline display modes. Image clips can now remain normal temporal stills or switch to Keyframe Reference mode, which draws them as fixed-width thumbnail pins with measured contextual labels instead of duration-width blocks while keeping the same source asset and clip timing data. Keyframe references now behave as point-in-time references for snapping, project duration, and preview/export compositing; their stored duration is retained only so switching back to Still Image remains reversible. Selected keyframe references now show a subdued preview-only canvas ghost when the playhead is elsewhere, and the ghost participates in the existing transform handles without affecting actual render output. I2V bridge creation now prompts before converting the referenced start/end image clips to keyframe display mode.
 - **2026-05-25:** Added keyboard deletion and a confirmation modal for multi-selected Assets panel items. Asset deletion now previews how many source assets and timeline clip instances will be removed, then runs through a shared editor helper that reports the final removal counts; source media files on disk are left in place.
 - **2026-05-25:** Hardened Windows Explorer media drops into the egui Assets pane. The drop handler now falls back to supported-media detection when the OS file-drop event does not provide a normal egui pointer coordinate, so PNG/JPEG/image/video/audio drops are imported instead of silently ignored.
 - **2026-05-24:** Hardened batch seed advancement so `Increment` persists the next seed after every generation attempt, including failed or cached/no-output ComfyUI runs. Queued jobs now carry the seed field and next seed they should advance to, preventing repeated identical prompts from getting stuck in a self-reinforcing cache miss loop.

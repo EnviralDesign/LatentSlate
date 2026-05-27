@@ -31,6 +31,22 @@ impl Default for ClipTransform {
     }
 }
 
+/// Timeline display mode for image clip instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipImageMode {
+    /// Draw the image as a normal temporal still clip.
+    Still,
+    /// Draw the image as a keyframe/reference pin anchored at clip start.
+    Keyframe,
+}
+
+impl Default for ClipImageMode {
+    fn default() -> Self {
+        Self::Still
+    }
+}
+
 /// A clip placed on a track
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
@@ -53,6 +69,9 @@ pub struct Clip {
     /// Optional user-facing label for this clip instance.
     #[serde(default)]
     pub label: Option<String>,
+    /// Image-specific timeline display mode.
+    #[serde(default)]
+    pub image_mode: ClipImageMode,
     /// Transform applied when compositing this clip.
     #[serde(default)]
     pub transform: ClipTransform,
@@ -71,6 +90,7 @@ impl Clip {
             trim_in_seconds: 0.0,
             volume: 1.0,
             label: None,
+            image_mode: ClipImageMode::Still,
             transform: ClipTransform::default(),
         }
     }

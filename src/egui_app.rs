@@ -42,11 +42,12 @@ use crate::editor::{
 use crate::providers::ProviderProgress;
 use crate::state::{
     asset_display_name, input_value_as_bool, input_value_as_f64, input_value_as_i64,
-    input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipTransform,
-    ComfyOutputSelector, ComfyWorkflowRef, GenerationJob, GenerationJobStatus, GenerationRecord,
-    GenerationSeedAdvance, GenerativeConfig, InputBinding, InputUi, InputValue, ManifestInput,
-    NodeSelector, Project, ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField,
-    ProviderInputType, ProviderManifest, ProviderOutputType, SeedStrategy, TrackType,
+    input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipImageMode,
+    ClipTransform, ComfyOutputSelector, ComfyWorkflowRef, GenerationJob, GenerationJobStatus,
+    GenerationRecord, GenerationSeedAdvance, GenerativeConfig, InputBinding, InputUi, InputValue,
+    ManifestInput, NodeSelector, Project, ProjectSettings, ProviderConnection, ProviderEntry,
+    ProviderInputField, ProviderInputType, ProviderManifest, ProviderOutputType, SeedStrategy,
+    TrackType,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
@@ -62,6 +63,9 @@ const TIMELINE_TRACK_H: f32 = 36.0;
 const TIMELINE_ADD_ROW_H: f32 = 42.0;
 const TIMELINE_CLIP_H: f32 = 32.0;
 const TIMELINE_CLIP_Y_PAD: f32 = 2.0;
+const TIMELINE_KEYFRAME_HIT_W: f32 = 40.0;
+const TIMELINE_KEYFRAME_THUMB: f32 = 24.0;
+const TIMELINE_KEYFRAME_LABEL_W: f32 = 140.0;
 const TIMELINE_SCROLLBAR_H: f32 = 12.0;
 const TIMELINE_MIN_ZOOM_FLOOR: f32 = 0.1;
 const TIMELINE_MAX_PX_PER_FRAME: f32 = 8.0;
@@ -137,6 +141,8 @@ const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
 const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
+const TRACK_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 300.0];
+const BRIDGE_KEYFRAME_MODAL_SIZE: [f32; 2] = [500.0, 340.0];
 const QUEUE_PANEL_W: f32 = 320.0;
 const QUEUE_PANEL_MIN_H: f32 = 132.0;
 const QUEUE_PANEL_PAD: f32 = 12.0;
@@ -211,6 +217,8 @@ pub struct NlaEguiApp {
     preview_prefetch_in_flight: Arc<AtomicBool>,
     asset_thumbnails: HashMap<Uuid, AssetThumbnail>,
     asset_thumbnail_misses: HashSet<Uuid>,
+    asset_source_dimensions: HashMap<Uuid, Vec2>,
+    asset_source_dimension_misses: HashSet<Uuid>,
     timeline_thumbnails: HashMap<TimelineThumbnailKey, AssetThumbnail>,
     timeline_thumbnail_misses: HashSet<TimelineThumbnailKey>,
     audio_peak_caches: HashMap<Uuid, PeakCache>,
@@ -250,6 +258,8 @@ pub struct NlaEguiApp {
     api_key_modal: ApiKeyModalState,
     provider_template_kind: ProviderTemplateKind,
     asset_delete_confirmation: Option<AssetDeleteConfirmation>,
+    track_delete_confirmation: Option<TrackDeleteConfirmation>,
+    bridge_keyframe_confirmation: Option<BridgeKeyframeConfirmation>,
     generation_runtime: Option<tokio::runtime::Runtime>,
     generation_events_tx: mpsc::Sender<GenerationEvent>,
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
@@ -497,12 +507,14 @@ struct TimelineRects {
     tracks: Rect,
     add_row: Rect,
     scrollbar: Rect,
+    track_scroll_y: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct TimelineClipGeom {
     clip_id: Uuid,
     rect: Rect,
+    keyframe: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -579,6 +591,22 @@ struct AssetDeleteConfirmation {
     asset_ids: Vec<Uuid>,
     asset_count: usize,
     clip_count: usize,
+    sample_names: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TrackDeleteConfirmation {
+    track_ids: Vec<Uuid>,
+    track_count: usize,
+    clip_count: usize,
+    marker_count: usize,
+    sample_names: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct BridgeKeyframeConfirmation {
+    clip_ids: Vec<Uuid>,
+    convert_clip_ids: Vec<Uuid>,
     sample_names: Vec<String>,
 }
 
@@ -685,6 +713,8 @@ impl NlaEguiApp {
             preview_prefetch_in_flight: Arc::new(AtomicBool::new(false)),
             asset_thumbnails: HashMap::new(),
             asset_thumbnail_misses: HashSet::new(),
+            asset_source_dimensions: HashMap::new(),
+            asset_source_dimension_misses: HashSet::new(),
             timeline_thumbnails: HashMap::new(),
             timeline_thumbnail_misses: HashSet::new(),
             audio_peak_caches: HashMap::new(),
@@ -724,6 +754,8 @@ impl NlaEguiApp {
             api_key_modal: ApiKeyModalState::default(),
             provider_template_kind: ProviderTemplateKind::default(),
             asset_delete_confirmation: None,
+            track_delete_confirmation: None,
+            bridge_keyframe_confirmation: None,
             generation_runtime,
             generation_events_tx,
             generation_events_rx,
@@ -1058,6 +1090,8 @@ impl NlaEguiApp {
         self.preview_perf_sequence = 0;
         self.asset_thumbnails.clear();
         self.asset_thumbnail_misses.clear();
+        self.asset_source_dimensions.clear();
+        self.asset_source_dimension_misses.clear();
         self.timeline_thumbnails.clear();
         self.timeline_thumbnail_misses.clear();
         self.audio_peak_caches.clear();
@@ -1136,6 +1170,8 @@ impl NlaEguiApp {
             || self.editor.overlays.api_keys
             || self.editor.overlays.queue
             || self.asset_delete_confirmation.is_some()
+            || self.track_delete_confirmation.is_some()
+            || self.bridge_keyframe_confirmation.is_some()
             || self.provider_json_editor_path.is_some()
             || self.provider_builder_open
     }
@@ -1180,6 +1216,12 @@ impl NlaEguiApp {
 
         if delete && !self.editor.selection.asset_ids.is_empty() {
             self.request_delete_selected_assets();
+            ctx.request_repaint();
+            return;
+        }
+
+        if delete && !self.editor.selection.track_ids.is_empty() {
+            self.request_delete_selected_tracks();
             ctx.request_repaint();
             return;
         }
@@ -1886,6 +1928,27 @@ impl NlaEguiApp {
         None
     }
 
+    fn asset_source_dimensions(&mut self, asset: &Asset) -> Option<Vec2> {
+        if let Some(size) = self.asset_source_dimensions.get(&asset.id) {
+            return Some(*size);
+        }
+        if self.asset_source_dimension_misses.contains(&asset.id) {
+            return None;
+        }
+
+        let project_root = self.editor.project.project_path.as_deref()?;
+        for path in asset_thumbnail_candidates(project_root, asset) {
+            if let Ok((width, height)) = image::image_dimensions(&path) {
+                let size = Vec2::new(width.max(1) as f32, height.max(1) as f32);
+                self.asset_source_dimensions.insert(asset.id, size);
+                return Some(size);
+            }
+        }
+
+        self.asset_source_dimension_misses.insert(asset.id);
+        None
+    }
+
     fn timeline_thumbnail(
         &mut self,
         ctx: &Context,
@@ -2353,6 +2416,87 @@ impl NlaEguiApp {
         result
     }
 
+    fn request_delete_selected_tracks(&mut self) {
+        let track_ids = self.editor.selection.track_ids.clone();
+        self.request_delete_tracks(&track_ids);
+    }
+
+    fn request_delete_tracks(&mut self, track_ids: &[Uuid]) {
+        if let Some(confirmation) = self.track_delete_confirmation(track_ids) {
+            self.track_delete_confirmation = Some(confirmation);
+        }
+    }
+
+    fn track_delete_confirmation(&self, track_ids: &[Uuid]) -> Option<TrackDeleteConfirmation> {
+        let unique_track_ids = unique_uuid_list(track_ids);
+        if unique_track_ids.is_empty() {
+            return None;
+        }
+
+        let existing_track_ids: Vec<Uuid> = unique_track_ids
+            .into_iter()
+            .filter(|track_id| {
+                self.editor
+                    .project
+                    .tracks
+                    .iter()
+                    .any(|track| track.id == *track_id)
+            })
+            .collect();
+        if existing_track_ids.is_empty() {
+            return None;
+        }
+
+        let mut clip_count = 0usize;
+        let mut marker_count = 0usize;
+        for track_id in existing_track_ids.iter().copied() {
+            let (clips, markers) = self.editor.project.track_delete_counts(track_id);
+            clip_count += clips;
+            marker_count += markers;
+        }
+        let sample_names = existing_track_ids
+            .iter()
+            .filter_map(|track_id| {
+                self.editor
+                    .project
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == *track_id)
+            })
+            .take(4)
+            .map(|track| track.name.clone())
+            .collect();
+
+        Some(TrackDeleteConfirmation {
+            track_count: existing_track_ids.len(),
+            track_ids: existing_track_ids,
+            clip_count,
+            marker_count,
+            sample_names,
+        })
+    }
+
+    fn perform_delete_tracks(&mut self, track_ids: &[Uuid]) -> usize {
+        let unique_track_ids = unique_uuid_list(track_ids);
+        let mut deleted = 0usize;
+        for track_id in unique_track_ids {
+            if self.editor.project.remove_track(track_id) {
+                deleted += 1;
+            }
+        }
+        if deleted > 0 {
+            self.editor.selection.clear();
+            self.editor.preview_dirty = true;
+            self.editor.status = if deleted == 1 {
+                "Deleted track".to_string()
+            } else {
+                format!("Deleted {deleted} tracks")
+            };
+            self.refresh_audio_playback_items();
+        }
+        deleted
+    }
+
     fn handle_asset_file_drops(&mut self, ctx: &Context) {
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
         if dropped_files.is_empty() {
@@ -2594,7 +2738,7 @@ impl NlaEguiApp {
             self.space_selected_clips(&clips);
         }
         if create_bridge {
-            self.create_bridge_video_from_selected_clips(&clips);
+            self.request_bridge_video_from_selected_clips(&clips);
         }
     }
 
@@ -2653,6 +2797,77 @@ impl NlaEguiApp {
             .project
             .find_asset(asset_id)
             .is_some_and(|asset| asset.is_image())
+    }
+
+    fn request_bridge_video_from_selected_clips(&mut self, clips: &[Clip]) {
+        let image_clips = self.bridge_image_clips(clips);
+        let (Some(first), Some(last)) = (image_clips.first(), image_clips.last()) else {
+            self.editor.status = "Select at least two image clips first.".to_string();
+            return;
+        };
+        if first.id == last.id {
+            self.editor.status = "Select two different image clips.".to_string();
+            return;
+        }
+
+        let convert_clip_ids: Vec<Uuid> = [first, last]
+            .iter()
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .is_some_and(|asset| !clip_is_keyframe_image(clip, Some(asset)))
+            })
+            .map(|clip| clip.id)
+            .collect();
+        if convert_clip_ids.is_empty() {
+            self.create_bridge_video_from_selected_clips(&image_clips);
+            return;
+        }
+
+        let sample_names = [first, last]
+            .iter()
+            .filter_map(|clip| self.editor.project.find_asset(clip.asset_id))
+            .map(|asset| asset.name.clone())
+            .collect();
+        self.bridge_keyframe_confirmation = Some(BridgeKeyframeConfirmation {
+            clip_ids: image_clips.iter().map(|clip| clip.id).collect(),
+            convert_clip_ids,
+            sample_names,
+        });
+    }
+
+    fn bridge_image_clips(&self, clips: &[Clip]) -> Vec<Clip> {
+        let mut image_clips: Vec<Clip> = clips
+            .iter()
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .is_some_and(|asset| asset.is_image())
+            })
+            .cloned()
+            .collect();
+        image_clips.sort_by(|a, b| {
+            a.start_time
+                .partial_cmp(&b.start_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        image_clips
+    }
+
+    fn create_bridge_video_from_clip_ids(&mut self, clip_ids: &[Uuid]) {
+        let clips: Vec<Clip> = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .filter(|clip| clip_ids.contains(&clip.id))
+            .cloned()
+            .collect();
+        let image_clips = self.bridge_image_clips(&clips);
+        self.create_bridge_video_from_selected_clips(&image_clips);
     }
 
     fn create_bridge_video_from_selected_clips(&mut self, clips: &[Clip]) {
@@ -2778,6 +2993,9 @@ impl NlaEguiApp {
             .and_then(|clip| self.editor.project.find_asset(clip.asset_id))
             .map(|asset| asset.name.clone())
             .unwrap_or_else(|| "Unknown asset".to_string());
+        let clip_asset_is_image = clip_asset_id
+            .and_then(|asset_id| self.editor.project.find_asset(asset_id))
+            .is_some_and(|asset| asset.is_image());
         let mut preview_dirty = false;
         if let Some(clip) = self
             .editor
@@ -2799,6 +3017,33 @@ impl NlaEguiApp {
                         Some(label)
                     };
                 }
+                if clip_asset_is_image {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    let mut next_mode = clip.image_mode;
+                    kit::labeled_combo_field(
+                        ui,
+                        "Timeline Display",
+                        ("clip_image_mode", clip.id),
+                        clip_image_mode_label(next_mode),
+                        |ui| {
+                            automation_selectable_value(
+                                ui,
+                                &mut next_mode,
+                                ClipImageMode::Still,
+                                "Still Image",
+                            );
+                            automation_selectable_value(
+                                ui,
+                                &mut next_mode,
+                                ClipImageMode::Keyframe,
+                                "Keyframe Reference",
+                            );
+                        },
+                    );
+                    if next_mode != clip.image_mode {
+                        clip.image_mode = next_mode;
+                    }
+                }
             });
             ui.add_space(kit::FORM_ROW_GAP);
             inspector_card(ui, "Transform", |ui| {
@@ -2806,11 +3051,21 @@ impl NlaEguiApp {
             });
             ui.add_space(kit::FORM_ROW_GAP);
             inspector_card(ui, "Timing", |ui| {
-                preview_dirty |= inspector_two_drag_f64(
-                    ui,
-                    ("Start", &mut clip.start_time, 0.05),
-                    ("Duration", &mut clip.duration, 0.05),
-                );
+                if clip_asset_is_image && clip.image_mode == ClipImageMode::Keyframe {
+                    preview_dirty |= inspector_drag_f64(
+                        ui,
+                        "Time",
+                        &mut clip.start_time,
+                        0.05,
+                        ui.available_width(),
+                    );
+                } else {
+                    preview_dirty |= inspector_two_drag_f64(
+                        ui,
+                        ("Start", &mut clip.start_time, 0.05),
+                        ("Duration", &mut clip.duration, 0.05),
+                    );
+                }
             });
         }
         if let Some(asset_id) = clip_asset_id {
@@ -3853,6 +4108,9 @@ impl NlaEguiApp {
     }
 
     fn track_attributes(&mut self, ui: &mut Ui, track_id: Uuid) {
+        let mut track_mute_changed = false;
+        let mut preview_dirty = false;
+        let mut delete_track = false;
         if let Some(track) = self
             .editor
             .project
@@ -3868,10 +4126,31 @@ impl NlaEguiApp {
                 inspector_meta_row(ui, "Type", format!("{:?}", track.track_type));
                 if track.track_type != TrackType::Marker {
                     ui.add_space(kit::FORM_ROW_GAP);
+                    let before = track.muted;
+                    automation_checkbox(ui, &mut track.muted, "Muted");
+                    if track.muted != before {
+                        track_mute_changed = true;
+                        preview_dirty = true;
+                    }
+                    ui.add_space(kit::FORM_ROW_GAP);
                     let volume_w = ui.available_width();
                     let _ = inspector_drag_f32(ui, "Volume", &mut track.volume, 0.01, volume_w);
                 }
+                ui.add_space(kit::ACTION_GAP);
+                let delete_w = ui.available_width();
+                if kit::danger_button(ui, "Delete Track", delete_w).clicked() {
+                    delete_track = true;
+                }
             });
+        }
+        if delete_track {
+            self.request_delete_tracks(&[track_id]);
+        }
+        if preview_dirty {
+            self.editor.preview_dirty = true;
+        }
+        if track_mute_changed {
+            self.refresh_audio_playback_items();
         }
     }
 
@@ -3978,7 +4257,14 @@ impl NlaEguiApp {
                     );
                 }
             }
-            let object_geometries = self.preview_object_geometries(&layers, canvas_rect, scale);
+            let mut object_geometries = self.preview_object_geometries(&layers, canvas_rect, scale);
+            object_geometries.extend(self.paint_preview_keyframe_reference_ghosts(
+                ui,
+                &layer_painter,
+                canvas_rect,
+                &layers,
+                scale,
+            ));
             self.paint_preview_transform_overlay(
                 ui,
                 rect,
@@ -4230,6 +4516,106 @@ impl NlaEguiApp {
                 ),
                 project_to_screen,
             });
+        }
+
+        geometries
+    }
+
+    fn paint_preview_keyframe_reference_ghosts(
+        &mut self,
+        ui: &mut Ui,
+        painter: &egui::Painter,
+        canvas_rect: Rect,
+        layers: &PreviewLayerStack,
+        canvas_scale: f32,
+    ) -> Vec<PreviewObjectGeometry> {
+        let active_clip_ids: HashSet<Uuid> = layers
+            .layers
+            .iter()
+            .filter_map(|layer| layer.clip_id)
+            .collect();
+        let fps = self.editor.project.settings.fps.max(1.0);
+        let current_frame = timeline_floor_frame(self.editor.current_time, fps);
+        let candidates: Vec<(Clip, Asset)> = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .filter(|clip| self.editor.selection.clip_ids.contains(&clip.id))
+            .filter(|clip| !active_clip_ids.contains(&clip.id))
+            .filter(|clip| timeline_floor_frame(clip.start_time, fps) != current_frame)
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_track(clip.track_id)
+                    .is_some_and(|track| !track.muted)
+            })
+            .filter_map(|clip| {
+                let asset = self.editor.project.find_asset(clip.asset_id)?;
+                if !clip_is_keyframe_image(clip, Some(asset)) {
+                    return None;
+                }
+                Some((clip.clone(), asset.clone()))
+            })
+            .collect();
+        let mut geometries = Vec::new();
+
+        for (clip, asset) in candidates {
+            let Some((texture_id, fallback_size)) = self.asset_thumbnail(ui.ctx(), &asset) else {
+                continue;
+            };
+            let source_size = self
+                .asset_source_dimensions(&asset)
+                .unwrap_or(fallback_size)
+                .max(Vec2::splat(1.0));
+            let geometry = preview_geometry_for_clip(
+                &self.editor.project,
+                &clip,
+                source_size,
+                canvas_rect,
+                layers,
+                canvas_scale,
+            );
+            let screen_rect = Rect::from_center_size(
+                geometry.screen_center,
+                Vec2::new(
+                    source_size.x
+                        * preview_project_scale(layers, self.editor.project.settings.width)
+                        * canvas_scale
+                        * clip.transform.scale_x.max(0.01),
+                    source_size.y
+                        * preview_project_scale(layers, self.editor.project.settings.width)
+                        * canvas_scale
+                        * clip.transform.scale_y.max(0.01),
+                ),
+            );
+            let tint = Color32::from_white_alpha(82);
+            if clip.transform.rotation_deg.abs() <= 0.01 {
+                painter.image(
+                    texture_id,
+                    screen_rect,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    tint,
+                );
+            } else {
+                paint_rotated_texture(
+                    painter,
+                    texture_id,
+                    screen_rect,
+                    clip.transform.rotation_deg,
+                    tint,
+                );
+            }
+            for index in 0..4 {
+                painter.line_segment(
+                    [
+                        geometry.screen_corners[index],
+                        geometry.screen_corners[(index + 1) % 4],
+                    ],
+                    Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.42)),
+                );
+            }
+            geometries.push(geometry);
         }
 
         geometries
@@ -4918,14 +5304,15 @@ impl NlaEguiApp {
         let duration = self.editor.project.duration().max(10.0);
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
         let track_count = self.editor.project.tracks.len().max(1) as f32;
-        let min_h = TIMELINE_RULER_H
-            + track_count * TIMELINE_TRACK_H
-            + TIMELINE_ADD_ROW_H
-            + TIMELINE_SCROLLBAR_H;
+        let min_h = TIMELINE_RULER_H + TIMELINE_TRACK_H + TIMELINE_ADD_ROW_H;
         let total_h = available.y.max(min_h);
         let (outer, response) =
             ui.allocate_exact_size(Vec2::new(available.x, total_h), Sense::click_and_drag());
-        let rects = timeline_rects(outer);
+        let track_content_h = track_count * TIMELINE_TRACK_H;
+        let max_scroll_y =
+            (track_content_h - (total_h - TIMELINE_RULER_H - TIMELINE_ADD_ROW_H).max(1.0)).max(0.0);
+        self.clamp_timeline_vertical_scroll(max_scroll_y);
+        let rects = timeline_rects(outer, self.editor.layout.timeline_scroll_y);
         let viewport_w = rects.tracks.width().max(1.0);
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         self.editor.layout.timeline_zoom =
@@ -4941,8 +5328,15 @@ impl NlaEguiApp {
         let content_w = (duration as f32 * zoom).max(viewport_w);
         self.clamp_timeline_scroll(content_w, viewport_w);
         let content_viewport =
-            Rect::from_min_max(rects.ruler.left_top(), rects.tracks.right_bottom());
-        self.handle_timeline_wheel(ui, content_viewport, duration, content_w, viewport_w);
+            Rect::from_min_max(rects.outer.left_top(), rects.tracks.right_bottom());
+        self.handle_timeline_wheel(
+            ui,
+            content_viewport,
+            duration,
+            content_w,
+            viewport_w,
+            max_scroll_y,
+        );
         let cache_buckets = if self.editor.layout.preview_stats {
             let bucket_hint_seconds = ((6.0 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR)) as f64)
                 .max(1.0 / self.editor.project.settings.fps.max(1.0));
@@ -4954,11 +5348,18 @@ impl NlaEguiApp {
         };
 
         let painter = ui.painter_at(outer);
-        let content_clip = Rect::from_min_max(
+        let overlay_clip = Rect::from_min_max(
             rects.ruler.left_top(),
             Pos2::new(rects.outer.right(), rects.add_row.top()),
         );
-        let content_painter = painter.with_clip_rect(content_clip);
+        let overlay_painter = painter.with_clip_rect(overlay_clip);
+        let ruler_painter = painter.with_clip_rect(rects.ruler);
+        let track_painter = painter.with_clip_rect(rects.tracks);
+        let label_viewport = Rect::from_min_max(
+            Pos2::new(outer.left(), rects.tracks.top()),
+            Pos2::new(rects.tracks.left(), rects.tracks.bottom()),
+        );
+        let label_painter = painter.with_clip_rect(label_viewport);
         painter.rect_filled(outer, 0.0, Color32::from_rgb(12, 13, 15));
         painter.rect_filled(rects.label, 0.0, kit::PANEL);
         painter.rect_filled(rects.ruler, 0.0, kit::CHROME);
@@ -4995,73 +5396,111 @@ impl NlaEguiApp {
             })
         });
 
-        self.paint_timeline_ruler(&content_painter, rects.ruler, duration, zoom, fps);
+        self.paint_timeline_ruler(&ruler_painter, rects.ruler, duration, zoom, fps);
 
         let mut clip_geoms = Vec::new();
         let mut marker_geoms = Vec::new();
         for (row, track) in tracks.iter().enumerate() {
             let row_rect = timeline_row_rect(rects, row);
+            if row_rect.bottom() < rects.tracks.top() || row_rect.top() > rects.tracks.bottom() {
+                continue;
+            }
             let label_rect = Rect::from_min_max(
                 Pos2::new(outer.left(), row_rect.top()),
                 Pos2::new(rects.tracks.left(), row_rect.bottom()),
             );
+            let label_hit_rect = label_rect.intersect(label_viewport);
             let selected = self.editor.selection.track_ids.contains(&track.id);
-            let track_color = track_color(track.track_type);
+            let track_muted = track.muted && track.track_type != TrackType::Marker;
+            let track_color = if track_muted {
+                track_color(track.track_type).gamma_multiply(0.45)
+            } else {
+                track_color(track.track_type)
+            };
             let track_response = ui.interact(
-                label_rect,
+                label_hit_rect,
                 ui.id().with(("timeline-track-label", track.id)),
                 Sense::click(),
             );
+            if track_response.clicked() {
+                self.editor.selection.select_track(track.id);
+            }
             track_response.context_menu(|ui| {
                 self.editor.selection.select_track(track.id);
-                let movable = track.track_type != TrackType::Marker;
-                ui.add_enabled_ui(movable, |ui| {
-                    let can_move_up = self
-                        .editor
-                        .project
-                        .tracks
-                        .iter()
-                        .position(|candidate| candidate.id == track.id)
-                        .map(|index| index > 0)
-                        .unwrap_or(false);
-                    let can_move_down = self
-                        .editor
-                        .project
-                        .tracks
-                        .iter()
-                        .position(|candidate| candidate.id == track.id)
-                        .map(|index| index + 1 < self.editor.project.tracks.len())
-                        .unwrap_or(false);
-                    if automation_button(
-                        ui.add_enabled(can_move_up, egui::Button::new("Move Up")),
-                        "Move Up",
-                    )
-                    .clicked()
-                    {
-                        if self.editor.project.move_track_up(track.id) {
+                let can_move_up = self
+                    .editor
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|candidate| candidate.id == track.id)
+                    .map(|index| index > 0)
+                    .unwrap_or(false);
+                let can_move_down = self
+                    .editor
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|candidate| candidate.id == track.id)
+                    .map(|index| index + 1 < self.editor.project.tracks.len())
+                    .unwrap_or(false);
+                if automation_button(
+                    ui.add_enabled(can_move_up, egui::Button::new("Move Up")),
+                    "Move Up",
+                )
+                .clicked()
+                {
+                    if self.editor.project.move_track_up(track.id) {
+                        self.editor.preview_dirty = true;
+                        self.editor.status = format!("Moved {} up", track.name);
+                    }
+                    ui.close();
+                }
+                if automation_button(
+                    ui.add_enabled(can_move_down, egui::Button::new("Move Down")),
+                    "Move Down",
+                )
+                .clicked()
+                {
+                    if self.editor.project.move_track_down(track.id) {
+                        self.editor.preview_dirty = true;
+                        self.editor.status = format!("Moved {} down", track.name);
+                    }
+                    ui.close();
+                }
+                if track.track_type != TrackType::Marker {
+                    ui.separator();
+                    let label = if track.muted {
+                        "Unmute Track"
+                    } else {
+                        "Mute Track"
+                    };
+                    if automation_button(ui.button(label), label).clicked() {
+                        if let Some(project_track) = self
+                            .editor
+                            .project
+                            .tracks
+                            .iter_mut()
+                            .find(|candidate| candidate.id == track.id)
+                        {
+                            project_track.muted = !project_track.muted;
                             self.editor.preview_dirty = true;
-                            self.editor.status = format!("Moved {} up", track.name);
+                            self.editor.status = if project_track.muted {
+                                format!("Muted {}", project_track.name)
+                            } else {
+                                format!("Unmuted {}", project_track.name)
+                            };
                         }
+                        self.refresh_audio_playback_items();
                         ui.close();
                     }
-                    if automation_button(
-                        ui.add_enabled(can_move_down, egui::Button::new("Move Down")),
-                        "Move Down",
-                    )
-                    .clicked()
-                    {
-                        if self.editor.project.move_track_down(track.id) {
-                            self.editor.preview_dirty = true;
-                            self.editor.status = format!("Moved {} down", track.name);
-                        }
-                        ui.close();
-                    }
-                });
-                if !movable {
-                    ui.label(kit::caption("Marker track is fixed for now."));
+                }
+                ui.separator();
+                if automation_button(ui.button("Delete Track..."), "Delete Track").clicked() {
+                    self.request_delete_tracks(&[track.id]);
+                    ui.close();
                 }
             });
-            painter.rect_filled(
+            label_painter.rect_filled(
                 label_rect,
                 0.0,
                 if selected {
@@ -5070,7 +5509,7 @@ impl NlaEguiApp {
                     kit::PANEL
                 },
             );
-            content_painter.rect_filled(
+            track_painter.rect_filled(
                 row_rect,
                 0.0,
                 if row % 2 == 0 {
@@ -5080,29 +5519,29 @@ impl NlaEguiApp {
                 },
             );
             if drop_target_track_id == Some(track.id) {
-                content_painter.rect_filled(row_rect, 0.0, kit::BORDER_FOCUS.gamma_multiply(0.10));
-                content_painter.rect_stroke(
+                track_painter.rect_filled(row_rect, 0.0, kit::BORDER_FOCUS.gamma_multiply(0.10));
+                track_painter.rect_stroke(
                     row_rect.shrink(1.0),
                     3.0,
                     Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.85)),
                     egui::StrokeKind::Inside,
                 );
             }
-            painter.line_segment(
+            label_painter.line_segment(
                 [
                     Pos2::new(outer.left(), row_rect.bottom()),
                     Pos2::new(rects.tracks.left(), row_rect.bottom()),
                 ],
                 Stroke::new(1.0, kit::BORDER_SOFT),
             );
-            content_painter.line_segment(
+            track_painter.line_segment(
                 [
                     Pos2::new(rects.tracks.left(), row_rect.bottom()),
                     Pos2::new(rects.tracks.right(), row_rect.bottom()),
                 ],
                 Stroke::new(1.0, kit::BORDER_SOFT),
             );
-            painter.rect_filled(
+            label_painter.rect_filled(
                 Rect::from_min_size(
                     Pos2::new(label_rect.left() + 12.0, row_rect.center().y - 8.0),
                     Vec2::new(3.0, 16.0),
@@ -5110,23 +5549,43 @@ impl NlaEguiApp {
                 1.0,
                 track_color,
             );
-            painter.text(
+            label_painter.text(
                 Pos2::new(label_rect.left() + 26.0, row_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 &track.name,
                 FontId::proportional(12.5),
-                kit::TEXT,
+                if track_muted {
+                    kit::TEXT_DIM
+                } else {
+                    kit::TEXT
+                },
             );
+            if track_muted {
+                label_painter.text(
+                    label_rect.right_center() - Vec2::new(14.0, 0.0),
+                    egui::Align2::CENTER_CENTER,
+                    "M",
+                    FontId::monospace(10.0),
+                    kit::TEXT_DIM,
+                );
+            }
 
             for clip in clips.iter().filter(|clip| clip.track_id == track.id) {
-                let clip_rect =
-                    timeline_clip_rect(clip, row_rect, zoom, self.editor.layout.timeline_scroll_x);
+                let asset = assets_by_id.get(&clip.asset_id);
+                let keyframe = clip_is_keyframe_image(clip, asset);
+                let clip_rect = timeline_clip_rect(
+                    clip,
+                    asset,
+                    row_rect,
+                    zoom,
+                    self.editor.layout.timeline_scroll_x,
+                );
                 clip_geoms.push(TimelineClipGeom {
                     clip_id: clip.id,
                     rect: clip_rect,
+                    keyframe,
                 });
                 let selected = self.editor.selection.clip_ids.contains(&clip.id);
-                let asset = assets_by_id.get(&clip.asset_id);
                 let thumbnail_tiles = asset
                     .filter(|asset| asset.is_visual())
                     .map(|asset| {
@@ -5136,8 +5595,14 @@ impl NlaEguiApp {
                 let waveform = asset
                     .filter(|asset| asset.is_audio())
                     .and_then(|asset| self.audio_peak_cache(ui.ctx(), asset));
+                let contextual_keyframe_label = keyframe
+                    && (selected
+                        || ui
+                            .ctx()
+                            .pointer_hover_pos()
+                            .is_some_and(|pos| clip_rect.contains(pos)));
                 self.paint_timeline_clip(
-                    &content_painter,
+                    &track_painter,
                     clip,
                     asset,
                     clip_rect,
@@ -5146,11 +5611,23 @@ impl NlaEguiApp {
                     &thumbnail_tiles,
                     waveform.as_ref(),
                     cache_buckets.get(&clip.id).map(Vec::as_slice),
+                    contextual_keyframe_label,
+                );
+            }
+            if track_muted {
+                track_painter.rect_filled(
+                    row_rect,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(3, 4, 6, 96),
                 );
             }
 
             if track.track_type == TrackType::Marker {
-                for marker in markers.iter() {
+                for marker in markers.iter().filter(|marker| {
+                    self.editor
+                        .project
+                        .marker_belongs_to_track(marker, track.id)
+                }) {
                     let x = time_to_timeline_x(
                         marker.time,
                         rects.tracks.left(),
@@ -5162,13 +5639,14 @@ impl NlaEguiApp {
                         marker_id: marker.id,
                         hit_rect,
                     });
-                    self.paint_timeline_marker(&content_painter, marker, row_rect, x);
+                    self.paint_timeline_marker(&track_painter, marker, row_rect, x);
                 }
             }
         }
 
         self.paint_add_track_row(ui, &painter, rects);
-        self.paint_timeline_playhead(&content_painter, rects, duration, zoom);
+        self.paint_timeline_grid_overlay(&track_painter, rects, duration, zoom);
+        self.paint_timeline_playhead(&overlay_painter, rects, duration, zoom);
         if let Some(time) = self.timeline_snap_preview {
             let x = time_to_timeline_x(
                 time,
@@ -5176,7 +5654,7 @@ impl NlaEguiApp {
                 zoom,
                 self.editor.layout.timeline_scroll_x,
             );
-            content_painter.line_segment(
+            overlay_painter.line_segment(
                 [
                     Pos2::new(x, rects.ruler.top()),
                     Pos2::new(x, rects.add_row.top()),
@@ -5185,6 +5663,7 @@ impl NlaEguiApp {
             );
         }
         self.paint_timeline_scrollbar(ui, &painter, rects, content_w, viewport_w);
+        self.paint_timeline_vertical_scrollbar(ui, &painter, rects, track_content_h);
         if let Some(payload) = response.dnd_release_payload::<AssetTimelineDragPayload>() {
             if let Some(pos) = ui
                 .ctx()
@@ -5212,6 +5691,11 @@ impl NlaEguiApp {
                     }
                 })
                 .unwrap_or(self.editor.current_time);
+            let marker_track_id = context_pos.and_then(|pos| {
+                timeline_track_at_pos(pos, rects, &tracks)
+                    .filter(|track| track.track_type == TrackType::Marker)
+                    .map(|track| track.id)
+            });
 
             if let Some(pos) = context_pos {
                 match timeline_hit(pos, rects, &tracks, &clip_geoms, &marker_geoms) {
@@ -5227,7 +5711,8 @@ impl NlaEguiApp {
             }
 
             if automation_button(ui.button("Add Marker Here"), "Add Marker Here").clicked() {
-                self.editor.add_marker(Some(marker_time));
+                self.editor
+                    .add_marker_to_track(Some(marker_time), marker_track_id);
                 ui.close();
                 return;
             }
@@ -5280,7 +5765,7 @@ impl NlaEguiApp {
                         .partial_cmp(&b.start_time)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
-                self.create_bridge_video_from_selected_clips(&sorted);
+                self.request_bridge_video_from_selected_clips(&sorted);
                 ui.close();
             }
             if !selected_clips.is_empty() {
@@ -5418,6 +5903,17 @@ impl NlaEguiApp {
             self.editor.layout.timeline_scroll_x.clamp(0.0, max_scroll);
     }
 
+    fn clamp_timeline_vertical_scroll(&mut self, max_scroll_y: f32) {
+        if !self.editor.layout.timeline_scroll_y.is_finite() {
+            self.editor.layout.timeline_scroll_y = 0.0;
+        }
+        self.editor.layout.timeline_scroll_y = self
+            .editor
+            .layout
+            .timeline_scroll_y
+            .clamp(0.0, max_scroll_y.max(0.0));
+    }
+
     fn handle_timeline_keyboard(&mut self, ui: &mut Ui, duration: f64, viewport_w: f32) {
         if self.keyboard_shortcuts_suppressed(ui.ctx()) {
             return;
@@ -5442,6 +5938,7 @@ impl NlaEguiApp {
         duration: f64,
         content_w: f32,
         viewport_w: f32,
+        max_scroll_y: f32,
     ) {
         let Some(pointer) = ui.ctx().pointer_hover_pos() else {
             return;
@@ -5449,33 +5946,38 @@ impl NlaEguiApp {
         if !viewport_rect.contains(pointer) {
             return;
         }
-        let (ctrl_down, ctrl_zoom_delta, shift, smooth_delta, wheel_delta) = ui.input(|input| {
-            let mut ctrl_zoom_delta = 0.0;
-            let mut shift_wheel_delta = Vec2::ZERO;
-            for event in input.events.iter() {
-                if let egui::Event::MouseWheel {
-                    delta, modifiers, ..
-                } = event
-                {
-                    if modifiers.command || modifiers.ctrl || modifiers.mac_cmd {
-                        ctrl_zoom_delta += if delta.y.abs() > 0.0 {
-                            delta.y
+        let (ctrl_down, ctrl_zoom_delta, shift, smooth_delta, wheel_delta, plain_wheel_delta) = ui
+            .input(|input| {
+                let mut ctrl_zoom_delta = 0.0;
+                let mut shift_wheel_delta = Vec2::ZERO;
+                let mut plain_wheel_delta = Vec2::ZERO;
+                for event in input.events.iter() {
+                    if let egui::Event::MouseWheel {
+                        delta, modifiers, ..
+                    } = event
+                    {
+                        if modifiers.command || modifiers.ctrl || modifiers.mac_cmd {
+                            ctrl_zoom_delta += if delta.y.abs() > 0.0 {
+                                delta.y
+                            } else {
+                                delta.x
+                            };
+                        } else if modifiers.shift {
+                            shift_wheel_delta += *delta;
                         } else {
-                            delta.x
-                        };
-                    } else if modifiers.shift {
-                        shift_wheel_delta += *delta;
+                            plain_wheel_delta += *delta;
+                        }
                     }
                 }
-            }
-            (
-                input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd,
-                ctrl_zoom_delta,
-                input.modifiers.shift,
-                input.smooth_scroll_delta,
-                shift_wheel_delta,
-            )
-        });
+                (
+                    input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd,
+                    ctrl_zoom_delta,
+                    input.modifiers.shift,
+                    input.smooth_scroll_delta,
+                    shift_wheel_delta,
+                    plain_wheel_delta,
+                )
+            });
 
         let ctrl_zoom_delta = if ctrl_zoom_delta.abs() > 0.0 {
             ctrl_zoom_delta
@@ -5497,6 +5999,22 @@ impl NlaEguiApp {
             );
             ui.ctx().request_repaint();
             return;
+        }
+
+        if max_scroll_y > 0.0 && !shift && !ctrl_down {
+            let vertical_delta = if plain_wheel_delta.y.abs() > 0.0 {
+                plain_wheel_delta.y
+            } else if smooth_delta.y.abs() > 0.0 && smooth_delta.x.abs() <= smooth_delta.y.abs() {
+                smooth_delta.y
+            } else {
+                0.0
+            };
+            if vertical_delta.abs() > 0.0 {
+                self.editor.layout.timeline_scroll_y -= vertical_delta;
+                self.clamp_timeline_vertical_scroll(max_scroll_y);
+                ui.ctx().request_repaint();
+                return;
+            }
         }
 
         let content_delta = if wheel_delta.x.abs() > 0.0 {
@@ -5575,19 +6093,50 @@ impl NlaEguiApp {
                 ],
                 Stroke::new(1.0, Color32::from_rgb(52, 55, 62)),
             );
-            painter.line_segment(
-                [
-                    Pos2::new(x, rect.bottom()),
-                    Pos2::new(x, rect.bottom() + rect.height() * 12.0),
-                ],
-                Stroke::new(1.0, Color32::from_rgb(25, 27, 31)),
-            );
             painter.text(
                 Pos2::new(x + 4.0, rect.top() + 4.0),
                 egui::Align2::LEFT_TOP,
                 timeline_ruler_label(t),
                 FontId::monospace(9.0),
                 kit::TEXT_DIM,
+            );
+        }
+    }
+
+    fn paint_timeline_grid_overlay(
+        &self,
+        painter: &egui::Painter,
+        rects: TimelineRects,
+        duration: f64,
+        zoom: f32,
+    ) {
+        let scroll_x = self.editor.layout.timeline_scroll_x;
+        let visible_start = (scroll_x / zoom).max(0.0) as f64;
+        let visible_end = ((scroll_x + rects.tracks.width()) / zoom).min(duration as f32) as f64;
+        let target_seconds = (90.0 / zoom.max(0.1)).max(0.5) as f64;
+        let major_step = nice_timeline_step(target_seconds);
+        let first_tick = (visible_start / major_step).floor() as i32 - 1;
+        let last_tick = (visible_end / major_step).ceil() as i32 + 1;
+        let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(86, 92, 104, 42));
+
+        for tick in first_tick..=last_tick {
+            if tick < 0 {
+                continue;
+            }
+            let t = tick as f64 * major_step;
+            if t > duration {
+                continue;
+            }
+            let x = time_to_timeline_x(t, rects.tracks.left(), zoom, scroll_x);
+            if x < rects.tracks.left() - 1.0 || x > rects.tracks.right() + 1.0 {
+                continue;
+            }
+            painter.line_segment(
+                [
+                    Pos2::new(x, rects.tracks.top()),
+                    Pos2::new(x, rects.tracks.bottom()),
+                ],
+                stroke,
             );
         }
     }
@@ -5603,7 +6152,22 @@ impl NlaEguiApp {
         thumbnail_tiles: &[TimelineThumbTile],
         waveform: Option<&PeakCache>,
         cache_buckets: Option<&[bool]>,
+        contextual_keyframe_label: bool,
     ) {
+        if clip_is_keyframe_image(clip, asset) {
+            self.paint_timeline_keyframe_clip(
+                painter,
+                clip,
+                asset,
+                rect,
+                accent,
+                selected,
+                thumbnail_tiles,
+                contextual_keyframe_label,
+            );
+            return;
+        }
+
         let fill = if selected {
             Color32::from_rgb(18, 50, 36)
         } else {
@@ -5651,6 +6215,130 @@ impl NlaEguiApp {
             FontId::proportional(10.5),
             kit::TEXT_ON_ACCENT,
         );
+    }
+
+    fn paint_timeline_keyframe_clip(
+        &self,
+        painter: &egui::Painter,
+        clip: &Clip,
+        asset: Option<&Asset>,
+        rect: Rect,
+        accent: Color32,
+        selected: bool,
+        thumbnail_tiles: &[TimelineThumbTile],
+        show_label: bool,
+    ) {
+        let anchor_x = rect.left() + 4.0;
+        let color = if selected {
+            kit::BORDER_FOCUS
+        } else {
+            accent.gamma_multiply(0.82)
+        };
+        painter.line_segment(
+            [
+                Pos2::new(anchor_x, rect.top() + 2.0),
+                Pos2::new(anchor_x, rect.bottom() - 2.0),
+            ],
+            Stroke::new(if selected { 2.0 } else { 1.35 }, color),
+        );
+        let head = [
+            Pos2::new(anchor_x - 4.5, rect.top() + 1.0),
+            Pos2::new(anchor_x + 4.5, rect.top() + 1.0),
+            Pos2::new(anchor_x, rect.top() + 8.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            head.to_vec(),
+            color,
+            Stroke::NONE,
+        ));
+
+        let thumb_size = TIMELINE_KEYFRAME_THUMB.min(rect.height() - 8.0).max(12.0);
+        let thumb_rect = Rect::from_min_size(
+            Pos2::new(anchor_x + 6.0, rect.top() + 2.0),
+            Vec2::splat(thumb_size),
+        );
+        if thumb_rect.right() > rect.right() {
+            return;
+        }
+
+        let thumb_frame = thumb_rect.expand(2.0);
+        painter.rect_filled(
+            thumb_frame,
+            4.0,
+            if selected {
+                Color32::from_rgb(18, 50, 36)
+            } else {
+                Color32::from_rgb(21, 23, 27)
+            },
+        );
+        painter.rect_stroke(
+            thumb_frame,
+            4.0,
+            Stroke::new(if selected { 1.5 } else { 1.0 }, color),
+            egui::StrokeKind::Inside,
+        );
+
+        if let Some(tile) = thumbnail_tiles.first() {
+            let clip_painter = painter.with_clip_rect(thumb_rect);
+            let scale = (thumb_rect.width() / tile.size.x)
+                .max(thumb_rect.height() / tile.size.y)
+                .max(0.01);
+            let image_rect = Rect::from_center_size(thumb_rect.center(), tile.size * scale);
+            clip_painter.image(
+                tile.texture_id,
+                image_rect,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::from_white_alpha(if selected { 255 } else { 210 }),
+            );
+            painter.rect_stroke(
+                thumb_rect,
+                3.0,
+                Stroke::new(1.0, color.gamma_multiply(0.75)),
+                egui::StrokeKind::Inside,
+            );
+        } else {
+            painter.rect_filled(thumb_rect, 3.0, kit::FIELD_BG);
+            painter.text(
+                thumb_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "IMG",
+                FontId::proportional(8.5),
+                kit::IMAGE,
+            );
+        }
+
+        if show_label {
+            let label_left = thumb_frame.right() + 5.0;
+            let label = timeline_clip_title(clip, asset);
+            let font_id = FontId::proportional(10.0);
+            let text_w = painter
+                .layout_no_wrap(label.clone(), font_id.clone(), kit::TEXT)
+                .size()
+                .x;
+            let desired_w = (text_w + 12.0).clamp(36.0, TIMELINE_KEYFRAME_LABEL_W);
+            let label_w = desired_w.min((painter.clip_rect().right() - label_left).max(0.0));
+            if label_w >= 36.0 {
+                let label_rect = Rect::from_min_size(
+                    Pos2::new(label_left, rect.center().y - TIMELINE_MARKER_LABEL_H * 0.5),
+                    Vec2::new(label_w, TIMELINE_MARKER_LABEL_H),
+                );
+                painter.rect_filled(label_rect, 4.0, Color32::from_rgb(21, 23, 27));
+                painter.rect_stroke(
+                    label_rect,
+                    4.0,
+                    Stroke::new(1.0, color.gamma_multiply(if selected { 1.0 } else { 0.72 })),
+                    egui::StrokeKind::Inside,
+                );
+                let text_painter = painter.with_clip_rect(label_rect.shrink2(Vec2::new(6.0, 1.0)));
+                text_painter.text(
+                    label_rect.left_center() + Vec2::new(6.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    font_id,
+                    kit::TEXT,
+                );
+            }
+        }
     }
 
     fn paint_timeline_marker(
@@ -5764,13 +6452,18 @@ impl NlaEguiApp {
             ],
             Stroke::new(1.0, kit::BORDER_SOFT),
         );
+        let button_y = rects.add_row.center().y - 12.0;
         let video_rect = Rect::from_min_size(
-            rects.add_row.left_top() + Vec2::new(12.0, 10.0),
+            Pos2::new(rects.add_row.left() + 12.0, button_y),
             Vec2::new(56.0, 24.0),
         );
         let audio_rect = Rect::from_min_size(
-            rects.add_row.left_top() + Vec2::new(72.0, 10.0),
+            Pos2::new(video_rect.right() + 6.0, button_y),
             Vec2::new(56.0, 24.0),
+        );
+        let marker_rect = Rect::from_min_size(
+            Pos2::new(audio_rect.right() + 6.0, button_y),
+            Vec2::new(66.0, 24.0),
         );
         let video_resp = ui.interact(
             video_rect,
@@ -5782,11 +6475,25 @@ impl NlaEguiApp {
             ui.id().with("timeline-add-audio"),
             Sense::click(),
         );
+        let marker_resp = ui.interact(
+            marker_rect,
+            ui.id().with("timeline-add-marker"),
+            Sense::click(),
+        );
         if video_resp.clicked() {
-            self.editor.project.add_video_track();
+            let track_id = self.editor.project.add_video_track();
+            self.editor.selection.select_track(track_id);
+            self.editor.status = "Added video track".to_string();
         }
         if audio_resp.clicked() {
-            self.editor.project.add_audio_track();
+            let track_id = self.editor.project.add_audio_track();
+            self.editor.selection.select_track(track_id);
+            self.editor.status = "Added audio track".to_string();
+        }
+        if marker_resp.clicked() {
+            let track_id = self.editor.project.add_marker_track();
+            self.editor.selection.select_track(track_id);
+            self.editor.status = "Added marker track".to_string();
         }
         paint_dashed_timeline_button(
             painter,
@@ -5801,6 +6508,13 @@ impl NlaEguiApp {
             "+ Audio",
             kit::AUDIO,
             audio_resp.hovered(),
+        );
+        paint_dashed_timeline_button(
+            painter,
+            marker_rect,
+            "+ Marker",
+            kit::MARKER,
+            marker_resp.hovered(),
         );
     }
 
@@ -5842,6 +6556,47 @@ impl NlaEguiApp {
                 / (rects.scrollbar.width() - handle_w).max(1.0))
             .clamp(0.0, 1.0);
             self.editor.layout.timeline_scroll_x = ratio * max_scroll;
+        }
+    }
+
+    fn paint_timeline_vertical_scrollbar(
+        &mut self,
+        ui: &mut Ui,
+        painter: &egui::Painter,
+        rects: TimelineRects,
+        content_h: f32,
+    ) {
+        let viewport_h = rects.tracks.height().max(1.0);
+        if content_h <= viewport_h + 1.0 {
+            return;
+        }
+
+        let max_scroll = (content_h - viewport_h).max(0.0);
+        let rail = Rect::from_min_max(
+            Pos2::new(rects.tracks.right() - 7.0, rects.tracks.top() + 4.0),
+            Pos2::new(rects.tracks.right() - 3.0, rects.tracks.bottom() - 4.0),
+        );
+        let handle_h = (viewport_h / content_h * rail.height()).clamp(28.0, rail.height());
+        let handle_y = rail.top()
+            + (self.editor.layout.timeline_scroll_y / max_scroll) * (rail.height() - handle_h);
+        let handle = Rect::from_min_size(
+            Pos2::new(rail.left(), handle_y),
+            Vec2::new(rail.width(), handle_h),
+        );
+        painter.rect_filled(rail, 2.0, Color32::from_rgba_unmultiplied(5, 7, 10, 110));
+        painter.rect_filled(handle, 2.0, kit::BORDER.gamma_multiply(1.25));
+
+        let response = ui.interact(
+            rail.expand2(Vec2::new(6.0, 0.0)),
+            ui.id().with("timeline-vertical-scrollbar"),
+            Sense::click_and_drag(),
+        );
+        if (response.dragged() || response.clicked()) && response.interact_pointer_pos().is_some() {
+            let pos = response.interact_pointer_pos().unwrap();
+            let ratio = ((pos.y - rail.top() - handle_h * 0.5)
+                / (rail.height() - handle_h).max(1.0))
+            .clamp(0.0, 1.0);
+            self.editor.layout.timeline_scroll_y = ratio * max_scroll;
         }
     }
 
@@ -6105,11 +6860,21 @@ impl NlaEguiApp {
                 let mut new_start_frames = start_frames + delta_frames;
                 if snap_enabled {
                     let targets = self.timeline_snap_targets(Some(clip_id), None, true);
-                    if let Some(hit) = best_snap_delta_frames(
-                        &[new_start_frames, new_start_frames + duration_frames],
-                        &targets,
-                        snap_threshold_frames,
-                    ) {
+                    let is_keyframe_reference = self
+                        .editor
+                        .project
+                        .clips
+                        .iter()
+                        .find(|clip| clip.id == clip_id)
+                        .is_some_and(|clip| self.editor.project.is_keyframe_reference_clip(clip));
+                    let source_frames = if is_keyframe_reference {
+                        vec![new_start_frames]
+                    } else {
+                        vec![new_start_frames, new_start_frames + duration_frames]
+                    };
+                    if let Some(hit) =
+                        best_snap_delta_frames(&source_frames, &targets, snap_threshold_frames)
+                    {
                         new_start_frames += hit.delta_frames;
                         self.timeline_snap_preview =
                             Some(seconds_from_frames(hit.target.frame, fps));
@@ -6240,10 +7005,12 @@ impl NlaEguiApp {
                 frames_from_seconds(clip.start_time, fps).round(),
                 clip.id,
             ));
-            targets.push(SnapTarget::clip_edge(
-                frames_from_seconds(clip.end_time(), fps).round(),
-                clip.id,
-            ));
+            if !self.editor.project.is_keyframe_reference_clip(clip) {
+                targets.push(SnapTarget::clip_edge(
+                    frames_from_seconds(clip.end_time(), fps).round(),
+                    clip.id,
+                ));
+            }
         }
         for marker in self.editor.project.markers.iter() {
             if Some(marker.id) == exclude_marker {
@@ -6316,6 +7083,12 @@ impl NlaEguiApp {
         }
         if self.asset_delete_confirmation.is_some() {
             self.asset_delete_confirmation_modal(ctx);
+        }
+        if self.track_delete_confirmation.is_some() {
+            self.track_delete_confirmation_modal(ctx);
+        }
+        if self.bridge_keyframe_confirmation.is_some() {
+            self.bridge_keyframe_confirmation_modal(ctx);
         }
         if self.provider_json_editor_path.is_some() {
             self.provider_json_editor_modal(ctx);
@@ -6424,6 +7197,200 @@ impl NlaEguiApp {
             self.perform_delete_assets(&asset_ids);
         } else if cancel_clicked || close_clicked || outside_clicked || !open {
             self.asset_delete_confirmation = None;
+        }
+    }
+
+    fn track_delete_confirmation_modal(&mut self, ctx: &Context) {
+        let Some(confirmation) = self.track_delete_confirmation.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut cancel_clicked = false;
+        let mut delete_clicked = false;
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "track_delete", true);
+        let size = modal_size(ctx, TRACK_DELETE_MODAL_SIZE, [380.0, 260.0]);
+        egui::Window::new("Delete Tracks")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Delete Tracks?",
+                    Some("Remove selected timeline tracks and their contents."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    kit::body_with_footer(
+                        ui,
+                        110.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| {
+                            let track_word = if confirmation.track_count == 1 {
+                                "track"
+                            } else {
+                                "tracks"
+                            };
+                            ui.label(
+                                RichText::new(format!(
+                                    "You are about to delete {} {}.",
+                                    confirmation.track_count, track_word
+                                ))
+                                .color(kit::TEXT)
+                                .strong(),
+                            );
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            let clip_context = match confirmation.clip_count {
+                                0 => "No clips will be removed.".to_string(),
+                                1 => "1 clip will be removed.".to_string(),
+                                count => format!("{count} clips will be removed."),
+                            };
+                            let marker_context = match confirmation.marker_count {
+                                0 => "No markers will be removed.".to_string(),
+                                1 => "1 marker will be removed.".to_string(),
+                                count => format!("{count} markers will be removed."),
+                            };
+                            ui.label(RichText::new(clip_context).color(kit::TEXT_MUTED));
+                            ui.label(RichText::new(marker_context).color(kit::TEXT_MUTED));
+                            if !confirmation.sample_names.is_empty() {
+                                ui.add_space(kit::ACTION_GAP);
+                                kit::field_label(ui, "Tracks");
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                for name in confirmation.sample_names.iter() {
+                                    ui.label(RichText::new(name).color(kit::TEXT));
+                                }
+                                let remaining = confirmation
+                                    .track_count
+                                    .saturating_sub(confirmation.sample_names.len());
+                                if remaining > 0 {
+                                    ui.label(
+                                        RichText::new(format!("+ {remaining} more"))
+                                            .color(kit::TEXT_MUTED),
+                                    );
+                                }
+                            }
+                        },
+                        |ui| {
+                            let gap = kit::ACTION_GAP;
+                            let button_w = ((ui.available_width() - gap) / 2.0).max(120.0);
+                            ui.horizontal(|ui| {
+                                cancel_clicked =
+                                    kit::secondary_button(ui, "Cancel", button_w).clicked();
+                                ui.add_space(gap);
+                                delete_clicked =
+                                    kit::danger_button(ui, "Delete Tracks", button_w).clicked();
+                            });
+                        },
+                    );
+                });
+            });
+
+        if delete_clicked {
+            let track_ids = confirmation.track_ids.clone();
+            self.track_delete_confirmation = None;
+            self.perform_delete_tracks(&track_ids);
+        } else if cancel_clicked || close_clicked || outside_clicked || !open {
+            self.track_delete_confirmation = None;
+        }
+    }
+
+    fn bridge_keyframe_confirmation_modal(&mut self, ctx: &Context) {
+        let Some(confirmation) = self.bridge_keyframe_confirmation.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut cancel_clicked = false;
+        let mut create_clicked = false;
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "bridge_keyframes", true);
+        let size = modal_size(ctx, BRIDGE_KEYFRAME_MODAL_SIZE, [400.0, 280.0]);
+        egui::Window::new("Convert Keyframes")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Use Images as Keyframes?",
+                    Some("The bridge will anchor to image start times."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    kit::body_with_footer(
+                        ui,
+                        130.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} referenced image clips will switch to keyframe display mode.",
+                                    confirmation.convert_clip_ids.len()
+                                ))
+                                .color(kit::TEXT)
+                                .strong(),
+                            );
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            ui.label(
+                                RichText::new(
+                                    "Keyframe image clips keep their asset and timing data, but draw as marker-like pins on the timeline so the generated video span reads from keyframe to keyframe.",
+                                )
+                                .color(kit::TEXT_MUTED),
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Normal still-image behavior remains available per clip in the Attributes panel.",
+                                )
+                                .color(kit::TEXT_MUTED),
+                            );
+                            if !confirmation.sample_names.is_empty() {
+                                ui.add_space(kit::ACTION_GAP);
+                                kit::field_label(ui, "Referenced Images");
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                for name in confirmation.sample_names.iter() {
+                                    ui.label(RichText::new(name).color(kit::TEXT));
+                                }
+                            }
+                        },
+                        |ui| {
+                            let gap = kit::ACTION_GAP;
+                            let button_w = ((ui.available_width() - gap) / 2.0).max(120.0);
+                            ui.horizontal(|ui| {
+                                cancel_clicked =
+                                    kit::secondary_button(ui, "Cancel", button_w).clicked();
+                                ui.add_space(gap);
+                                create_clicked =
+                                    kit::primary_button(ui, "Convert + Create", button_w).clicked();
+                            });
+                        },
+                    );
+                });
+            });
+
+        if create_clicked {
+            let clip_ids = confirmation.clip_ids.clone();
+            for clip_id in confirmation.convert_clip_ids.iter() {
+                self.editor
+                    .project
+                    .set_clip_image_mode(*clip_id, ClipImageMode::Keyframe);
+            }
+            self.bridge_keyframe_confirmation = None;
+            self.create_bridge_video_from_clip_ids(&clip_ids);
+            self.editor.preview_dirty = true;
+        } else if cancel_clicked || close_clicked || outside_clicked || !open {
+            self.bridge_keyframe_confirmation = None;
         }
     }
 
@@ -7581,6 +8548,8 @@ impl NlaEguiApp {
     fn invalidate_asset_visual_cache(&mut self, asset_id: Uuid) {
         self.asset_thumbnails.remove(&asset_id);
         self.asset_thumbnail_misses.remove(&asset_id);
+        self.asset_source_dimensions.remove(&asset_id);
+        self.asset_source_dimension_misses.remove(&asset_id);
         self.timeline_thumbnails
             .retain(|key, _| key.asset_id != asset_id);
         self.timeline_thumbnail_misses
@@ -8857,6 +9826,45 @@ fn preview_project_scale(layers: &PreviewLayerStack, project_width: u32) -> f32 
     layers.canvas_width.max(1) as f32 / project_width.max(1) as f32
 }
 
+fn preview_geometry_for_clip(
+    project: &Project,
+    clip: &Clip,
+    source_size: Vec2,
+    canvas_rect: Rect,
+    layers: &PreviewLayerStack,
+    canvas_scale: f32,
+) -> PreviewObjectGeometry {
+    let project_w = project.settings.width.max(1) as f32;
+    let project_h = project.settings.height.max(1) as f32;
+    let preview_scale = preview_project_scale(layers, project.settings.width);
+    let project_to_screen = (preview_scale * canvas_scale).max(0.0001);
+    let project_center = Pos2::new(project_w * 0.5, project_h * 0.5);
+    let half_size = Vec2::new(
+        source_size.x.max(1.0) * clip.transform.scale_x.max(0.01) * 0.5,
+        source_size.y.max(1.0) * clip.transform.scale_y.max(0.01) * 0.5,
+    );
+    let center = project_center + Vec2::new(clip.transform.position_x, clip.transform.position_y);
+    let project_rect = Rect::from_center_size(center, half_size * 2.0);
+    let corners_project = [
+        project_rect.left_top(),
+        project_rect.right_top(),
+        project_rect.right_bottom(),
+        project_rect.left_bottom(),
+    ];
+    let screen_corners = corners_project.map(|point| {
+        let rotated = rotate_point(point, center, clip.transform.rotation_deg);
+        preview_project_to_screen(rotated, canvas_rect, preview_scale, canvas_scale)
+    });
+
+    PreviewObjectGeometry {
+        clip_id: clip.id,
+        project_rect,
+        screen_corners,
+        screen_center: preview_project_to_screen(center, canvas_rect, preview_scale, canvas_scale),
+        project_to_screen,
+    }
+}
+
 fn preview_scroll_delta(ui: &Ui, rect: Rect) -> f32 {
     let pointer_in_rect = ui
         .ctx()
@@ -8923,6 +9931,10 @@ fn rect_from_points(points: &[Pos2]) -> Rect {
         max.y = max.y.max(point.y);
     }
     Rect::from_min_max(min, max)
+}
+
+fn timeline_floor_frame(time_seconds: f64, fps: f64) -> i64 {
+    (time_seconds.max(0.0) * fps.max(1.0)).floor() as i64
 }
 
 fn preview_scale_handle_points(object: &PreviewObjectGeometry) -> [(PreviewScaleHandle, Pos2); 8] {
@@ -9378,17 +10390,14 @@ const ASSET_THUMBNAIL_IMAGE_INSET: f32 = 3.0;
 const ASSET_ROW_TEXT_GAP: f32 = 10.0;
 const INSPECTOR_THUMBNAIL_SIZE: Vec2 = Vec2::new(68.0, 50.0);
 
-fn timeline_rects(outer: Rect) -> TimelineRects {
+fn timeline_rects(outer: Rect, track_scroll_y: f32) -> TimelineRects {
     let ruler = Rect::from_min_max(
         Pos2::new(outer.left() + TIMELINE_LABEL_W, outer.top()),
         Pos2::new(outer.right(), outer.top() + TIMELINE_RULER_H),
     );
     let add_row = Rect::from_min_max(
-        Pos2::new(
-            outer.left(),
-            outer.bottom() - TIMELINE_ADD_ROW_H - TIMELINE_SCROLLBAR_H,
-        ),
-        Pos2::new(outer.right(), outer.bottom() - TIMELINE_SCROLLBAR_H),
+        Pos2::new(outer.left(), outer.bottom() - TIMELINE_ADD_ROW_H),
+        outer.right_bottom(),
     );
     let tracks = Rect::from_min_max(
         Pos2::new(outer.left() + TIMELINE_LABEL_W, ruler.bottom()),
@@ -9399,8 +10408,11 @@ fn timeline_rects(outer: Rect) -> TimelineRects {
         Pos2::new(outer.left() + TIMELINE_LABEL_W, add_row.top()),
     );
     let scrollbar = Rect::from_min_max(
-        Pos2::new(outer.left() + TIMELINE_LABEL_W, add_row.bottom()),
-        outer.right_bottom(),
+        Pos2::new(
+            outer.left() + TIMELINE_LABEL_W,
+            add_row.bottom() - TIMELINE_SCROLLBAR_H,
+        ),
+        Pos2::new(outer.right(), add_row.bottom()),
     );
     TimelineRects {
         outer,
@@ -9409,11 +10421,12 @@ fn timeline_rects(outer: Rect) -> TimelineRects {
         tracks,
         add_row,
         scrollbar,
+        track_scroll_y,
     }
 }
 
 fn timeline_row_rect(rects: TimelineRects, row: usize) -> Rect {
-    let top = rects.tracks.top() + row as f32 * TIMELINE_TRACK_H;
+    let top = rects.tracks.top() + row as f32 * TIMELINE_TRACK_H - rects.track_scroll_y;
     Rect::from_min_max(
         Pos2::new(rects.tracks.left(), top),
         Pos2::new(rects.tracks.right(), top + TIMELINE_TRACK_H),
@@ -9541,8 +10554,26 @@ fn rect_union(a: Rect, b: Rect) -> Rect {
     )
 }
 
-fn timeline_clip_rect(clip: &Clip, row_rect: Rect, zoom: f32, scroll_x: f32) -> Rect {
+fn clip_is_keyframe_image(clip: &Clip, asset: Option<&Asset>) -> bool {
+    clip.image_mode == ClipImageMode::Keyframe && asset.is_some_and(|asset| asset.is_image())
+}
+
+fn timeline_clip_rect(
+    clip: &Clip,
+    asset: Option<&Asset>,
+    row_rect: Rect,
+    zoom: f32,
+    scroll_x: f32,
+) -> Rect {
     let x1 = time_to_timeline_x(clip.start_time, row_rect.left(), zoom, scroll_x);
+    if clip_is_keyframe_image(clip, asset) {
+        let y = row_rect.top() + TIMELINE_CLIP_Y_PAD;
+        let h = TIMELINE_CLIP_H.min(row_rect.height() - TIMELINE_CLIP_Y_PAD * 2.0);
+        let w = TIMELINE_KEYFRAME_HIT_W
+            .min(row_rect.right() - x1 + 4.0)
+            .max(0.0);
+        return Rect::from_min_size(Pos2::new(x1 - 4.0, y), Vec2::new(w, h));
+    }
     let x2 = time_to_timeline_x(clip.end_time(), row_rect.left(), zoom, scroll_x);
     let y = row_rect.top() + TIMELINE_CLIP_Y_PAD;
     Rect::from_min_max(
@@ -9638,9 +10669,11 @@ fn build_audio_playback_items(
 ) -> (Vec<PlaybackItem>, Vec<Uuid>) {
     let mut track_types = HashMap::new();
     let mut track_volumes = HashMap::new();
+    let mut track_mutes = HashMap::new();
     for track in project.tracks.iter() {
         track_types.insert(track.id, track.track_type);
         track_volumes.insert(track.id, track.volume);
+        track_mutes.insert(track.id, track.muted);
     }
 
     let sample_rate = engine.sample_rate() as f64;
@@ -9653,6 +10686,9 @@ fn build_audio_playback_items(
             continue;
         };
         if *track_type != TrackType::Audio && *track_type != TrackType::Video {
+            continue;
+        }
+        if track_mutes.get(&clip.track_id).copied().unwrap_or(false) {
             continue;
         }
         let Some(asset) = project.find_asset(clip.asset_id) else {
@@ -9741,8 +10777,10 @@ fn audio_decode_targets_for_project(
     project_root: &Path,
 ) -> Vec<(Uuid, PathBuf)> {
     let mut track_types = HashMap::new();
+    let mut track_mutes = HashMap::new();
     for track in project.tracks.iter() {
         track_types.insert(track.id, track.track_type);
+        track_mutes.insert(track.id, track.muted);
     }
 
     let mut seen = HashSet::new();
@@ -9752,6 +10790,9 @@ fn audio_decode_targets_for_project(
             continue;
         };
         if *track_type != TrackType::Audio && *track_type != TrackType::Video {
+            continue;
+        }
+        if track_mutes.get(&clip.track_id).copied().unwrap_or(false) {
             continue;
         }
         let Some(asset) = project.find_asset(clip.asset_id) else {
@@ -9853,7 +10894,7 @@ fn timeline_hit(
         return TimelineHit::Ruler;
     }
     if pos.x < rects.tracks.left() && pos.y >= rects.tracks.top() && pos.y < rects.add_row.top() {
-        let row = ((pos.y - rects.tracks.top()) / TIMELINE_TRACK_H)
+        let row = ((pos.y - rects.tracks.top() + rects.track_scroll_y) / TIMELINE_TRACK_H)
             .floor()
             .max(0.0) as usize;
         return tracks
@@ -9865,6 +10906,9 @@ fn timeline_hit(
         let hit_rect = geom.rect.expand2(Vec2::new(TIMELINE_HANDLE_W, 0.0));
         if !hit_rect.contains(pos) {
             continue;
+        }
+        if geom.keyframe {
+            return TimelineHit::ClipBody(geom.clip_id);
         }
         if (pos.x - geom.rect.left()).abs() <= TIMELINE_HANDLE_W {
             return TimelineHit::ClipLeftEdge(geom.clip_id);
@@ -9896,7 +10940,7 @@ fn timeline_track_at_pos<'a>(
     if !rects.tracks.contains(pos) {
         return None;
     }
-    let row = ((pos.y - rects.tracks.top()) / TIMELINE_TRACK_H)
+    let row = ((pos.y - rects.tracks.top() + rects.track_scroll_y) / TIMELINE_TRACK_H)
         .floor()
         .max(0.0) as usize;
     tracks.get(row)
@@ -11074,6 +12118,13 @@ fn provider_output_type_label(output_type: ProviderOutputType) -> &'static str {
     }
 }
 
+fn clip_image_mode_label(mode: ClipImageMode) -> &'static str {
+    match mode {
+        ClipImageMode::Still => "Still Image",
+        ClipImageMode::Keyframe => "Keyframe Reference",
+    }
+}
+
 fn provider_output_type_field(ui: &mut Ui, label: &str, value: &mut ProviderOutputType) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
@@ -11112,71 +12163,181 @@ fn provider_builder_input_editor(
     input: &mut ProviderBuilderInput,
     action: &mut Option<ProviderInputAction>,
 ) {
-    kit::sunken_frame().show(ui, |ui| {
-        kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
-            0 => {
-                kit::labeled_text_field(ui, "Name", &mut input.name);
-            }
-            1 => {
-                kit::labeled_text_field(ui, "Label", &mut input.label);
-            }
-            _ => {}
-        });
-        ui.add_space(kit::FORM_ROW_GAP);
-        kit::field_grid_row(ui, &[0.44, 1.0], |ui, column| match column {
-            0 => {
-                provider_input_type_field(ui, "Type", &mut input.input_type_key);
-            }
-            1 => {
-                kit::labeled_text_field(ui, "Default", &mut input.default_text);
-            }
-            _ => {}
-        });
-        ui.add_space(kit::FORM_ROW_GAP);
-        if input.input_type_key == "enum" {
-            kit::labeled_text_field(ui, "Enum Options", &mut input.enum_options);
-            ui.add_space(kit::FORM_ROW_GAP);
-        }
-        kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
-            0 => {
-                kit::labeled_text_field(ui, "Tag", &mut input.tag);
-            }
-            1 => {
-                ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
-                ui.horizontal(|ui| {
-                    automation_checkbox(ui, &mut input.required, "Required");
-                    if input.input_type_key == "text" {
-                        automation_checkbox(ui, &mut input.multiline, "Multiline");
-                    } else {
-                        input.multiline = false;
-                    }
-                });
-            }
-            _ => {}
-        });
-        ui.add_space(kit::FORM_ROW_GAP);
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [(ui.available_width() - 178.0).max(80.0), 18.0],
-                egui::Label::new(kit::caption(format!(
-                    "-> node {} / {}.{}",
-                    input.selector.node_id.as_deref().unwrap_or("-"),
-                    empty_dash(&input.selector.class_type),
-                    empty_dash(&input.selector.input_key)
-                )))
-                .truncate(),
-            );
-            if kit::field_button(ui, "Up", 42.0).clicked() && index > 0 {
-                *action = Some(ProviderInputAction::MoveUp(index));
-            }
-            if kit::field_button(ui, "Down", 52.0).clicked() && index + 1 < len {
-                *action = Some(ProviderInputAction::MoveDown(index));
-            }
-            if kit::danger_button(ui, "Delete", 66.0).clicked() {
-                *action = Some(ProviderInputAction::Delete(index));
-            }
+    let card_w = ui.available_width().max(0.0);
+    ui.scope(|ui| {
+        ui.set_width(card_w);
+        ui.set_min_width(card_w);
+        ui.set_max_width(card_w);
+        kit::sunken_frame().show(ui, |ui| {
+            let content_w = (card_w - 16.0).max(0.0);
+            ui.set_width(content_w);
+            ui.set_min_width(content_w);
+            ui.set_max_width(content_w);
+            provider_builder_input_editor_contents(ui, index, len, input, action);
         });
     });
+}
+
+fn provider_builder_input_editor_contents(
+    ui: &mut Ui,
+    index: usize,
+    len: usize,
+    input: &mut ProviderBuilderInput,
+    action: &mut Option<ProviderInputAction>,
+) {
+    kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
+        0 => {
+            kit::labeled_text_field(ui, "Name", &mut input.name);
+        }
+        1 => {
+            kit::labeled_text_field(ui, "Label", &mut input.label);
+        }
+        _ => {}
+    });
+    ui.add_space(kit::FORM_ROW_GAP);
+    kit::field_grid_row(ui, &[0.44, 1.0], |ui, column| match column {
+        0 => {
+            provider_input_type_field(ui, "Type", &mut input.input_type_key);
+        }
+        1 => {
+            provider_builder_default_field(ui, input);
+        }
+        _ => {}
+    });
+    ui.add_space(kit::FORM_ROW_GAP);
+    if input.input_type_key == "enum" {
+        kit::labeled_text_field(ui, "Enum Options", &mut input.enum_options);
+        ui.add_space(kit::FORM_ROW_GAP);
+    }
+    kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
+        0 => {
+            kit::labeled_text_field(ui, "Tag", &mut input.tag);
+        }
+        1 => {
+            ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
+            ui.horizontal(|ui| {
+                automation_checkbox(ui, &mut input.required, "Required");
+                if input.input_type_key == "text" {
+                    automation_checkbox(ui, &mut input.multiline, "Multiline");
+                } else {
+                    input.multiline = false;
+                }
+            });
+        }
+        _ => {}
+    });
+    ui.add_space(kit::FORM_ROW_GAP);
+    ui.horizontal(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        let buttons_w = 42.0 + 52.0 + 66.0 + gap * 3.0;
+        ui.add_sized(
+            [(ui.available_width() - buttons_w).max(0.0), 18.0],
+            egui::Label::new(kit::caption(format!(
+                "-> node {} / {}.{}",
+                input.selector.node_id.as_deref().unwrap_or("-"),
+                empty_dash(&input.selector.class_type),
+                empty_dash(&input.selector.input_key)
+            )))
+            .truncate(),
+        );
+        if kit::field_button(ui, "Up", 42.0).clicked() && index > 0 {
+            *action = Some(ProviderInputAction::MoveUp(index));
+        }
+        if kit::field_button(ui, "Down", 52.0).clicked() && index + 1 < len {
+            *action = Some(ProviderInputAction::MoveDown(index));
+        }
+        if kit::danger_button(ui, "Delete", 66.0).clicked() {
+            *action = Some(ProviderInputAction::Delete(index));
+        }
+    });
+}
+
+fn provider_builder_default_field(ui: &mut Ui, input: &mut ProviderBuilderInput) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+        kit::field_label(ui, "Default");
+        match input.input_type_key.as_str() {
+            "boolean" => {
+                let mut value = parse_bool_default_text(&input.default_text).unwrap_or(false);
+                let response = automation_checkbox(ui, &mut value, "True");
+                if response.changed() {
+                    input.default_text = value.to_string();
+                }
+            }
+            "integer" => {
+                let mut value = input.default_text.trim().parse::<i64>().unwrap_or(0);
+                let width = ui.available_width();
+                let rect = inspector_numeric_rect(ui, width);
+                if provider_builder_integer_default_in_rect(ui, rect, &mut value) {
+                    input.default_text = value.to_string();
+                }
+            }
+            "number" => {
+                let mut value = input.default_text.trim().parse::<f64>().unwrap_or(0.0);
+                let width = ui.available_width();
+                let rect = inspector_numeric_rect(ui, width);
+                if provider_builder_number_default_in_rect(ui, rect, &mut value) {
+                    input.default_text = value.to_string();
+                }
+            }
+            "enum" => {
+                let options = provider_builder_enum_options(input);
+                if options.is_empty() {
+                    kit::singleline_text_field(ui, &mut input.default_text, ui.available_width());
+                } else {
+                    if input.default_text.trim().is_empty() {
+                        input.default_text = options[0].clone();
+                    }
+                    let selected = input.default_text.clone();
+                    kit::combo_field(
+                        ui,
+                        ("provider_default_enum", &input.name),
+                        selected,
+                        ui.available_width(),
+                        |ui| {
+                            for option in options {
+                                automation_selectable_value(
+                                    ui,
+                                    &mut input.default_text,
+                                    option.clone(),
+                                    &option,
+                                );
+                            }
+                        },
+                    );
+                }
+            }
+            "image" | "video" | "audio" => {
+                input.default_text.clear();
+                kit::readonly_value_box(
+                    ui,
+                    "Runtime asset binding",
+                    Vec2::new(ui.available_width(), kit::FIELD_H),
+                );
+            }
+            _ => {
+                kit::singleline_text_field(ui, &mut input.default_text, ui.available_width());
+            }
+        }
+    });
+}
+
+fn provider_builder_integer_default_in_rect(ui: &mut Ui, rect: Rect, value: &mut i64) -> bool {
+    inspector_numeric_field(ui, rect, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value).speed(1.0),
+        )
+    })
+}
+
+fn provider_builder_number_default_in_rect(ui: &mut Ui, rect: Rect, value: &mut f64) -> bool {
+    inspector_numeric_field(ui, rect, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value).speed(0.1),
+        )
+    })
 }
 
 fn provider_input_type_field(ui: &mut Ui, label: &str, value: &mut String) {
@@ -11289,8 +12450,7 @@ fn parse_provider_default_value(
             serde_json::Value::Number(parsed.into())
         }
         ProviderInputType::Boolean => {
-            let parsed = trimmed
-                .parse::<bool>()
+            let parsed = parse_bool_default_text(trimmed)
                 .map_err(|_| format!("Invalid boolean default '{trimmed}'."))?;
             serde_json::Value::Bool(parsed)
         }
@@ -11300,6 +12460,24 @@ fn parse_provider_default_value(
         }
     };
     Ok(Some(value))
+}
+
+fn parse_bool_default_text(text: &str) -> Result<bool, ()> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "true" | "t" | "yes" | "y" | "on" | "1" => Ok(true),
+        "false" | "f" | "no" | "n" | "off" | "0" => Ok(false),
+        _ => Err(()),
+    }
+}
+
+fn provider_builder_enum_options(input: &ProviderBuilderInput) -> Vec<String> {
+    input
+        .enum_options
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<InputUi> {

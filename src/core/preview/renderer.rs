@@ -9,7 +9,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::core::media::probe_duration_seconds;
 use crate::core::video_decode::{DecodeMode, VideoDecodeWorker};
-use crate::state::{Asset, AssetKind, Project, TrackType};
+use crate::state::{Asset, AssetKind, Clip, ClipImageMode, Project, TrackType};
 
 use super::{
     cache::FrameCache,
@@ -40,6 +40,18 @@ fn plate_texture_key(width: u32, height: u32) -> u64 {
     width.hash(&mut hasher);
     height.hash(&mut hasher);
     hasher.finish()
+}
+
+fn clip_is_keyframe_reference(clip: &Clip, asset: &Asset) -> bool {
+    clip.image_mode == ClipImageMode::Keyframe && asset.is_image()
+}
+
+fn clip_active_for_preview(clip: &Clip, asset: &Asset, time_seconds: f64, fps: f64) -> bool {
+    if clip_is_keyframe_reference(clip, asset) {
+        return time_to_frame_index(time_seconds, fps) == time_to_frame_index(clip.start_time, fps);
+    }
+
+    time_seconds >= clip.start_time && time_seconds < clip.end_time()
 }
 
 /// Generates composited preview frames for the current timeline time.
@@ -313,7 +325,7 @@ impl PreviewRenderer {
         let mut track_order: HashMap<uuid::Uuid, usize> = HashMap::new();
         let mut video_tracks = 0;
         for track in project.tracks.iter() {
-            if track.track_type == TrackType::Video {
+            if track.track_type == TrackType::Video && !track.muted {
                 track_order.insert(track.id, video_tracks);
                 video_tracks += 1;
             }
@@ -332,14 +344,14 @@ impl PreviewRenderer {
                 None => continue,
             };
 
-            if time_seconds < clip.start_time || time_seconds >= clip.end_time() {
-                continue;
-            }
-
             let asset = match project.find_asset(clip.asset_id) {
                 Some(asset) if asset.is_visual() => asset,
                 _ => continue,
             };
+
+            if !clip_active_for_preview(clip, asset, time_seconds, fps) {
+                continue;
+            }
 
             let source_time = (time_seconds - clip.start_time + clip.trim_in_seconds).max(0.0);
             let Some((path, is_video, duration)) = resolve_asset_source(
@@ -518,14 +530,14 @@ impl PreviewRenderer {
             }
             let frame_time = frame_index_to_time(frame_index, fps);
             for clip in project.clips.iter() {
-                if frame_time < clip.start_time || frame_time >= clip.end_time() {
-                    continue;
-                }
-
                 let asset = match project.find_asset(clip.asset_id) {
                     Some(asset) if asset.is_visual() => asset,
                     _ => continue,
                 };
+
+                if !clip_active_for_preview(clip, asset, frame_time, fps) {
+                    continue;
+                }
 
                 let source_time = (frame_time - clip.start_time + clip.trim_in_seconds).max(0.0);
                 let _ = self.load_clip_frame(
@@ -564,6 +576,9 @@ impl PreviewRenderer {
                 continue;
             };
             if !asset.is_visual() {
+                continue;
+            }
+            if clip_is_keyframe_reference(clip, asset) {
                 continue;
             }
 

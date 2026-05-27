@@ -6,6 +6,10 @@ use uuid::Uuid;
 pub struct Marker {
     /// Unique identifier
     pub id: Uuid,
+    /// Marker track this marker belongs to. Older projects may omit this and
+    /// are treated as belonging to the first marker track.
+    #[serde(default)]
+    pub track_id: Option<Uuid>,
     /// Time position in seconds
     pub time: f64,
     /// Optional label
@@ -22,6 +26,7 @@ impl Marker {
     pub fn new(time: f64) -> Self {
         Self {
             id: Uuid::new_v4(),
+            track_id: None,
             time,
             label: None,
             description: None,
@@ -34,6 +39,7 @@ impl Marker {
     pub fn with_label(time: f64, label: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
+            track_id: None,
             time,
             label: Some(label.into()),
             description: None,

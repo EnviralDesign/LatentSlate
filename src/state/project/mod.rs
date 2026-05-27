@@ -9,7 +9,7 @@ mod project;
 mod settings;
 mod track;
 
-pub use clip::{Clip, ClipTransform};
+pub use clip::{Clip, ClipImageMode, ClipTransform};
 pub use marker::Marker;
 pub use project::Project;
 pub use settings::ProjectSettings;
