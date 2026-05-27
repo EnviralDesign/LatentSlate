@@ -31,11 +31,13 @@ use crate::core::generation::{
     compatible_asset_for_provider_input, next_version_label, random_seed_i64,
     resolve_provider_inputs, resolve_seed_field, semantic_reference_slot, update_seed_inputs,
 };
+use crate::core::media::probe_duration_seconds;
 use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};
 use crate::core::timeline_snap::{
     best_snap_delta_frames, frames_from_seconds, seconds_from_frames, snap_time_to_frame,
     SnapTarget,
 };
+use crate::core::video_decode::VideoDecodeWorker;
 use crate::editor::{
     default_generative_video_fps, default_generative_video_frames, default_projects_dir,
     EditorState,
@@ -262,6 +264,7 @@ pub struct NlaEguiApp {
     api_key_modal: ApiKeyModalState,
     asset_lab: AssetLabState,
     asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
+    asset_lab_video_decoder: VideoDecodeWorker,
     provider_template_kind: ProviderTemplateKind,
     asset_delete_confirmation: Option<AssetDeleteConfirmation>,
     track_delete_confirmation: Option<TrackDeleteConfirmation>,
@@ -361,17 +364,38 @@ struct ApiKeyModalState {
     error: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct AssetLabState {
     asset_id: Option<Uuid>,
     selected_version: Option<String>,
     pending_delete_version: Option<String>,
+    local_time_seconds: f64,
+    preview_auto_fit: bool,
+    preview_zoom: f32,
+    preview_pan: Vec2,
+    preview_pan_drag: Option<(Vec2, Pos2)>,
+}
+
+impl Default for AssetLabState {
+    fn default() -> Self {
+        Self {
+            asset_id: None,
+            selected_version: None,
+            pending_delete_version: None,
+            local_time_seconds: 0.0,
+            preview_auto_fit: true,
+            preview_zoom: 1.0,
+            preview_pan: Vec2::ZERO,
+            preview_pan_drag: None,
+        }
+    }
 }
 
 struct AssetLabPreviewTexture {
     asset_id: Uuid,
     version: Option<String>,
     path: PathBuf,
+    frame_index: Option<i64>,
     texture: TextureHandle,
     size: Vec2,
 }
@@ -382,6 +406,7 @@ enum AssetLabAction {
     SetActive(String),
     DuplicateVersion(String),
     ExtractVersion(String),
+    ExtractCurrentFrame(String),
     RequestDelete(String),
     ConfirmDelete(String),
     CancelDelete,
@@ -811,6 +836,7 @@ impl NlaEguiApp {
             api_key_modal: ApiKeyModalState::default(),
             asset_lab: AssetLabState::default(),
             asset_lab_preview_texture: None,
+            asset_lab_video_decoder: VideoDecodeWorker::new(8192, 8192),
             provider_template_kind: ProviderTemplateKind::default(),
             asset_delete_confirmation: None,
             track_delete_confirmation: None,
@@ -1220,6 +1246,10 @@ impl NlaEguiApp {
     }
 
     fn open_asset_lab(&mut self, asset_id: Uuid) {
+        self.open_asset_lab_at_time(asset_id, None);
+    }
+
+    fn open_asset_lab_at_time(&mut self, asset_id: Uuid, local_time_seconds: Option<f64>) {
         let selected_version = self
             .editor
             .project
@@ -1235,6 +1265,11 @@ impl NlaEguiApp {
             asset_id: Some(asset_id),
             selected_version,
             pending_delete_version: None,
+            local_time_seconds: local_time_seconds.unwrap_or(0.0).max(0.0),
+            preview_auto_fit: true,
+            preview_zoom: 1.0,
+            preview_pan: Vec2::ZERO,
+            preview_pan_drag: None,
         };
         self.asset_lab_preview_texture = None;
         self.editor.overlays.asset_lab = true;
@@ -1247,8 +1282,11 @@ impl NlaEguiApp {
     }
 
     fn keyboard_shortcuts_suppressed(&self, ctx: &Context) -> bool {
-        ctx.text_edit_focused()
-            || self.editor.show_startup()
+        ctx.text_edit_focused() || self.modal_background_input_blocked()
+    }
+
+    fn modal_background_input_blocked(&self) -> bool {
+        self.editor.show_startup()
             || self.editor.overlays.new_project
             || self.editor.overlays.project_settings
             || self.editor.overlays.generative_video
@@ -3752,7 +3790,14 @@ impl NlaEguiApp {
         }
 
         if open_asset_lab {
-            self.open_asset_lab(asset_id);
+            let local_time = context_clip_id.and_then(|clip_id| {
+                self.editor.project.clips.iter().find_map(|clip| {
+                    (clip.id == clip_id).then(|| {
+                        (self.editor.current_time - clip.start_time + clip.trim_in_seconds).max(0.0)
+                    })
+                })
+            });
+            self.open_asset_lab_at_time(asset_id, local_time);
         }
 
         if generate_clicked {
@@ -4794,6 +4839,9 @@ impl NlaEguiApp {
         layers: &PreviewLayerStack,
         fit_scale: f32,
     ) {
+        if self.modal_background_input_blocked() {
+            return;
+        }
         let pointer = ui
             .ctx()
             .pointer_interact_pos()
@@ -6168,7 +6216,10 @@ impl NlaEguiApp {
                         && automation_button(ui.button("Open Asset Lab"), "Open Asset Lab")
                             .clicked()
                     {
-                        self.open_asset_lab(asset.id);
+                        let local_time = (self.editor.current_time - single_clip.start_time
+                            + single_clip.trim_in_seconds)
+                            .max(0.0);
+                        self.open_asset_lab_at_time(asset.id, Some(local_time));
                         ui.close();
                     }
                     if asset.is_image() || asset.is_video() {
@@ -6404,6 +6455,9 @@ impl NlaEguiApp {
         viewport_w: f32,
         max_scroll_y: f32,
     ) {
+        if self.modal_background_input_blocked() {
+            return;
+        }
         let Some(pointer) = ui.ctx().pointer_hover_pos() else {
             return;
         };
@@ -7232,7 +7286,10 @@ impl NlaEguiApp {
                     | TimelineHit::ClipRightEdge(id)
                     | TimelineHit::ClipBody(id) => {
                         if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
-                            self.open_asset_lab(clip.asset_id);
+                            let local_time = (self.editor.current_time - clip.start_time
+                                + clip.trim_in_seconds)
+                                .max(0.0);
+                            self.open_asset_lab_at_time(clip.asset_id, Some(local_time));
                         }
                     }
                     _ => {}
@@ -7696,6 +7753,26 @@ impl NlaEguiApp {
                 });
                 strip.cell(|ui| {
                     kit::card_frame().show(ui, |ui| {
+                        let selected_output_path =
+                            selected_version.as_deref().and_then(|version| {
+                                self.editor.project.project_path.as_ref().and_then(|root| {
+                                    generative_output_file_for_version(root, asset, Some(version))
+                                })
+                            });
+                        let selected_video_duration = asset
+                            .duration_seconds
+                            .filter(|duration| *duration > 0.0)
+                            .or_else(|| {
+                                selected_output_path
+                                    .as_deref()
+                                    .filter(|_| asset.is_video())
+                                    .and_then(probe_duration_seconds)
+                            })
+                            .unwrap_or(0.0)
+                            .max(0.0);
+                        let selected_video_fps =
+                            asset_lab_video_fps(asset, self.editor.project.settings.fps);
+
                         kit::field_label(ui, "Preview");
                         ui.add_space(kit::FORM_ROW_GAP);
                         let preview = self.asset_lab_preview_texture(
@@ -7703,62 +7780,79 @@ impl NlaEguiApp {
                             asset,
                             selected_version.as_deref(),
                         );
-                        asset_lab_preview(ui, asset, preview);
-
-                        ui.add_space(kit::ACTION_GAP);
-                        kit::field_label(ui, "Version Details");
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        if let Some(version) = selected_version.as_deref() {
-                            asset_lab_meta_row(ui, "Version", version);
-                            if let Some(record) = config.and_then(|config| {
-                                config
-                                    .versions
-                                    .iter()
-                                    .find(|record| record.version == version)
-                            }) {
-                                asset_lab_meta_row(
-                                    ui,
-                                    "Created",
-                                    record
-                                        .timestamp
-                                        .with_timezone(&chrono::Local)
-                                        .format("%Y-%m-%d %H:%M:%S")
-                                        .to_string(),
-                                );
-                                asset_lab_meta_row(
-                                    ui,
-                                    "Provider",
-                                    asset_lab_provider_name(
-                                        &self.editor.provider_entries,
-                                        record.provider_id,
-                                    ),
-                                );
-                                asset_lab_meta_row(
-                                    ui,
-                                    "Inputs",
-                                    format!("{} captured", record.inputs_snapshot.len()),
-                                );
-                            }
-                            if let Some(path) =
-                                self.editor.project.project_path.as_ref().and_then(|root| {
-                                    generative_output_file_for_version(root, asset, Some(version))
-                                })
-                            {
-                                asset_lab_meta_row(ui, "File", path_label(&path));
-                            }
-                        } else {
-                            ui.label(kit::caption("Select a generated version."));
+                        asset_lab_preview(ui, asset, preview, &mut self.asset_lab);
+                        if asset.is_video() && selected_output_path.is_some() {
+                            self.asset_lab_video_scrubber(
+                                ui,
+                                selected_video_duration,
+                                selected_video_fps,
+                            );
                         }
 
                         ui.add_space(kit::ACTION_GAP);
-                        self.asset_lab_action_rows(
-                            ui,
-                            asset,
-                            selected_version.as_deref(),
-                            active_version.as_deref(),
-                            pending_delete.as_deref(),
-                            action,
-                        );
+                        let details_height = ui.available_height().max(80.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("asset_lab_details", asset.id))
+                            .max_height(details_height)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                kit::field_label(ui, "Version Details");
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                if let Some(version) = selected_version.as_deref() {
+                                    asset_lab_meta_row(ui, "Version", version);
+                                    if asset.is_video() {
+                                        asset_lab_meta_row(
+                                            ui,
+                                            "Local Time",
+                                            timecode(self.asset_lab.local_time_seconds),
+                                        );
+                                    }
+                                    if let Some(record) = config.and_then(|config| {
+                                        config
+                                            .versions
+                                            .iter()
+                                            .find(|record| record.version == version)
+                                    }) {
+                                        asset_lab_meta_row(
+                                            ui,
+                                            "Created",
+                                            record
+                                                .timestamp
+                                                .with_timezone(&chrono::Local)
+                                                .format("%Y-%m-%d %H:%M:%S")
+                                                .to_string(),
+                                        );
+                                        asset_lab_meta_row(
+                                            ui,
+                                            "Provider",
+                                            asset_lab_provider_name(
+                                                &self.editor.provider_entries,
+                                                record.provider_id,
+                                            ),
+                                        );
+                                        asset_lab_meta_row(
+                                            ui,
+                                            "Inputs",
+                                            format!("{} captured", record.inputs_snapshot.len()),
+                                        );
+                                    }
+                                    if let Some(path) = selected_output_path.as_ref() {
+                                        asset_lab_meta_row(ui, "File", path_label(path));
+                                    }
+                                } else {
+                                    ui.label(kit::caption("Select a generated version."));
+                                }
+
+                                ui.add_space(kit::ACTION_GAP);
+                                self.asset_lab_action_rows(
+                                    ui,
+                                    asset,
+                                    selected_version.as_deref(),
+                                    active_version.as_deref(),
+                                    pending_delete.as_deref(),
+                                    action,
+                                );
+                            });
                     });
                 });
             });
@@ -7769,7 +7863,7 @@ impl NlaEguiApp {
             kit::field_label(ui, "Asset");
             ui.add_space(kit::FORM_ROW_GAP);
             let preview = self.asset_thumbnail(ui.ctx(), asset);
-            asset_lab_preview(ui, asset, preview);
+            asset_lab_preview(ui, asset, preview, &mut self.asset_lab);
             ui.add_space(kit::ACTION_GAP);
             asset_lab_meta_row(ui, "Type", asset_kind_label(&asset.kind));
             if let Some(source) = asset_source_label(asset) {
@@ -7860,13 +7954,24 @@ impl NlaEguiApp {
                     }
                 }
                 _ => {
-                    if kit::secondary_button(ui, "Open Location", width).clicked() {
+                    if asset.is_video() {
+                        if kit::secondary_button(ui, "Extract Current Frame", width).clicked() {
+                            *action =
+                                Some(AssetLabAction::ExtractCurrentFrame(version.to_string()));
+                        }
+                    } else if kit::secondary_button(ui, "Open Location", width).clicked() {
                         *action = Some(AssetLabAction::OpenLocation);
                     }
                 }
             },
         );
         ui.add_space(kit::FORM_ROW_GAP);
+        if asset.is_video() {
+            if kit::secondary_button(ui, "Open Location", ui.available_width()).clicked() {
+                *action = Some(AssetLabAction::OpenLocation);
+            }
+            ui.add_space(kit::FORM_ROW_GAP);
+        }
         if kit::danger_button(ui, "Delete Version", ui.available_width()).clicked() {
             *action = Some(AssetLabAction::RequestDelete(version.to_string()));
         }
@@ -7885,11 +7990,106 @@ impl NlaEguiApp {
         }
     }
 
+    fn asset_lab_video_scrubber(&mut self, ui: &mut Ui, duration: f64, fps: f64) {
+        let duration = duration.max(0.0);
+        let fps = fps.max(1.0);
+
+        if !ui.ctx().text_edit_focused() {
+            let (left, right) = ui.input(|input| {
+                (
+                    input.key_pressed(egui::Key::ArrowLeft),
+                    input.key_pressed(egui::Key::ArrowRight),
+                )
+            });
+            if left {
+                self.asset_lab.local_time_seconds =
+                    previous_frame_time(self.asset_lab.local_time_seconds, fps).min(duration);
+                self.asset_lab_preview_texture = None;
+            }
+            if right {
+                self.asset_lab.local_time_seconds =
+                    next_frame_time(self.asset_lab.local_time_seconds, duration, fps);
+                self.asset_lab_preview_texture = None;
+            }
+        }
+
+        ui.add_space(kit::FORM_ROW_GAP);
+        let desired_size = Vec2::new(ui.available_width(), 42.0);
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click_and_drag());
+
+        if duration > 0.0 && (response.clicked() || response.dragged()) {
+            if let Some(pointer) = response.interact_pointer_pos() {
+                let fraction = ((pointer.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+                let raw_time = duration * fraction as f64;
+                let frame = frames_from_seconds(raw_time, fps).round();
+                self.asset_lab.local_time_seconds = seconds_from_frames(frame, fps).min(duration);
+                self.asset_lab_preview_texture = None;
+            }
+        }
+
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+        painter.rect_stroke(
+            rect,
+            kit::field_radius(),
+            Stroke::new(1.0, kit::BORDER_SOFT),
+            egui::StrokeKind::Inside,
+        );
+
+        let inner = rect.shrink2(Vec2::new(8.0, 7.0));
+        if duration > 0.0 && inner.width() > 1.0 {
+            let step = asset_lab_scrub_tick_step(duration, inner.width());
+            let mut tick = 0.0;
+            while tick <= duration + step * 0.5 {
+                let x = inner.left() + inner.width() * (tick / duration).clamp(0.0, 1.0) as f32;
+                painter.line_segment(
+                    [
+                        Pos2::new(x, inner.top() + 12.0),
+                        Pos2::new(x, inner.bottom() - 6.0),
+                    ],
+                    Stroke::new(1.0, kit::BORDER_SOFT),
+                );
+                painter.text(
+                    Pos2::new(x + 3.0, inner.top()),
+                    egui::Align2::LEFT_TOP,
+                    timecode(tick),
+                    FontId::monospace(9.0),
+                    kit::TEXT_DIM,
+                );
+                tick += step;
+            }
+
+            let current = self.asset_lab.local_time_seconds.min(duration);
+            let x = inner.left() + inner.width() * (current / duration).clamp(0.0, 1.0) as f32;
+            painter.line_segment(
+                [Pos2::new(x, inner.top()), Pos2::new(x, inner.bottom())],
+                Stroke::new(2.0, kit::PLAYHEAD),
+            );
+            painter.circle_filled(Pos2::new(x, inner.top()), 4.0, kit::PLAYHEAD);
+            painter.text(
+                Pos2::new(inner.right(), inner.top()),
+                egui::Align2::RIGHT_TOP,
+                format!("{} / {}", timecode(current), timecode(duration)),
+                FontId::monospace(10.0),
+                kit::TEXT,
+            );
+        } else {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "00:00.00",
+                FontId::monospace(10.0),
+                kit::TEXT_DIM,
+            );
+        }
+    }
+
     fn handle_asset_lab_action(&mut self, asset_id: Uuid, action: AssetLabAction) {
         match action {
             AssetLabAction::SelectVersion(version) => {
                 self.asset_lab.selected_version = Some(version);
                 self.asset_lab.pending_delete_version = None;
+                self.asset_lab_preview_texture = None;
             }
             AssetLabAction::SetActive(version) => {
                 self.set_generative_active_version(asset_id, &version);
@@ -7908,6 +8108,9 @@ impl NlaEguiApp {
                     Ok(new_asset_id) => self.warm_asset_thumbnails(&[new_asset_id]),
                     Err(err) => self.editor.status = err,
                 }
+            }
+            AssetLabAction::ExtractCurrentFrame(version) => {
+                self.extract_asset_lab_current_frame(asset_id, &version);
             }
             AssetLabAction::RequestDelete(version) => {
                 self.asset_lab.pending_delete_version = Some(version);
@@ -7938,6 +8141,62 @@ impl NlaEguiApp {
                     self.editor.status = err;
                 }
             }
+        }
+    }
+
+    fn extract_asset_lab_current_frame(&mut self, asset_id: Uuid, version: &str) {
+        let Some(project_root) = self.editor.project.project_path.clone() else {
+            self.editor.status = "Project folder is unavailable.".to_string();
+            return;
+        };
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.editor.status = "Asset not found.".to_string();
+            return;
+        };
+        if !asset.is_video() {
+            self.editor.status =
+                "Current-frame extraction is only available for video assets.".to_string();
+            return;
+        }
+        let Some(path) = generative_output_file_for_version(&project_root, &asset, Some(version))
+        else {
+            self.editor.status = format!("No output file was found for {version}.");
+            return;
+        };
+
+        let fps = asset_lab_video_fps(&asset, self.editor.project.settings.fps);
+        let duration = probe_duration_seconds(&path)
+            .or(asset.duration_seconds)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let frame_time = if duration > 0.0 {
+            self.asset_lab.local_time_seconds.min(duration)
+        } else {
+            self.asset_lab.local_time_seconds.max(0.0)
+        };
+        let frame_index = frames_from_seconds(frame_time, fps).round().max(0.0);
+        let snapped_time = seconds_from_frames(frame_index, fps);
+
+        let Some(response) = self.asset_lab_video_decoder.decode(
+            &path,
+            snapped_time,
+            0,
+            self.editor.layout.hardware_decode,
+        ) else {
+            self.editor.status = "Could not decode current video frame.".to_string();
+            return;
+        };
+        let Some(frame) = response.image else {
+            self.editor.status = "Could not decode current video frame.".to_string();
+            return;
+        };
+
+        match self
+            .editor
+            .add_extracted_frame_asset(asset_id, Some(version), snapped_time, frame)
+        {
+            Ok(new_asset_id) => self.warm_asset_thumbnails(&[new_asset_id]),
+            Err(err) => self.editor.status = err,
         }
     }
 
@@ -8107,29 +8366,47 @@ impl NlaEguiApp {
     ) -> Option<(TextureId, Vec2)> {
         let project_root = self.editor.project.project_path.as_ref()?;
         let path = generative_output_file_for_version(project_root, asset, version)?;
-        let can_load_direct_image = asset.is_image();
-        if !can_load_direct_image {
-            if asset.active_version() == version {
-                return self.asset_thumbnail(ctx, asset);
-            }
-            return None;
-        }
+        let fps = asset_lab_video_fps(asset, self.editor.project.settings.fps);
+        let frame_index = asset.is_video().then(|| {
+            frames_from_seconds(self.asset_lab.local_time_seconds.max(0.0), fps)
+                .round()
+                .max(0.0) as i64
+        });
 
         if let Some(cached) = self.asset_lab_preview_texture.as_ref() {
             if cached.asset_id == asset.id
                 && cached.version.as_deref() == version
                 && cached.path == path
+                && cached.frame_index == frame_index
             {
                 return Some((cached.texture.id(), cached.size));
             }
         }
 
-        let (image, size) = load_preview_image(&path, 512)?;
+        let (image, size) = if asset.is_video() {
+            let frame_time = seconds_from_frames(frame_index.unwrap_or(0) as f64, fps);
+            let response = self.asset_lab_video_decoder.decode(
+                &path,
+                frame_time,
+                0,
+                self.editor.layout.hardware_decode,
+            )?;
+            let frame = response.image?;
+            let size = Vec2::new(frame.width().max(1) as f32, frame.height().max(1) as f32);
+            let image = ColorImage::from_rgba_unmultiplied(
+                [frame.width() as usize, frame.height() as usize],
+                frame.as_raw(),
+            );
+            (image, size)
+        } else {
+            load_preview_image(&path, 512)?
+        };
         let texture = ctx.load_texture(
             format!(
-                "asset-lab-preview-{}-{}",
+                "asset-lab-preview-{}-{}-{}",
                 asset.id,
-                version.unwrap_or("fallback")
+                version.unwrap_or("fallback"),
+                frame_index.unwrap_or(-1)
             ),
             image,
             TextureOptions::LINEAR,
@@ -8139,6 +8416,7 @@ impl NlaEguiApp {
             asset_id: asset.id,
             version: version.map(str::to_string),
             path,
+            frame_index,
             texture,
             size,
         });
@@ -12652,6 +12930,13 @@ fn asset_accent(asset: &Asset) -> Color32 {
     }
 }
 
+fn asset_lab_video_fps(asset: &Asset, fallback: f64) -> f64 {
+    match asset.kind {
+        AssetKind::GenerativeVideo { fps, .. } => fps.max(1.0),
+        _ => fallback.max(1.0),
+    }
+}
+
 fn asset_kind_label(kind: &AssetKind) -> &'static str {
     match kind {
         AssetKind::Video { .. } => "Video",
@@ -12797,14 +13082,19 @@ fn asset_lab_version_row(
     )
 }
 
-fn asset_lab_preview(ui: &mut Ui, asset: &Asset, preview: Option<(TextureId, Vec2)>) {
-    let (rect, _) = ui.allocate_exact_size(
+fn asset_lab_preview(
+    ui: &mut Ui,
+    asset: &Asset,
+    preview: Option<(TextureId, Vec2)>,
+    state: &mut AssetLabState,
+) {
+    let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), ASSET_LAB_PREVIEW_H),
-        Sense::hover(),
+        Sense::click_and_drag(),
     );
-    ui.painter()
-        .rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
-    ui.painter().rect_stroke(
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+    painter.rect_stroke(
         rect,
         kit::field_radius(),
         Stroke::new(1.0, kit::BORDER_SOFT),
@@ -12813,24 +13103,88 @@ fn asset_lab_preview(ui: &mut Ui, asset: &Asset, preview: Option<(TextureId, Vec
 
     if let Some((texture_id, size)) = preview {
         let image_bounds = rect.shrink(10.0);
-        let scale = (image_bounds.width() / size.x)
-            .min(image_bounds.height() / size.y)
+        let fit_scale = (image_bounds.width() / size.x.max(1.0))
+            .min(image_bounds.height() / size.y.max(1.0))
             .max(0.01);
+        if state.preview_auto_fit {
+            state.preview_zoom = fit_scale;
+            state.preview_pan = Vec2::ZERO;
+        }
+
+        if response.double_clicked() {
+            state.preview_auto_fit = true;
+            state.preview_zoom = fit_scale;
+            state.preview_pan = Vec2::ZERO;
+        }
+
+        let scroll_delta = preview_scroll_delta(ui, rect);
+        if scroll_delta.abs() > f32::EPSILON {
+            let old_zoom = state.preview_zoom.max(PREVIEW_ZOOM_MIN);
+            let zoom_factor =
+                (1.0 + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY).clamp(0.5, 2.0);
+            let new_zoom = (old_zoom * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
+            if let Some(pointer) = ui.ctx().pointer_hover_pos() {
+                let old_center = image_bounds.center() + state.preview_pan;
+                let ratio = new_zoom / old_zoom;
+                state.preview_pan =
+                    pointer - (pointer - old_center) * ratio - image_bounds.center();
+            }
+            state.preview_zoom = new_zoom;
+            state.preview_auto_fit = false;
+        }
+
+        let secondary_down =
+            ui.input(|input| input.pointer.button_down(egui::PointerButton::Secondary));
+        if secondary_down && (response.hovered() || state.preview_pan_drag.is_some()) {
+            if let Some(pointer) = ui.ctx().pointer_hover_pos() {
+                let (start_pan, start_pointer) = state
+                    .preview_pan_drag
+                    .get_or_insert((state.preview_pan, pointer));
+                state.preview_pan = *start_pan + (pointer - *start_pointer);
+                state.preview_auto_fit = false;
+            }
+        } else {
+            state.preview_pan_drag = None;
+        }
+
+        let scale = state.preview_zoom.max(PREVIEW_ZOOM_MIN);
         let image_rect = Rect::from_center_size(image_bounds.center(), size * scale);
-        ui.painter().image(
+        let image_rect = image_rect.translate(state.preview_pan);
+        painter.image(
             texture_id,
             image_rect,
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
     } else {
-        ui.painter().text(
+        painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             asset_icon(asset),
             FontId::proportional(18.0),
             asset_accent(asset),
         );
+    }
+}
+
+fn asset_lab_scrub_tick_step(duration: f64, width: f32) -> f64 {
+    if duration <= 10.0 || width <= 0.0 {
+        return 1.0;
+    }
+    let target_ticks = (width as f64 / 76.0).clamp(2.0, 16.0);
+    let rough_step = duration / target_ticks;
+    if rough_step <= 1.0 {
+        1.0
+    } else if rough_step <= 2.0 {
+        2.0
+    } else if rough_step <= 5.0 {
+        5.0
+    } else if rough_step <= 10.0 {
+        10.0
+    } else if rough_step <= 30.0 {
+        30.0
+    } else {
+        60.0
     }
 }
 

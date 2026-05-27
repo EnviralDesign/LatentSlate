@@ -346,6 +346,55 @@ impl EditorState {
         Ok(new_id)
     }
 
+    pub fn add_extracted_frame_asset(
+        &mut self,
+        source_asset_id: Uuid,
+        version: Option<&str>,
+        time_seconds: f64,
+        frame: image::RgbaImage,
+    ) -> Result<Uuid, String> {
+        let project_root = self
+            .project
+            .project_path
+            .clone()
+            .ok_or_else(|| "Create or open a project first.".to_string())?;
+        let source_asset = self
+            .project
+            .find_asset(source_asset_id)
+            .cloned()
+            .ok_or_else(|| "Asset not found.".to_string())?;
+        let target_dir = project_root.join("images");
+        fs::create_dir_all(&target_dir)
+            .map_err(|err| format!("Failed to create image asset folder: {err}"))?;
+
+        let version_label = version.unwrap_or("frame");
+        let centiseconds = (time_seconds.max(0.0) * 100.0).round() as u64;
+        let time_label = format!(
+            "{:02}_{:02}_{:02}",
+            centiseconds / 360_000,
+            (centiseconds / 6_000) % 60,
+            (centiseconds / 100) % 60
+        );
+        let base_name = format!("{} {} {}", source_asset.name, version_label, time_label);
+        let target_path = unique_file_path(&target_dir, &sanitize_file_stem(&base_name), "png");
+        frame
+            .save(&target_path)
+            .map_err(|err| format!("Failed to save extracted frame: {err}"))?;
+
+        let relative_path = PathBuf::from("images").join(
+            target_path
+                .file_name()
+                .ok_or_else(|| "Extracted frame path has no filename.".to_string())?,
+        );
+        let name = unique_asset_name(&self.project.assets, &base_name);
+        let asset = Asset::new_image(name, relative_path);
+        let new_id = self.project.add_asset(asset);
+        self.selection.select_asset(new_id);
+        self.preview_dirty = true;
+        self.status = "Extracted frame as image asset".to_string();
+        Ok(new_id)
+    }
+
     pub fn add_asset_to_timeline(
         &mut self,
         asset_id: Uuid,

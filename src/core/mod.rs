@@ -10,5 +10,5 @@ pub mod preview;
 pub mod provider_store;
 pub mod thumbnailer;
 pub mod timeline_snap;
-mod video_decode;
+pub mod video_decode;
 // pub mod ffmpeg; // Placeholder for future imports
