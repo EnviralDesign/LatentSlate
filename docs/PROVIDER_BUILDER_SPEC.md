@@ -45,15 +45,15 @@ Fields:
 - Request format (json/form)
 - Response path for output
 
-## Step 3: Node Browser (ComfyUI)
+## Step 3: Output Selection
 
-**Goal:** Find inputs to expose.
+**Goal:** Define provider output before any inputs are exposed.
 
 Layout (current build):
 - **Left column:** Node browser (search + list)
 - **Middle column:** Node inspector + input/output actions
 - **Right column:** Provider settings + exposed inputs/output summary
-- **Tabs:** `Inputs` and `Output` modes switch what the middle/right panels show
+- **Tabs:** `Output` comes first. `Inputs` remains disabled until a workflow output node is selected.
 
 Left panel:
 - Search bar (class type, title, input key)
@@ -66,12 +66,15 @@ Right panel:
 - Outputs list (for output selection)
 
 Actions:
-- **Expose Input** button next to each input key
 - **Use as Output** button for saver/output nodes
 
 ## Step 4: Exposed Inputs Editor
 
 **Goal:** Curate the provider UI.
+
+Once an output node is configured, the `Inputs` tab unlocks:
+
+- **Expose Input** button next to each input key
 
 For each exposed input:
 - Label
@@ -81,16 +84,10 @@ For each exposed input:
 - Advanced toggle
 - Group name
 - Binding preview (selector fields)
-
-## Step 5: Output Selection
-
-**Goal:** Define provider output.
-
-- Choose a saver/output node.
-- Show output_type picker (image/video/audio).
-- Hide ComfyUI history output keys from normal UX. The builder auto-fills
-  the manifest key for compatibility, and runtime detection scans all file
-  arrays on the selected node for a file matching the provider output type.
+- The output_type picker remains in Provider Settings (image/video/audio).
+- ComfyUI history output keys stay hidden from normal UX. The builder auto-fills
+  the manifest key for compatibility, and runtime detection scans all file arrays
+  on the selected output node for a file matching the provider output type.
 
 ## Step 6: Review & Save
 

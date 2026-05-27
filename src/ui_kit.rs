@@ -340,6 +340,43 @@ pub fn body_with_footer(
         });
 }
 
+pub fn equal_width_action_row(
+    ui: &mut Ui,
+    count: usize,
+    height: f32,
+    gap: f32,
+    mut add_cell: impl FnMut(&mut Ui, usize, f32),
+) {
+    if count == 0 {
+        return;
+    }
+
+    let row_width = ui.available_width().max(0.0);
+    let gaps = count.saturating_sub(1) as f32;
+    let gap = if gaps > 0.0 {
+        gap.max(0.0).min(row_width / gaps)
+    } else {
+        0.0
+    };
+    let cell_width = ((row_width - gap * gaps) / count as f32).max(0.0);
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_width, height), Sense::hover());
+
+    let mut x = row_rect.left();
+    for index in 0..count {
+        let rect = Rect::from_min_size(Pos2::new(x, row_rect.top()), Vec2::new(cell_width, height));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        child.shrink_clip_rect(rect);
+        child.set_width(cell_width);
+        child.set_max_width(cell_width);
+        add_cell(&mut child, index, cell_width);
+        x += cell_width + gap;
+    }
+}
+
 pub fn field_grid_row(ui: &mut Ui, weights: &[f32], add_cell: impl FnMut(&mut Ui, usize)) {
     field_grid_row_with_height(
         ui,
@@ -2258,35 +2295,51 @@ fn paint_button_at(
     label: &str,
     skin: ButtonSkin,
 ) -> Response {
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let enabled = response.enabled();
+    let response = if enabled {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    };
     paint_button_background(ui, rect, &response, skin);
-    let galley = egui::WidgetText::from(RichText::new(label).color(skin.text).size(skin.text_size))
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            (rect.width() - 12.0).max(0.0),
-            FontId::proportional(skin.text_size),
-        );
+    let text_color = if enabled {
+        skin.text
+    } else {
+        ui.visuals().gray_out(skin.text)
+    };
+    let galley =
+        egui::WidgetText::from(RichText::new(label).color(text_color).size(skin.text_size))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                (rect.width() - 12.0).max(0.0),
+                FontId::proportional(skin.text_size),
+            );
     ui.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley, skin.text);
+        .galley(rect.center() - galley.size() * 0.5, galley, text_color);
     crate::core::automation::instrument_response(
         response,
         "button",
         Some(label.to_string()),
-        true,
+        enabled,
         false,
     )
 }
 
 fn paint_button_background(ui: &Ui, rect: Rect, response: &Response, skin: ButtonSkin) {
-    let fill = if response.is_pointer_button_down_on() {
+    let enabled = response.enabled();
+    let fill = if !enabled {
+        disabled_button_color(ui, skin.fill)
+    } else if response.is_pointer_button_down_on() {
         skin.active_fill
     } else if response.hovered() || response.has_focus() {
         skin.hover_fill
     } else {
         skin.fill
     };
-    let stroke = if response.has_focus() {
+    let stroke = if !enabled {
+        disabled_button_color(ui, skin.stroke)
+    } else if response.has_focus() {
         BORDER_FOCUS
     } else if response.hovered() {
         skin.stroke.gamma_multiply(1.35)
@@ -2303,6 +2356,14 @@ fn paint_button_background(ui: &Ui, rect: Rect, response: &Response, skin: Butto
             Stroke::new(1.0, stroke),
             StrokeKind::Inside,
         );
+    }
+}
+
+fn disabled_button_color(ui: &Ui, color: Color32) -> Color32 {
+    if color == Color32::TRANSPARENT {
+        Color32::TRANSPARENT
+    } else {
+        ui.visuals().gray_out(color)
     }
 }
 
@@ -2404,22 +2465,45 @@ pub fn draw_accent_row(
     accent: Color32,
     add_contents: impl FnOnce(&mut Ui, Rect),
 ) -> Response {
+    draw_accent_row_with_status(ui, height, selected, accent, None, add_contents)
+}
+
+pub fn draw_accent_row_with_status(
+    ui: &mut Ui,
+    height: f32,
+    selected: bool,
+    accent: Color32,
+    status_accent: Option<Color32>,
+    add_contents: impl FnOnce(&mut Ui, Rect),
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), height),
         Sense::click_and_drag(),
     );
     let fill = row_fill(selected, response.hovered());
     ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
+    let stroke_color = status_accent
+        .map(|color| color.gamma_multiply(if selected { 1.0 } else { 0.82 }))
+        .unwrap_or(if selected { accent } else { BORDER_SOFT });
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(5),
-        Stroke::new(1.0, if selected { accent } else { BORDER_SOFT }),
+        Stroke::new(1.0, stroke_color),
         StrokeKind::Inside,
     );
+    if let Some(color) = status_accent {
+        let inner = rect.shrink(1.5);
+        ui.painter().rect_stroke(
+            inner,
+            CornerRadius::same(4),
+            Stroke::new(1.0, color.gamma_multiply(0.38)),
+            StrokeKind::Inside,
+        );
+    }
     ui.painter().rect_filled(
         Rect::from_min_size(rect.left_top(), Vec2::new(4.0, rect.height())),
         CornerRadius::same(2),
-        accent,
+        status_accent.unwrap_or(accent),
     );
     let content_rect = rect.shrink2(Vec2::new(10.0, 5.0));
     let mut child = ui.new_child(

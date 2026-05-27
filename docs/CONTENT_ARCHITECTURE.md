@@ -289,9 +289,9 @@ Suggested flow:
 
 1. Pick a workflow JSON (API format).
 2. The builder parses nodes and builds an indexed list.
-3. Select a node input, click **Expose Input**.
-4. Name the field, set default/required/range, optionally mark as Advanced.
-5. Select an output node for `image`/`video`/`audio` output.
+3. Select the saver/output node for `image`/`video`/`audio` output.
+4. Once output is configured, select node inputs and click **Expose Input**.
+5. Name each field, set default/required/range, optionally mark as Advanced.
 6. Save: the builder writes a manifest and creates the provider entry.
 
 Tagging nodes (`_meta.nla_tag`) keeps bindings stable across workflow edits.

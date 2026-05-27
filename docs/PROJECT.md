@@ -823,6 +823,9 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-26:** Added Provider Builder binding-state affordances. Workflow nodes now show a subtle status outline and subtitle when they are already selected as output or have exposed inputs, already-exposed input rows show a disabled `Exposed` action, and the current output node shows a disabled `Output Selected` action instead of inviting duplicate clicks.
+- **2026-05-26:** Reordered the ComfyUI Provider Builder into an output-first flow. The Output tab now appears first and opens by default, Inputs stays disabled until a node-backed output is selected, switching workflows clears stale output/input bindings, and custom kit buttons now render visibly disabled when wrapped in disabled egui containers.
+- **2026-05-26:** Added a reusable equal-width action-row helper for modal footers so paired buttons split the actual available rect instead of combining manual gaps with egui's horizontal spacing. Asset delete, track delete, and bridge-keyframe confirmation footers now stay clipped/responsive at narrower modal widths, and the asset-delete explanatory copy wraps instead of truncating.
 - **2026-05-26:** Improved Provider Builder exposed-input cards. Default values now render with type-aware controls instead of a universal text box: booleans use a checkbox-style toggle, numeric defaults use drag fields, enums use a dropdown, and image/video/audio inputs show that defaults are runtime asset bindings. Exposed-input cards now use bounded-width, content-height layout and bounded action rows so lower cards cannot progressively drift wider or push Delete buttons past the right edge of the editor column.
 - **2026-05-26:** Made shared multiline text fields internally scrollable. Provider prompt fields, marker descriptions, and other reusable multiline inputs now keep their configured visible row count while long text scrolls inside the field instead of painting or clipping awkwardly at the field boundary.
 - **2026-05-26:** Tightened timeline body clipping after the sticky header/footer restructure. The ruler now has its own clip, track rows and their clip/marker contents are clipped strictly to the scrollable track viewport, and only overlay elements such as the playhead may span the ruler plus working area.
@@ -1187,7 +1190,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-05-22*
+*Last updated: 2026-05-26*
 
 
 

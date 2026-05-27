@@ -612,8 +612,8 @@ struct BridgeKeyframeConfirmation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProviderBuilderTab {
-    Inputs,
     Output,
+    Inputs,
 }
 
 #[derive(Clone, Debug)]
@@ -7152,12 +7152,20 @@ impl NlaEguiApp {
                                 .strong(),
                             );
                             ui.add_space(kit::FORM_ROW_GAP);
-                            ui.label(RichText::new(clip_context).color(kit::TEXT_MUTED));
-                            ui.label(
-                                RichText::new(
-                                    "Timeline clip instances will be removed. Source media files on disk are left in place.",
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(clip_context).color(kit::TEXT_MUTED),
                                 )
-                                .color(kit::TEXT_MUTED),
+                                .wrap(),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "Timeline clip instances will be removed. Source media files on disk are left in place.",
+                                    )
+                                    .color(kit::TEXT_MUTED),
+                                )
+                                .wrap(),
                             );
                             if !confirmation.sample_names.is_empty() {
                                 ui.add_space(kit::ACTION_GAP);
@@ -7177,15 +7185,24 @@ impl NlaEguiApp {
                             }
                         },
                         |ui| {
-                            let gap = kit::ACTION_GAP;
-                            let button_w = ((ui.available_width() - gap) / 2.0).max(120.0);
-                            ui.horizontal(|ui| {
-                                cancel_clicked = kit::secondary_button(ui, "Cancel", button_w)
-                                    .clicked();
-                                ui.add_space(gap);
-                                delete_clicked =
-                                    kit::danger_button(ui, "Delete Assets", button_w).clicked();
-                            });
+                            kit::equal_width_action_row(
+                                ui,
+                                2,
+                                kit::SECONDARY_BUTTON_H,
+                                kit::ACTION_GAP,
+                                |ui, index, button_w| match index {
+                                    0 => {
+                                        cancel_clicked =
+                                            kit::secondary_button(ui, "Cancel", button_w)
+                                                .clicked();
+                                    }
+                                    _ => {
+                                        delete_clicked =
+                                            kit::danger_button(ui, "Delete Assets", button_w)
+                                                .clicked();
+                                    }
+                                },
+                            );
                         },
                     );
                 });
@@ -7278,15 +7295,23 @@ impl NlaEguiApp {
                             }
                         },
                         |ui| {
-                            let gap = kit::ACTION_GAP;
-                            let button_w = ((ui.available_width() - gap) / 2.0).max(120.0);
-                            ui.horizontal(|ui| {
-                                cancel_clicked =
-                                    kit::secondary_button(ui, "Cancel", button_w).clicked();
-                                ui.add_space(gap);
-                                delete_clicked =
-                                    kit::danger_button(ui, "Delete Tracks", button_w).clicked();
-                            });
+                            kit::equal_width_action_row(
+                                ui,
+                                2,
+                                kit::SECONDARY_BUTTON_H,
+                                kit::ACTION_GAP,
+                                |ui, index, button_w| match index {
+                                    0 => {
+                                        cancel_clicked =
+                                            kit::secondary_button(ui, "Cancel", button_w).clicked();
+                                    }
+                                    _ => {
+                                        delete_clicked =
+                                            kit::danger_button(ui, "Delete Tracks", button_w)
+                                                .clicked();
+                                    }
+                                },
+                            );
                         },
                     );
                 });
@@ -7365,15 +7390,24 @@ impl NlaEguiApp {
                             }
                         },
                         |ui| {
-                            let gap = kit::ACTION_GAP;
-                            let button_w = ((ui.available_width() - gap) / 2.0).max(120.0);
-                            ui.horizontal(|ui| {
-                                cancel_clicked =
-                                    kit::secondary_button(ui, "Cancel", button_w).clicked();
-                                ui.add_space(gap);
-                                create_clicked =
-                                    kit::primary_button(ui, "Convert + Create", button_w).clicked();
-                            });
+                            kit::equal_width_action_row(
+                                ui,
+                                2,
+                                kit::SECONDARY_BUTTON_H,
+                                kit::ACTION_GAP,
+                                |ui, index, button_w| match index {
+                                    0 => {
+                                        cancel_clicked =
+                                            kit::secondary_button(ui, "Cancel", button_w)
+                                                .clicked();
+                                    }
+                                    _ => {
+                                        create_clicked =
+                                            kit::primary_button(ui, "Convert + Create", button_w)
+                                                .clicked();
+                                    }
+                                },
+                            );
                         },
                     );
                 });
@@ -9348,13 +9382,26 @@ impl NlaEguiApp {
     }
 
     fn provider_builder_tabs(&mut self, ui: &mut Ui) {
+        self.provider_builder.ensure_valid_tab();
+        let output_active = self.provider_builder.tab == ProviderBuilderTab::Output;
+        let inputs_active = self.provider_builder.tab == ProviderBuilderTab::Inputs;
+        let inputs_enabled = self.provider_builder.output_configured();
+
         ui.horizontal(|ui| {
-            let inputs_active = self.provider_builder.tab == ProviderBuilderTab::Inputs;
-            if kit::timeline_tool_text_button(ui, "Inputs", 74.0, inputs_active).clicked() {
-                self.provider_builder.tab = ProviderBuilderTab::Inputs;
-            }
-            if kit::timeline_tool_text_button(ui, "Output", 74.0, !inputs_active).clicked() {
+            if kit::timeline_tool_text_button(ui, "Output", 74.0, output_active).clicked() {
                 self.provider_builder.tab = ProviderBuilderTab::Output;
+            }
+            let inputs_response = ui
+                .add_enabled_ui(inputs_enabled, |ui| {
+                    kit::timeline_tool_text_button(ui, "Inputs", 74.0, inputs_active)
+                })
+                .inner;
+            let inputs_clicked = inputs_response.clicked();
+            if !inputs_enabled {
+                inputs_response.on_disabled_hover_text("Select an output node first.");
+            }
+            if inputs_clicked {
+                self.provider_builder.tab = ProviderBuilderTab::Inputs;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(kit::caption(self.provider_builder.output_status_label()));
@@ -9409,7 +9456,17 @@ impl NlaEguiApp {
                         .selected_node_id
                         .as_ref()
                         .is_some_and(|id| id == &node.id);
-                    let response = workflow_node_row(ui, &node, selected);
+                    let output_selected = self.provider_builder.node_is_output(&node.id);
+                    let exposed_input_count =
+                        self.provider_builder.exposed_input_count_for_node(&node.id);
+                    let response = workflow_node_row(
+                        ui,
+                        &node,
+                        selected,
+                        output_selected,
+                        exposed_input_count,
+                        self.provider_builder.output_type,
+                    );
                     if response.clicked() {
                         self.provider_builder.selected_node_id = Some(node.id);
                     }
@@ -9443,6 +9500,14 @@ impl NlaEguiApp {
 
             match self.provider_builder.tab {
                 ProviderBuilderTab::Inputs => {
+                    if !self.provider_builder.output_configured() {
+                        kit::empty_state(
+                            ui,
+                            "Set output first",
+                            "Choose the workflow node that produces the final media before exposing inputs.",
+                        );
+                        return;
+                    }
                     kit::field_label(ui, "Inputs");
                     ui.add_space(kit::FORM_ROW_GAP);
                     if node.inputs.is_empty() {
@@ -9450,12 +9515,26 @@ impl NlaEguiApp {
                     }
                     let mut expose_key: Option<String> = None;
                     for input_key in node.inputs.iter() {
+                        let already_exposed =
+                            self.provider_builder.input_exposed(&node.id, input_key);
                         ui.horizontal(|ui| {
                             ui.add_sized(
                                 [(ui.available_width() - 76.0).max(60.0), 18.0],
                                 egui::Label::new(kit::body(input_key)).truncate(),
                             );
-                            if kit::field_button(ui, "Expose", 68.0).clicked() {
+                            let label = if already_exposed { "Exposed" } else { "Expose" };
+                            let response = ui
+                                .add_enabled_ui(!already_exposed, |ui| {
+                                    kit::field_button(ui, label, 68.0)
+                                })
+                                .inner;
+                            let clicked = response.clicked();
+                            if already_exposed {
+                                response.on_disabled_hover_text(
+                                    "This workflow input is already exposed.",
+                                );
+                            }
+                            if clicked {
                                 expose_key = Some(input_key.clone());
                             }
                         });
@@ -9467,8 +9546,24 @@ impl NlaEguiApp {
                 ProviderBuilderTab::Output => {
                     kit::field_label(ui, "Output Node");
                     ui.add_space(kit::FORM_ROW_GAP);
+                    let output_selected = self.provider_builder.node_is_output(&node.id);
                     let use_output_w = ui.available_width();
-                    if kit::secondary_button(ui, "Use as Output", use_output_w).clicked() {
+                    let label = if output_selected {
+                        "Output Selected"
+                    } else {
+                        "Use as Output"
+                    };
+                    let response = ui
+                        .add_enabled_ui(!output_selected, |ui| {
+                            kit::secondary_button(ui, label, use_output_w)
+                        })
+                        .inner;
+                    let clicked = response.clicked();
+                    if output_selected {
+                        response
+                            .on_disabled_hover_text("This node is already the provider output.");
+                    }
+                    if clicked {
                         self.provider_builder.output_node = Some(ProviderOutputNodeDraft {
                             node_id: Some(node.id),
                             class_type: node.class_type,
@@ -9580,6 +9675,7 @@ impl NlaEguiApp {
             });
 
             ui.add_space(kit::ACTION_GAP);
+            self.provider_builder.ensure_valid_tab();
             match self.provider_builder.tab {
                 ProviderBuilderTab::Inputs => self.provider_builder_inputs_editor(ui),
                 ProviderBuilderTab::Output => self.provider_builder_output_editor(ui),
@@ -9658,12 +9754,14 @@ impl NlaEguiApp {
                 self.provider_builder.workflow_nodes = nodes;
                 self.provider_builder.workflow_error = None;
                 self.provider_builder.selected_node_id = None;
+                self.provider_builder.reset_workflow_bindings();
             }
             Err(err) => {
                 self.provider_builder.workflow_path = Some(path);
                 self.provider_builder.workflow_nodes.clear();
                 self.provider_builder.workflow_error = Some(err);
                 self.provider_builder.selected_node_id = None;
+                self.provider_builder.reset_workflow_bindings();
             }
         }
     }
@@ -11491,7 +11589,7 @@ impl ProviderBuilderState {
                 .iter()
                 .map(ProviderBuilderInput::from_provider_input)
                 .collect(),
-            tab: ProviderBuilderTab::Inputs,
+            tab: ProviderBuilderTab::Output,
             error: None,
         };
 
@@ -11544,6 +11642,58 @@ impl ProviderBuilderState {
             .iter()
             .find(|node| &node.id == selected_id)
             .cloned()
+    }
+
+    fn node_is_output(&self, node_id: &str) -> bool {
+        self.output_node
+            .as_ref()
+            .and_then(|node| node.node_id.as_deref())
+            .is_some_and(|id| id == node_id)
+    }
+
+    fn exposed_input_count_for_node(&self, node_id: &str) -> usize {
+        self.inputs
+            .iter()
+            .filter(|input| {
+                input
+                    .selector
+                    .node_id
+                    .as_deref()
+                    .is_some_and(|id| id == node_id)
+            })
+            .count()
+    }
+
+    fn input_exposed(&self, node_id: &str, input_key: &str) -> bool {
+        self.inputs.iter().any(|input| {
+            input
+                .selector
+                .node_id
+                .as_deref()
+                .is_some_and(|id| id == node_id)
+                && input.selector.input_key == input_key
+        })
+    }
+
+    fn output_configured(&self) -> bool {
+        self.output_node
+            .as_ref()
+            .and_then(|node| node.node_id.as_deref())
+            .is_some_and(|node_id| !node_id.trim().is_empty())
+    }
+
+    fn ensure_valid_tab(&mut self) {
+        if !self.output_configured() && self.tab == ProviderBuilderTab::Inputs {
+            self.tab = ProviderBuilderTab::Output;
+        }
+    }
+
+    fn reset_workflow_bindings(&mut self) {
+        self.output_node = None;
+        self.output_key = default_output_key(self.output_type).to_string();
+        self.output_tag.clear();
+        self.inputs.clear();
+        self.tab = ProviderBuilderTab::Output;
     }
 
     fn apply_manifest(&mut self, manifest: ProviderManifest) {
@@ -11600,16 +11750,22 @@ impl ProviderBuilderState {
     }
 
     fn output_status_label(&self) -> String {
-        self.output_node
-            .as_ref()
-            .map(|node| {
+        match self.output_node.as_ref() {
+            Some(node)
+                if node
+                    .node_id
+                    .as_deref()
+                    .is_some_and(|node_id| !node_id.trim().is_empty()) =>
+            {
                 format!(
                     "Output: {} ({})",
                     node.title.clone().unwrap_or_else(|| "Untitled".to_string()),
                     node.class_type
                 )
-            })
-            .unwrap_or_else(|| "Output: Not set".to_string())
+            }
+            Some(_) => "Output: Re-select node".to_string(),
+            None => "Output: Not set".to_string(),
+        }
     }
 
     fn workflow_path_display(&self) -> String {
@@ -12148,10 +12304,28 @@ fn workflow_node_row(
     ui: &mut Ui,
     node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
     selected: bool,
+    output_selected: bool,
+    exposed_input_count: usize,
+    output_type: ProviderOutputType,
 ) -> egui::Response {
-    kit::draw_accent_row(ui, 54.0, selected, kit::IMAGE, |ui, rect| {
+    let status_accent = if output_selected {
+        Some(provider_output_color(output_type))
+    } else if exposed_input_count > 0 {
+        Some(kit::BORDER_FOCUS)
+    } else {
+        None
+    };
+    kit::draw_accent_row_with_status(ui, 54.0, selected, kit::IMAGE, status_accent, |ui, rect| {
         let title = node.title.as_deref().unwrap_or("Untitled");
-        let subtitle = format!("{}  Node {}", node.class_type, node.id);
+        let status = match (output_selected, exposed_input_count) {
+            (true, 0) => "  Output".to_string(),
+            (true, 1) => "  Output + 1 input".to_string(),
+            (true, count) => format!("  Output + {count} inputs"),
+            (false, 1) => "  1 input exposed".to_string(),
+            (false, count) if count > 1 => format!("  {count} inputs exposed"),
+            _ => String::new(),
+        };
+        let subtitle = format!("{}  Node {}{}", node.class_type, node.id, status);
         paint_text_button_row(ui, rect, title, &subtitle);
     })
 }
