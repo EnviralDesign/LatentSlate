@@ -1,7 +1,10 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Arc,
+};
 use std::thread;
 use std::time::Instant;
 
@@ -15,6 +18,7 @@ const MAX_DECODE_WORKERS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DecodeTimings {
+    pub queue_ms: f64,
     pub seek_ms: f64,
     pub packet_ms: f64,
     pub transfer_ms: f64,
@@ -24,7 +28,12 @@ pub struct DecodeTimings {
 
 impl DecodeTimings {
     pub fn total_ms(&self) -> f64 {
-        self.seek_ms + self.packet_ms + self.transfer_ms + self.scale_ms + self.copy_ms
+        self.queue_ms
+            + self.seek_ms
+            + self.packet_ms
+            + self.transfer_ms
+            + self.scale_ms
+            + self.copy_ms
     }
 }
 
@@ -43,6 +52,8 @@ struct DecodeRequest {
     mode: DecodeMode,
     lane_id: u64,
     allow_hw: bool,
+    epoch: u64,
+    enqueued_at: Instant,
     respond_to: mpsc::Sender<DecodeResponse>,
 }
 
@@ -64,6 +75,7 @@ pub struct DecodeResponse {
 #[derive(Clone)]
 pub struct VideoDecodeWorker {
     senders: Vec<mpsc::Sender<DecodeRequest>>,
+    epoch: Arc<AtomicU64>,
 }
 
 impl VideoDecodeWorker {
@@ -74,9 +86,11 @@ impl VideoDecodeWorker {
             .unwrap_or(1);
 
         let mut senders = Vec::with_capacity(worker_count);
+        let epoch = Arc::new(AtomicU64::new(0));
         for _ in 0..worker_count {
             let (sender, receiver) = mpsc::channel::<DecodeRequest>();
             senders.push(sender);
+            let worker_epoch = Arc::clone(&epoch);
 
             thread::spawn(move || {
                 let _ = ffmpeg::init();
@@ -90,8 +104,23 @@ impl VideoDecodeWorker {
                         mode,
                         lane_id,
                         allow_hw,
+                        epoch,
+                        enqueued_at,
                         respond_to,
                     } = request;
+
+                    if epoch != worker_epoch.load(Ordering::Relaxed) {
+                        let mut timings = DecodeTimings::default();
+                        timings.queue_ms = elapsed_ms(enqueued_at);
+                        let _ = respond_to.send(DecodeResponse {
+                            image: None,
+                            timings,
+                            used_hw: false,
+                            source_width: 0,
+                            source_height: 0,
+                        });
+                        continue;
+                    }
 
                     let key = DecoderKey {
                         path: path.clone(),
@@ -99,7 +128,7 @@ impl VideoDecodeWorker {
                         allow_hw,
                     };
 
-                    let outcome = match decoders.entry(key) {
+                    let mut outcome = match decoders.entry(key) {
                         Entry::Occupied(mut entry) => {
                             access_counter = access_counter.wrapping_add(1);
                             entry.get_mut().last_used = access_counter;
@@ -123,6 +152,7 @@ impl VideoDecodeWorker {
                             }
                         }
                     };
+                    outcome.timings.queue_ms = elapsed_ms(enqueued_at);
 
                     if decoders.len() > MAX_DECODERS {
                         evict_least_used(&mut decoders);
@@ -139,7 +169,15 @@ impl VideoDecodeWorker {
             });
         }
 
-        Self { senders }
+        Self { senders, epoch }
+    }
+
+    pub fn current_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
+
+    pub fn invalidate_pending(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Decode a single frame at the requested timestamp (seconds).
@@ -184,7 +222,26 @@ impl VideoDecodeWorker {
         lane_id: u64,
         allow_hw: bool,
     ) -> Option<mpsc::Receiver<DecodeResponse>> {
-        let sender = self.select_sender(lane_id)?;
+        self.decode_async_at_epoch(
+            path,
+            time_seconds,
+            mode,
+            lane_id,
+            allow_hw,
+            self.current_epoch(),
+        )
+    }
+
+    pub fn decode_async_at_epoch(
+        &self,
+        path: &Path,
+        time_seconds: f64,
+        mode: DecodeMode,
+        lane_id: u64,
+        allow_hw: bool,
+        epoch: u64,
+    ) -> Option<mpsc::Receiver<DecodeResponse>> {
+        let sender = self.select_sender(lane_id, epoch)?;
         let (respond_to, response) = mpsc::channel();
         let request = DecodeRequest {
             path: path.to_path_buf(),
@@ -192,6 +249,8 @@ impl VideoDecodeWorker {
             mode,
             lane_id,
             allow_hw,
+            epoch,
+            enqueued_at: Instant::now(),
             respond_to,
         };
 
@@ -213,11 +272,12 @@ impl VideoDecodeWorker {
         response.recv().ok()
     }
 
-    fn select_sender(&self, lane_id: u64) -> Option<&mpsc::Sender<DecodeRequest>> {
+    fn select_sender(&self, lane_id: u64, epoch: u64) -> Option<&mpsc::Sender<DecodeRequest>> {
         if self.senders.is_empty() {
             return None;
         }
-        let index = (lane_id as usize) % self.senders.len();
+        let mixed = lane_id ^ epoch.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let index = (mixed as usize) % self.senders.len();
         self.senders.get(index)
     }
 }

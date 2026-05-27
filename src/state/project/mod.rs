@@ -11,6 +11,6 @@ mod track;
 
 pub use clip::{Clip, ClipImageMode, ClipTransform};
 pub use marker::Marker;
-pub use project::Project;
+pub use project::{Project, ProjectWorkspaceLayout};
 pub use settings::ProjectSettings;
 pub use track::{Track, TrackType};

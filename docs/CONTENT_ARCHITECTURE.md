@@ -413,6 +413,13 @@ The UI must also expose an unpin action for these media-input fields. Once
 unpinned, the field returns to the normal timeline-proximity resolver while
 keeping the last asset as a fallback when no timeline context is available.
 
+Image inputs may also bind to a video clip boundary instead of a still image.
+The binding remains an asset reference, but carries a `first_frame` or
+`last_frame` hint. At generation time the resolver extracts that single video
+frame into the project cache and passes the generated PNG path to the provider.
+This intentionally supports only first/last clip frames for now; arbitrary video
+slices stay out of the UI until the interaction model is clearer.
+
 ### Duration Inference
 
 If the generative provider supports a `duration` input:
@@ -704,6 +711,7 @@ struct GenerationRecord {
 | Input wiring | Timeline overlap = smart suggestions, no explicit linking |
 | Provider taxonomy | Grouped by output type; input schema is dynamic |
 | Provider bindings | Resolve ComfyUI inputs by node ID plus input key; resolve outputs by selected node plus media-file detection |
+| Provider input metadata | Query ComfyUI `/object_info` from each provider's own Base URL to enrich exposed inputs with live enum/default/type metadata; workflow JSON scalar values remain the offline fallback |
 | Provider builder UI | Workflow picker + node browser for binding exposed inputs |
 | Track types | Video, Audio, Markers |
 | Track duplication | Video/Audio can be duplicated; Markers is singular |
@@ -713,4 +721,4 @@ struct GenerationRecord {
 
 ---
 
-*Last updated: 2026-01-08*
+*Last updated: 2026-05-27*

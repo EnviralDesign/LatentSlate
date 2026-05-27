@@ -60,6 +60,7 @@ pub struct PreviewRenderer {
     max_width: u32,
     max_height: u32,
     video_decoder: VideoDecodeWorker,
+    prefetch_video_decoder: VideoDecodeWorker,
     frame_cache: Mutex<FrameCache>,
     duration_cache: Mutex<HashMap<PathBuf, Option<f64>>>,
     #[allow(dead_code)]
@@ -83,6 +84,7 @@ impl PreviewRenderer {
             max_width,
             max_height,
             video_decoder: VideoDecodeWorker::new(max_width, max_height),
+            prefetch_video_decoder: VideoDecodeWorker::new(max_width, max_height),
             frame_cache: Mutex::new(FrameCache::new(max_cache_bytes)),
             duration_cache: Mutex::new(HashMap::new()),
             plate_cache: Mutex::new(None),
@@ -95,6 +97,8 @@ impl PreviewRenderer {
         if let Ok(mut cache) = self.frame_cache.lock() {
             cache.invalidate_folder(folder);
         }
+        self.video_decoder.invalidate_pending();
+        self.prefetch_video_decoder.invalidate_pending();
     }
 
     pub fn cache_stats(&self) -> PreviewCacheStats {
@@ -322,6 +326,7 @@ impl PreviewRenderer {
         allow_hw_decode: bool,
         stats: &mut PreviewStats,
     ) -> Vec<PreviewLayer> {
+        let decode_epoch = self.video_decoder.current_epoch();
         let mut track_order: HashMap<uuid::Uuid, usize> = HashMap::new();
         let mut video_tracks = 0;
         for track in project.tracks.iter() {
@@ -443,12 +448,13 @@ impl PreviewRenderer {
         if !pending.is_empty() {
             let mut requests = Vec::with_capacity(pending.len());
             for item in pending {
-                if let Some(receiver) = self.video_decoder.decode_async(
+                if let Some(receiver) = self.video_decoder.decode_async_at_epoch(
                     &item.path,
                     item.frame_time,
                     decode_mode,
                     item.lane_id,
                     allow_hw_decode,
+                    decode_epoch,
                 ) {
                     requests.push((item, receiver));
                 }
@@ -458,6 +464,7 @@ impl PreviewRenderer {
                 if let Ok(response) = receiver.recv() {
                     let timings = response.timings;
                     stats.video_decode_ms += timings.total_ms();
+                    stats.video_decode_queue_ms += timings.queue_ms;
                     stats.video_decode_seek_ms += timings.seek_ms;
                     stats.video_decode_packet_ms += timings.packet_ms;
                     stats.video_decode_transfer_ms += timings.transfer_ms;
@@ -522,6 +529,7 @@ impl PreviewRenderer {
         let project_root = project.project_path.as_ref().unwrap_or(&self.project_root);
         let start_frame = time_to_frame_index(time_seconds, fps);
         let step = direction.signum() as i64;
+        let decode_epoch = self.prefetch_video_decoder.current_epoch();
 
         for offset in 1..=window_frames {
             let frame_index = start_frame + step * offset as i64;
@@ -548,6 +556,8 @@ impl PreviewRenderer {
                     decode_mode,
                     track_lane_id(clip.track_id),
                     allow_hw_decode,
+                    &self.prefetch_video_decoder,
+                    decode_epoch,
                     None,
                 );
             }
@@ -645,6 +655,8 @@ impl PreviewRenderer {
         decode_mode: PreviewDecodeMode,
         lane_id: u64,
         allow_hw_decode: bool,
+        decoder: &VideoDecodeWorker,
+        decode_epoch: u64,
         mut stats: Option<&mut PreviewStats>,
     ) -> Option<Arc<RgbaImage>> {
         let (path, is_video, duration) = resolve_asset_source(
@@ -688,21 +700,21 @@ impl PreviewRenderer {
                 PreviewDecodeMode::Seek => DecodeMode::Seek,
                 PreviewDecodeMode::Sequential => DecodeMode::Sequential,
             };
-            let response = match mode {
-                DecodeMode::Seek => {
-                    self.video_decoder
-                        .decode(&path, frame_time, lane_id, allow_hw_decode)?
-                }
-                DecodeMode::Sequential => self.video_decoder.decode_sequential(
+            let response = decoder
+                .decode_async_at_epoch(
                     &path,
                     frame_time,
+                    mode,
                     lane_id,
                     allow_hw_decode,
-                )?,
-            };
+                    decode_epoch,
+                )?
+                .recv()
+                .ok()?;
             if let Some(stats) = stats.as_deref_mut() {
                 let timings = response.timings;
                 stats.video_decode_ms += timings.total_ms();
+                stats.video_decode_queue_ms += timings.queue_ms;
                 stats.video_decode_seek_ms += timings.seek_ms;
                 stats.video_decode_packet_ms += timings.packet_ms;
                 stats.video_decode_transfer_ms += timings.transfer_ms;

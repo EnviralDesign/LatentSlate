@@ -143,6 +143,30 @@ pub async fn check_health(base_url: &str) -> Result<(), String> {
     }
 }
 
+/// Fetches ComfyUI's live node/input schema for the configured provider endpoint.
+pub async fn fetch_object_info(base_url: &str) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|err| format!("Failed to build HTTP client: {}", err))?;
+    let url = format!("{}/object_info", base_url.trim_end_matches('/'));
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to fetch ComfyUI object info: {}", err))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "ComfyUI object info request failed ({})",
+            response.status()
+        ));
+    }
+    response
+        .json::<Value>()
+        .await
+        .map_err(|err| format!("Failed to parse ComfyUI object info: {}", err))
+}
+
 /// Submits a ComfyUI workflow and downloads the first output matching the output type.
 pub async fn generate_output(
     base_url: &str,

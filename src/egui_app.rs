@@ -1,3 +1,4 @@
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -7,8 +8,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, Color32, ColorImage, Context, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke,
-    TextureHandle, TextureId, TextureOptions, Ui, Vec2,
+    self, Align, Color32, ColorImage, Context, FontId, Layout, Pos2, Rect, Response, RichText,
+    Sense, Stroke, TextureHandle, TextureId, TextureOptions, Ui, Vec2,
 };
 use uuid::Uuid;
 
@@ -41,13 +42,13 @@ use crate::editor::{
 };
 use crate::providers::ProviderProgress;
 use crate::state::{
-    asset_display_name, input_value_as_bool, input_value_as_f64, input_value_as_i64,
-    input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipImageMode,
-    ClipTransform, ComfyOutputSelector, ComfyWorkflowRef, GenerationJob, GenerationJobStatus,
-    GenerationRecord, GenerationSeedAdvance, GenerativeConfig, InputBinding, InputUi, InputValue,
-    ManifestInput, NodeSelector, Project, ProjectSettings, ProviderConnection, ProviderEntry,
-    ProviderInputField, ProviderInputType, ProviderManifest, ProviderOutputType, SeedStrategy,
-    TrackType,
+    asset_display_name, delete_generative_version_files, input_value_as_bool, input_value_as_f64,
+    input_value_as_i64, input_value_as_string, parse_version_index, Asset, AssetKind, Clip,
+    ClipImageMode, ClipTransform, ComfyOutputSelector, ComfyWorkflowRef, GenerationJob,
+    GenerationJobStatus, GenerationRecord, GenerationSeedAdvance, GenerativeConfig, InputBinding,
+    InputUi, InputValue, ManifestInput, NodeSelector, Project, ProjectSettings, ProviderConnection,
+    ProviderEntry, ProviderInputField, ProviderInputType, ProviderManifest, ProviderOutputType,
+    SeedStrategy, SourceFrameReference, TrackType,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
@@ -140,6 +141,7 @@ const API_KEYS_MODAL_SIZE: [f32; 2] = [480.0, 280.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
+const ASSET_LAB_MODAL_SIZE: [f32; 2] = [900.0, 640.0];
 const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
 const TRACK_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 300.0];
 const BRIDGE_KEYFRAME_MODAL_SIZE: [f32; 2] = [500.0, 340.0];
@@ -156,6 +158,8 @@ const QUEUE_JOB_CARD_H: f32 = 64.0;
 const QUEUE_JOB_RUNNING_H: f32 = 106.0;
 const QUEUE_JOB_FAILED_H: f32 = 84.0;
 const MAX_GENERATION_BATCH_COUNT: u32 = 50;
+const ASSET_LAB_VERSION_ROW_H: f32 = 54.0;
+const ASSET_LAB_PREVIEW_H: f32 = 220.0;
 
 fn project_wizard_size(ctx: &Context) -> Vec2 {
     let available = ctx.content_rect().size();
@@ -256,6 +260,8 @@ pub struct NlaEguiApp {
     provider_builder_open: bool,
     provider_builder: ProviderBuilderState,
     api_key_modal: ApiKeyModalState,
+    asset_lab: AssetLabState,
+    asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
     provider_template_kind: ProviderTemplateKind,
     asset_delete_confirmation: Option<AssetDeleteConfirmation>,
     track_delete_confirmation: Option<TrackDeleteConfirmation>,
@@ -264,6 +270,7 @@ pub struct NlaEguiApp {
     generation_events_tx: mpsc::Sender<GenerationEvent>,
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
     generation_active: Option<Uuid>,
+    generation_cancel_tokens: HashMap<Uuid, Arc<AtomicBool>>,
     export_modal: ExportModalState,
     export_events_tx: mpsc::Sender<VideoExportEvent>,
     export_events_rx: mpsc::Receiver<VideoExportEvent>,
@@ -324,6 +331,7 @@ struct PreviewPerfSummary {
     composite_ms_avg: f64,
     encode_ms_avg: f64,
     video_decode_ms_avg: f64,
+    video_decode_queue_ms_avg: f64,
     video_decode_seek_ms_avg: f64,
     still_load_ms_avg: f64,
     layers_avg: f64,
@@ -351,6 +359,33 @@ struct ApiKeyModalState {
     saved: bool,
     masked_existing: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AssetLabState {
+    asset_id: Option<Uuid>,
+    selected_version: Option<String>,
+    pending_delete_version: Option<String>,
+}
+
+struct AssetLabPreviewTexture {
+    asset_id: Uuid,
+    version: Option<String>,
+    path: PathBuf,
+    texture: TextureHandle,
+    size: Vec2,
+}
+
+#[derive(Clone, Debug)]
+enum AssetLabAction {
+    SelectVersion(String),
+    SetActive(String),
+    DuplicateVersion(String),
+    ExtractVersion(String),
+    RequestDelete(String),
+    ConfirmDelete(String),
+    CancelDelete,
+    OpenLocation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -397,6 +432,7 @@ struct TimelineThumbTile {
 struct AssetInputCandidate {
     asset_id: Uuid,
     source_clip_id: Option<Uuid>,
+    frame_reference: Option<SourceFrameReference>,
     label: String,
     detail: String,
     contextual: bool,
@@ -584,6 +620,7 @@ struct GenerationOutput {
 enum GenerationFailure {
     Offline(String),
     Error(String),
+    Canceled,
 }
 
 #[derive(Clone, Debug)]
@@ -610,6 +647,20 @@ struct BridgeKeyframeConfirmation {
     sample_names: Vec<String>,
 }
 
+#[derive(Clone)]
+struct BridgeReferenceClip {
+    clip: Clip,
+    anchor_time: f64,
+    frame_reference: Option<SourceFrameReference>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SingleI2VReference {
+    Image,
+    VideoFirstFrame,
+    VideoLastFrame,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProviderBuilderTab {
     Output,
@@ -629,6 +680,9 @@ struct ProviderBuilderState {
     workflow_error: Option<String>,
     workflow_search: String,
     selected_node_id: Option<String>,
+    comfy_schema: crate::core::comfyui_workflow::ComfyObjectInfoMap,
+    schema_base_url: Option<String>,
+    schema_status: Option<String>,
     output_key: String,
     output_tag: String,
     output_node: Option<ProviderOutputNodeDraft>,
@@ -662,6 +716,9 @@ struct ProviderBuilderInput {
     enum_options: String,
     tag: String,
     multiline: bool,
+    ui_min: Option<f64>,
+    ui_max: Option<f64>,
+    ui_step: Option<f64>,
     selector: ProviderNodeSelectorDraft,
 }
 
@@ -752,6 +809,8 @@ impl NlaEguiApp {
             provider_builder_open: false,
             provider_builder: ProviderBuilderState::default(),
             api_key_modal: ApiKeyModalState::default(),
+            asset_lab: AssetLabState::default(),
+            asset_lab_preview_texture: None,
             provider_template_kind: ProviderTemplateKind::default(),
             asset_delete_confirmation: None,
             track_delete_confirmation: None,
@@ -760,6 +819,7 @@ impl NlaEguiApp {
             generation_events_tx,
             generation_events_rx,
             generation_active: None,
+            generation_cancel_tokens: HashMap::new(),
             export_modal,
             export_events_tx,
             export_events_rx,
@@ -1159,6 +1219,33 @@ impl NlaEguiApp {
         }
     }
 
+    fn open_asset_lab(&mut self, asset_id: Uuid) {
+        let selected_version = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(preferred_asset_lab_version)
+            .or_else(|| {
+                self.editor
+                    .project
+                    .find_asset(asset_id)
+                    .and_then(|asset| asset.active_version().map(str::to_string))
+            });
+        self.asset_lab = AssetLabState {
+            asset_id: Some(asset_id),
+            selected_version,
+            pending_delete_version: None,
+        };
+        self.asset_lab_preview_texture = None;
+        self.editor.overlays.asset_lab = true;
+    }
+
+    fn close_asset_lab(&mut self) {
+        self.editor.overlays.asset_lab = false;
+        self.asset_lab = AssetLabState::default();
+        self.asset_lab_preview_texture = None;
+    }
+
     fn keyboard_shortcuts_suppressed(&self, ctx: &Context) -> bool {
         ctx.text_edit_focused()
             || self.editor.show_startup()
@@ -1168,6 +1255,7 @@ impl NlaEguiApp {
             || self.editor.overlays.export_video
             || self.editor.overlays.providers
             || self.editor.overlays.api_keys
+            || self.editor.overlays.asset_lab
             || self.editor.overlays.queue
             || self.asset_delete_confirmation.is_some()
             || self.track_delete_confirmation.is_some()
@@ -2215,9 +2303,13 @@ impl NlaEguiApp {
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Bottom);
     }
 
+    fn project_panel_id(&self, name: &'static str) -> egui::Id {
+        egui::Id::new((name, self.editor.project.project_path.clone()))
+    }
+
     fn left_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.left_collapsed {
-            let response = egui::Panel::left("assets_collapsed")
+            let response = egui::Panel::left(self.project_panel_id("assets_collapsed"))
                 .exact_size(kit::COLLAPSED_RAIL_W)
                 .frame(kit::collapsed_dock_frame())
                 .show_inside(root, |ui| {
@@ -2231,7 +2323,7 @@ impl NlaEguiApp {
             return;
         }
 
-        let response = egui::Panel::left("assets")
+        let response = egui::Panel::left(self.project_panel_id("assets"))
             .resizable(true)
             .default_size(self.editor.layout.left_width)
             .size_range(180.0..=420.0)
@@ -2241,6 +2333,7 @@ impl NlaEguiApp {
             });
         self.asset_drop_target_rect = Some(response.response.rect);
         self.asset_drop_target_hovered = response.response.hovered();
+        self.editor.layout.left_width = response.response.rect.width().clamp(180.0, 420.0);
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Right);
     }
 
@@ -2309,8 +2402,18 @@ impl NlaEguiApp {
         let mut clear_selection = false;
         kit::scroll_body(ui, |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-            let assets: Vec<Asset> = self.editor.project.assets.clone();
-            for asset in assets {
+            let mut assets: Vec<(usize, Asset)> = self
+                .editor
+                .project
+                .assets
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect();
+            assets.sort_by(|(a_index, a), (b_index, b)| {
+                asset_natural_cmp(a, b).then_with(|| a_index.cmp(b_index))
+            });
+            for (_, asset) in assets {
                 let selected = self.editor.selection.asset_ids.contains(&asset.id);
                 let thumbnail = self.asset_thumbnail(ui.ctx(), &asset);
                 let response = asset_row(ui, &asset, selected, thumbnail);
@@ -2322,12 +2425,34 @@ impl NlaEguiApp {
                         self.editor.selection.select_asset(asset.id);
                     }
                 }
+                if response.double_clicked() {
+                    self.open_asset_lab(asset.id);
+                }
                 response.context_menu(|ui| {
                     if automation_button(ui.button("Add to timeline"), "Add to timeline").clicked()
                     {
                         if let Err(err) = self.editor.add_asset_to_timeline(asset.id, None) {
                             self.editor.status = err;
                         }
+                        ui.close();
+                    }
+                    if automation_button(ui.button("Duplicate"), "Duplicate").clicked() {
+                        let asset_ids = if selected && self.editor.selection.asset_ids.len() > 1 {
+                            self.editor.selection.asset_ids.clone()
+                        } else {
+                            vec![asset.id]
+                        };
+                        self.duplicate_assets(&asset_ids);
+                        ui.close();
+                    }
+                    if asset.is_generative()
+                        && automation_button(
+                            ui.button("Extract active generation"),
+                            "Extract active generation",
+                        )
+                        .clicked()
+                    {
+                        self.extract_active_generation(asset.id);
                         ui.close();
                     }
                     if automation_button(ui.button("Delete"), "Delete").clicked() {
@@ -2354,6 +2479,38 @@ impl NlaEguiApp {
         });
         if clear_selection {
             self.editor.selection.clear();
+        }
+    }
+
+    fn duplicate_assets(&mut self, asset_ids: &[Uuid]) {
+        match self.editor.duplicate_assets(asset_ids) {
+            Ok(new_asset_ids) => self.warm_asset_thumbnails(&new_asset_ids),
+            Err(err) => self.editor.status = err,
+        }
+    }
+
+    fn extract_active_generation(&mut self, asset_id: Uuid) {
+        match self.editor.extract_active_generation_as_asset(asset_id) {
+            Ok(new_asset_id) => self.warm_asset_thumbnails(&[new_asset_id]),
+            Err(err) => self.editor.status = err,
+        }
+    }
+
+    fn warm_asset_thumbnails(&mut self, asset_ids: &[Uuid]) {
+        let Some(runtime) = self.generation_runtime.as_ref() else {
+            return;
+        };
+        let thumbnailer = Arc::clone(&self.editor.thumbnailer);
+        let assets: Vec<Asset> = asset_ids
+            .iter()
+            .filter_map(|asset_id| self.editor.project.find_asset(*asset_id).cloned())
+            .filter(|asset| asset.is_visual())
+            .collect();
+        for asset in assets {
+            let thumbnailer = Arc::clone(&thumbnailer);
+            runtime.spawn(async move {
+                let _ = thumbnailer.generate(&asset, true).await;
+            });
         }
     }
 
@@ -2592,7 +2749,7 @@ impl NlaEguiApp {
 
     fn right_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.right_collapsed {
-            let response = egui::Panel::right("attributes_collapsed")
+            let response = egui::Panel::right(self.project_panel_id("attributes_collapsed"))
                 .exact_size(kit::COLLAPSED_RAIL_W)
                 .frame(kit::collapsed_dock_frame())
                 .show_inside(root, |ui| {
@@ -2604,7 +2761,7 @@ impl NlaEguiApp {
             return;
         }
 
-        let response = egui::Panel::right("attributes")
+        let response = egui::Panel::right(self.project_panel_id("attributes"))
             .resizable(true)
             .default_size(self.editor.layout.right_width)
             .size_range(200.0..=440.0)
@@ -2612,6 +2769,7 @@ impl NlaEguiApp {
             .show_inside(root, |ui| {
                 kit::fixed_panel_body(ui, |ui| self.attributes_panel(ui));
             });
+        self.editor.layout.right_width = response.response.rect.width().clamp(200.0, 440.0);
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Left);
     }
 
@@ -2709,21 +2867,21 @@ impl NlaEguiApp {
             }
         });
 
-        let image_clip_ids: Vec<Uuid> = clips
+        let visual_reference_clip_ids: Vec<Uuid> = clips
             .iter()
             .filter_map(|clip| {
                 self.editor
                     .project
                     .find_asset(clip.asset_id)
-                    .filter(|asset| asset.is_image())
+                    .filter(|asset| asset.is_image() || asset.is_video())
                     .map(|_| clip.id)
             })
             .collect();
-        if image_clip_ids.len() >= 2 {
+        if visual_reference_clip_ids.len() >= 2 {
             ui.add_space(kit::FORM_ROW_GAP);
             inspector_card(ui, "Generation", |ui| {
                 ui.label(kit::caption(
-                    "Create a new generative video asset using the first and last selected image clips as pinned references.",
+                    "Create a new generative video asset using selected image keyframes or video boundaries as pinned references.",
                 ));
                 ui.add_space(kit::ACTION_GAP);
                 if kit::primary_button(ui, "Generate Between Keyframes", ui.available_width())
@@ -2800,61 +2958,103 @@ impl NlaEguiApp {
     }
 
     fn request_bridge_video_from_selected_clips(&mut self, clips: &[Clip]) {
-        let image_clips = self.bridge_image_clips(clips);
-        let (Some(first), Some(last)) = (image_clips.first(), image_clips.last()) else {
-            self.editor.status = "Select at least two image clips first.".to_string();
+        let reference_clips = self.bridge_reference_clips(clips);
+        let (Some(first), Some(last)) = (reference_clips.first(), reference_clips.last()) else {
+            self.editor.status =
+                "Select at least two image or video reference clips first.".to_string();
             return;
         };
-        if first.id == last.id {
-            self.editor.status = "Select two different image clips.".to_string();
+        if first.clip.id == last.clip.id {
+            self.editor.status = "Select two different reference clips.".to_string();
             return;
         }
 
         let convert_clip_ids: Vec<Uuid> = [first, last]
             .iter()
-            .filter(|clip| {
+            .filter(|reference| {
                 self.editor
                     .project
-                    .find_asset(clip.asset_id)
-                    .is_some_and(|asset| !clip_is_keyframe_image(clip, Some(asset)))
+                    .find_asset(reference.clip.asset_id)
+                    .is_some_and(|asset| {
+                        asset.is_image() && !clip_is_keyframe_image(&reference.clip, Some(asset))
+                    })
             })
-            .map(|clip| clip.id)
+            .map(|reference| reference.clip.id)
             .collect();
         if convert_clip_ids.is_empty() {
-            self.create_bridge_video_from_selected_clips(&image_clips);
+            self.create_bridge_video_from_selected_clips(clips);
             return;
         }
 
         let sample_names = [first, last]
             .iter()
-            .filter_map(|clip| self.editor.project.find_asset(clip.asset_id))
-            .map(|asset| asset.name.clone())
+            .filter_map(|reference| {
+                self.editor
+                    .project
+                    .find_asset(reference.clip.asset_id)
+                    .map(|asset| {
+                        if let Some(frame) = reference.frame_reference {
+                            format!("{} ({})", asset.name, frame.label())
+                        } else {
+                            asset.name.clone()
+                        }
+                    })
+            })
             .collect();
         self.bridge_keyframe_confirmation = Some(BridgeKeyframeConfirmation {
-            clip_ids: image_clips.iter().map(|clip| clip.id).collect(),
+            clip_ids: reference_clips
+                .iter()
+                .map(|reference| reference.clip.id)
+                .collect(),
             convert_clip_ids,
             sample_names,
         });
     }
 
-    fn bridge_image_clips(&self, clips: &[Clip]) -> Vec<Clip> {
-        let mut image_clips: Vec<Clip> = clips
+    fn bridge_reference_clips(&self, clips: &[Clip]) -> Vec<BridgeReferenceClip> {
+        let mut visual_clips: Vec<Clip> = clips
             .iter()
             .filter(|clip| {
                 self.editor
                     .project
                     .find_asset(clip.asset_id)
-                    .is_some_and(|asset| asset.is_image())
+                    .is_some_and(|asset| asset.is_image() || asset.is_video())
             })
             .cloned()
             .collect();
-        image_clips.sort_by(|a, b| {
+        visual_clips.sort_by(|a, b| {
             a.start_time
                 .partial_cmp(&b.start_time)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.id.cmp(&b.id))
         });
-        image_clips
+        if visual_clips.len() < 2 {
+            return Vec::new();
+        }
+
+        let first_clip = visual_clips.first().cloned();
+        let last_clip = visual_clips.last().cloned();
+        let (Some(first_clip), Some(last_clip)) = (first_clip, last_clip) else {
+            return Vec::new();
+        };
+        let Some(first_asset) = self.editor.project.find_asset(first_clip.asset_id) else {
+            return Vec::new();
+        };
+        let Some(last_asset) = self.editor.project.find_asset(last_clip.asset_id) else {
+            return Vec::new();
+        };
+
+        let mut references = vec![
+            bridge_reference_for_clip(first_clip, first_asset, true),
+            bridge_reference_for_clip(last_clip, last_asset, false),
+        ];
+        references.sort_by(|a, b| {
+            a.anchor_time
+                .partial_cmp(&b.anchor_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.clip.id.cmp(&b.clip.id))
+        });
+        references
     }
 
     fn create_bridge_video_from_clip_ids(&mut self, clip_ids: &[Uuid]) {
@@ -2866,39 +3066,112 @@ impl NlaEguiApp {
             .filter(|clip| clip_ids.contains(&clip.id))
             .cloned()
             .collect();
-        let image_clips = self.bridge_image_clips(&clips);
-        self.create_bridge_video_from_selected_clips(&image_clips);
+        self.create_bridge_video_from_selected_clips(&clips);
+    }
+
+    fn create_i2v_from_single_clip(&mut self, clip_id: Uuid, reference: SingleI2VReference) {
+        let Some(source_clip) = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+        else {
+            self.editor.status = "Selected clip was not found.".to_string();
+            return;
+        };
+        let Some(source_asset) = self
+            .editor
+            .project
+            .find_asset(source_clip.asset_id)
+            .cloned()
+        else {
+            self.editor.status = "Selected clip source asset was not found.".to_string();
+            return;
+        };
+
+        let (start_time, frame_reference, status_reference) = match reference {
+            SingleI2VReference::Image if source_asset.is_image() => {
+                (source_clip.start_time, None, "image")
+            }
+            SingleI2VReference::VideoFirstFrame if source_asset.is_video() => (
+                source_clip.start_time,
+                Some(SourceFrameReference::First),
+                "video first frame",
+            ),
+            SingleI2VReference::VideoLastFrame if source_asset.is_video() => (
+                source_clip.end_time(),
+                Some(SourceFrameReference::Last),
+                "video last frame",
+            ),
+            _ => {
+                self.editor.status =
+                    "Selected clip is not compatible with that I2V action.".to_string();
+                return;
+            }
+        };
+
+        let fps = default_generative_video_fps();
+        let frame_count = default_generative_video_frames();
+        let duration = frame_count as f64 / fps.max(1.0);
+        let target_track_id = self.bridge_target_track_id(source_clip.track_id);
+        let asset_id = match self.editor.create_generative_video(fps, frame_count) {
+            Ok(asset_id) => asset_id,
+            Err(err) => {
+                self.editor.status = err;
+                return;
+            }
+        };
+
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.reference_slots.insert(
+                    "start_image".to_string(),
+                    InputValue::AssetRef {
+                        asset_id: source_clip.asset_id,
+                        source_clip_id: Some(source_clip.id),
+                        pinned: true,
+                        frame_reference,
+                    },
+                );
+            });
+        let config_save_error = self.editor.project.save_generative_config(asset_id).err();
+
+        let mut clip = Clip::new(asset_id, target_track_id, start_time, duration);
+        clip.label = Some("I2V".to_string());
+        let new_clip_id = self.editor.project.add_clip(clip);
+        self.editor.selection.select_clip(new_clip_id);
+        self.editor.preview_dirty = true;
+        self.editor.status = if let Some(err) = config_save_error {
+            format!("I2V clip created from {status_reference}, but config save failed: {err}")
+        } else {
+            format!("Created I2V clip from {status_reference}.")
+        };
     }
 
     fn create_bridge_video_from_selected_clips(&mut self, clips: &[Clip]) {
-        let image_clips: Vec<Clip> = clips
-            .iter()
-            .filter(|clip| {
-                self.editor
-                    .project
-                    .find_asset(clip.asset_id)
-                    .is_some_and(|asset| asset.is_image())
-            })
-            .cloned()
-            .collect();
-        let (Some(first), Some(last)) = (image_clips.first(), image_clips.last()) else {
-            self.editor.status = "Select at least two image clips first.".to_string();
+        let reference_clips = self.bridge_reference_clips(clips);
+        let (Some(first), Some(last)) = (reference_clips.first(), reference_clips.last()) else {
+            self.editor.status =
+                "Select at least two image or video reference clips first.".to_string();
             return;
         };
-        if first.id == last.id {
-            self.editor.status = "Select two different image clips.".to_string();
+        if first.clip.id == last.clip.id {
+            self.editor.status = "Select two different reference clips.".to_string();
             return;
         }
 
         let fallback_duration =
             default_generative_video_frames() as f64 / default_generative_video_fps();
-        let duration = (last.start_time - first.start_time)
+        let duration = (last.anchor_time - first.anchor_time)
             .abs()
             .max(fallback_duration);
         let fps = default_generative_video_fps();
         let frame_count = frames_from_seconds(duration, fps).round().max(1.0) as u32;
-        let start_time = first.start_time.min(last.start_time);
-        let target_track_id = self.bridge_target_track_id(first.track_id);
+        let start_time = first.anchor_time.min(last.anchor_time);
+        let target_track_id = self.bridge_target_track_id(first.clip.track_id);
 
         let asset_id = match self.editor.create_generative_video(fps, frame_count) {
             Ok(asset_id) => asset_id,
@@ -2914,17 +3187,19 @@ impl NlaEguiApp {
                 config.reference_slots.insert(
                     "start_image".to_string(),
                     InputValue::AssetRef {
-                        asset_id: first.asset_id,
-                        source_clip_id: Some(first.id),
+                        asset_id: first.clip.asset_id,
+                        source_clip_id: Some(first.clip.id),
                         pinned: true,
+                        frame_reference: first.frame_reference,
                     },
                 );
                 config.reference_slots.insert(
                     "end_image".to_string(),
                     InputValue::AssetRef {
-                        asset_id: last.asset_id,
-                        source_clip_id: Some(last.id),
+                        asset_id: last.clip.asset_id,
+                        source_clip_id: Some(last.clip.id),
                         pinned: true,
+                        frame_reference: last.frame_reference,
                     },
                 );
             });
@@ -2937,7 +3212,8 @@ impl NlaEguiApp {
         let clip_id = self.editor.project.add_clip(clip);
         self.editor.selection.select_clip(clip_id);
         self.editor.preview_dirty = true;
-        self.editor.status = "Created generative video bridge from selected keyframes.".to_string();
+        self.editor.status =
+            "Created generative video bridge from selected references.".to_string();
     }
 
     fn bridge_target_track_id(&mut self, source_track_id: Uuid) -> Uuid {
@@ -3196,7 +3472,7 @@ impl NlaEguiApp {
         let mut next_batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT) as i64;
         let mut next_seed_strategy = batch.seed_strategy;
         let mut next_seed_field = batch.seed_field.clone().unwrap_or_default();
-        let mut open_versions_folder = false;
+        let mut open_asset_lab = false;
         let mut generate_clicked = false;
 
         inspector_card(ui, "Generative", |ui| {
@@ -3246,7 +3522,7 @@ impl NlaEguiApp {
                     strip.cell(|ui| {
                         let button_w = ui.available_width();
                         if kit::field_button(ui, "Manage", button_w).clicked() {
-                            open_versions_folder = true;
+                            open_asset_lab = true;
                         }
                     });
                 });
@@ -3472,18 +3748,11 @@ impl NlaEguiApp {
             }
         }
         if preview_dirty {
-            self.invalidate_asset_visual_cache(asset_id);
-            self.editor.preview_dirty = true;
+            self.invalidate_generative_asset_runtime(asset_id);
         }
 
-        if open_versions_folder {
-            if let Some(folder_path) = folder_path.as_ref() {
-                if let Err(err) = open_path_in_file_manager(folder_path) {
-                    self.editor.status = err;
-                }
-            } else {
-                self.editor.status = "Project folder is unavailable.".to_string();
-            }
+        if open_asset_lab {
+            self.open_asset_lab(asset_id);
         }
 
         if generate_clicked {
@@ -3603,8 +3872,9 @@ impl NlaEguiApp {
                             .as_ref()
                             .and_then(input_value_as_i64)
                             .unwrap_or(0);
+                        let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
                         let width = ui.available_width();
-                        if inspector_drag_i64(ui, &label, &mut value, 1.0, width) {
+                        if inspector_drag_i64(ui, &label, &mut value, step, width) {
                             updates.push((
                                 input.name.clone(),
                                 InputValue::Literal {
@@ -3704,6 +3974,7 @@ impl NlaEguiApp {
                     asset_id: candidate.asset_id,
                     source_clip_id: candidate.source_clip_id,
                     pinned: false,
+                    frame_reference: candidate.frame_reference,
                 })
                 .or(current_binding.clone()),
             Some(value) => Some(value),
@@ -3713,6 +3984,7 @@ impl NlaEguiApp {
                     asset_id: candidate.asset_id,
                     source_clip_id: candidate.source_clip_id,
                     pinned: false,
+                    frame_reference: candidate.frame_reference,
                 }),
         };
 
@@ -3732,7 +4004,7 @@ impl NlaEguiApp {
 
         kit::labeled_combo_field(ui, &input.label, combo_id, current_label, |ui| {
             if let Some(candidate) = auto_candidate.as_ref() {
-                let label = format!("Auto: {}", candidate.label);
+                let label = format!("Auto: {}  {}", candidate.label, candidate.detail);
                 if ui
                     .selectable_label(
                         matches!(next, Some(InputValue::AssetRef { pinned: false, .. })),
@@ -3744,6 +4016,7 @@ impl NlaEguiApp {
                         asset_id: candidate.asset_id,
                         source_clip_id: candidate.source_clip_id,
                         pinned: false,
+                        frame_reference: candidate.frame_reference,
                     });
                     ui.close();
                 }
@@ -3778,6 +4051,7 @@ impl NlaEguiApp {
                         asset_id: candidate.asset_id,
                         source_clip_id: candidate.source_clip_id,
                         pinned: true,
+                        frame_reference: candidate.frame_reference,
                     });
                     ui.close();
                 }
@@ -3788,6 +4062,7 @@ impl NlaEguiApp {
             asset_id,
             source_clip_id,
             pinned,
+            frame_reference,
         }) = resolved_binding.as_ref()
         {
             ui.add_space(4.0);
@@ -3811,6 +4086,7 @@ impl NlaEguiApp {
                             asset_id: *asset_id,
                             source_clip_id: *source_clip_id,
                             pinned: !*pinned,
+                            frame_reference: *frame_reference,
                         });
                     }
                 });
@@ -3833,6 +4109,7 @@ impl NlaEguiApp {
             asset_id,
             source_clip_id,
             pinned,
+            frame_reference,
         } = value
         else {
             return None;
@@ -3853,12 +4130,23 @@ impl NlaEguiApp {
                     .iter()
                     .find(|clip| clip.id == clip_id)
             })
-            .map(|clip| format!(" @ {}", timecode(clip.start_time)))
+            .map(|clip| {
+                let anchor = if *frame_reference == Some(SourceFrameReference::Last) {
+                    clip.end_time()
+                } else {
+                    clip.start_time
+                };
+                format!(" @ {}", timecode(anchor))
+            })
+            .unwrap_or_default();
+        let frame_suffix = frame_reference
+            .map(|frame| format!(" ({})", frame.label()))
             .unwrap_or_default();
         Some(format!(
-            "{prefix}: {}{}",
+            "{prefix}: {}{}{}",
             asset_display_name(asset),
-            clip_suffix
+            clip_suffix,
+            frame_suffix
         ))
     }
 
@@ -3893,12 +4181,11 @@ impl NlaEguiApp {
             let Some(asset) = self.editor.project.find_asset(clip.asset_id) else {
                 continue;
             };
-            if !compatible_asset_for_provider_input(asset, &input.input_type) {
+            let Some((time_distance, detail, frame_reference)) =
+                self.asset_input_clip_candidate(input, slot, target_time, clip, asset)
+            else {
                 continue;
-            }
-            let distance = target_time
-                .map(|target| (clip.start_time - target).abs())
-                .unwrap_or(0.0);
+            };
             let track_score = match (
                 context_track_index,
                 self.editor
@@ -3907,19 +4194,22 @@ impl NlaEguiApp {
                     .iter()
                     .position(|track| track.id == clip.track_id),
             ) {
-                (Some(context_index), Some(index)) if index > context_index => 0.0,
-                (Some(context_index), Some(index)) => {
-                    (context_index as f64 - index as f64).abs() * 0.25
+                (Some(context_index), Some(index)) if index == context_index + 1 => 0.0,
+                (Some(context_index), Some(index)) if index == context_index => 0.05,
+                (Some(context_index), Some(index)) if index > context_index => {
+                    0.1 + (index - context_index - 1) as f64 * 0.15
                 }
+                (Some(context_index), Some(index)) => (context_index - index) as f64 * 0.5,
                 _ => 0.0,
             };
             candidates.push(AssetInputCandidate {
                 asset_id: asset.id,
                 source_clip_id: Some(clip.id),
+                frame_reference,
                 label: asset_display_name(asset),
-                detail: timecode(clip.start_time),
+                detail,
                 contextual: context_clip_id.is_some(),
-                score: distance + track_score,
+                score: time_distance + track_score,
             });
         }
 
@@ -3937,6 +4227,7 @@ impl NlaEguiApp {
             candidates.push(AssetInputCandidate {
                 asset_id: asset.id,
                 source_clip_id: None,
+                frame_reference: None,
                 label: asset_display_name(asset),
                 detail: asset_kind_label(&asset.kind).to_string(),
                 contextual: false,
@@ -3957,72 +4248,183 @@ impl NlaEguiApp {
         candidates
     }
 
+    fn asset_input_clip_candidate(
+        &self,
+        input: &ProviderInputField,
+        slot: &str,
+        target_time: Option<f64>,
+        clip: &Clip,
+        asset: &Asset,
+    ) -> Option<(f64, String, Option<SourceFrameReference>)> {
+        match input.input_type {
+            ProviderInputType::Image => {
+                if asset.is_image() {
+                    let anchor = clip.start_time;
+                    let distance = target_time
+                        .map(|target| (anchor - target).abs())
+                        .unwrap_or(0.0);
+                    return Some((distance, timecode(anchor), None));
+                }
+                if asset.is_video() {
+                    let target = target_time?;
+                    let start_distance = (clip.start_time - target).abs();
+                    let end_distance = (clip.end_time() - target).abs();
+                    let prefer_last_for_start =
+                        slot.starts_with("start") && end_distance <= start_distance;
+                    let prefer_first_for_end =
+                        slot.starts_with("end") && start_distance <= end_distance;
+                    let frame = if prefer_last_for_start {
+                        SourceFrameReference::Last
+                    } else if prefer_first_for_end || start_distance <= end_distance {
+                        SourceFrameReference::First
+                    } else {
+                        SourceFrameReference::Last
+                    };
+                    let (anchor, distance) = match frame {
+                        SourceFrameReference::First => (clip.start_time, start_distance),
+                        SourceFrameReference::Last => (clip.end_time(), end_distance),
+                    };
+                    let slot_hint = if slot.starts_with("end") {
+                        "end ref"
+                    } else if slot.starts_with("start") {
+                        "start ref"
+                    } else {
+                        "image ref"
+                    };
+                    return Some((
+                        distance,
+                        format!("{} {} @ {}", slot_hint, frame.label(), timecode(anchor)),
+                        Some(frame),
+                    ));
+                }
+                None
+            }
+            ProviderInputType::Video | ProviderInputType::Audio => {
+                if !compatible_asset_for_provider_input(asset, &input.input_type) {
+                    return None;
+                }
+                let anchor = clip.start_time;
+                let distance = target_time
+                    .map(|target| (anchor - target).abs())
+                    .unwrap_or(0.0);
+                Some((distance, timecode(anchor), None))
+            }
+            _ => None,
+        }
+    }
+
     fn asset_attributes(&mut self, ui: &mut Ui, asset_id: Uuid) {
         let mut add_to_timeline = false;
-        let asset_snapshot = self
+        let mut duplicate_asset = false;
+        let mut extract_generation = false;
+        let mut open_asset_lab = false;
+        let mut rename_to: Option<String> = None;
+        let Some(asset_snapshot) = self
             .editor
             .project
             .assets
             .iter()
             .find(|asset| asset.id == asset_id)
-            .cloned();
-        let thumbnail = asset_snapshot
-            .as_ref()
-            .and_then(|asset| self.asset_thumbnail(ui.ctx(), asset));
-        if let Some(asset) = self
-            .editor
-            .project
-            .assets
-            .iter_mut()
-            .find(|asset| asset.id == asset_id)
-        {
-            let kind_label = asset_kind_label(&asset.kind).to_string();
-            let duration = asset.duration_seconds;
-            let source = asset_source_label(asset);
-            let active_version = asset.active_version().map(str::to_string);
-            inspector_card(ui, "Asset", |ui| {
-                let accent = asset_accent(asset);
-                ui.horizontal(|ui| {
-                    let (thumb_rect, _) =
-                        ui.allocate_exact_size(INSPECTOR_THUMBNAIL_SIZE, Sense::hover());
-                    paint_asset_thumbnail(ui, thumb_rect, asset, accent, thumbnail);
-                    ui.add_space(2.0);
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        ui.label(kit::caption("Type"));
-                        ui.label(kit::value(&kind_label));
-                        if let Some(duration) = duration {
-                            ui.label(kit::caption(format_duration(duration)));
-                        }
-                    });
+            .cloned()
+        else {
+            return;
+        };
+        let thumbnail = self.asset_thumbnail(ui.ctx(), &asset_snapshot);
+        let kind_label = asset_kind_label(&asset_snapshot.kind).to_string();
+        let duration = asset_snapshot.duration_seconds;
+        let source = asset_source_label(&asset_snapshot);
+        let active_version = asset_snapshot.active_version().map(str::to_string);
+        let is_generative = asset_snapshot.is_generative();
+        inspector_card(ui, "Asset", |ui| {
+            let accent = asset_accent(&asset_snapshot);
+            ui.horizontal(|ui| {
+                let (thumb_rect, _) =
+                    ui.allocate_exact_size(INSPECTOR_THUMBNAIL_SIZE, Sense::hover());
+                paint_asset_thumbnail(ui, thumb_rect, &asset_snapshot, accent, thumbnail);
+                ui.add_space(2.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.label(kit::caption("Type"));
+                    ui.label(kit::value(&kind_label));
+                    if let Some(duration) = duration {
+                        ui.label(kit::caption(format_duration(duration)));
+                    }
                 });
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::field_label(ui, "Name");
-                let name_w = ui.available_width();
-                kit::singleline_text_field(ui, &mut asset.name, name_w);
-                ui.add_space(kit::FORM_ROW_GAP);
-                if let Some(active_version) = active_version {
-                    inspector_meta_row(ui, "Version", active_version);
-                }
-                if let Some(source) = source {
-                    inspector_meta_row(ui, "Source", source);
-                }
-                ui.add_space(kit::ACTION_GAP);
-                let add_w = ui.available_width();
-                if kit::secondary_button(ui, "Add to timeline", add_w).clicked() {
-                    add_to_timeline = true;
-                }
             });
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::field_label(ui, "Name");
+            let mut name = asset_snapshot.name.clone();
+            if kit::singleline_text_field(ui, &mut name, ui.available_width()).changed() {
+                rename_to = Some(name);
+            }
+            ui.add_space(kit::FORM_ROW_GAP);
+            if let Some(active_version) = active_version {
+                inspector_meta_row(ui, "Version", active_version);
+            }
+            if let Some(source) = source {
+                inspector_meta_row(ui, "Source", source);
+            }
+            ui.add_space(kit::ACTION_GAP);
+            kit::equal_width_action_row(
+                ui,
+                2,
+                kit::SECONDARY_BUTTON_H,
+                kit::FIELD_COMPOUND_GAP,
+                |ui, index, width| match index {
+                    0 => {
+                        if kit::secondary_button(ui, "Add to timeline", width).clicked() {
+                            add_to_timeline = true;
+                        }
+                    }
+                    _ => {
+                        if kit::secondary_button(ui, "Duplicate", width).clicked() {
+                            duplicate_asset = true;
+                        }
+                    }
+                },
+            );
+            if is_generative {
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::equal_width_action_row(
+                    ui,
+                    2,
+                    kit::SECONDARY_BUTTON_H,
+                    kit::FIELD_COMPOUND_GAP,
+                    |ui, index, width| match index {
+                        0 => {
+                            if kit::secondary_button(ui, "Extract", width).clicked() {
+                                extract_generation = true;
+                            }
+                        }
+                        _ => {
+                            if kit::secondary_button(ui, "Asset Lab", width).clicked() {
+                                open_asset_lab = true;
+                            }
+                        }
+                    },
+                );
+            }
+        });
+        if let Some(name) = rename_to {
+            if let Err(err) = self.editor.rename_asset(asset_id, name) {
+                self.editor.status = err;
+            }
         }
         if add_to_timeline {
             if let Err(err) = self.editor.add_asset_to_timeline(asset_id, None) {
                 self.editor.status = err;
             }
         }
-        if asset_snapshot
-            .as_ref()
-            .is_some_and(|asset| asset.is_generative())
-        {
+        if duplicate_asset {
+            self.duplicate_assets(&[asset_id]);
+        }
+        if extract_generation {
+            self.extract_active_generation(asset_id);
+        }
+        if open_asset_lab {
+            self.open_asset_lab(asset_id);
+        }
+        if is_generative {
             ui.add_space(kit::FORM_ROW_GAP);
             self.generative_asset_attributes(ui, asset_id, None);
         }
@@ -4309,7 +4711,8 @@ impl NlaEguiApp {
                         "worker {:.1}ms  delivery {:.1}ms\n",
                         "total {:.1}ms  upload {:.1}ms\n",
                         "scan {:.1}ms  comp {:.1}ms\n",
-                        "vdec {:.1}ms  still {:.1}ms\n",
+                        "vdec {:.1}ms  wait {:.1}ms\n",
+                        "still {:.1}ms\n",
                         "  seek {:.1}  pkt {:.1}\n",
                         "  xfer {:.1}  scale {:.1}  copy {:.1}\n",
                         "cache {:.0}/{:.0}MB  entries {}\n",
@@ -4325,6 +4728,7 @@ impl NlaEguiApp {
                     stats.collect_ms,
                     stats.composite_ms,
                     stats.video_decode_ms,
+                    stats.video_decode_queue_ms,
                     stats.still_load_ms,
                     stats.video_decode_seek_ms,
                     stats.video_decode_packet_ms,
@@ -4344,7 +4748,7 @@ impl NlaEguiApp {
                 );
                 let stats_rect = Rect::from_min_size(
                     rect.right_top() + Vec2::new(-274.0, 12.0),
-                    Vec2::new(258.0, 176.0),
+                    Vec2::new(258.0, 188.0),
                 );
                 ui.painter().rect_filled(
                     stats_rect,
@@ -5119,7 +5523,7 @@ impl NlaEguiApp {
 
     fn timeline_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.timeline_collapsed {
-            let response = egui::Panel::bottom("timeline")
+            let response = egui::Panel::bottom(self.project_panel_id("timeline_collapsed"))
                 .exact_size(TIMELINE_HEADER_H + 12.0)
                 .frame(kit::timeline_frame())
                 .show_inside(root, |ui| {
@@ -5129,7 +5533,7 @@ impl NlaEguiApp {
             return;
         }
 
-        let response = egui::Panel::bottom("timeline")
+        let response = egui::Panel::bottom(self.project_panel_id("timeline"))
             .resizable(true)
             .default_size(self.editor.layout.timeline_height)
             .size_range(150.0..=420.0)
@@ -5731,42 +6135,102 @@ impl NlaEguiApp {
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then_with(|| a.id.cmp(&b.id))
             });
-            let can_space = selected_clips.len() >= 2;
-            if automation_button(
-                ui.add_enabled(can_space, egui::Button::new("Space Selected Clips")),
-                "Space Selected Clips",
-            )
-            .clicked()
-            {
-                self.space_selected_clips(&selected_clips);
-                ui.close();
-            }
-            let image_count = selected_clips
+            let visual_count = selected_clips
                 .iter()
                 .filter(|clip| {
                     self.editor
                         .project
                         .find_asset(clip.asset_id)
-                        .is_some_and(|asset| asset.is_image())
+                        .is_some_and(|asset| asset.is_image() || asset.is_video())
                 })
                 .count();
-            if automation_button(
-                ui.add_enabled(
-                    image_count >= 2,
-                    egui::Button::new("Generate Between Keyframes"),
-                ),
-                "Generate Between Keyframes",
-            )
-            .clicked()
+            if selected_clips.len() >= 2 {
+                ui.separator();
+                if automation_button(ui.button("Space Selected Clips"), "Space Selected Clips")
+                    .clicked()
+                {
+                    self.space_selected_clips(&selected_clips);
+                    ui.close();
+                }
+            }
+            if let Some(single_clip) = selected_clips
+                .first()
+                .filter(|_| selected_clips.len() == 1)
+                .cloned()
             {
-                let mut sorted = selected_clips.clone();
-                sorted.sort_by(|a, b| {
-                    a.start_time
-                        .partial_cmp(&b.start_time)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                self.request_bridge_video_from_selected_clips(&sorted);
-                ui.close();
+                if let Some(asset) = self
+                    .editor
+                    .project
+                    .find_asset(single_clip.asset_id)
+                    .cloned()
+                {
+                    if asset.is_generative()
+                        && automation_button(ui.button("Open Asset Lab"), "Open Asset Lab")
+                            .clicked()
+                    {
+                        self.open_asset_lab(asset.id);
+                        ui.close();
+                    }
+                    if asset.is_image() || asset.is_video() {
+                        ui.separator();
+                        ui.label(kit::caption("Generate"));
+                    }
+                    if asset.is_image()
+                        && automation_button(
+                            ui.button("Create I2V from Image"),
+                            "Create I2V from Image",
+                        )
+                        .clicked()
+                    {
+                        self.create_i2v_from_single_clip(single_clip.id, SingleI2VReference::Image);
+                        ui.close();
+                    }
+                    if asset.is_video() {
+                        if automation_button(
+                            ui.button("Create I2V from First Frame"),
+                            "Create I2V from First Frame",
+                        )
+                        .clicked()
+                        {
+                            self.create_i2v_from_single_clip(
+                                single_clip.id,
+                                SingleI2VReference::VideoFirstFrame,
+                            );
+                            ui.close();
+                        }
+                        if automation_button(
+                            ui.button("Extend I2V from Last Frame"),
+                            "Extend I2V from Last Frame",
+                        )
+                        .clicked()
+                        {
+                            self.create_i2v_from_single_clip(
+                                single_clip.id,
+                                SingleI2VReference::VideoLastFrame,
+                            );
+                            ui.close();
+                        }
+                    }
+                }
+            }
+            if visual_count >= 2 {
+                ui.separator();
+                ui.label(kit::caption("Generate"));
+                if automation_button(
+                    ui.button("Generate Between Keyframes"),
+                    "Generate Between Keyframes",
+                )
+                .clicked()
+                {
+                    let mut sorted = selected_clips.clone();
+                    sorted.sort_by(|a, b| {
+                        a.start_time
+                            .partial_cmp(&b.start_time)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    self.request_bridge_video_from_selected_clips(&sorted);
+                    ui.close();
+                }
             }
             if !selected_clips.is_empty() {
                 ui.separator();
@@ -6761,6 +7225,21 @@ impl NlaEguiApp {
             }
         }
 
+        if response.double_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
+                    TimelineHit::ClipLeftEdge(id)
+                    | TimelineHit::ClipRightEdge(id)
+                    | TimelineHit::ClipBody(id) => {
+                        if let Some(clip) = clips.iter().find(|clip| clip.id == id) {
+                            self.open_asset_lab(clip.asset_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let toggle_select = multi_select_modifier(ui);
@@ -7081,6 +7560,9 @@ impl NlaEguiApp {
         if self.editor.overlays.api_keys {
             self.api_keys_modal(ctx);
         }
+        if self.editor.overlays.asset_lab {
+            self.asset_lab_modal(ctx);
+        }
         if self.asset_delete_confirmation.is_some() {
             self.asset_delete_confirmation_modal(ctx);
         }
@@ -7096,6 +7578,571 @@ impl NlaEguiApp {
         if self.provider_builder_open {
             self.provider_builder_modal(ctx);
         }
+    }
+
+    fn asset_lab_modal(&mut self, ctx: &Context) {
+        let Some(asset_id) = self.asset_lab.asset_id else {
+            self.close_asset_lab();
+            return;
+        };
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.close_asset_lab();
+            return;
+        };
+
+        let config_snapshot = self.editor.project.generative_config(asset_id).cloned();
+        if asset.is_generative() {
+            let selected_is_valid = self
+                .asset_lab
+                .selected_version
+                .as_deref()
+                .is_some_and(|version| asset_lab_version_exists(config_snapshot.as_ref(), version));
+            if !selected_is_valid {
+                self.asset_lab.selected_version = config_snapshot
+                    .as_ref()
+                    .and_then(preferred_asset_lab_version)
+                    .or_else(|| asset.active_version().map(str::to_string));
+            }
+        }
+
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut action: Option<AssetLabAction> = None;
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "asset_lab", true);
+        let size = modal_size(ctx, ASSET_LAB_MODAL_SIZE, [660.0, 460.0]);
+        let subtitle = format!("{}  |  {}", asset.name, asset_kind_label(&asset.kind));
+
+        egui::Window::new("Asset Lab")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked =
+                    kit::modal_header_with_close(ui, "Asset Lab", Some(&subtitle), true);
+                kit::modal_body(ui, |ui| {
+                    self.asset_lab_modal_contents(
+                        ui,
+                        &asset,
+                        config_snapshot.as_ref(),
+                        &mut action,
+                    );
+                });
+            });
+
+        if let Some(action) = action {
+            self.handle_asset_lab_action(asset_id, action);
+        } else if close_clicked || outside_clicked || !open {
+            self.close_asset_lab();
+        }
+    }
+
+    fn asset_lab_modal_contents(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        if !asset.is_generative() {
+            self.asset_lab_basic_asset_contents(ui, asset);
+            return;
+        }
+
+        let versions = config.map(sorted_generation_records).unwrap_or_default();
+        let selected_version = self.asset_lab.selected_version.clone();
+        let active_version = asset.active_version().map(str::to_string);
+        let pending_delete = self.asset_lab.pending_delete_version.clone();
+
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::exact(285.0))
+            .size(Size::remainder().at_least(320.0))
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    kit::card_frame().show(ui, |ui| {
+                        kit::field_label(ui, "Versions");
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        if versions.is_empty() {
+                            ui.label(kit::caption("No generated versions yet."));
+                        } else {
+                            let list_height = (ui.available_height() - 4.0).max(120.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt(("asset_lab_versions", asset.id))
+                                .max_height(list_height)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                                    for record in versions.iter() {
+                                        let selected = selected_version.as_deref()
+                                            == Some(record.version.as_str());
+                                        let active = active_version.as_deref()
+                                            == Some(record.version.as_str());
+                                        let response =
+                                            asset_lab_version_row(ui, record, selected, active);
+                                        if response.clicked() {
+                                            *action = Some(AssetLabAction::SelectVersion(
+                                                record.version.clone(),
+                                            ));
+                                        }
+                                    }
+                                });
+                        }
+                    });
+                });
+                strip.cell(|ui| {
+                    kit::card_frame().show(ui, |ui| {
+                        kit::field_label(ui, "Preview");
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        let preview = self.asset_lab_preview_texture(
+                            ui.ctx(),
+                            asset,
+                            selected_version.as_deref(),
+                        );
+                        asset_lab_preview(ui, asset, preview);
+
+                        ui.add_space(kit::ACTION_GAP);
+                        kit::field_label(ui, "Version Details");
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        if let Some(version) = selected_version.as_deref() {
+                            asset_lab_meta_row(ui, "Version", version);
+                            if let Some(record) = config.and_then(|config| {
+                                config
+                                    .versions
+                                    .iter()
+                                    .find(|record| record.version == version)
+                            }) {
+                                asset_lab_meta_row(
+                                    ui,
+                                    "Created",
+                                    record
+                                        .timestamp
+                                        .with_timezone(&chrono::Local)
+                                        .format("%Y-%m-%d %H:%M:%S")
+                                        .to_string(),
+                                );
+                                asset_lab_meta_row(
+                                    ui,
+                                    "Provider",
+                                    asset_lab_provider_name(
+                                        &self.editor.provider_entries,
+                                        record.provider_id,
+                                    ),
+                                );
+                                asset_lab_meta_row(
+                                    ui,
+                                    "Inputs",
+                                    format!("{} captured", record.inputs_snapshot.len()),
+                                );
+                            }
+                            if let Some(path) =
+                                self.editor.project.project_path.as_ref().and_then(|root| {
+                                    generative_output_file_for_version(root, asset, Some(version))
+                                })
+                            {
+                                asset_lab_meta_row(ui, "File", path_label(&path));
+                            }
+                        } else {
+                            ui.label(kit::caption("Select a generated version."));
+                        }
+
+                        ui.add_space(kit::ACTION_GAP);
+                        self.asset_lab_action_rows(
+                            ui,
+                            asset,
+                            selected_version.as_deref(),
+                            active_version.as_deref(),
+                            pending_delete.as_deref(),
+                            action,
+                        );
+                    });
+                });
+            });
+    }
+
+    fn asset_lab_basic_asset_contents(&mut self, ui: &mut Ui, asset: &Asset) {
+        kit::card_frame().show(ui, |ui| {
+            kit::field_label(ui, "Asset");
+            ui.add_space(kit::FORM_ROW_GAP);
+            let preview = self.asset_thumbnail(ui.ctx(), asset);
+            asset_lab_preview(ui, asset, preview);
+            ui.add_space(kit::ACTION_GAP);
+            asset_lab_meta_row(ui, "Type", asset_kind_label(&asset.kind));
+            if let Some(source) = asset_source_label(asset) {
+                asset_lab_meta_row(ui, "Source", source);
+            }
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.label(kit::caption(
+                "Full media editing will land here; version tools are available for generative assets first.",
+            ));
+        });
+    }
+
+    fn asset_lab_action_rows(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        selected_version: Option<&str>,
+        active_version: Option<&str>,
+        pending_delete: Option<&str>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let Some(version) = selected_version else {
+            return;
+        };
+
+        if let Some(pending_version) = pending_delete {
+            ui.label(
+                RichText::new(format!(
+                    "Delete {pending_version}? This removes its output file."
+                ))
+                .color(kit::DANGER)
+                .strong(),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::equal_width_action_row(
+                ui,
+                2,
+                kit::SECONDARY_BUTTON_H,
+                kit::FIELD_COMPOUND_GAP,
+                |ui, index, width| match index {
+                    0 => {
+                        if kit::secondary_button(ui, "Cancel", width).clicked() {
+                            *action = Some(AssetLabAction::CancelDelete);
+                        }
+                    }
+                    _ => {
+                        if kit::danger_button(ui, "Delete Version", width).clicked() {
+                            *action =
+                                Some(AssetLabAction::ConfirmDelete(pending_version.to_string()));
+                        }
+                    }
+                },
+            );
+            return;
+        }
+
+        let can_set_active = active_version != Some(version);
+        kit::equal_width_action_row(
+            ui,
+            2,
+            kit::SECONDARY_BUTTON_H,
+            kit::FIELD_COMPOUND_GAP,
+            |ui, index, width| match index {
+                0 => {
+                    ui.add_enabled_ui(can_set_active, |ui| {
+                        if kit::secondary_button(ui, "Set Active", width).clicked() {
+                            *action = Some(AssetLabAction::SetActive(version.to_string()));
+                        }
+                    });
+                }
+                _ => {
+                    if kit::secondary_button(ui, "Duplicate Version", width).clicked() {
+                        *action = Some(AssetLabAction::DuplicateVersion(version.to_string()));
+                    }
+                }
+            },
+        );
+        ui.add_space(kit::FORM_ROW_GAP);
+        kit::equal_width_action_row(
+            ui,
+            2,
+            kit::SECONDARY_BUTTON_H,
+            kit::FIELD_COMPOUND_GAP,
+            |ui, index, width| match index {
+                0 => {
+                    if kit::secondary_button(ui, "Extract Version", width).clicked() {
+                        *action = Some(AssetLabAction::ExtractVersion(version.to_string()));
+                    }
+                }
+                _ => {
+                    if kit::secondary_button(ui, "Open Location", width).clicked() {
+                        *action = Some(AssetLabAction::OpenLocation);
+                    }
+                }
+            },
+        );
+        ui.add_space(kit::FORM_ROW_GAP);
+        if kit::danger_button(ui, "Delete Version", ui.available_width()).clicked() {
+            *action = Some(AssetLabAction::RequestDelete(version.to_string()));
+        }
+
+        if active_version != Some(version) {
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.label(kit::caption(
+                "Timeline and preview use the active version. Set this version active to route it into existing clips.",
+            ));
+        }
+        if !asset.is_visual() {
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.label(kit::caption(
+                "Non-visual assets do not show preview thumbnails yet.",
+            ));
+        }
+    }
+
+    fn handle_asset_lab_action(&mut self, asset_id: Uuid, action: AssetLabAction) {
+        match action {
+            AssetLabAction::SelectVersion(version) => {
+                self.asset_lab.selected_version = Some(version);
+                self.asset_lab.pending_delete_version = None;
+            }
+            AssetLabAction::SetActive(version) => {
+                self.set_generative_active_version(asset_id, &version);
+                self.asset_lab.selected_version = Some(version);
+                self.asset_lab.pending_delete_version = None;
+            }
+            AssetLabAction::DuplicateVersion(version) => {
+                self.duplicate_generative_version(asset_id, &version);
+                self.asset_lab.pending_delete_version = None;
+            }
+            AssetLabAction::ExtractVersion(version) => {
+                match self
+                    .editor
+                    .extract_generation_version_as_asset(asset_id, Some(&version))
+                {
+                    Ok(new_asset_id) => self.warm_asset_thumbnails(&[new_asset_id]),
+                    Err(err) => self.editor.status = err,
+                }
+            }
+            AssetLabAction::RequestDelete(version) => {
+                self.asset_lab.pending_delete_version = Some(version);
+            }
+            AssetLabAction::ConfirmDelete(version) => {
+                self.delete_generative_version(asset_id, &version);
+                self.asset_lab.pending_delete_version = None;
+            }
+            AssetLabAction::CancelDelete => {
+                self.asset_lab.pending_delete_version = None;
+            }
+            AssetLabAction::OpenLocation => {
+                let result = self
+                    .editor
+                    .project
+                    .project_path
+                    .as_ref()
+                    .and_then(|root| {
+                        self.editor
+                            .project
+                            .find_asset(asset_id)
+                            .and_then(generative_folder_for_asset)
+                            .map(|folder| root.join(folder))
+                    })
+                    .ok_or_else(|| "Project folder is unavailable.".to_string())
+                    .and_then(|path| open_path_in_file_manager(&path));
+                if let Err(err) = result {
+                    self.editor.status = err;
+                }
+            }
+        }
+    }
+
+    fn set_generative_active_version(&mut self, asset_id: Uuid, version: &str) {
+        let config_snapshot = self.editor.project.generative_config(asset_id).cloned();
+        let Some(record) = config_snapshot
+            .as_ref()
+            .and_then(|config| {
+                config
+                    .versions
+                    .iter()
+                    .find(|record| record.version == version)
+            })
+            .cloned()
+        else {
+            self.editor.status = format!("Version {version} was not found.");
+            return;
+        };
+
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.active_version = Some(version.to_string());
+                config.provider_id = Some(record.provider_id);
+                config.inputs = record.inputs_snapshot;
+            });
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Failed to save active version: {err}");
+            return;
+        }
+        self.invalidate_generative_asset_runtime(asset_id);
+        self.editor.status = format!("Set {version} active.");
+    }
+
+    fn duplicate_generative_version(&mut self, asset_id: Uuid, version: &str) {
+        let Some(project_root) = self.editor.project.project_path.clone() else {
+            self.editor.status = "Project folder is unavailable.".to_string();
+            return;
+        };
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.editor.status = "Asset not found.".to_string();
+            return;
+        };
+        let Some(folder) = generative_folder_for_asset(&asset).cloned() else {
+            self.editor.status = "Asset has no generation folder.".to_string();
+            return;
+        };
+        let Some(config_snapshot) = self.editor.project.generative_config(asset_id).cloned() else {
+            self.editor.status = "Generation config was not found.".to_string();
+            return;
+        };
+        let Some(source_record) = config_snapshot
+            .versions
+            .iter()
+            .find(|record| record.version == version)
+            .cloned()
+        else {
+            self.editor.status = format!("Version {version} was not found.");
+            return;
+        };
+        let new_version = next_version_label(&config_snapshot);
+        let folder_path = project_root.join(&folder);
+        if let Err(err) = copy_generative_version_files(&folder_path, version, &new_version) {
+            self.editor.status = err;
+            return;
+        }
+
+        let new_record = GenerationRecord {
+            version: new_version.clone(),
+            timestamp: chrono::Utc::now(),
+            provider_id: source_record.provider_id,
+            inputs_snapshot: source_record.inputs_snapshot,
+        };
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.active_version = Some(new_version.clone());
+                config.provider_id = Some(new_record.provider_id);
+                config.inputs = new_record.inputs_snapshot.clone();
+                config.versions.push(new_record);
+            });
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Duplicated version, but config save failed: {err}");
+            return;
+        }
+        self.asset_lab.selected_version = Some(new_version.clone());
+        self.invalidate_generative_asset_runtime(asset_id);
+        self.editor.status = format!("Duplicated {version} as {new_version}.");
+    }
+
+    fn delete_generative_version(&mut self, asset_id: Uuid, version: &str) {
+        let Some(project_root) = self.editor.project.project_path.clone() else {
+            self.editor.status = "Project folder is unavailable.".to_string();
+            return;
+        };
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.editor.status = "Asset not found.".to_string();
+            return;
+        };
+        let Some(folder) = generative_folder_for_asset(&asset).cloned() else {
+            self.editor.status = "Asset has no generation folder.".to_string();
+            return;
+        };
+        if let Err(err) = delete_generative_version_files(&project_root.join(folder), version) {
+            self.editor.status = format!("Failed to delete version files: {err}");
+            return;
+        }
+
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.versions.retain(|record| record.version != version);
+                if config.active_version.as_deref() == Some(version) {
+                    config.active_version = preferred_asset_lab_version(config);
+                    if let Some(active) = config.active_version.clone() {
+                        if let Some(record) = config
+                            .versions
+                            .iter()
+                            .find(|record| record.version == active)
+                            .cloned()
+                        {
+                            config.provider_id = Some(record.provider_id);
+                            config.inputs = record.inputs_snapshot;
+                        }
+                    }
+                }
+            });
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Deleted version, but config save failed: {err}");
+            return;
+        }
+        let next_selected = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(preferred_asset_lab_version);
+        self.asset_lab.selected_version = next_selected;
+        self.invalidate_generative_asset_runtime(asset_id);
+        self.editor.status = format!("Deleted {version}.");
+    }
+
+    fn invalidate_generative_asset_runtime(&mut self, asset_id: Uuid) {
+        if let (Some(project_root), Some(asset)) = (
+            self.editor.project.project_path.as_ref(),
+            self.editor.project.find_asset(asset_id),
+        ) {
+            if let Some(folder) = generative_folder_for_asset(asset) {
+                self.editor
+                    .previewer
+                    .invalidate_folder(&project_root.join(folder));
+            }
+        }
+        self.invalidate_preview_render_jobs();
+        self.preview_prefetch_in_flight
+            .store(false, Ordering::Relaxed);
+        self.preview_idle_prefetched_time = None;
+        self.invalidate_asset_visual_cache(asset_id);
+        self.asset_lab_preview_texture = None;
+        self.editor.preview_dirty = true;
+    }
+
+    fn asset_lab_preview_texture(
+        &mut self,
+        ctx: &Context,
+        asset: &Asset,
+        version: Option<&str>,
+    ) -> Option<(TextureId, Vec2)> {
+        let project_root = self.editor.project.project_path.as_ref()?;
+        let path = generative_output_file_for_version(project_root, asset, version)?;
+        let can_load_direct_image = asset.is_image();
+        if !can_load_direct_image {
+            if asset.active_version() == version {
+                return self.asset_thumbnail(ctx, asset);
+            }
+            return None;
+        }
+
+        if let Some(cached) = self.asset_lab_preview_texture.as_ref() {
+            if cached.asset_id == asset.id
+                && cached.version.as_deref() == version
+                && cached.path == path
+            {
+                return Some((cached.texture.id(), cached.size));
+            }
+        }
+
+        let (image, size) = load_preview_image(&path, 512)?;
+        let texture = ctx.load_texture(
+            format!(
+                "asset-lab-preview-{}-{}",
+                asset.id,
+                version.unwrap_or("fallback")
+            ),
+            image,
+            TextureOptions::LINEAR,
+        );
+        let texture_id = texture.id();
+        self.asset_lab_preview_texture = Some(AssetLabPreviewTexture {
+            asset_id: asset.id,
+            version: version.map(str::to_string),
+            path,
+            texture,
+            size,
+        });
+        Some((texture_id, size))
     }
 
     fn asset_delete_confirmation_modal(&mut self, ctx: &Context) {
@@ -7350,7 +8397,7 @@ impl NlaEguiApp {
                 close_clicked = kit::modal_header_with_close(
                     ui,
                     "Use Images as Keyframes?",
-                    Some("The bridge will anchor to image start times."),
+                    Some("The bridge will anchor image pins and video boundary frames."),
                     true,
                 );
                 kit::modal_body(ui, |ui| {
@@ -7370,7 +8417,7 @@ impl NlaEguiApp {
                             ui.add_space(kit::FORM_ROW_GAP);
                             ui.label(
                                 RichText::new(
-                                    "Keyframe image clips keep their asset and timing data, but draw as marker-like pins on the timeline so the generated video span reads from keyframe to keyframe.",
+                                    "Keyframe image clips keep their asset and timing data, but draw as marker-like pins on the timeline. Video references use only the first or last frame at the selected boundary.",
                                 )
                                 .color(kit::TEXT_MUTED),
                             );
@@ -7382,7 +8429,7 @@ impl NlaEguiApp {
                             );
                             if !confirmation.sample_names.is_empty() {
                                 ui.add_space(kit::ACTION_GAP);
-                                kit::field_label(ui, "Referenced Images");
+                                kit::field_label(ui, "Referenced Media");
                                 ui.add_space(kit::FORM_ROW_GAP);
                                 for name in confirmation.sample_names.iter() {
                                     ui.label(RichText::new(name).color(kit::TEXT));
@@ -8238,6 +9285,7 @@ impl NlaEguiApp {
     fn queue_panel(&mut self, ctx: &Context) {
         let mut close_clicked = false;
         let mut clear_clicked = false;
+        let mut cancel_job_id = None;
         let app_rect = ctx.content_rect();
         let fallback_anchor = Rect::from_min_size(
             Pos2::new(app_rect.right() - 72.0, app_rect.top() + 4.0),
@@ -8252,9 +9300,7 @@ impl NlaEguiApp {
                 GenerationJobStatus::Queued | GenerationJobStatus::Running
             )
         });
-        let has_clearable = jobs
-            .iter()
-            .any(|job| job.status != GenerationJobStatus::Running);
+        let has_clearable = jobs.iter().any(|job| queue_job_is_terminal(job.status));
         let desired_body_h = queue_list_height(&jobs);
         let desired_h =
             QUEUE_PANEL_PAD * 2.0 + QUEUE_PANEL_HEADER_H + QUEUE_PANEL_GAP + desired_body_h;
@@ -8311,23 +9357,64 @@ impl NlaEguiApp {
                     &mut clear_clicked,
                     &mut close_clicked,
                 );
-                queue_body(&mut child, body_rect, &jobs);
+                queue_body(&mut child, body_rect, &jobs, &mut cancel_job_id);
             });
 
+        if let Some(job_id) = cancel_job_id {
+            self.cancel_generation_job(job_id);
+        }
         if clear_clicked {
             let before = self.editor.generation_queue.len();
             self.editor
                 .generation_queue
-                .retain(|job| job.status == GenerationJobStatus::Running);
+                .retain(|job| !queue_job_is_terminal(job.status));
             let cleared = before.saturating_sub(self.editor.generation_queue.len());
             self.editor.status = if cleared == 1 {
-                "Cleared 1 generation job.".to_string()
+                "Cleared 1 completed generation job.".to_string()
             } else {
-                format!("Cleared {cleared} generation jobs.")
+                format!("Cleared {cleared} completed generation jobs.")
             };
         }
         if close_clicked {
             self.editor.overlays.queue = false;
+        }
+    }
+
+    fn cancel_generation_job(&mut self, job_id: Uuid) {
+        let mut cancelled_label = None;
+        if let Some(job) = self
+            .editor
+            .generation_queue
+            .iter_mut()
+            .find(|job| job.id == job_id)
+        {
+            if !matches!(
+                job.status,
+                GenerationJobStatus::Queued | GenerationJobStatus::Running
+            ) {
+                return;
+            }
+            let was_running = job.status == GenerationJobStatus::Running;
+            job.status = GenerationJobStatus::Canceled;
+            job.progress_overall = None;
+            job.progress_node = None;
+            job.error = Some("Cancelled by user.".to_string());
+            cancelled_label = Some((job.asset_label.clone(), was_running));
+        }
+
+        if self.generation_active == Some(job_id) {
+            self.generation_active = None;
+        }
+        if let Some(cancel) = self.generation_cancel_tokens.remove(&job_id) {
+            cancel.store(true, Ordering::Relaxed);
+        }
+
+        if let Some((label, was_running)) = cancelled_label {
+            self.editor.status = if was_running {
+                format!("Cancelled generation for {label}; external provider may still finish.")
+            } else {
+                format!("Removed queued generation for {label}.")
+            };
         }
     }
 
@@ -8391,6 +9478,9 @@ impl NlaEguiApp {
         };
         self.generation_active = Some(job.id);
 
+        let cancel_token = Arc::new(AtomicBool::new(false));
+        self.generation_cancel_tokens
+            .insert(job.id, Arc::clone(&cancel_token));
         let events = self.generation_events_tx.clone();
         runtime.spawn(async move {
             let (progress_tx, mut progress_rx) =
@@ -8408,7 +9498,8 @@ impl NlaEguiApp {
             });
 
             let job_id = job.id;
-            let result = execute_generation_job_async(job, version, Some(progress_tx)).await;
+            let result =
+                execute_generation_job_async(job, version, Some(progress_tx), cancel_token).await;
             let _ = events.send(GenerationEvent::Finished { job_id, result });
         });
     }
@@ -8440,12 +9531,20 @@ impl NlaEguiApp {
                 if self.generation_active == Some(job_id) {
                     self.generation_active = None;
                 }
+                self.generation_cancel_tokens.remove(&job_id);
                 let job_snapshot = self
                     .editor
                     .generation_queue
                     .iter()
                     .find(|job| job.id == job_id)
                     .cloned();
+                if job_snapshot.is_none()
+                    || job_snapshot
+                        .as_ref()
+                        .is_some_and(|job| job.status == GenerationJobStatus::Canceled)
+                {
+                    return;
+                }
 
                 match result {
                     Ok(output) => {
@@ -8473,6 +9572,7 @@ impl NlaEguiApp {
                         let message = match err {
                             GenerationFailure::Offline(err) => format!("Provider offline: {err}"),
                             GenerationFailure::Error(err) => err,
+                            GenerationFailure::Canceled => "Generation cancelled.".to_string(),
                         };
                         if let Some(entry) = self
                             .editor
@@ -8616,6 +9716,7 @@ impl NlaEguiApp {
                     .as_ref()
                     .map(|error| format!("Failed: {error}"))
                     .unwrap_or_else(|| "Failed".to_string()),
+                GenerationJobStatus::Canceled => "Canceled".to_string(),
             })
     }
 
@@ -8652,6 +9753,9 @@ impl NlaEguiApp {
             .as_ref()
             .and_then(|field| resolved.values.get(field))
             .and_then(input_value_as_i64);
+        if let Some(field) = seed_field.as_ref() {
+            seed_base = self.reserved_seed_base(asset_id, field, seed_base);
+        }
         let mut seed_base_randomized = false;
         if seed_base.is_none()
             && seed_field.is_some()
@@ -8725,6 +9829,35 @@ impl NlaEguiApp {
             }
         }
         Ok(status)
+    }
+
+    fn reserved_seed_base(
+        &self,
+        asset_id: Uuid,
+        seed_field: &str,
+        config_seed_base: Option<i64>,
+    ) -> Option<i64> {
+        self.editor
+            .generation_queue
+            .iter()
+            .filter(|job| {
+                job.asset_id == asset_id
+                    && matches!(
+                        job.status,
+                        GenerationJobStatus::Queued | GenerationJobStatus::Running
+                    )
+            })
+            .filter_map(|job| {
+                let seed_advance = job.seed_advance.as_ref()?;
+                if seed_advance.field == seed_field {
+                    Some(seed_advance.next_seed)
+                } else {
+                    None
+                }
+            })
+            .fold(config_seed_base, |base, reserved_next| {
+                Some(base.map_or(reserved_next, |base| base.max(reserved_next)))
+            })
     }
 
     fn open_api_key_modal(&mut self, credential_id: &str, label: &str) {
@@ -9512,33 +10645,37 @@ impl NlaEguiApp {
                     ui.add_space(kit::FORM_ROW_GAP);
                     if node.inputs.is_empty() {
                         ui.label(kit::caption("No inputs found on this node."));
+                        return;
                     }
                     let mut expose_key: Option<String> = None;
-                    for input_key in node.inputs.iter() {
-                        let already_exposed =
-                            self.provider_builder.input_exposed(&node.id, input_key);
-                        ui.horizontal(|ui| {
-                            ui.add_sized(
-                                [(ui.available_width() - 76.0).max(60.0), 18.0],
-                                egui::Label::new(kit::body(input_key)).truncate(),
-                            );
-                            let label = if already_exposed { "Exposed" } else { "Expose" };
-                            let response = ui
-                                .add_enabled_ui(!already_exposed, |ui| {
-                                    kit::field_button(ui, label, 68.0)
-                                })
-                                .inner;
-                            let clicked = response.clicked();
-                            if already_exposed {
-                                response.on_disabled_hover_text(
-                                    "This workflow input is already exposed.",
+                    kit::scroll_body(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                        for input_key in node.inputs.iter() {
+                            let already_exposed =
+                                self.provider_builder.input_exposed(&node.id, input_key);
+                            ui.horizontal(|ui| {
+                                ui.add_sized(
+                                    [(ui.available_width() - 76.0).max(60.0), 18.0],
+                                    egui::Label::new(kit::body(input_key)).truncate(),
                                 );
-                            }
-                            if clicked {
-                                expose_key = Some(input_key.clone());
-                            }
-                        });
-                    }
+                                let label = if already_exposed { "Exposed" } else { "Expose" };
+                                let response = ui
+                                    .add_enabled_ui(!already_exposed, |ui| {
+                                        kit::field_button(ui, label, 68.0)
+                                    })
+                                    .inner;
+                                let clicked = response.clicked();
+                                if already_exposed {
+                                    response.on_disabled_hover_text(
+                                        "This workflow input is already exposed.",
+                                    );
+                                }
+                                if clicked {
+                                    expose_key = Some(input_key.clone());
+                                }
+                            });
+                        }
+                    });
                     if let Some(input_key) = expose_key {
                         self.expose_provider_builder_input(&node, &input_key);
                     }
@@ -9614,6 +10751,18 @@ impl NlaEguiApp {
                 });
                 ui.add_space(kit::FORM_ROW_GAP);
                 kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.horizontal(|ui| {
+                    if kit::secondary_button(ui, "Refresh Schema", 130.0).clicked() {
+                        self.refresh_provider_builder_schema();
+                    }
+                    if let Some(status) = &self.provider_builder.schema_status {
+                        ui.add_sized(
+                            [(ui.available_width()).max(40.0), 18.0],
+                            egui::Label::new(kit::caption(status)).truncate(),
+                        );
+                    }
+                });
                 ui.add_space(kit::FORM_ROW_GAP);
 
                 let workflow_display = self.provider_builder.workflow_path_display();
@@ -9793,6 +10942,38 @@ impl NlaEguiApp {
         }
     }
 
+    fn refresh_provider_builder_schema(&mut self) {
+        let base_url = self.provider_builder.base_url.trim().to_string();
+        if base_url.is_empty() {
+            self.provider_builder.error =
+                Some("Enter the provider's ComfyUI base URL before refreshing schema.".to_string());
+            return;
+        }
+        let Some(runtime) = self.generation_runtime.as_ref() else {
+            self.provider_builder.error =
+                Some("Generation runtime is unavailable; cannot query ComfyUI schema.".to_string());
+            return;
+        };
+
+        match runtime.block_on(crate::providers::comfyui::fetch_object_info(&base_url)) {
+            Ok(value) => {
+                let schema = crate::core::comfyui_workflow::parse_object_info_schema(&value);
+                let class_count = schema.len();
+                self.provider_builder.comfy_schema = schema;
+                self.provider_builder.schema_base_url = Some(base_url);
+                let enriched_count = self.provider_builder.enrich_existing_inputs_from_schema();
+                self.provider_builder.schema_status = Some(format!(
+                    "Loaded schema for {class_count} Comfy node classes; updated {enriched_count} exposed inputs."
+                ));
+                self.provider_builder.error = None;
+            }
+            Err(err) => {
+                self.provider_builder.schema_status = None;
+                self.provider_builder.error = Some(err);
+            }
+        }
+    }
+
     fn expose_provider_builder_input(
         &mut self,
         node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
@@ -9810,10 +10991,11 @@ impl NlaEguiApp {
             input_key,
             &self.provider_builder.inputs,
         );
+        let schema = self.provider_builder.input_schema(node, input_key);
         self.provider_builder
             .inputs
             .push(ProviderBuilderInput::from_node(
-                node, input_key, name, label,
+                node, input_key, name, label, schema,
             ));
         self.provider_builder.error = None;
     }
@@ -10275,6 +11457,7 @@ fn summarize_preview_stats<'a>(
     let mut composite_sum = 0.0;
     let mut encode_sum = 0.0;
     let mut video_decode_sum = 0.0;
+    let mut video_decode_queue_sum = 0.0;
     let mut video_decode_seek_sum = 0.0;
     let mut still_load_sum = 0.0;
     let mut layers_sum = 0.0;
@@ -10289,6 +11472,7 @@ fn summarize_preview_stats<'a>(
         composite_sum += stats.composite_ms;
         encode_sum += stats.encode_ms;
         video_decode_sum += stats.video_decode_ms;
+        video_decode_queue_sum += stats.video_decode_queue_ms;
         video_decode_seek_sum += stats.video_decode_seek_ms;
         still_load_sum += stats.still_load_ms;
         layers_sum += stats.layers as f64;
@@ -10307,6 +11491,7 @@ fn summarize_preview_stats<'a>(
     summary.composite_ms_avg = composite_sum / count;
     summary.encode_ms_avg = encode_sum / count;
     summary.video_decode_ms_avg = video_decode_sum / count;
+    summary.video_decode_queue_ms_avg = video_decode_queue_sum / count;
     summary.video_decode_seek_ms_avg = video_decode_seek_sum / count;
     summary.still_load_ms_avg = still_load_sum / count;
     summary.layers_avg = layers_sum / count;
@@ -10430,6 +11615,7 @@ async fn execute_generation_job_async(
     job: GenerationJob,
     version: String,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProviderProgress>>,
+    cancel_token: Arc<AtomicBool>,
 ) -> Result<GenerationOutput, GenerationFailure> {
     if job.output_type == ProviderOutputType::Audio {
         return Err(GenerationFailure::Error(
@@ -10449,12 +11635,19 @@ async fn execute_generation_job_async(
         crate::providers::ProviderExecutionError::Error(err) => GenerationFailure::Error(err),
     })?;
 
+    if cancel_token.load(Ordering::Relaxed) {
+        return Err(GenerationFailure::Canceled);
+    }
+
     std::fs::create_dir_all(&job.folder_path).map_err(|err| {
         GenerationFailure::Error(format!("Failed to create output folder: {err}"))
     })?;
     let output_path = job
         .folder_path
         .join(format!("{}.{}", version, output.extension));
+    if cancel_token.load(Ordering::Relaxed) {
+        return Err(GenerationFailure::Canceled);
+    }
     std::fs::write(&output_path, &output.bytes)
         .map_err(|err| GenerationFailure::Error(format!("Failed to save output: {err}")))?;
 
@@ -10599,9 +11792,11 @@ fn binding_matches_candidate(
             asset_id,
             source_clip_id,
             pinned: value_pinned,
+            frame_reference,
         }) if *asset_id == candidate.asset_id
             && *source_clip_id == candidate.source_clip_id
             && *value_pinned == pinned
+            && *frame_reference == candidate.frame_reference
     )
 }
 
@@ -10654,6 +11849,31 @@ fn rect_union(a: Rect, b: Rect) -> Rect {
 
 fn clip_is_keyframe_image(clip: &Clip, asset: Option<&Asset>) -> bool {
     clip.image_mode == ClipImageMode::Keyframe && asset.is_some_and(|asset| asset.is_image())
+}
+
+fn bridge_reference_for_clip(
+    clip: Clip,
+    asset: &Asset,
+    start_reference: bool,
+) -> BridgeReferenceClip {
+    if asset.is_video() {
+        let (anchor_time, frame_reference) = if start_reference {
+            (clip.end_time(), Some(SourceFrameReference::Last))
+        } else {
+            (clip.start_time, Some(SourceFrameReference::First))
+        };
+        BridgeReferenceClip {
+            clip,
+            anchor_time,
+            frame_reference,
+        }
+    } else {
+        BridgeReferenceClip {
+            anchor_time: clip.start_time,
+            clip,
+            frame_reference: None,
+        }
+    }
 }
 
 fn timeline_clip_rect(
@@ -11361,6 +12581,61 @@ fn asset_row_subtitle(asset: &Asset) -> String {
     parts.join("  ")
 }
 
+fn asset_natural_cmp(a: &Asset, b: &Asset) -> CmpOrdering {
+    natural_case_insensitive_cmp(&asset_display_name(a), &asset_display_name(b))
+        .then_with(|| asset_kind_label(&a.kind).cmp(asset_kind_label(&b.kind)))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+fn natural_case_insensitive_cmp(a: &str, b: &str) -> CmpOrdering {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut a_index = 0usize;
+    let mut b_index = 0usize;
+
+    while a_index < a_chars.len() && b_index < b_chars.len() {
+        let (a_digits, a_token, next_a) = natural_token(&a_chars, a_index);
+        let (b_digits, b_token, next_b) = natural_token(&b_chars, b_index);
+
+        let ordering = if a_digits && b_digits {
+            natural_number_cmp(&a_token, &b_token)
+        } else {
+            a_token
+                .to_ascii_lowercase()
+                .cmp(&b_token.to_ascii_lowercase())
+        };
+        if ordering != CmpOrdering::Equal {
+            return ordering;
+        }
+
+        a_index = next_a;
+        b_index = next_b;
+    }
+
+    a_chars.len().cmp(&b_chars.len())
+}
+
+fn natural_token(chars: &[char], start: usize) -> (bool, String, usize) {
+    let is_digits = chars[start].is_ascii_digit();
+    let mut end = start + 1;
+    while end < chars.len() && chars[end].is_ascii_digit() == is_digits {
+        end += 1;
+    }
+    (is_digits, chars[start..end].iter().collect(), end)
+}
+
+fn natural_number_cmp(a: &str, b: &str) -> CmpOrdering {
+    let a_trimmed = a.trim_start_matches('0');
+    let b_trimmed = b.trim_start_matches('0');
+    let a_digits = if a_trimmed.is_empty() { "0" } else { a_trimmed };
+    let b_digits = if b_trimmed.is_empty() { "0" } else { b_trimmed };
+
+    a_digits
+        .len()
+        .cmp(&b_digits.len())
+        .then_with(|| a_digits.cmp(b_digits))
+}
+
 fn asset_icon(asset: &Asset) -> &'static str {
     match asset.kind {
         AssetKind::Video { .. } | AssetKind::GenerativeVideo { .. } => "VID",
@@ -11396,6 +12671,204 @@ fn asset_source_label(asset: &Asset) -> Option<String> {
         AssetKind::GenerativeVideo { folder, .. }
         | AssetKind::GenerativeImage { folder, .. }
         | AssetKind::GenerativeAudio { folder, .. } => Some(path_label(folder)),
+    }
+}
+
+fn generative_folder_for_asset(asset: &Asset) -> Option<&PathBuf> {
+    match &asset.kind {
+        AssetKind::GenerativeVideo { folder, .. }
+        | AssetKind::GenerativeImage { folder, .. }
+        | AssetKind::GenerativeAudio { folder, .. } => Some(folder),
+        _ => None,
+    }
+}
+
+fn generative_output_extensions(asset: &Asset) -> Option<&'static [&'static str]> {
+    match asset.kind {
+        AssetKind::GenerativeImage { .. } => Some(IMAGE_EXTENSIONS),
+        AssetKind::GenerativeVideo { .. } => Some(VIDEO_EXTENSIONS),
+        AssetKind::GenerativeAudio { .. } => Some(AUDIO_EXTENSIONS),
+        _ => None,
+    }
+}
+
+fn generative_output_file_for_version(
+    project_root: &Path,
+    asset: &Asset,
+    version: Option<&str>,
+) -> Option<PathBuf> {
+    let folder = generative_folder_for_asset(asset)?;
+    let extensions = generative_output_extensions(asset)?;
+    resolve_generative_file(project_root, folder, version, extensions)
+}
+
+fn sorted_generation_records(config: &GenerativeConfig) -> Vec<GenerationRecord> {
+    let mut records = config.versions.clone();
+    records.sort_by(|a, b| {
+        match (
+            parse_version_index(&a.version),
+            parse_version_index(&b.version),
+        ) {
+            (Some(a_index), Some(b_index)) => b_index.cmp(&a_index),
+            _ => natural_case_insensitive_cmp(&b.version, &a.version),
+        }
+        .then_with(|| b.timestamp.cmp(&a.timestamp))
+    });
+    records
+}
+
+fn preferred_asset_lab_version(config: &GenerativeConfig) -> Option<String> {
+    if let Some(active) = config.active_version.as_ref() {
+        if config
+            .versions
+            .iter()
+            .any(|record| record.version == *active)
+        {
+            return Some(active.clone());
+        }
+    }
+    sorted_generation_records(config)
+        .first()
+        .map(|record| record.version.clone())
+}
+
+fn asset_lab_version_exists(config: Option<&GenerativeConfig>, version: &str) -> bool {
+    config.is_some_and(|config| {
+        config
+            .versions
+            .iter()
+            .any(|record| record.version == version)
+    })
+}
+
+fn asset_lab_provider_name(providers: &[ProviderEntry], provider_id: Uuid) -> String {
+    providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .map(|provider| provider.name.clone())
+        .unwrap_or_else(|| provider_id.to_string())
+}
+
+fn asset_lab_meta_row(ui: &mut Ui, label: &str, value: impl Into<String>) {
+    inspector_meta_row(ui, label, value);
+}
+
+fn asset_lab_version_row(
+    ui: &mut Ui,
+    record: &GenerationRecord,
+    selected: bool,
+    active: bool,
+) -> Response {
+    kit::draw_accent_row_with_status(
+        ui,
+        ASSET_LAB_VERSION_ROW_H,
+        selected,
+        kit::IMAGE,
+        active.then_some(kit::PRIMARY),
+        |ui, content_rect| {
+            let title = if active {
+                format!("{}  ACTIVE", record.version)
+            } else {
+                record.version.clone()
+            };
+            paint_truncated_row_text_top(
+                ui,
+                Pos2::new(content_rect.left(), content_rect.top()),
+                kit::value(title),
+                12.0,
+                content_rect.width(),
+                kit::TEXT,
+            );
+            paint_truncated_row_text_bottom(
+                ui,
+                Pos2::new(content_rect.left(), content_rect.bottom()),
+                kit::caption(
+                    record
+                        .timestamp
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                ),
+                11.0,
+                content_rect.width(),
+                kit::TEXT_MUTED,
+            );
+        },
+    )
+}
+
+fn asset_lab_preview(ui: &mut Ui, asset: &Asset, preview: Option<(TextureId, Vec2)>) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), ASSET_LAB_PREVIEW_H),
+        Sense::hover(),
+    );
+    ui.painter()
+        .rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+    ui.painter().rect_stroke(
+        rect,
+        kit::field_radius(),
+        Stroke::new(1.0, kit::BORDER_SOFT),
+        egui::StrokeKind::Inside,
+    );
+
+    if let Some((texture_id, size)) = preview {
+        let image_bounds = rect.shrink(10.0);
+        let scale = (image_bounds.width() / size.x)
+            .min(image_bounds.height() / size.y)
+            .max(0.01);
+        let image_rect = Rect::from_center_size(image_bounds.center(), size * scale);
+        ui.painter().image(
+            texture_id,
+            image_rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            asset_icon(asset),
+            FontId::proportional(18.0),
+            asset_accent(asset),
+        );
+    }
+}
+
+fn copy_generative_version_files(
+    folder_path: &Path,
+    source_version: &str,
+    target_version: &str,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(folder_path)
+        .map_err(|err| format!("Failed to read generation folder: {err}"))?;
+    let mut copied_any = false;
+    for entry in entries {
+        let source_path = entry
+            .map_err(|err| format!("Failed to read generation folder entry: {err}"))?
+            .path();
+        if !source_path.is_file() {
+            continue;
+        }
+        let stem = source_path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if stem != source_version {
+            continue;
+        }
+        let extension = source_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .ok_or_else(|| format!("Version file {} has no extension.", source_path.display()))?;
+        let target_path = folder_path.join(format!("{target_version}.{extension}"));
+        std::fs::copy(&source_path, &target_path)
+            .map_err(|err| format!("Failed to duplicate {}: {err}", source_path.display()))?;
+        copied_any = true;
+    }
+    if copied_any {
+        Ok(())
+    } else {
+        Err(format!("No output files found for {source_version}."))
     }
 }
 
@@ -11496,7 +12969,15 @@ fn resolve_generative_file(
 }
 
 fn load_thumbnail_image(path: &Path) -> Option<(ColorImage, Vec2)> {
-    let image = image::open(path).ok()?.thumbnail(96, 96).to_rgba8();
+    load_preview_image(path, 96)
+}
+
+fn load_preview_image(path: &Path, max_edge: u32) -> Option<(ColorImage, Vec2)> {
+    let max_edge = max_edge.max(1);
+    let image = image::open(path)
+        .ok()?
+        .thumbnail(max_edge, max_edge)
+        .to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let display_size = Vec2::new(size[0] as f32, size[1] as f32);
     let color_image = ColorImage::from_rgba_unmultiplied(size, image.as_raw());
@@ -11581,6 +13062,9 @@ impl ProviderBuilderState {
             workflow_error,
             workflow_search: String::new(),
             selected_node_id: None,
+            comfy_schema: crate::core::comfyui_workflow::ComfyObjectInfoMap::new(),
+            schema_base_url: None,
+            schema_status: None,
             output_key: default_output_key(entry.output_type).to_string(),
             output_tag: String::new(),
             output_node: None,
@@ -11673,6 +13157,63 @@ impl ProviderBuilderState {
                 .is_some_and(|id| id == node_id)
                 && input.selector.input_key == input_key
         })
+    }
+
+    fn input_schema(
+        &self,
+        node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+        input_key: &str,
+    ) -> Option<&crate::core::comfyui_workflow::ComfyInputSchema> {
+        let schema_base_url = self.schema_base_url.as_deref()?;
+        if normalize_comfy_base_url(schema_base_url) != normalize_comfy_base_url(&self.base_url) {
+            return None;
+        }
+        self.comfy_schema
+            .get(&node.class_type)
+            .and_then(|inputs| inputs.get(input_key))
+    }
+
+    fn enrich_existing_inputs_from_schema(&mut self) -> usize {
+        let Some(schema_base_url) = self.schema_base_url.as_deref() else {
+            return 0;
+        };
+        if normalize_comfy_base_url(schema_base_url) != normalize_comfy_base_url(&self.base_url) {
+            return 0;
+        }
+
+        let mut updated_count = 0;
+        for input in &mut self.inputs {
+            let input_key = input.selector.input_key.clone();
+            if input_key.trim().is_empty() {
+                continue;
+            }
+            let node = input
+                .selector
+                .node_id
+                .as_deref()
+                .and_then(|node_id| self.workflow_nodes.iter().find(|node| node.id == node_id))
+                .cloned()
+                .unwrap_or_else(|| crate::core::comfyui_workflow::ComfyWorkflowNode {
+                    id: input.selector.node_id.clone().unwrap_or_default(),
+                    class_type: input.selector.class_type.clone(),
+                    title: input.selector.title.clone(),
+                    inputs: vec![input_key.clone()],
+                    input_values: HashMap::new(),
+                });
+
+            let Some(schema) = self
+                .comfy_schema
+                .get(&node.class_type)
+                .and_then(|inputs| inputs.get(&input_key))
+            else {
+                continue;
+            };
+
+            if input.apply_schema(&node, schema) {
+                updated_count += 1;
+            }
+        }
+        updated_count
     }
 
     fn output_configured(&self) -> bool {
@@ -11941,17 +13482,37 @@ impl ProviderBuilderInput {
         input_key: &str,
         name: String,
         label: String,
+        schema: Option<&crate::core::comfyui_workflow::ComfyInputSchema>,
     ) -> Self {
-        let (input_type_key, multiline) = infer_provider_input_from_workflow_node(node, input_key);
+        let (heuristic_key, heuristic_multiline) =
+            infer_provider_input_from_workflow_node(node, input_key);
+        let input_type_key =
+            schema_provider_input_type_key(node, input_key, schema, &heuristic_key);
+        let default_value = node
+            .input_values
+            .get(input_key)
+            .filter(|value| provider_builder_default_value_is_scalar(value))
+            .or_else(|| schema.and_then(|schema| schema.default.as_ref()));
+        let enum_options = schema
+            .filter(|_| input_type_key == "enum")
+            .map(|schema| schema.enum_options.join("\n"))
+            .unwrap_or_default();
+        let default_text =
+            provider_builder_default_text_for_type(&input_type_key, default_value, &enum_options);
+        let multiline =
+            schema.map(|schema| schema.multiline).unwrap_or(false) || heuristic_multiline;
         Self {
             name,
             label,
             input_type_key,
-            required: false,
-            default_text: String::new(),
-            enum_options: String::new(),
+            required: schema.map(|schema| schema.required).unwrap_or(false),
+            default_text,
+            enum_options,
             tag: String::new(),
             multiline,
+            ui_min: schema.and_then(|schema| schema.min),
+            ui_max: schema.and_then(|schema| schema.max),
+            ui_step: schema.and_then(|schema| schema.step),
             selector: ProviderNodeSelectorDraft {
                 node_id: Some(node.id.clone()),
                 class_type: node.class_type.clone(),
@@ -11963,6 +13524,7 @@ impl ProviderBuilderInput {
 
     fn from_provider_input(input: &ProviderInputField) -> Self {
         let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
+        let ui_meta = input.ui.as_ref();
         Self {
             name: input.name.clone(),
             label: input.label.clone(),
@@ -11971,7 +13533,10 @@ impl ProviderBuilderInput {
             default_text: default_value_to_text(input.default.as_ref()),
             enum_options,
             tag: String::new(),
-            multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
+            multiline: ui_meta.is_some_and(|ui| ui.multiline),
+            ui_min: ui_meta.and_then(|ui| ui.min),
+            ui_max: ui_meta.and_then(|ui| ui.max),
+            ui_step: ui_meta.and_then(|ui| ui.step),
             selector: ProviderNodeSelectorDraft {
                 node_id: None,
                 class_type: String::new(),
@@ -11983,6 +13548,10 @@ impl ProviderBuilderInput {
 
     fn from_manifest_input(input: ManifestInput) -> Self {
         let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
+        let ui_min = input.ui.as_ref().and_then(|ui| ui.min);
+        let ui_max = input.ui.as_ref().and_then(|ui| ui.max);
+        let ui_step = input.ui.as_ref().and_then(|ui| ui.step);
+        let multiline = input.ui.as_ref().is_some_and(|ui| ui.multiline);
         Self {
             name: input.name,
             label: input.label,
@@ -11991,7 +13560,10 @@ impl ProviderBuilderInput {
             default_text: default_value_to_text(input.default.as_ref()),
             enum_options,
             tag: input.bind.selector.tag.unwrap_or_default(),
-            multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
+            multiline,
+            ui_min,
+            ui_max,
+            ui_step,
             selector: ProviderNodeSelectorDraft {
                 node_id: input.bind.selector.node_id,
                 class_type: input.bind.selector.class_type,
@@ -12003,6 +13575,10 @@ impl ProviderBuilderInput {
 
     fn from_custom_http_input(input: crate::state::CustomHttpInput) -> Self {
         let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
+        let ui_min = input.ui.as_ref().and_then(|ui| ui.min);
+        let ui_max = input.ui.as_ref().and_then(|ui| ui.max);
+        let ui_step = input.ui.as_ref().and_then(|ui| ui.step);
+        let multiline = input.ui.as_ref().is_some_and(|ui| ui.multiline);
         Self {
             name: input.name,
             label: input.label,
@@ -12011,7 +13587,10 @@ impl ProviderBuilderInput {
             default_text: default_value_to_text(input.default.as_ref()),
             enum_options,
             tag: String::new(),
-            multiline: input.ui.as_ref().is_some_and(|ui| ui.multiline),
+            multiline,
+            ui_min,
+            ui_max,
+            ui_step,
             selector: ProviderNodeSelectorDraft {
                 node_id: None,
                 class_type: String::new(),
@@ -12019,6 +13598,84 @@ impl ProviderBuilderInput {
                 title: None,
             },
         }
+    }
+
+    fn apply_schema(
+        &mut self,
+        node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+        schema: &crate::core::comfyui_workflow::ComfyInputSchema,
+    ) -> bool {
+        let before = (
+            self.input_type_key.clone(),
+            self.required,
+            self.default_text.clone(),
+            self.enum_options.clone(),
+            self.multiline,
+            self.ui_min,
+            self.ui_max,
+            self.ui_step,
+        );
+        let (heuristic_key, heuristic_multiline) =
+            infer_provider_input_from_workflow_node(node, &self.selector.input_key);
+        let next_type = schema_provider_input_type_key(
+            node,
+            &self.selector.input_key,
+            Some(schema),
+            &heuristic_key,
+        );
+        let default_value = node
+            .input_values
+            .get(&self.selector.input_key)
+            .filter(|value| provider_builder_default_value_is_scalar(value))
+            .or(schema.default.as_ref());
+
+        self.input_type_key = next_type;
+        self.required = schema.required;
+        self.multiline = schema.multiline || heuristic_multiline;
+        self.ui_min = schema.min;
+        self.ui_max = schema.max;
+        self.ui_step = schema.step;
+
+        if self.input_type_key == "enum" {
+            let schema_options = schema.enum_options.join("\n");
+            if !schema_options.trim().is_empty() {
+                self.enum_options = schema_options;
+            }
+            let options = provider_builder_enum_options(self);
+            let current_default = self.default_text.trim();
+            if current_default.is_empty() || !options.iter().any(|option| option == current_default)
+            {
+                self.default_text = provider_builder_default_text_for_type(
+                    &self.input_type_key,
+                    default_value,
+                    &self.enum_options,
+                );
+            }
+        } else {
+            self.enum_options.clear();
+            if matches!(self.input_type_key.as_str(), "image" | "video" | "audio") {
+                self.default_text.clear();
+                self.multiline = false;
+            } else if self.default_text.trim().is_empty() {
+                self.default_text = provider_builder_default_text_for_type(
+                    &self.input_type_key,
+                    default_value,
+                    &self.enum_options,
+                );
+            }
+        }
+
+        before
+            != (
+                self.input_type_key.clone(),
+                self.required,
+                self.default_text.clone(),
+                self.enum_options.clone(),
+                self.multiline,
+                self.ui_min,
+                self.ui_max,
+                self.ui_step,
+            )
     }
 }
 
@@ -12380,7 +14037,14 @@ fn provider_builder_input_editor_contents(
     });
     ui.add_space(kit::FORM_ROW_GAP);
     if input.input_type_key == "enum" {
-        kit::labeled_text_field(ui, "Enum Options", &mut input.enum_options);
+        kit::field_label(ui, "Enum Options");
+        ui.add_space(kit::FIELD_LABEL_GAP);
+        kit::multiline_text_field(
+            ui,
+            &mut input.enum_options,
+            ui.available_width(),
+            kit::MultilineTextFieldOptions::rows(3),
+        );
         ui.add_space(kit::FORM_ROW_GAP);
     }
     kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
@@ -12561,7 +14225,7 @@ fn provider_input_type_to_key(input_type: &ProviderInputType) -> (String, String
         ProviderInputType::Number => ("number".to_string(), String::new()),
         ProviderInputType::Integer => ("integer".to_string(), String::new()),
         ProviderInputType::Boolean => ("boolean".to_string(), String::new()),
-        ProviderInputType::Enum { options } => ("enum".to_string(), options.join(",")),
+        ProviderInputType::Enum { options } => ("enum".to_string(), options.join("\n")),
         ProviderInputType::Image => ("image".to_string(), String::new()),
         ProviderInputType::Video => ("video".to_string(), String::new()),
         ProviderInputType::Audio => ("audio".to_string(), String::new()),
@@ -12578,13 +14242,7 @@ fn parse_provider_input_type(input: &ProviderBuilderInput) -> Result<ProviderInp
         "video" => Ok(ProviderInputType::Video),
         "audio" => Ok(ProviderInputType::Audio),
         "enum" => {
-            let options: Vec<String> = input
-                .enum_options
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .collect();
+            let options = provider_builder_enum_options(input);
             if options.is_empty() {
                 Err(format!(
                     "Enum input '{}' needs at least one option.",
@@ -12645,9 +14303,18 @@ fn parse_bool_default_text(text: &str) -> Result<bool, ()> {
 }
 
 fn provider_builder_enum_options(input: &ProviderBuilderInput) -> Vec<String> {
-    input
-        .enum_options
-        .split(',')
+    split_provider_builder_enum_options(&input.enum_options)
+}
+
+fn split_provider_builder_enum_options(text: &str) -> Vec<String> {
+    let has_newlines = text.contains('\n') || text.contains('\r');
+    let values: Vec<&str> = if has_newlines {
+        text.lines().collect()
+    } else {
+        text.split(',').collect()
+    };
+    values
+        .into_iter()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
@@ -12655,13 +14322,17 @@ fn provider_builder_enum_options(input: &ProviderBuilderInput) -> Vec<String> {
 }
 
 fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<InputUi> {
-    if input.input_type_key == "text" && input.multiline {
+    if (input.input_type_key == "text" && input.multiline)
+        || input.ui_min.is_some()
+        || input.ui_max.is_some()
+        || input.ui_step.is_some()
+    {
         Some(InputUi {
-            min: None,
-            max: None,
-            step: None,
+            min: input.ui_min,
+            max: input.ui_max,
+            step: input.ui_step,
             placeholder: None,
-            multiline: true,
+            multiline: input.input_type_key == "text" && input.multiline,
             group: None,
             advanced: false,
             unit: None,
@@ -12669,6 +14340,72 @@ fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<InputUi> {
     } else {
         None
     }
+}
+
+fn normalize_comfy_base_url(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+fn schema_provider_input_type_key(
+    node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+    input_key: &str,
+    schema: Option<&crate::core::comfyui_workflow::ComfyInputSchema>,
+    heuristic_key: &str,
+) -> String {
+    if matches!(heuristic_key, "image" | "video" | "audio") {
+        return heuristic_key.to_string();
+    }
+
+    let Some(schema) = schema else {
+        return heuristic_key.to_string();
+    };
+
+    if !schema.enum_options.is_empty() {
+        return "enum".to_string();
+    }
+
+    let Some(type_name) = schema.type_name.as_deref() else {
+        return heuristic_key.to_string();
+    };
+    match type_name.trim().to_ascii_uppercase().as_str() {
+        "INT" | "INTEGER" => "integer".to_string(),
+        "FLOAT" | "DOUBLE" | "NUMBER" => "number".to_string(),
+        "BOOLEAN" | "BOOL" => "boolean".to_string(),
+        "STRING" | "TEXT" => "text".to_string(),
+        "IMAGE" | "MASK" => "image".to_string(),
+        "VIDEO" => "video".to_string(),
+        "AUDIO" => "audio".to_string(),
+        "ENUM" | "COMBO" => "enum".to_string(),
+        _ => infer_provider_input_from_workflow_node(node, input_key).0,
+    }
+}
+
+fn provider_builder_default_value_is_scalar(value: &serde_json::Value) -> bool {
+    matches!(
+        value,
+        serde_json::Value::String(_) | serde_json::Value::Number(_) | serde_json::Value::Bool(_)
+    )
+}
+
+fn provider_builder_default_text_for_type(
+    input_type_key: &str,
+    value: Option<&serde_json::Value>,
+    enum_options: &str,
+) -> String {
+    if matches!(input_type_key, "image" | "video" | "audio") {
+        return String::new();
+    }
+    let value_text = default_value_to_text(value);
+    if !value_text.trim().is_empty() {
+        return value_text;
+    }
+    if input_type_key == "enum" {
+        return split_provider_builder_enum_options(enum_options)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+    }
+    String::new()
 }
 
 fn default_value_to_text(value: Option<&serde_json::Value>) -> String {
@@ -13244,8 +14981,19 @@ fn queue_job_height(job: &GenerationJob) -> f32 {
     match job.status {
         GenerationJobStatus::Running => QUEUE_JOB_RUNNING_H,
         GenerationJobStatus::Failed => QUEUE_JOB_FAILED_H,
-        GenerationJobStatus::Queued | GenerationJobStatus::Succeeded => QUEUE_JOB_CARD_H,
+        GenerationJobStatus::Queued
+        | GenerationJobStatus::Succeeded
+        | GenerationJobStatus::Canceled => QUEUE_JOB_CARD_H,
     }
+}
+
+fn queue_job_is_terminal(status: GenerationJobStatus) -> bool {
+    matches!(
+        status,
+        GenerationJobStatus::Succeeded
+            | GenerationJobStatus::Failed
+            | GenerationJobStatus::Canceled
+    )
 }
 
 fn paint_queue_panel_shell(ui: &mut Ui, rect: Rect, attention: bool) {
@@ -13329,7 +15077,7 @@ fn queue_header(
     });
 }
 
-fn queue_body(ui: &mut Ui, rect: Rect, jobs: &[GenerationJob]) {
+fn queue_body(ui: &mut Ui, rect: Rect, jobs: &[GenerationJob], cancel_job_id: &mut Option<Uuid>) {
     let mut body_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -13346,7 +15094,9 @@ fn queue_body(ui: &mut Ui, rect: Rect, jobs: &[GenerationJob]) {
             queue_empty_state(ui);
         } else {
             for job in jobs.iter().rev() {
-                queue_job_card(ui, job);
+                if queue_job_card(ui, job) {
+                    *cancel_job_id = Some(job.id);
+                }
             }
         }
     });
@@ -13372,7 +15122,7 @@ fn queue_empty_state(ui: &mut Ui) {
     );
 }
 
-fn queue_job_card(ui: &mut Ui, job: &GenerationJob) {
+fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     let height = queue_job_height(job);
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -13393,6 +15143,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) {
         GenerationJobStatus::Running => 64.0,
         GenerationJobStatus::Failed => 60.0,
         GenerationJobStatus::Queued => 62.0,
+        GenerationJobStatus::Canceled => 74.0,
     };
     let title_rect = Rect::from_min_max(
         content.left_top(),
@@ -13430,7 +15181,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) {
             let node = job.progress_node.unwrap_or(0.0).clamp(0.0, 1.0);
             let progress_rect = Rect::from_min_max(
                 Pos2::new(content.left(), content.top() + 44.0),
-                content.right_bottom(),
+                Pos2::new(content.right() - 60.0, content.bottom()),
             );
             queue_progress_rows(ui, progress_rect, workflow, node);
         }
@@ -13443,8 +15194,48 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) {
                 queue_clipped_label(ui, error_rect, error, kit::DANGER, 10.0, false);
             }
         }
-        GenerationJobStatus::Queued | GenerationJobStatus::Succeeded => {}
+        GenerationJobStatus::Queued
+        | GenerationJobStatus::Succeeded
+        | GenerationJobStatus::Canceled => {}
     }
+
+    let mut cancel_clicked = false;
+    if matches!(
+        job.status,
+        GenerationJobStatus::Queued | GenerationJobStatus::Running
+    ) {
+        let cancel_rect = Rect::from_min_size(
+            Pos2::new(content.right() - 52.0, content.bottom() - 20.0),
+            Vec2::new(52.0, 18.0),
+        );
+        let cancel_response = ui.interact(
+            cancel_rect,
+            ui.id().with(("generation-job-cancel", job.id)),
+            Sense::click(),
+        );
+        let fill = if cancel_response.hovered() {
+            Color32::from_rgba_unmultiplied(145, 32, 42, 92)
+        } else {
+            Color32::from_rgba_unmultiplied(145, 32, 42, 40)
+        };
+        ui.painter()
+            .rect_filled(cancel_rect, egui::CornerRadius::same(5), fill);
+        ui.painter().rect_stroke(
+            cancel_rect,
+            egui::CornerRadius::same(5),
+            Stroke::new(1.0, kit::DANGER.gamma_multiply(0.75)),
+            egui::StrokeKind::Inside,
+        );
+        ui.painter().text(
+            cancel_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Cancel",
+            FontId::proportional(9.0),
+            kit::TEXT,
+        );
+        cancel_clicked = cancel_response.clicked();
+    }
+    cancel_clicked
 }
 
 fn queue_progress_rows(ui: &mut Ui, rect: Rect, workflow: f32, node: f32) {
@@ -13549,6 +15340,7 @@ fn queue_status_style(status: GenerationJobStatus) -> (&'static str, Color32) {
         GenerationJobStatus::Running => ("Running", kit::MARKER),
         GenerationJobStatus::Succeeded => ("Done", kit::PRIMARY_HOVER),
         GenerationJobStatus::Failed => ("Failed", kit::DANGER),
+        GenerationJobStatus::Canceled => ("Canceled", kit::TEXT_DIM),
     }
 }
 

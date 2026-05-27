@@ -8,6 +8,60 @@ use uuid::Uuid;
 use super::{Clip, ClipImageMode, ClipTransform, Marker, ProjectSettings, Track, TrackType};
 use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectWorkspaceLayout {
+    #[serde(default)]
+    pub left_collapsed: bool,
+    #[serde(default)]
+    pub right_collapsed: bool,
+    #[serde(default)]
+    pub timeline_collapsed: bool,
+    #[serde(default = "default_left_width")]
+    pub left_width: f32,
+    #[serde(default = "default_right_width")]
+    pub right_width: f32,
+    #[serde(default = "default_timeline_height")]
+    pub timeline_height: f32,
+    #[serde(default = "default_timeline_zoom")]
+    pub timeline_zoom: f32,
+    #[serde(default)]
+    pub timeline_scroll_x: f32,
+    #[serde(default)]
+    pub timeline_scroll_y: f32,
+}
+
+impl Default for ProjectWorkspaceLayout {
+    fn default() -> Self {
+        Self {
+            left_collapsed: false,
+            right_collapsed: false,
+            timeline_collapsed: false,
+            left_width: default_left_width(),
+            right_width: default_right_width(),
+            timeline_height: default_timeline_height(),
+            timeline_zoom: default_timeline_zoom(),
+            timeline_scroll_x: 0.0,
+            timeline_scroll_y: 0.0,
+        }
+    }
+}
+
+fn default_left_width() -> f32 {
+    250.0
+}
+
+fn default_right_width() -> f32 {
+    250.0
+}
+
+fn default_timeline_height() -> f32 {
+    220.0
+}
+
+fn default_timeline_zoom() -> f32 {
+    4.0
+}
+
 /// The main project container
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -25,6 +79,9 @@ pub struct Project {
     pub clips: Vec<Clip>,
     /// All markers
     pub markers: Vec<Marker>,
+    /// Per-project editor workspace layout.
+    #[serde(default)]
+    pub workspace_layout: ProjectWorkspaceLayout,
 
     /// Path to the project folder (not serialized - set on load)
     #[serde(skip)]
@@ -48,6 +105,7 @@ impl Default for Project {
             assets: Vec::new(),
             clips: Vec::new(),
             markers: Vec::new(),
+            workspace_layout: ProjectWorkspaceLayout::default(),
             project_path: None,
             generative_configs: HashMap::new(),
         }

@@ -1128,13 +1128,14 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
 
     let field_id = child.next_auto_id();
     child.skip_ahead_auto_ids(1);
+    let text_align = editable_field_text_align(&child, field_id);
 
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
     egui::TextEdit::singleline(value)
         .id(field_id)
         .desired_width(rect.width())
         .min_size(rect.size())
-        .horizontal_align(FIELD_TEXT_ALIGN)
+        .horizontal_align(text_align)
         .vertical_align(Align::Center)
         .text_color(TEXT)
         .font(FontId::proportional(FIELD_TEXT_SIZE))
@@ -1164,6 +1165,7 @@ fn password_text_field(
 
     let field_id = child.next_auto_id();
     child.skip_ahead_auto_ids(1);
+    let text_align = editable_field_text_align(&child, field_id);
 
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
     let mut output = egui::TextEdit::singleline(value)
@@ -1171,7 +1173,7 @@ fn password_text_field(
         .password(true)
         .desired_width(rect.width())
         .min_size(rect.size())
-        .horizontal_align(FIELD_TEXT_ALIGN)
+        .horizontal_align(text_align)
         .vertical_align(Align::Center)
         .text_color(TEXT)
         .font(FontId::proportional(FIELD_TEXT_SIZE))
@@ -1221,6 +1223,14 @@ fn singleline_text_field_labeled(
         true,
         true,
     )
+}
+
+fn editable_field_text_align(ui: &Ui, field_id: egui::Id) -> Align {
+    if ui.memory(|mem| mem.has_focus(field_id)) {
+        Align::Min
+    } else {
+        FIELD_TEXT_ALIGN
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

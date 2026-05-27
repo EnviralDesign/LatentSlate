@@ -20,6 +20,7 @@ pub struct PreviewStats {
     pub composite_ms: f64,
     pub encode_ms: f64,
     pub video_decode_ms: f64,
+    pub video_decode_queue_ms: f64,
     pub video_decode_seek_ms: f64,
     pub video_decode_packet_ms: f64,
     pub video_decode_transfer_ms: f64,

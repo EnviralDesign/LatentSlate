@@ -10,6 +10,31 @@ use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// Optional frame extraction mode for media references that use a video clip as
+/// an image provider input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFrameReference {
+    First,
+    Last,
+}
+
+impl SourceFrameReference {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::First => "first frame",
+            Self::Last => "last frame",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::Last => "last",
+        }
+    }
+}
+
 /// Input value bound to a provider field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -20,6 +45,8 @@ pub enum InputValue {
         source_clip_id: Option<Uuid>,
         #[serde(default = "default_asset_ref_pinned")]
         pinned: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame_reference: Option<SourceFrameReference>,
     },
     Literal {
         value: serde_json::Value,
@@ -277,6 +304,7 @@ pub enum GenerationJobStatus {
     Running,
     Succeeded,
     Failed,
+    Canceled,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -4,13 +4,15 @@
 // replacing provider execution and seed handling.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::state::{
-    Asset, AssetKind, GenerativeConfig, InputValue, Project, ProviderEntry, ProviderInputField,
-    ProviderInputType,
+    Asset, AssetKind, Clip, GenerativeConfig, InputValue, Project, ProviderEntry,
+    ProviderInputField, ProviderInputType, SourceFrameReference,
 };
 
 #[derive(Debug, Clone)]
@@ -35,7 +37,7 @@ pub fn resolve_provider_inputs(
             ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
                 let binding = asset_input_value(project, context_clip_id, provider, config, input);
                 if let Some(binding) = binding {
-                    if let Some(path) = asset_ref_path(project, &binding) {
+                    if let Some(path) = asset_ref_path(project, &binding, &input.input_type) {
                         values.insert(
                             input.name.clone(),
                             Value::String(path.to_string_lossy().to_string()),
@@ -127,12 +129,14 @@ fn resolve_unpinned_asset_ref(
             asset_id,
             source_clip_id,
             pinned,
+            frame_reference,
         } => {
             if pinned {
                 Some(InputValue::AssetRef {
                     asset_id,
                     source_clip_id,
                     pinned,
+                    frame_reference,
                 })
             } else {
                 best_timeline_asset_ref_for_input(project, context_clip_id, input).or(Some(
@@ -140,6 +144,7 @@ fn resolve_unpinned_asset_ref(
                         asset_id,
                         source_clip_id,
                         pinned,
+                        frame_reference,
                     },
                 ))
             }
@@ -180,15 +185,8 @@ fn best_timeline_asset_ref_for_input(
         .filter(|clip| clip.id != context.id)
         .filter_map(|clip| {
             let asset = project.find_asset(clip.asset_id)?;
-            if !compatible_asset_for_provider_input(asset, &input.input_type) {
-                return None;
-            }
-            let clip_anchor = if slot.starts_with("end") {
-                clip.start_time
-            } else {
-                clip.start_time
-            };
-            let time_distance = (clip_anchor - target_time).abs();
+            let (time_distance, frame_reference) =
+                timeline_asset_candidate(asset, clip, &input.input_type, slot, target_time)?;
             let track_penalty = match (
                 context_track_index,
                 project
@@ -196,28 +194,109 @@ fn best_timeline_asset_ref_for_input(
                     .iter()
                     .position(|track| track.id == clip.track_id),
             ) {
-                (Some(context_index), Some(index)) if index > context_index => 0.0,
-                (Some(context_index), Some(index)) => {
-                    (context_index as f64 - index as f64).abs() * 0.25
+                (Some(context_index), Some(index)) if index == context_index + 1 => 0.0,
+                (Some(context_index), Some(index)) if index == context_index => 0.05,
+                (Some(context_index), Some(index)) if index > context_index => {
+                    0.1 + (index - context_index - 1) as f64 * 0.15
                 }
+                (Some(context_index), Some(index)) => (context_index - index) as f64 * 0.5,
                 _ => 1.0,
             };
-            Some((time_distance + track_penalty, clip.asset_id, clip.id))
+            Some((
+                time_distance + track_penalty,
+                clip.asset_id,
+                clip.id,
+                frame_reference,
+            ))
         })
         .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(_, asset_id, source_clip_id)| InputValue::AssetRef {
-            asset_id,
-            source_clip_id: Some(source_clip_id),
-            pinned: false,
-        })
+        .map(
+            |(_, asset_id, source_clip_id, frame_reference)| InputValue::AssetRef {
+                asset_id,
+                source_clip_id: Some(source_clip_id),
+                pinned: false,
+                frame_reference,
+            },
+        )
 }
 
-fn asset_ref_path(project: &Project, value: &InputValue) -> Option<std::path::PathBuf> {
-    let InputValue::AssetRef { asset_id, .. } = value else {
+fn timeline_asset_candidate(
+    asset: &Asset,
+    clip: &Clip,
+    input_type: &ProviderInputType,
+    slot: &str,
+    target_time: f64,
+) -> Option<(f64, Option<SourceFrameReference>)> {
+    match input_type {
+        ProviderInputType::Image => {
+            if asset.is_image() {
+                return Some(((clip.start_time - target_time).abs(), None));
+            }
+            if asset.is_video() {
+                let start_distance = (clip.start_time - target_time).abs();
+                let end_distance = (clip.end_time() - target_time).abs();
+                let prefer_last_for_start =
+                    slot.starts_with("start") && end_distance <= start_distance;
+                let prefer_first_for_end =
+                    slot.starts_with("end") && start_distance <= end_distance;
+                let frame = if prefer_last_for_start {
+                    SourceFrameReference::Last
+                } else if prefer_first_for_end || start_distance <= end_distance {
+                    SourceFrameReference::First
+                } else {
+                    SourceFrameReference::Last
+                };
+                let distance = match frame {
+                    SourceFrameReference::First => start_distance,
+                    SourceFrameReference::Last => end_distance,
+                };
+                return Some((distance, Some(frame)));
+            }
+            None
+        }
+        ProviderInputType::Video | ProviderInputType::Audio => {
+            if compatible_asset_for_provider_input(asset, input_type) {
+                Some(((clip.start_time - target_time).abs(), None))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn asset_ref_path(
+    project: &Project,
+    value: &InputValue,
+    input_type: &ProviderInputType,
+) -> Option<std::path::PathBuf> {
+    let InputValue::AssetRef {
+        asset_id,
+        source_clip_id,
+        frame_reference,
+        ..
+    } = value
+    else {
         return None;
     };
     let root = project.project_path.as_ref()?;
     let asset = project.find_asset(*asset_id)?;
+    if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
+        let source_path = video_asset_source_path(root, asset)?;
+        let frame = (*frame_reference).unwrap_or(SourceFrameReference::First);
+        let time_seconds = (*source_clip_id)
+            .and_then(|clip_id| project.clips.iter().find(|clip| clip.id == clip_id))
+            .map(|clip| source_frame_time(clip, frame, project.settings.fps))
+            .unwrap_or_else(|| asset_level_frame_time(asset, frame, project.settings.fps));
+        return extract_video_reference_frame(
+            root,
+            *asset_id,
+            *source_clip_id,
+            frame,
+            time_seconds,
+            &source_path,
+        );
+    }
     match &asset.kind {
         AssetKind::Image { path } | AssetKind::Video { path } | AssetKind::Audio { path } => {
             Some(root.join(path))
@@ -250,6 +329,93 @@ fn asset_ref_path(project: &Project, value: &InputValue) -> Option<std::path::Pa
             active_version.as_deref(),
             &["wav", "mp3", "ogg", "flac", "m4a"],
         ),
+    }
+}
+
+fn video_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
+    match &asset.kind {
+        AssetKind::Video { path } => Some(project_root.join(path)),
+        AssetKind::GenerativeVideo {
+            folder,
+            active_version,
+            ..
+        } => resolve_generative_source(
+            project_root,
+            folder,
+            active_version.as_deref(),
+            &["mp4", "mov", "mkv", "webm"],
+        ),
+        _ => None,
+    }
+}
+
+fn source_frame_time(clip: &Clip, frame: SourceFrameReference, fps: f64) -> f64 {
+    let frame_epsilon = 1.0 / fps.max(1.0);
+    match frame {
+        SourceFrameReference::First => clip.trim_in_seconds.max(0.0),
+        SourceFrameReference::Last => (clip.trim_in_seconds + clip.duration - frame_epsilon)
+            .max(clip.trim_in_seconds)
+            .max(0.0),
+    }
+}
+
+fn asset_level_frame_time(asset: &Asset, frame: SourceFrameReference, fps: f64) -> f64 {
+    match frame {
+        SourceFrameReference::First => 0.0,
+        SourceFrameReference::Last => {
+            let frame_epsilon = 1.0 / fps.max(1.0);
+            asset
+                .duration_seconds
+                .map(|duration| (duration - frame_epsilon).max(0.0))
+                .unwrap_or(0.0)
+        }
+    }
+}
+
+fn extract_video_reference_frame(
+    project_root: &Path,
+    asset_id: Uuid,
+    source_clip_id: Option<Uuid>,
+    frame: SourceFrameReference,
+    time_seconds: f64,
+    source_path: &Path,
+) -> Option<PathBuf> {
+    let cache_dir = project_root.join(".cache").join("reference_frames");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    let time_millis = (time_seconds.max(0.0) * 1000.0).round() as u64;
+    let clip_part = source_clip_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "asset".to_string());
+    let output_path = cache_dir.join(format!(
+        "{}_{}_{}_{}.png",
+        asset_id,
+        clip_part,
+        frame.as_str(),
+        time_millis
+    ));
+    if output_path.exists() {
+        return Some(output_path);
+    }
+
+    let status = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-ss")
+        .arg(format!("{:.6}", time_seconds.max(0.0)))
+        .arg("-i")
+        .arg(source_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg(&output_path)
+        .status()
+        .ok()?;
+
+    if status.success() && output_path.exists() {
+        Some(output_path)
+    } else {
+        None
     }
 }
 

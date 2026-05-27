@@ -475,6 +475,7 @@ workflows/
   - [x] Timeline context section at top of asset picker
   - [x] Other project assets section below
   - [x] Pinned/unpinned source clip references for bridge-created generative assets
+  - [x] Image inputs can auto-bind to first/last frames from proximal video clips
   - [ ] Duration defaults to clip duration on timeline
 
 - [x] **Provider System**
@@ -777,7 +778,7 @@ v1.0 - Public Release
 
 ---
 
-## 📊 Current Status (2026-05-19)
+## 📊 Current Status (2026-05-27)
 
 ### Completed ✅
 | Area | Status | Notes |
@@ -823,6 +824,21 @@ src/
 ```
 
 ### Recent Changes (Session Log)
+- **2026-05-27:** Added per-project workspace layout persistence for the main editor shell. Assets/Attributes collapse state, side-panel widths, Timeline collapse state, Timeline height, and Timeline zoom/scroll now serialize into `project.json`, reload when a project opens, and use project-scoped egui panel ids so switching projects does not inherit stale panel memory from the previous workspace.
+- **2026-05-27:** Hardened generative video version-switch playback/scrub responsiveness. Foreground preview decode and background prefetch now use separate decoder worker pools, decode worker lane assignment shifts after invalidation epochs so new-version scrub requests are less likely to sit behind old-version work, and Preview Stats now shows decode queue wait time separately from actual FFmpeg decode cost.
+- **2026-05-27:** Fixed Generation Queue `Clear All` semantics so it only removes terminal jobs (done, failed, or canceled). Queued and running generation work now stays in the queue unless explicitly canceled.
+- **2026-05-27:** Fixed generative video version-switch scrub stalls by adding a preview decode epoch. Active-version changes now invalidate queued preview decode/prefetch work for the generation folder so stale old-version frames are skipped instead of blocking the first scrub on the newly selected version.
+- **2026-05-27:** Added the first Asset Lab slice for generative version management. The previous Explorer-only Manage action now opens an in-app modal with version selection, active-version switching, preview/details, version duplication, version extraction to normal assets, deletion confirmation, and an explicit Open Location escape hatch. Asset rows and generative timeline clips can also open the lab by double-clicking or context menu.
+- **2026-05-27:** Fixed shared editable single-line field behavior for long values. Focused text/password fields now use the native left-aligned edit path so egui keeps the caret scrolled into view while preserving the centered display alignment when fields are not focused.
+- **2026-05-27:** Added asset-library rename, duplicate, and generation-extraction workflows. Asset names now update through the shared editor path, selected asset rows and the Attributes inspector can duplicate assets, generative asset duplicates copy their output folder/config so they can diverge, and active generative outputs can be extracted into normal image/video/audio project assets. The same operations are exposed through the Rust-native automation API.
+- **2026-05-27:** Sorted the Assets pane with a view-level natural alphanumeric order. Project asset storage order stays unchanged, but the visible list now places names like `Gen Image 2` before `Gen Image 10` while preserving UUID-backed selection, drag/drop, and timeline references.
+- **2026-05-27:** Fixed rapid multi-queue seed reservation for incrementing generation jobs. New generation enqueues now inspect already queued/running jobs for the same asset and seed field, then reserve the next seed after the highest pending seed instead of rereading the stale saved config seed until the first job completes.
+- **2026-05-27:** Made Provider Builder schema refresh apply to already-exposed inputs. Refreshing ComfyUI schema now updates matching exposed input cards in place with schema-derived type, enum options, required flags, multiline state, numeric metadata, and safe defaults while preserving user-authored names, labels, tags, and valid existing default selections.
+- **2026-05-27:** Fixed Provider Builder selected-node input lists so large Comfy nodes scroll inside the middle details card instead of clipping their lower inputs/actions.
+- **2026-05-27:** Added provider-specific ComfyUI schema enrichment to the Provider Builder. The builder can now query `/object_info` from the selected provider's own Base URL, parse Comfy input metadata, and use it when exposing inputs so enum options, defaults, booleans, numbers/integers, multiline text, required flags, and numeric step metadata are filled from the live Comfy instance instead of being typed manually. Workflow parsing also retains scalar input values from the workflow JSON as offline fallback defaults.
+- **2026-05-26:** Added explicit generation-queue cancellation. Queued/running jobs now expose a `Cancel` action in the queue popover; cancelling a running job marks it canceled, clears the app-side active job lock so the next queued generation can proceed, and sets a cancellation token so late provider responses are discarded before saving output files. External providers such as ComfyUI may still finish their own work, but the editor no longer waits on that job.
+- **2026-05-26:** Added timeline-native single-reference I2V creation. Right-clicking one image clip now offers `Create I2V from Image`, and right-clicking one video clip offers first-frame or last-frame I2V actions. These actions create a generative video clip one video track above the source, pin the source as the `start_image` reference, and keep the inspector focused on editing the selected item instead of mixing in creation macros.
+- **2026-05-26:** Extended timeline media references for I2V/FF2LV workflows. Image provider inputs can now resolve from still-image keyframe clips or from the first/last frame of a proximal video clip boundary; video frame references are cached as generated PNGs under the project cache before provider execution. The Generate Between Keyframes macro now accepts image and video clips, pins image assets directly, pins video clips as first/last-frame references, and still places the bridge clip one video track above the source when possible.
 - **2026-05-26:** Added Provider Builder binding-state affordances. Workflow nodes now show a subtle status outline and subtitle when they are already selected as output or have exposed inputs, already-exposed input rows show a disabled `Exposed` action, and the current output node shows a disabled `Output Selected` action instead of inviting duplicate clicks.
 - **2026-05-26:** Reordered the ComfyUI Provider Builder into an output-first flow. The Output tab now appears first and opens by default, Inputs stays disabled until a node-backed output is selected, switching workflows clears stale output/input bindings, and custom kit buttons now render visibly disabled when wrapped in disabled egui containers.
 - **2026-05-26:** Added a reusable equal-width action-row helper for modal footers so paired buttons split the actual available rect instead of combining manual gaps with egui's horizontal spacing. Asset delete, track delete, and bridge-keyframe confirmation footers now stay clipped/responsive at narrower modal widths, and the asset-delete explanatory copy wraps instead of truncating.
@@ -961,7 +977,7 @@ src/
 - **2026-01-12:** Queue job labels now omit active-version suffixes to avoid confusion while generating.
 - **2026-01-12:** Removed version labels from the queue to avoid misleading planned versions.
 - **2026-01-12:** Added a Manage Versions menu with delete current/others/all actions and confirmations.
-- **2026-01-12:** Added a Clear All action in the generation queue to purge queued/completed jobs quickly.
+- **2026-01-12:** Added a Clear All action in the generation queue to purge completed terminal jobs quickly.
 - **2026-01-12:** Wired ComfyUI WebSocket progress events into the generation queue with workflow + node progress bars.
 - **2026-01-12:** Added batch generation controls (count + seed strategy/field) with seed auto-detection and multi-job enqueueing.
 - **2026-01-12:** Improved ComfyUI missing-output messaging to point at cached results and seed offsets.
@@ -1190,7 +1206,7 @@ We start with the UI shell, dial in the look and feel, then layer in functionali
 
 ---
 
-*Last updated: 2026-05-26*
+*Last updated: 2026-05-27*
 
 
 

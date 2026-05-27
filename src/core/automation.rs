@@ -69,6 +69,28 @@ pub enum AutomationCommand {
     OpenProject { folder: PathBuf },
     /// Import a file through the normal project import path.
     ImportAsset { path: PathBuf },
+    /// Rename an asset, resolving by ID, name, or first selected asset.
+    RenameAsset {
+        #[serde(default)]
+        asset_id: Option<Uuid>,
+        #[serde(default)]
+        asset_name: Option<String>,
+        name: String,
+    },
+    /// Duplicate an asset as a new project asset.
+    DuplicateAsset {
+        #[serde(default)]
+        asset_id: Option<Uuid>,
+        #[serde(default)]
+        asset_name: Option<String>,
+    },
+    /// Extract a generative asset's active output as a normal project asset.
+    ExtractActiveGeneration {
+        #[serde(default)]
+        asset_id: Option<Uuid>,
+        #[serde(default)]
+        asset_name: Option<String>,
+    },
     /// Add an asset to the timeline, resolving by ID, name, or first asset.
     AddAssetToTimeline {
         #[serde(default)]

@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use crate::core::provider_store::{
 use crate::core::thumbnailer::Thumbnailer;
 use crate::state::{
     next_generative_index, Asset, AssetKind, GenerationJob, Project, ProjectSettings,
-    ProviderEntry, SelectionState, DEFAULT_GENERATIVE_VIDEO_FPS,
+    ProjectWorkspaceLayout, ProviderEntry, SelectionState, DEFAULT_GENERATIVE_VIDEO_FPS,
     DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
@@ -50,6 +51,45 @@ impl Default for EditorLayout {
     }
 }
 
+impl EditorLayout {
+    pub fn apply_workspace_layout(&mut self, layout: &ProjectWorkspaceLayout) {
+        let defaults = ProjectWorkspaceLayout::default();
+        self.left_collapsed = layout.left_collapsed;
+        self.right_collapsed = layout.right_collapsed;
+        self.timeline_collapsed = layout.timeline_collapsed;
+        self.left_width = finite_or(layout.left_width, defaults.left_width).clamp(120.0, 720.0);
+        self.right_width = finite_or(layout.right_width, defaults.right_width).clamp(120.0, 720.0);
+        self.timeline_height =
+            finite_or(layout.timeline_height, defaults.timeline_height).clamp(150.0, 420.0);
+        self.timeline_zoom =
+            finite_or(layout.timeline_zoom, defaults.timeline_zoom).clamp(0.01, 20_000.0);
+        self.timeline_scroll_x = finite_or(layout.timeline_scroll_x, 0.0).max(0.0);
+        self.timeline_scroll_y = finite_or(layout.timeline_scroll_y, 0.0).max(0.0);
+    }
+
+    pub fn workspace_layout(&self) -> ProjectWorkspaceLayout {
+        ProjectWorkspaceLayout {
+            left_collapsed: self.left_collapsed,
+            right_collapsed: self.right_collapsed,
+            timeline_collapsed: self.timeline_collapsed,
+            left_width: finite_or(self.left_width, 250.0).clamp(120.0, 720.0),
+            right_width: finite_or(self.right_width, 250.0).clamp(120.0, 720.0),
+            timeline_height: finite_or(self.timeline_height, 220.0).clamp(150.0, 420.0),
+            timeline_zoom: finite_or(self.timeline_zoom, 4.0).clamp(0.01, 20_000.0),
+            timeline_scroll_x: finite_or(self.timeline_scroll_x, 0.0).max(0.0),
+            timeline_scroll_y: finite_or(self.timeline_scroll_y, 0.0).max(0.0),
+        }
+    }
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct EditorOverlays {
     pub startup: bool,
@@ -60,6 +100,7 @@ pub struct EditorOverlays {
     pub generative_video: bool,
     pub export_video: bool,
     pub api_keys: bool,
+    pub asset_lab: bool,
 }
 
 pub struct EditorState {
@@ -160,6 +201,8 @@ impl EditorState {
     }
 
     fn set_project(&mut self, project: Project, project_root: PathBuf, preview_limits: (u32, u32)) {
+        self.layout
+            .apply_workspace_layout(&project.workspace_layout);
         self.thumbnailer = Arc::new(Thumbnailer::new(project_root.clone()));
         self.previewer = Arc::new(crate::core::preview::PreviewRenderer::new_with_limits(
             project_root,
@@ -186,6 +229,121 @@ impl EditorState {
         self.preview_dirty = true;
         self.status = "Asset imported".to_string();
         Ok(asset_id)
+    }
+
+    pub fn rename_asset(&mut self, asset_id: Uuid, name: impl Into<String>) -> Result<(), String> {
+        let name = name.into();
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Asset name cannot be empty.".to_string());
+        }
+        if !self.project.rename_asset(asset_id, trimmed.to_string()) {
+            return Err("Asset not found.".to_string());
+        }
+        self.status = "Asset renamed".to_string();
+        Ok(())
+    }
+
+    pub fn duplicate_asset(&mut self, asset_id: Uuid) -> Result<Uuid, String> {
+        let new_ids = self.duplicate_assets(&[asset_id])?;
+        new_ids
+            .first()
+            .copied()
+            .ok_or_else(|| "Asset could not be duplicated.".to_string())
+    }
+
+    pub fn duplicate_assets(&mut self, asset_ids: &[Uuid]) -> Result<Vec<Uuid>, String> {
+        let mut unique_asset_ids = Vec::new();
+        for asset_id in asset_ids {
+            if !unique_asset_ids.contains(asset_id) {
+                unique_asset_ids.push(*asset_id);
+            }
+        }
+        if unique_asset_ids.is_empty() {
+            return Err("No assets selected.".to_string());
+        }
+
+        let mut duplicated = Vec::new();
+        for asset_id in unique_asset_ids {
+            duplicated.push(self.duplicate_asset_inner(asset_id)?);
+        }
+
+        self.selection.clear();
+        self.selection.asset_ids = duplicated.clone();
+        self.preview_dirty = true;
+        self.status = if duplicated.len() == 1 {
+            "Duplicated asset".to_string()
+        } else {
+            format!("Duplicated {} assets", duplicated.len())
+        };
+        Ok(duplicated)
+    }
+
+    pub fn extract_active_generation_as_asset(&mut self, asset_id: Uuid) -> Result<Uuid, String> {
+        self.extract_generation_version_as_asset(asset_id, None)
+    }
+
+    pub fn extract_generation_version_as_asset(
+        &mut self,
+        asset_id: Uuid,
+        version: Option<&str>,
+    ) -> Result<Uuid, String> {
+        let project_root = self
+            .project
+            .project_path
+            .clone()
+            .ok_or_else(|| "Create or open a project first.".to_string())?;
+        let source_asset = self
+            .project
+            .find_asset(asset_id)
+            .cloned()
+            .ok_or_else(|| "Asset not found.".to_string())?;
+
+        let Some(source) = generative_source_for_extraction(&project_root, &source_asset, version)
+        else {
+            return Err("No active generation file was found for this asset.".to_string());
+        };
+
+        let extension = source
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or(source.default_extension)
+            .to_ascii_lowercase();
+        let target_dir = project_root.join(source.target_subdir);
+        fs::create_dir_all(&target_dir)
+            .map_err(|err| format!("Failed to create asset folder: {err}"))?;
+
+        let version_label = source.version.as_deref().unwrap_or_else(|| {
+            source
+                .path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output")
+        });
+        let base_name = format!("{} {}", source_asset.name, version_label);
+        let target_path =
+            unique_file_path(&target_dir, &sanitize_file_stem(&base_name), &extension);
+        fs::copy(&source.path, &target_path)
+            .map_err(|err| format!("Failed to extract generated output: {err}"))?;
+
+        let relative_path = PathBuf::from(source.target_subdir).join(
+            target_path
+                .file_name()
+                .ok_or_else(|| "Extracted output path has no filename.".to_string())?,
+        );
+        let name = unique_asset_name(&self.project.assets, &base_name);
+        let mut asset = match source.output {
+            ExtractedAssetOutput::Image => Asset::new_image(name, relative_path),
+            ExtractedAssetOutput::Video => Asset::new_video(name, relative_path),
+            ExtractedAssetOutput::Audio => Asset::new_audio(name, relative_path),
+        };
+        asset.duration_seconds = source_asset.duration_seconds;
+        let new_id = self.project.add_asset(asset);
+        self.selection.select_asset(new_id);
+        self.preview_dirty = true;
+        self.status = "Extracted generation as asset".to_string();
+        Ok(new_id)
     }
 
     pub fn add_asset_to_timeline(
@@ -260,6 +418,7 @@ impl EditorState {
     }
 
     pub fn save(&mut self) -> Result<(), String> {
+        self.project.workspace_layout = self.layout.workspace_layout();
         self.project
             .save()
             .map_err(|err| format!("Failed to save project: {err}"))?;
@@ -437,6 +596,50 @@ impl EditorState {
                 Ok(asset_id) => AutomationResponse::ok(json!({ "asset_id": asset_id })),
                 Err(err) => AutomationResponse::error(err),
             },
+            AutomationCommand::RenameAsset {
+                asset_id,
+                asset_name,
+                name,
+            } => {
+                let selected = self.resolve_asset_or_selected(*asset_id, asset_name.as_deref());
+                match selected {
+                    Some(asset_id) => match self.rename_asset(asset_id, name.clone()) {
+                        Ok(()) => AutomationResponse::ok(json!({ "asset_id": asset_id })),
+                        Err(err) => AutomationResponse::error(err),
+                    },
+                    None => AutomationResponse::error("No matching asset found."),
+                }
+            }
+            AutomationCommand::DuplicateAsset {
+                asset_id,
+                asset_name,
+            } => {
+                let selected = self.resolve_asset_or_selected(*asset_id, asset_name.as_deref());
+                match selected {
+                    Some(asset_id) => match self.duplicate_asset(asset_id) {
+                        Ok(new_asset_id) => {
+                            AutomationResponse::ok(json!({ "asset_id": new_asset_id }))
+                        }
+                        Err(err) => AutomationResponse::error(err),
+                    },
+                    None => AutomationResponse::error("No matching asset found."),
+                }
+            }
+            AutomationCommand::ExtractActiveGeneration {
+                asset_id,
+                asset_name,
+            } => {
+                let selected = self.resolve_asset_or_selected(*asset_id, asset_name.as_deref());
+                match selected {
+                    Some(asset_id) => match self.extract_active_generation_as_asset(asset_id) {
+                        Ok(new_asset_id) => {
+                            AutomationResponse::ok(json!({ "asset_id": new_asset_id }))
+                        }
+                        Err(err) => AutomationResponse::error(err),
+                    },
+                    None => AutomationResponse::error("No matching asset found."),
+                }
+            }
             AutomationCommand::AddAssetToTimeline {
                 asset_id,
                 asset_name,
@@ -610,6 +813,64 @@ impl EditorState {
             .or_else(|| self.project.assets.first().map(|asset| asset.id))
     }
 
+    fn resolve_asset_or_selected(
+        &self,
+        asset_id: Option<Uuid>,
+        asset_name: Option<&str>,
+    ) -> Option<Uuid> {
+        asset_id
+            .or_else(|| {
+                asset_name.and_then(|name| {
+                    self.project
+                        .assets
+                        .iter()
+                        .find(|asset| asset.name == name)
+                        .map(|asset| asset.id)
+                })
+            })
+            .or_else(|| self.selection.asset_ids.first().copied())
+    }
+
+    fn duplicate_asset_inner(&mut self, asset_id: Uuid) -> Result<Uuid, String> {
+        let project_root = self.project.project_path.clone();
+        let source = self
+            .project
+            .find_asset(asset_id)
+            .cloned()
+            .ok_or_else(|| "Asset not found.".to_string())?;
+        let mut asset = source.clone();
+        asset.id = Uuid::new_v4();
+        asset.name = unique_asset_copy_name(&self.project.assets, &source.name);
+
+        if source.is_generative() {
+            let project_root =
+                project_root.ok_or_else(|| "Create or open a project first.".to_string())?;
+            let source_folder = generative_folder(&source)
+                .cloned()
+                .ok_or_else(|| "Generative asset has no output folder.".to_string())?;
+            let target_folder = unique_generative_copy_folder(&project_root, &source_folder);
+            copy_dir_recursive(
+                &project_root.join(&source_folder),
+                &project_root.join(&target_folder),
+            )?;
+            set_generative_folder(&mut asset, target_folder.clone());
+            let config = self
+                .project
+                .generative_configs
+                .get(&source.id)
+                .cloned()
+                .unwrap_or_default();
+            let new_id = self.project.add_asset(asset);
+            self.project.generative_configs.insert(new_id, config);
+            self.project
+                .save_generative_config(new_id)
+                .map_err(|err| format!("Failed to save duplicated generative config: {err}"))?;
+            Ok(new_id)
+        } else {
+            Ok(self.project.add_asset(asset))
+        }
+    }
+
     pub fn state_json(&self) -> serde_json::Value {
         json!({
             "project": {
@@ -620,6 +881,7 @@ impl EditorState {
                 "assets": self.project.assets.clone(),
                 "clips": self.project.clips.clone(),
                 "markers": self.project.markers.clone(),
+                "workspace_layout": self.layout.workspace_layout(),
             },
             "current_time": self.current_time,
             "startup_done": self.startup_done,
@@ -630,11 +892,15 @@ impl EditorState {
                 "queue_open": self.overlays.queue,
                 "generative_video_open": self.overlays.generative_video,
                 "export_video_open": self.overlays.export_video,
+                "asset_lab_open": self.overlays.asset_lab,
             },
             "layout": {
                 "left_collapsed": self.layout.left_collapsed,
                 "right_collapsed": self.layout.right_collapsed,
                 "timeline_collapsed": self.layout.timeline_collapsed,
+                "left_width": self.layout.left_width,
+                "right_width": self.layout.right_width,
+                "timeline_height": self.layout.timeline_height,
                 "timeline_zoom": self.layout.timeline_zoom,
                 "timeline_scroll_x": self.layout.timeline_scroll_x,
                 "timeline_scroll_y": self.layout.timeline_scroll_y,
@@ -671,6 +937,250 @@ fn is_generative_image(kind: &AssetKind) -> bool {
 
 fn is_generative_audio(kind: &AssetKind) -> bool {
     matches!(kind, AssetKind::GenerativeAudio { .. })
+}
+
+fn generative_folder(asset: &Asset) -> Option<&PathBuf> {
+    match &asset.kind {
+        AssetKind::GenerativeVideo { folder, .. }
+        | AssetKind::GenerativeImage { folder, .. }
+        | AssetKind::GenerativeAudio { folder, .. } => Some(folder),
+        _ => None,
+    }
+}
+
+fn set_generative_folder(asset: &mut Asset, next_folder: PathBuf) {
+    match &mut asset.kind {
+        AssetKind::GenerativeVideo { folder, .. }
+        | AssetKind::GenerativeImage { folder, .. }
+        | AssetKind::GenerativeAudio { folder, .. } => *folder = next_folder,
+        _ => {}
+    }
+}
+
+fn unique_asset_copy_name(assets: &[Asset], source_name: &str) -> String {
+    unique_asset_name(assets, &format!("{source_name} Copy"))
+}
+
+fn unique_asset_name(assets: &[Asset], base_name: &str) -> String {
+    let base = base_name.trim();
+    let base = if base.is_empty() { "Asset" } else { base };
+    if !assets.iter().any(|asset| asset.name == base) {
+        return base.to_string();
+    }
+
+    let mut index = 2u32;
+    loop {
+        let candidate = format!("{base} {index}");
+        if !assets.iter().any(|asset| asset.name == candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn unique_generative_copy_folder(project_root: &Path, source_folder: &Path) -> PathBuf {
+    let parent = source_folder
+        .parent()
+        .unwrap_or_else(|| Path::new("generated"));
+    let stem = source_folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("asset");
+    let mut index = 1u32;
+    loop {
+        let folder_name = if index == 1 {
+            format!("{stem}_copy")
+        } else {
+            format!("{stem}_copy_{index}")
+        };
+        let candidate = parent.join(folder_name);
+        if !project_root.join(&candidate).exists() {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target).map_err(|err| format!("Failed to create copy folder: {err}"))?;
+    if !source.exists() {
+        return Ok(());
+    }
+
+    for entry in
+        fs::read_dir(source).map_err(|err| format!("Failed to read source folder: {err}"))?
+    {
+        let entry = entry.map_err(|err| format!("Failed to read source folder entry: {err}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &target_path)?;
+        } else if source_path.is_file() {
+            fs::copy(&source_path, &target_path)
+                .map_err(|err| format!("Failed to copy {}: {err}", source_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ExtractedAssetOutput {
+    Image,
+    Video,
+    Audio,
+}
+
+struct GenerativeExtractionSource {
+    path: PathBuf,
+    output: ExtractedAssetOutput,
+    target_subdir: &'static str,
+    default_extension: &'static str,
+    version: Option<String>,
+}
+
+const EXTRACT_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+const EXTRACT_VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi"];
+const EXTRACT_AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg"];
+
+fn generative_source_for_extraction(
+    project_root: &Path,
+    asset: &Asset,
+    version_override: Option<&str>,
+) -> Option<GenerativeExtractionSource> {
+    match &asset.kind {
+        AssetKind::GenerativeImage {
+            folder,
+            active_version,
+        } => {
+            let version = version_override.or(active_version.as_deref());
+            Some(GenerativeExtractionSource {
+                path: resolve_generative_output_file(
+                    project_root,
+                    folder,
+                    version,
+                    EXTRACT_IMAGE_EXTENSIONS,
+                )?,
+                output: ExtractedAssetOutput::Image,
+                target_subdir: "images",
+                default_extension: "png",
+                version: version
+                    .map(str::to_string)
+                    .or_else(|| active_version.clone()),
+            })
+        }
+        AssetKind::GenerativeVideo {
+            folder,
+            active_version,
+            ..
+        } => {
+            let version = version_override.or(active_version.as_deref());
+            Some(GenerativeExtractionSource {
+                path: resolve_generative_output_file(
+                    project_root,
+                    folder,
+                    version,
+                    EXTRACT_VIDEO_EXTENSIONS,
+                )?,
+                output: ExtractedAssetOutput::Video,
+                target_subdir: "video",
+                default_extension: "mp4",
+                version: version
+                    .map(str::to_string)
+                    .or_else(|| active_version.clone()),
+            })
+        }
+        AssetKind::GenerativeAudio {
+            folder,
+            active_version,
+        } => {
+            let version = version_override.or(active_version.as_deref());
+            Some(GenerativeExtractionSource {
+                path: resolve_generative_output_file(
+                    project_root,
+                    folder,
+                    version,
+                    EXTRACT_AUDIO_EXTENSIONS,
+                )?,
+                output: ExtractedAssetOutput::Audio,
+                target_subdir: "audio",
+                default_extension: "wav",
+                version: version
+                    .map(str::to_string)
+                    .or_else(|| active_version.clone()),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn resolve_generative_output_file(
+    project_root: &Path,
+    folder: &Path,
+    active_version: Option<&str>,
+    extensions: &[&str],
+) -> Option<PathBuf> {
+    let folder_path = project_root.join(folder);
+    if let Some(version) = active_version {
+        for extension in extensions {
+            let candidate = folder_path.join(format!("{version}.{extension}"));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let mut entries: Vec<PathBuf> = fs::read_dir(folder_path)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extensions
+                            .iter()
+                            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
+                    })
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
+}
+
+fn sanitize_file_stem(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '-' | '_') {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+    let sanitized = sanitized.trim().trim_matches('_').trim();
+    if sanitized.is_empty() {
+        "asset".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+fn unique_file_path(parent: &Path, stem: &str, extension: &str) -> PathBuf {
+    let extension = extension.trim_start_matches('.');
+    let mut index = 0u32;
+    loop {
+        let file_name = if index == 0 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem}_{index}.{extension}")
+        };
+        let candidate = parent.join(file_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        index += 1;
+    }
 }
 
 fn deleted_assets_status(assets: usize, clips: usize) -> String {
