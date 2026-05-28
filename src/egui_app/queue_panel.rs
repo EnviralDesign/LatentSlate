@@ -1,3 +1,5 @@
+use super::*;
+
 use eframe::egui::{
     self, Align, Color32, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
 };
@@ -395,5 +397,104 @@ fn queue_output_label(output_type: ProviderOutputType) -> &'static str {
         ProviderOutputType::Image => "Image",
         ProviderOutputType::Video => "Video",
         ProviderOutputType::Audio => "Audio",
+    }
+}
+impl NlaEguiApp {
+    pub(super) fn queue_panel(&mut self, ctx: &Context) {
+        let mut close_clicked = false;
+        let mut clear_clicked = false;
+        let mut cancel_job_id = None;
+        let app_rect = ctx.content_rect();
+        let fallback_anchor = Rect::from_min_size(
+            Pos2::new(app_rect.right() - 72.0, app_rect.top() + 4.0),
+            Vec2::new(62.0, kit::TOP_BAR_BUTTON_H),
+        );
+        let anchor = self.queue_button_rect.unwrap_or(fallback_anchor);
+        let bounds = app_rect.shrink(QUEUE_PANEL_MARGIN);
+        let jobs = self.editor.generation_queue.clone();
+        let has_attention = jobs.iter().any(|job| {
+            matches!(
+                job.status,
+                GenerationJobStatus::Queued | GenerationJobStatus::Running
+            )
+        });
+        let has_clearable = jobs.iter().any(|job| queue_job_is_terminal(job.status));
+        let desired_body_h = queue_list_height(&jobs);
+        let desired_h =
+            QUEUE_PANEL_PAD * 2.0 + QUEUE_PANEL_HEADER_H + QUEUE_PANEL_GAP + desired_body_h;
+        let max_h_by_window = (app_rect.height() - QUEUE_PANEL_MAX_APP_GAP).max(QUEUE_PANEL_MIN_H);
+        let panel_top =
+            (anchor.bottom() + QUEUE_PANEL_GAP).clamp(bounds.top(), bounds.bottom() - 24.0);
+        let max_h_below = (bounds.bottom() - panel_top).max(QUEUE_PANEL_MIN_H);
+        let panel_h = desired_h.clamp(
+            QUEUE_PANEL_MIN_H,
+            max_h_by_window.min(max_h_below).max(QUEUE_PANEL_MIN_H),
+        );
+        let max_x = (bounds.right() - QUEUE_PANEL_W).max(bounds.left());
+        let panel_pos = Pos2::new(
+            (anchor.right() - QUEUE_PANEL_W).clamp(bounds.left(), max_x),
+            panel_top,
+        );
+
+        if kit::modal_scrim(ctx, "queue").clicked() {
+            close_clicked = true;
+        }
+
+        egui::Area::new(egui::Id::new("generation_queue_popover"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(panel_pos)
+            .show(ctx, |ui| {
+                let (panel_rect, _) =
+                    ui.allocate_exact_size(Vec2::new(QUEUE_PANEL_W, panel_h), Sense::hover());
+                paint_queue_panel_shell(ui, panel_rect, has_attention);
+
+                let content_rect = panel_rect.shrink(QUEUE_PANEL_PAD);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(content_rect)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                child.set_min_size(content_rect.size());
+                child.shrink_clip_rect(content_rect);
+                child.set_width(content_rect.width());
+
+                let header_rect = Rect::from_min_size(
+                    content_rect.min,
+                    Vec2::new(content_rect.width(), QUEUE_PANEL_HEADER_H),
+                );
+                let body_rect = Rect::from_min_max(
+                    Pos2::new(content_rect.left(), header_rect.bottom() + QUEUE_PANEL_GAP),
+                    content_rect.right_bottom(),
+                );
+
+                queue_header(
+                    &mut child,
+                    header_rect,
+                    jobs.len(),
+                    has_clearable,
+                    &mut clear_clicked,
+                    &mut close_clicked,
+                );
+                queue_body(&mut child, body_rect, &jobs, &mut cancel_job_id);
+            });
+
+        if let Some(job_id) = cancel_job_id {
+            self.cancel_generation_job(job_id);
+        }
+        if clear_clicked {
+            let before = self.editor.generation_queue.len();
+            self.editor
+                .generation_queue
+                .retain(|job| !queue_job_is_terminal(job.status));
+            let cleared = before.saturating_sub(self.editor.generation_queue.len());
+            self.editor.status = if cleared == 1 {
+                "Cleared 1 completed generation job.".to_string()
+            } else {
+                format!("Cleared {cleared} completed generation jobs.")
+            };
+        }
+        if close_clicked {
+            self.editor.overlays.queue = false;
+        }
     }
 }
