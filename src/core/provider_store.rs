@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::core::credentials::{OPENAI_CREDENTIAL_ID, XAI_CREDENTIAL_ID};
 use crate::state::{
     InputUi, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
-    ProviderOutputType,
+    ProviderOutputType, ProviderWorkflowKind,
 };
 
 pub fn load_provider_entries(project_root: &Path) -> io::Result<Vec<ProviderEntry>> {
@@ -102,6 +102,7 @@ pub fn default_openai_image_provider_entry() -> ProviderEntry {
             base_url: None,
         },
     );
+    entry.workflow_kind = ProviderWorkflowKind::TextToImage;
     entry.inputs = vec![
         text_input(
             "prompt",
@@ -142,6 +143,7 @@ pub fn default_xai_image_provider_entry() -> ProviderEntry {
             base_url: None,
         },
     );
+    entry.workflow_kind = ProviderWorkflowKind::TextToImage;
     entry.inputs = vec![
         text_input(
             "prompt",
@@ -171,6 +173,7 @@ pub fn default_xai_video_provider_entry() -> ProviderEntry {
             base_url: None,
         },
     );
+    entry.workflow_kind = ProviderWorkflowKind::TextToVideo;
     entry.inputs = vec![
         text_input(
             "prompt",

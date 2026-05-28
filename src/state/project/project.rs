@@ -602,6 +602,22 @@ impl Project {
         false
     }
 
+    /// Move a clip to another compatible track.
+    pub fn move_clip_to_track(&mut self, id: Uuid, track_id: Uuid) -> bool {
+        let Some(clip_index) = self.clips.iter().position(|clip| clip.id == id) else {
+            return false;
+        };
+        if self.clips[clip_index].track_id == track_id {
+            return false;
+        }
+        if !self.asset_compatible_with_track(self.clips[clip_index].asset_id, track_id) {
+            return false;
+        }
+
+        self.clips[clip_index].track_id = track_id;
+        true
+    }
+
     /// Resize a clip (change start and/or duration)
     pub fn resize_clip(&mut self, id: Uuid, new_start: f64, new_duration: f64) -> bool {
         if let Some(clip) = self.clips.iter_mut().find(|c| c.id == id) {

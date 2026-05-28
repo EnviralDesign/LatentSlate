@@ -15,6 +15,74 @@ pub enum ProviderOutputType {
     Audio,
 }
 
+/// High-level generation workflow shape for UX filtering and creation menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderWorkflowKind {
+    /// Infer from provider output type and exposed media inputs.
+    Auto,
+    TextToImage,
+    ImageToImage,
+    TextToVideo,
+    ImageToVideo,
+    FirstFrameLastFrameVideo,
+    VideoToVideo,
+    TextToAudio,
+    AudioToAudio,
+    Custom,
+}
+
+impl Default for ProviderWorkflowKind {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl ProviderWorkflowKind {
+    pub const ALL: [ProviderWorkflowKind; 10] = [
+        ProviderWorkflowKind::Auto,
+        ProviderWorkflowKind::TextToImage,
+        ProviderWorkflowKind::ImageToImage,
+        ProviderWorkflowKind::TextToVideo,
+        ProviderWorkflowKind::ImageToVideo,
+        ProviderWorkflowKind::FirstFrameLastFrameVideo,
+        ProviderWorkflowKind::VideoToVideo,
+        ProviderWorkflowKind::TextToAudio,
+        ProviderWorkflowKind::AudioToAudio,
+        ProviderWorkflowKind::Custom,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::TextToImage => "Text to Image",
+            Self::ImageToImage => "Image to Image",
+            Self::TextToVideo => "Text to Video",
+            Self::ImageToVideo => "Image to Video",
+            Self::FirstFrameLastFrameVideo => "First/Last Frame Video",
+            Self::VideoToVideo => "Video to Video",
+            Self::TextToAudio => "Text to Audio",
+            Self::AudioToAudio => "Audio to Audio",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::TextToImage => "T2I",
+            Self::ImageToImage => "I2I",
+            Self::TextToVideo => "T2V",
+            Self::ImageToVideo => "I2V",
+            Self::FirstFrameLastFrameVideo => "FF2LF",
+            Self::VideoToVideo => "V2V",
+            Self::TextToAudio => "T2A",
+            Self::AudioToAudio => "A2A",
+            Self::Custom => "Custom",
+        }
+    }
+}
+
 /// Input types supported by provider schemas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -85,6 +153,8 @@ pub struct ProviderEntry {
     pub name: String,
     pub output_type: ProviderOutputType,
     #[serde(default)]
+    pub workflow_kind: ProviderWorkflowKind,
+    #[serde(default)]
     pub inputs: Vec<ProviderInputField>,
     pub connection: ProviderConnection,
 }
@@ -99,10 +169,85 @@ impl ProviderEntry {
             id: Uuid::new_v4(),
             name: name.into(),
             output_type,
+            workflow_kind: ProviderWorkflowKind::Auto,
             inputs: Vec::new(),
             connection,
         }
     }
+
+    pub fn resolved_workflow_kind(&self) -> ProviderWorkflowKind {
+        match self.workflow_kind {
+            ProviderWorkflowKind::Auto => infer_workflow_kind(self.output_type, &self.inputs),
+            explicit => explicit,
+        }
+    }
+}
+
+fn infer_workflow_kind(
+    output_type: ProviderOutputType,
+    inputs: &[ProviderInputField],
+) -> ProviderWorkflowKind {
+    let image_inputs: Vec<&ProviderInputField> = inputs
+        .iter()
+        .filter(|input| matches!(input.input_type, ProviderInputType::Image))
+        .collect();
+    let video_input_count = inputs
+        .iter()
+        .filter(|input| matches!(input.input_type, ProviderInputType::Video))
+        .count();
+    let audio_input_count = inputs
+        .iter()
+        .filter(|input| matches!(input.input_type, ProviderInputType::Audio))
+        .count();
+
+    match output_type {
+        ProviderOutputType::Image => {
+            if image_inputs.is_empty() {
+                ProviderWorkflowKind::TextToImage
+            } else {
+                ProviderWorkflowKind::ImageToImage
+            }
+        }
+        ProviderOutputType::Video => {
+            let has_start = image_inputs
+                .iter()
+                .any(|input| provider_input_reference_slot(input).starts_with("start"));
+            let has_end = image_inputs
+                .iter()
+                .any(|input| provider_input_reference_slot(input).starts_with("end"));
+            if has_start && has_end {
+                ProviderWorkflowKind::FirstFrameLastFrameVideo
+            } else if !image_inputs.is_empty() {
+                ProviderWorkflowKind::ImageToVideo
+            } else if video_input_count > 0 {
+                ProviderWorkflowKind::VideoToVideo
+            } else {
+                ProviderWorkflowKind::TextToVideo
+            }
+        }
+        ProviderOutputType::Audio => {
+            if audio_input_count > 0 {
+                ProviderWorkflowKind::AudioToAudio
+            } else {
+                ProviderWorkflowKind::TextToAudio
+            }
+        }
+    }
+}
+
+fn provider_input_reference_slot(input: &ProviderInputField) -> &'static str {
+    let key = format!("{} {}", input.name, input.label).to_ascii_lowercase();
+    if contains_any(&key, &["end", "last", "final"]) {
+        "end_image"
+    } else if contains_any(&key, &["start", "first", "initial", "init"]) {
+        "start_image"
+    } else {
+        "image"
+    }
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 pub fn input_value_as_string(value: &serde_json::Value) -> Option<String> {
