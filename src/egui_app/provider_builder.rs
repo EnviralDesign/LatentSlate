@@ -613,10 +613,11 @@ impl ProviderBuilderInput {
             .get(input_key)
             .filter(|value| provider_builder_default_value_is_scalar(value))
             .or_else(|| schema.and_then(|schema| schema.default.as_ref()));
-        let enum_options = schema
-            .filter(|_| input_type_key == "enum")
-            .map(|schema| schema.enum_options.join("\n"))
-            .unwrap_or_default();
+        let enum_options = if input_type_key == "enum" {
+            schema_or_workflow_enum_options(node, input_key, schema).join("\n")
+        } else {
+            String::new()
+        };
         let default_text =
             provider_builder_default_text_for_type(&input_type_key, default_value, &enum_options);
         let multiline =
@@ -757,7 +758,9 @@ impl ProviderBuilderInput {
         self.ui_step = schema.step;
 
         if self.input_type_key == "enum" {
-            let schema_options = schema.enum_options.join("\n");
+            let schema_options =
+                schema_or_workflow_enum_options(node, &self.selector.input_key, Some(schema))
+                    .join("\n");
             if !schema_options.trim().is_empty() {
                 self.enum_options = schema_options;
             }
@@ -1404,6 +1407,86 @@ pub(super) fn schema_provider_input_type_key(
         "AUDIO" => "audio".to_string(),
         "ENUM" | "COMBO" => "enum".to_string(),
         _ => infer_provider_input_from_workflow_node(node, input_key).0,
+    }
+}
+
+pub(super) fn schema_or_workflow_enum_options(
+    node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+    input_key: &str,
+    schema: Option<&crate::core::comfyui_workflow::ComfyInputSchema>,
+) -> Vec<String> {
+    if let Some(schema) = schema {
+        if !schema.enum_options.is_empty() {
+            return schema.enum_options.clone();
+        }
+        let schema_is_enum = schema.type_name.as_deref().is_some_and(|type_name| {
+            matches!(
+                type_name.trim().to_ascii_uppercase().as_str(),
+                "ENUM" | "COMBO"
+            )
+        });
+        if schema_is_enum {
+            let workflow_options = workflow_node_enum_options(node, input_key);
+            if !workflow_options.is_empty() {
+                return workflow_options;
+            }
+        }
+    }
+
+    if node.class_type == "CustomCombo" || input_key.eq_ignore_ascii_case("choice") {
+        return workflow_node_enum_options(node, input_key);
+    }
+
+    Vec::new()
+}
+
+pub(super) fn workflow_node_enum_options(
+    node: &crate::core::comfyui_workflow::ComfyWorkflowNode,
+    _input_key: &str,
+) -> Vec<String> {
+    let mut numbered = Vec::new();
+    let mut unnumbered = Vec::new();
+    for (key, value) in node.input_values.iter() {
+        let key_lower = key.to_ascii_lowercase();
+        if !key_lower.starts_with("option") {
+            continue;
+        }
+        let Some(option) = workflow_option_value_to_string(value) else {
+            continue;
+        };
+        if option.trim().is_empty() {
+            continue;
+        }
+        let suffix = key_lower.trim_start_matches("option");
+        if let Ok(index) = suffix.parse::<usize>() {
+            numbered.push((index, option));
+        } else {
+            unnumbered.push((key_lower, option));
+        }
+    }
+
+    numbered.sort_by_key(|(index, _)| *index);
+    unnumbered.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut options = Vec::new();
+    for (_, option) in numbered {
+        if !options.contains(&option) {
+            options.push(option);
+        }
+    }
+    for (_, option) in unnumbered {
+        if !options.contains(&option) {
+            options.push(option);
+        }
+    }
+    options
+}
+
+fn workflow_option_value_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
     }
 }
 
