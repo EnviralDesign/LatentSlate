@@ -2,15 +2,15 @@
 
 #![allow(dead_code)]
 
-use std::path::Path;
-use std::sync::OnceLock;
-
 use ffmpeg::channel_layout::ChannelLayout;
 use ffmpeg::codec;
 use ffmpeg::format;
 use ffmpeg::frame;
 use ffmpeg::media;
 use ffmpeg_next as ffmpeg;
+use std::path::Path;
+
+use crate::core::ffmpeg_runtime::init_ffmpeg;
 
 use super::resample::{frame_to_f32_interleaved, AudioResampleConfig, AudioResampler};
 
@@ -193,10 +193,4 @@ where
         }
     }
     Ok(())
-}
-
-fn init_ffmpeg() -> Result<(), String> {
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    let result = INIT.get_or_init(|| ffmpeg::init().map_err(|err| err.to_string()));
-    result.clone()
 }

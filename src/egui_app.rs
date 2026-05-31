@@ -246,6 +246,7 @@ pub struct NlaEguiApp {
     audio_decode_failures: Arc<Mutex<HashMap<Uuid, String>>>,
     audio_decode_warmup_pending: bool,
     timeline_drag: Option<TimelineDrag>,
+    timeline_context_menu_pos: Option<Pos2>,
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
     timeline_last_scrub_audio_time: Option<f64>,
@@ -496,6 +497,7 @@ impl NlaEguiApp {
             audio_decode_failures: Arc::new(Mutex::new(HashMap::new())),
             audio_decode_warmup_pending: false,
             timeline_drag: None,
+            timeline_context_menu_pos: None,
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
             timeline_last_scrub_audio_time: None,
@@ -566,7 +568,7 @@ impl NlaEguiApp {
     }
 
     fn keyboard_shortcuts_suppressed(&self, ctx: &Context) -> bool {
-        ctx.text_edit_focused() || self.modal_background_input_blocked()
+        ctx.text_edit_focused() || ctx.any_popup_open() || self.modal_background_input_blocked()
     }
 
     fn modal_background_input_blocked(&self) -> bool {

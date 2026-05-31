@@ -266,8 +266,13 @@ impl NlaEguiApp {
             .cloned()
             .map(|asset| (asset.id, asset))
             .collect();
-        let dragged_asset_id = egui::DragAndDrop::payload::<AssetTimelineDragPayload>(ui.ctx())
-            .map(|payload| payload.asset_id);
+        let timeline_input_frozen = ui.ctx().any_popup_open();
+        let dragged_asset_id = (!timeline_input_frozen)
+            .then(|| {
+                egui::DragAndDrop::payload::<AssetTimelineDragPayload>(ui.ctx())
+                    .map(|payload| payload.asset_id)
+            })
+            .flatten();
         let drop_target_track_id = dragged_asset_id.and_then(|asset_id| {
             ui.ctx().pointer_hover_pos().and_then(|pos| {
                 timeline_track_row_at_pos(pos, rects, &tracks)
@@ -279,20 +284,24 @@ impl NlaEguiApp {
                     .map(|track| track.id)
             })
         });
-        let clip_drag_target_track_id = match self.timeline_drag {
-            Some(TimelineDrag::ClipMove { clip_id, .. }) => {
-                ui.ctx().pointer_hover_pos().and_then(|pos| {
-                    let clip = clips.iter().find(|clip| clip.id == clip_id)?;
-                    timeline_track_row_at_pos(pos, rects, &tracks)
-                        .filter(|track| {
-                            self.editor
-                                .project
-                                .asset_compatible_with_track(clip.asset_id, track.id)
-                        })
-                        .map(|track| track.id)
-                })
+        let clip_drag_target_track_id = if timeline_input_frozen {
+            None
+        } else {
+            match self.timeline_drag {
+                Some(TimelineDrag::ClipMove { clip_id, .. }) => {
+                    ui.ctx().pointer_hover_pos().and_then(|pos| {
+                        let clip = clips.iter().find(|clip| clip.id == clip_id)?;
+                        timeline_track_row_at_pos(pos, rects, &tracks)
+                            .filter(|track| {
+                                self.editor
+                                    .project
+                                    .asset_compatible_with_track(clip.asset_id, track.id)
+                            })
+                            .map(|track| track.id)
+                    })
+                }
+                _ => None,
             }
-            _ => None,
         };
 
         self.paint_timeline_ruler(&ruler_painter, rects.ruler, duration, zoom, fps);
@@ -321,7 +330,7 @@ impl NlaEguiApp {
                 ui.id().with(("timeline-track-label", track.id)),
                 Sense::click(),
             );
-            if track_response.clicked() {
+            if !timeline_input_frozen && track_response.clicked() {
                 self.editor.selection.select_track(track.id);
             }
             track_response.context_menu(|ui| {
@@ -495,7 +504,8 @@ impl NlaEguiApp {
                 let waveform = asset
                     .filter(|asset| asset.is_audio())
                     .and_then(|asset| self.audio_peak_cache(ui.ctx(), asset));
-                let contextual_keyframe_label = keyframe
+                let contextual_keyframe_label = !timeline_input_frozen
+                    && keyframe
                     && (selected
                         || ui
                             .ctx()
@@ -564,20 +574,31 @@ impl NlaEguiApp {
         }
         self.paint_timeline_scrollbar(ui, &painter, rects, content_w, viewport_w);
         self.paint_timeline_vertical_scrollbar(ui, &painter, rects, track_content_h);
-        if let Some(payload) = response.dnd_release_payload::<AssetTimelineDragPayload>() {
-            if let Some(pos) = ui
-                .ctx()
-                .pointer_interact_pos()
-                .or_else(|| ui.ctx().pointer_hover_pos())
-            {
-                self.drop_asset_on_timeline(payload.asset_id, pos, rects, &tracks, duration, zoom);
+        if !timeline_input_frozen {
+            if let Some(payload) = response.dnd_release_payload::<AssetTimelineDragPayload>() {
+                if let Some(pos) = ui
+                    .ctx()
+                    .pointer_interact_pos()
+                    .or_else(|| ui.ctx().pointer_hover_pos())
+                {
+                    self.drop_asset_on_timeline(
+                        payload.asset_id,
+                        pos,
+                        rects,
+                        &tracks,
+                        duration,
+                        zoom,
+                    );
+                }
             }
         }
-        response.context_menu(|ui| {
-            let context_pos = ui
-                .ctx()
-                .pointer_interact_pos()
+        if response.secondary_clicked() {
+            self.timeline_context_menu_pos = response
+                .interact_pointer_pos()
                 .or_else(|| ui.ctx().pointer_hover_pos());
+        }
+        let context_menu_response = response.context_menu(|ui| {
+            let context_pos = self.timeline_context_menu_pos;
             let marker_time = context_pos
                 .map(|pos| {
                     if pos.x >= rects.tracks.left() {
@@ -620,26 +641,10 @@ impl NlaEguiApp {
                 return;
             }
 
-            if let Some(track) = context_track
+            let t2i_track_id = context_track
                 .as_ref()
                 .filter(|track| track.track_type == TrackType::Video)
-            {
-                ui.separator();
-                ui.menu_button("New Generative Image", |ui| {
-                    if let Some(provider_id) = self.provider_choice_menu(
-                        ui,
-                        ProviderWorkflowKind::TextToImage,
-                        "Configure provider later",
-                    ) {
-                        self.create_generative_image_clip_on_track(
-                            track.id,
-                            marker_time,
-                            provider_id,
-                        );
-                        ui.close();
-                    }
-                });
-            }
+                .map(|track| track.id);
 
             let mut selected_clips: Vec<Clip> = self
                 .editor
@@ -673,92 +678,112 @@ impl NlaEguiApp {
                     ui.close();
                 }
             }
-            if let Some(single_clip) = selected_clips
+            let single_clip = selected_clips
                 .first()
                 .filter(|_| selected_clips.len() == 1)
-                .cloned()
+                .cloned();
+            let single_asset = single_clip
+                .as_ref()
+                .and_then(|clip| self.editor.project.find_asset(clip.asset_id))
+                .cloned();
+            let single_is_generative = single_asset
+                .as_ref()
+                .is_some_and(|asset| asset.is_generative());
+            let single_is_image = single_asset.as_ref().is_some_and(|asset| asset.is_image());
+            let single_is_video = single_asset.as_ref().is_some_and(|asset| asset.is_video());
+
+            if let (Some(single_clip), Some(asset)) = (single_clip.as_ref(), single_asset.as_ref())
             {
-                if let Some(asset) = self
-                    .editor
-                    .project
-                    .find_asset(single_clip.asset_id)
-                    .cloned()
+                if single_is_generative
+                    && automation_button(ui.button("Open Asset Lab"), "Open Asset Lab").clicked()
                 {
-                    if asset.is_generative()
-                        && automation_button(ui.button("Open Asset Lab"), "Open Asset Lab")
-                            .clicked()
-                    {
-                        let local_time = (self.editor.current_time - single_clip.start_time
-                            + single_clip.trim_in_seconds)
-                            .max(0.0);
-                        self.open_asset_lab_at_time(asset.id, Some(local_time));
+                    let local_time = (self.editor.current_time - single_clip.start_time
+                        + single_clip.trim_in_seconds)
+                        .max(0.0);
+                    self.open_asset_lab_at_time(asset.id, Some(local_time));
+                    ui.close();
+                }
+            }
+
+            if t2i_track_id.is_some() || single_is_image || single_is_video || visual_count >= 2 {
+                ui.separator();
+                ui.label(kit::caption("Generate"));
+            }
+            if let Some(track_id) = t2i_track_id {
+                ui.menu_button("Create T2I Image", |ui| {
+                    if let Some(provider_id) = self.provider_choice_menu(
+                        ui,
+                        ProviderWorkflowKind::TextToImage,
+                        "Configure provider later",
+                    ) {
+                        self.create_generative_image_clip_on_track(
+                            track_id,
+                            marker_time,
+                            provider_id,
+                        );
                         ui.close();
                     }
-                    if asset.is_image() || asset.is_video() {
-                        ui.separator();
-                        ui.label(kit::caption("Generate"));
-                    }
-                    if asset.is_image() {
-                        ui.menu_button("Create I2I from Image", |ui| {
-                            if let Some(provider_id) = self.provider_choice_menu(
-                                ui,
-                                ProviderWorkflowKind::ImageToImage,
-                                "Configure provider later",
-                            ) {
-                                self.create_i2i_from_single_clip(single_clip.id, provider_id);
-                                ui.close();
-                            }
-                        });
-                        ui.menu_button("Create I2V from Image", |ui| {
-                            if let Some(provider_id) = self.provider_choice_menu(
-                                ui,
-                                ProviderWorkflowKind::ImageToVideo,
-                                "Configure provider later",
-                            ) {
-                                self.create_i2v_from_single_clip(
-                                    single_clip.id,
-                                    SingleI2VReference::Image,
-                                    provider_id,
-                                );
-                                ui.close();
-                            }
-                        });
-                    }
-                    if asset.is_video() {
-                        ui.menu_button("Create I2V from First Frame", |ui| {
-                            if let Some(provider_id) = self.provider_choice_menu(
-                                ui,
-                                ProviderWorkflowKind::ImageToVideo,
-                                "Configure provider later",
-                            ) {
-                                self.create_i2v_from_single_clip(
-                                    single_clip.id,
-                                    SingleI2VReference::VideoFirstFrame,
-                                    provider_id,
-                                );
-                                ui.close();
-                            }
-                        });
-                        ui.menu_button("Extend I2V from Last Frame", |ui| {
-                            if let Some(provider_id) = self.provider_choice_menu(
-                                ui,
-                                ProviderWorkflowKind::ImageToVideo,
-                                "Configure provider later",
-                            ) {
-                                self.create_i2v_from_single_clip(
-                                    single_clip.id,
-                                    SingleI2VReference::VideoLastFrame,
-                                    provider_id,
-                                );
-                                ui.close();
-                            }
-                        });
-                    }
+                });
+            }
+            if let Some(single_clip) = single_clip.as_ref() {
+                if single_is_image {
+                    ui.menu_button("Create I2I from Image", |ui| {
+                        if let Some(provider_id) = self.provider_choice_menu(
+                            ui,
+                            ProviderWorkflowKind::ImageToImage,
+                            "Configure provider later",
+                        ) {
+                            self.create_i2i_from_single_clip(single_clip.id, provider_id);
+                            ui.close();
+                        }
+                    });
+                    ui.menu_button("Create I2V from Image", |ui| {
+                        if let Some(provider_id) = self.provider_choice_menu(
+                            ui,
+                            ProviderWorkflowKind::ImageToVideo,
+                            "Configure provider later",
+                        ) {
+                            self.create_i2v_from_single_clip(
+                                single_clip.id,
+                                SingleI2VReference::Image,
+                                provider_id,
+                            );
+                            ui.close();
+                        }
+                    });
+                }
+                if single_is_video {
+                    ui.menu_button("Create I2V from First Frame", |ui| {
+                        if let Some(provider_id) = self.provider_choice_menu(
+                            ui,
+                            ProviderWorkflowKind::ImageToVideo,
+                            "Configure provider later",
+                        ) {
+                            self.create_i2v_from_single_clip(
+                                single_clip.id,
+                                SingleI2VReference::VideoFirstFrame,
+                                provider_id,
+                            );
+                            ui.close();
+                        }
+                    });
+                    ui.menu_button("Extend I2V from Last Frame", |ui| {
+                        if let Some(provider_id) = self.provider_choice_menu(
+                            ui,
+                            ProviderWorkflowKind::ImageToVideo,
+                            "Configure provider later",
+                        ) {
+                            self.create_i2v_from_single_clip(
+                                single_clip.id,
+                                SingleI2VReference::VideoLastFrame,
+                                provider_id,
+                            );
+                            ui.close();
+                        }
+                    });
                 }
             }
             if visual_count >= 2 {
-                ui.separator();
-                ui.label(kit::caption("Generate"));
                 ui.menu_button("Generate Between Keyframes", |ui| {
                     if let Some(provider_id) = self.provider_choice_menu(
                         ui,
@@ -792,6 +817,9 @@ impl NlaEguiApp {
                 ui.close();
             }
         });
+        if context_menu_response.is_none() && !response.context_menu_opened() {
+            self.timeline_context_menu_pos = None;
+        }
         self.handle_timeline_pointer(
             ui,
             &response,
@@ -953,7 +981,7 @@ impl NlaEguiApp {
         viewport_w: f32,
         max_scroll_y: f32,
     ) {
-        if self.modal_background_input_blocked() {
+        if self.modal_background_input_blocked() || ui.ctx().any_popup_open() {
             return;
         }
         let Some(pointer) = ui.ctx().pointer_hover_pos() else {
@@ -1501,17 +1529,18 @@ impl NlaEguiApp {
             ui.id().with("timeline-add-marker"),
             Sense::click(),
         );
-        if video_resp.clicked() {
+        let input_frozen = ui.ctx().any_popup_open();
+        if !input_frozen && video_resp.clicked() {
             let track_id = self.editor.project.add_video_track();
             self.editor.selection.select_track(track_id);
             self.editor.status = "Added video track".to_string();
         }
-        if audio_resp.clicked() {
+        if !input_frozen && audio_resp.clicked() {
             let track_id = self.editor.project.add_audio_track();
             self.editor.selection.select_track(track_id);
             self.editor.status = "Added audio track".to_string();
         }
-        if marker_resp.clicked() {
+        if !input_frozen && marker_resp.clicked() {
             let track_id = self.editor.project.add_marker_track();
             self.editor.selection.select_track(track_id);
             self.editor.status = "Added marker track".to_string();
@@ -1521,21 +1550,21 @@ impl NlaEguiApp {
             video_rect,
             "+ Video",
             kit::VIDEO,
-            video_resp.hovered(),
+            !input_frozen && video_resp.hovered(),
         );
         paint_dashed_timeline_button(
             painter,
             audio_rect,
             "+ Audio",
             kit::AUDIO,
-            audio_resp.hovered(),
+            !input_frozen && audio_resp.hovered(),
         );
         paint_dashed_timeline_button(
             painter,
             marker_rect,
             "+ Marker",
             kit::MARKER,
-            marker_resp.hovered(),
+            !input_frozen && marker_resp.hovered(),
         );
     }
 
@@ -1571,6 +1600,9 @@ impl NlaEguiApp {
             ui.id().with("timeline-scrollbar"),
             Sense::click_and_drag(),
         );
+        if ui.ctx().any_popup_open() {
+            return;
+        }
         if (response.dragged() || response.clicked()) && response.interact_pointer_pos().is_some() {
             let pos = response.interact_pointer_pos().unwrap();
             let ratio = ((pos.x - rects.scrollbar.left() - handle_w * 0.5)
@@ -1612,6 +1644,9 @@ impl NlaEguiApp {
             ui.id().with("timeline-vertical-scrollbar"),
             Sense::click_and_drag(),
         );
+        if ui.ctx().any_popup_open() {
+            return;
+        }
         if (response.dragged() || response.clicked()) && response.interact_pointer_pos().is_some() {
             let pos = response.interact_pointer_pos().unwrap();
             let ratio = ((pos.y - rail.top() - handle_h * 0.5)
@@ -1633,6 +1668,9 @@ impl NlaEguiApp {
         duration: f64,
         zoom: f32,
     ) {
+        if ui.ctx().any_popup_open() {
+            return;
+        }
         if let Some(pos) = ui
             .ctx()
             .pointer_hover_pos()

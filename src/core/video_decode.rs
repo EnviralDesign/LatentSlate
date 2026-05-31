@@ -11,6 +11,8 @@ use std::time::Instant;
 use ffmpeg_next as ffmpeg;
 use image::RgbaImage;
 
+use crate::core::ffmpeg_runtime::init_ffmpeg;
+
 const AV_TIME_BASE: i64 = 1_000_000;
 const MAX_DECODERS: usize = 8;
 const MAX_SEQUENTIAL_JUMP_SECONDS: f64 = 2.0;
@@ -93,7 +95,7 @@ impl VideoDecodeWorker {
             let worker_epoch = Arc::clone(&epoch);
 
             thread::spawn(move || {
-                let _ = ffmpeg::init();
+                let _ = init_ffmpeg();
                 let mut decoders: HashMap<DecoderKey, DecoderEntry> = HashMap::new();
                 let mut access_counter: u64 = 0;
 

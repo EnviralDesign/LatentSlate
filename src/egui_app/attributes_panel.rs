@@ -248,7 +248,7 @@ impl NlaEguiApp {
         }
         ui.separator();
         for provider in providers {
-            if automation_button(ui.button(&provider.name), &provider.name).clicked() {
+            if provider_choice_menu_row(ui, &provider).clicked() {
                 return Some(Some(provider.id));
             }
         }
@@ -2001,4 +2001,56 @@ impl NlaEguiApp {
             self.refresh_audio_playback_items();
         }
     }
+}
+
+fn provider_choice_menu_row(ui: &mut Ui, provider: &ProviderEntry) -> egui::Response {
+    let accent = provider_output_color(provider.output_type);
+    let height = 30.0;
+    let width = ui.available_width().max(210.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response.on_hover_cursor(egui::CursorIcon::PointingHand),
+        "button",
+        Some(provider.name.clone()),
+        true,
+        false,
+    );
+
+    let fill = if response.hovered() {
+        kit::PANEL_RAISED
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(3), fill);
+
+    let accent_rect = Rect::from_min_size(
+        Pos2::new(rect.left() + 2.0, rect.top() + 6.0),
+        Vec2::new(3.0, rect.height() - 12.0),
+    );
+    ui.painter()
+        .rect_filled(accent_rect, egui::CornerRadius::same(2), accent);
+
+    let kind = provider.resolved_workflow_kind().short_label();
+    let content = rect.shrink2(Vec2::new(12.0, 3.0));
+    let kind_w = 46.0_f32.min(content.width() * 0.32);
+    let name_w = (content.width() - kind_w - 8.0).max(24.0);
+    paint_truncated_row_text_top(
+        ui,
+        Pos2::new(content.left(), content.center().y - 6.5),
+        kit::value(&provider.name),
+        12.0,
+        name_w,
+        kit::TEXT,
+    );
+    paint_truncated_row_text_top(
+        ui,
+        Pos2::new(content.right() - kind_w, content.center().y - 6.5),
+        kit::caption(kind).color(accent.gamma_multiply(0.95)),
+        11.0,
+        kind_w,
+        accent,
+    );
+
+    response
 }
