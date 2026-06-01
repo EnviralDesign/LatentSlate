@@ -41,6 +41,8 @@ Provider and workflow risks:
 
 Cloud provider configs should store credential IDs, not raw API keys. On Windows, app-managed API keys use user-scoped DPAPI protection through the local credential store.
 
+The current Windows app-local root is `%LOCALAPPDATA%\EnviralDesign\LatentSlate\`. Treat files under that folder as private local configuration.
+
 Do not commit:
 
 - API keys.

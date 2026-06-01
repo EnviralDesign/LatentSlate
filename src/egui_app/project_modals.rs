@@ -39,11 +39,7 @@ impl LatentSlateApp {
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                kit::modal_header(
-                    ui,
-                    "LatentSlate",
-                    Some("Create a new project or open an existing one"),
-                );
+                kit::modal_header(ui, "LatentSlate", Some("From latent space to timeline."));
                 kit::modal_body(ui, |ui| self.new_project_modal_contents(ui, true));
             });
     }

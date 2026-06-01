@@ -4,6 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
+const MAKER_DATA_DIR: &str = "EnviralDesign";
+const APP_DATA_DIR: &str = "LatentSlate";
+
 fn resource_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -46,10 +49,14 @@ pub fn resource_dir(name: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn app_cache_root() -> PathBuf {
+pub fn app_data_root() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("LatentSlate").join("cache")
+    base.join(MAKER_DATA_DIR).join(APP_DATA_DIR)
+}
+
+pub fn app_cache_root() -> PathBuf {
+    app_data_root().join("cache")
 }

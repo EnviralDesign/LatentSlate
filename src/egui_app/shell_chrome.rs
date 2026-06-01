@@ -139,7 +139,17 @@ impl LatentSlateApp {
                         |ui, this: &mut Self| {
                             ui.label(RichText::new("LatentSlate").strong());
                             ui.label(
-                                RichText::new("egui migration build")
+                                RichText::new("From latent space to timeline.")
+                                    .small()
+                                    .color(kit::TEXT_MUTED),
+                            );
+                            ui.label(
+                                RichText::new("by Enviral Design")
+                                    .small()
+                                    .color(kit::TEXT_MUTED),
+                            );
+                            ui.label(
+                                RichText::new("functional alpha")
                                     .small()
                                     .color(kit::TEXT_MUTED),
                             );

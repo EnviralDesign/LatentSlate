@@ -1,13 +1,13 @@
 # Project Status
 
-LatentSlate is a Windows-first functional alpha for local AI video workflows. It combines a Rust/egui desktop timeline, project-local media management, FFmpeg-backed preview/export, audio playback, generative asset versioning, and bring-your-own ComfyUI providers.
+LatentSlate is a Windows-first functional alpha for local AI video workflows, created by Enviral Design. It combines a Rust/egui desktop timeline, project-local media management, FFmpeg-backed preview/export, audio playback, generative asset versioning, and bring-your-own ComfyUI providers.
 
 This file is the living project status page. Keep it current, concise, and factual.
 
 ## Current Positioning
 
 - **Audience:** technically capable ComfyUI users, AI video creators, Rust contributors, and OSS reviewers.
-- **Project shape:** local-first desktop editor, not a hosted generation service.
+- **Project shape:** local-first generative NLE, not a hosted generation service.
 - **Primary provider path:** local ComfyUI workflows exported as API JSON.
 - **Platform:** Windows is the only actively developed and tested platform today.
 - **Release state:** no installer or stable binary release yet.
@@ -71,7 +71,7 @@ Not a primary goal:
 
 | Area | Decision |
 |---|---|
-| Project identity | Public name, executable, package, automation env vars, and app-local storage roots use `LatentSlate`. |
+| Project identity | Public name, executable, package, automation env vars, and app-local storage roots use `LatentSlate`; maker identity is Enviral Design. |
 | UI runtime | `egui`/`eframe` native desktop shell. |
 | Language | Rust. |
 | Project model | Project equals folder; imported media is copied into project-local folders. |

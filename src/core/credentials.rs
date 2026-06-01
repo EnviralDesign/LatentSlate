@@ -40,7 +40,7 @@ impl Default for CredentialFile {
 }
 
 pub fn credentials_path() -> PathBuf {
-    app_config_root().join("credentials.json")
+    crate::core::paths::app_data_root().join("credentials.json")
 }
 
 pub fn has_secret(id: &str) -> bool {
@@ -88,14 +88,6 @@ pub fn load_secret(id: &str) -> Result<String, String> {
 
 pub fn secret_char_count(id: &str) -> Result<usize, String> {
     load_secret(id).map(|secret| secret.chars().count())
-}
-
-fn app_config_root() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
-        .or_else(|_| std::env::var("APPDATA"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("LatentSlate")
 }
 
 fn load_file() -> io::Result<CredentialFile> {
@@ -223,5 +215,5 @@ fn unprotect_secret(_bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn credential_entropy() -> &'static [u8] {
-    b"LatentSlate credential store v1"
+    b"EnviralDesign LatentSlate credential store v1"
 }

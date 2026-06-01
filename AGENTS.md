@@ -6,8 +6,8 @@ description: Best practices and rules for AI developers working on this project
 
 ## Repository Overview
 
-LatentSlate is a Windows-first Rust desktop application built with
-`egui`/`eframe`. It is a local-first timeline editor for AI-generated media,
+LatentSlate is a Windows-first Rust desktop application by Enviral Design built with
+`egui`/`eframe`. It is a local-first generative NLE for AI-generated media,
 with project-local assets, FFmpeg-backed preview/export, audio playback and
 waveforms, generative asset versioning, and bring-your-own ComfyUI provider
 workflows.

@@ -1,6 +1,8 @@
 # LatentSlate
 
-**A local-first Rust desktop timeline for AI-generated video workflows.**
+**From latent space to timeline.**
+
+A local-first generative NLE for ComfyUI and AI video workflows, by [Enviral Design](https://www.enviral-design.com/).
 
 Build and arrange generated images, video clips, audio, markers, and ComfyUI-driven generations in one project folder. This is a functional alpha for technically capable creators and contributors, not a polished production release.
 
@@ -20,7 +22,7 @@ Build and arrange generated images, video clips, audio, markers, and ComfyUI-dri
 
 ComfyUI is excellent for graph-based generation, but it is not a timeline editor. Traditional NLEs are excellent timeline editors, but they are not built around iterative AI generation, prompt/schema inputs, versioned outputs, or workflow-specific provider wiring.
 
-LatentSlate is exploring the missing middle: a local desktop editor where generated media, source clips, timeline context, provider inputs, and exports stay together.
+LatentSlate is exploring the missing middle: a local generative NLE where generated media, source clips, timeline context, provider inputs, and exports stay together.
 
 ## What It Is Today
 
@@ -83,4 +85,4 @@ Start with [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE). Created by Enviral Design with contributors.

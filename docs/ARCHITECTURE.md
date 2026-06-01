@@ -40,7 +40,8 @@ Important rules:
 - Imported media is copied into the project folder.
 - Assets store project-relative paths where possible.
 - Generated assets have their own folder with `config.json` plus versioned output files.
-- Provider entries are global on Windows under `%LOCALAPPDATA%\LatentSlate\providers\`.
+- Provider entries are global on Windows under `%LOCALAPPDATA%\EnviralDesign\LatentSlate\providers\`.
+- Earlier alpha builds may have used a different app-local storage root; there is no automatic migration yet.
 
 ## Timeline Model
 
