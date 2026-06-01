@@ -9,7 +9,8 @@ use eframe::egui::{
 use uuid::Uuid;
 
 use crate::state::{
-    parse_version_index, Asset, AssetKind, GenerationRecord, GenerativeConfig, ProviderEntry,
+    parse_version_index, Asset, AssetKind, AssetLabNode, GenerationRecord, GenerativeConfig,
+    InputValue, ProviderEntry, ProviderInputField, ProviderInputType, ProviderOutputType,
 };
 use crate::ui_kit as kit;
 
@@ -60,6 +61,12 @@ pub(super) struct AssetLabPreviewTexture {
     pub(super) size: Vec2,
 }
 
+const ASSET_LAB_NODE_CARD_W: f32 = 188.0;
+const ASSET_LAB_NODE_CARD_H: f32 = 88.0;
+const ASSET_LAB_NODE_GAP: f32 = 34.0;
+const ASSET_LAB_SOURCE_W: f32 = 92.0;
+const ASSET_LAB_SOURCE_H: f32 = 26.0;
+
 #[derive(Clone, Debug)]
 pub(super) enum AssetLabAction {
     SelectVersion(String),
@@ -67,6 +74,24 @@ pub(super) enum AssetLabAction {
     DuplicateVersion(String),
     ExtractVersion(String),
     ExtractCurrentFrame(String),
+    AddNode(Option<Uuid>),
+    SelectNode(Uuid),
+    SetNodeProvider {
+        node_id: Uuid,
+        provider_id: Option<Uuid>,
+    },
+    UpdateNodeInput {
+        node_id: Uuid,
+        input_name: String,
+        value: InputValue,
+    },
+    ClearNodeInput {
+        node_id: Uuid,
+        input_name: String,
+    },
+    GenerateNode(Uuid),
+    CreateEditStepFromVersion(String),
+    DeleteNode(Uuid),
     DuplicateAsset,
     AddAssetToTimeline,
     RequestDeleteAsset,
@@ -194,6 +219,24 @@ pub(super) fn asset_lab_provider_name(providers: &[ProviderEntry], provider_id: 
         .unwrap_or_else(|| provider_id.to_string())
 }
 
+pub(super) fn asset_lab_output_type(asset: &Asset) -> Option<ProviderOutputType> {
+    match asset.kind {
+        AssetKind::GenerativeImage { .. } | AssetKind::Image { .. } => {
+            Some(ProviderOutputType::Image)
+        }
+        AssetKind::GenerativeVideo { .. } | AssetKind::Video { .. } => {
+            Some(ProviderOutputType::Video)
+        }
+        AssetKind::GenerativeAudio { .. } | AssetKind::Audio { .. } => {
+            Some(ProviderOutputType::Audio)
+        }
+    }
+}
+
+pub(super) fn asset_lab_provider_is_compatible(asset: &Asset, provider: &ProviderEntry) -> bool {
+    asset_lab_output_type(asset) == Some(provider.output_type)
+}
+
 pub(super) fn asset_lab_meta_row(ui: &mut Ui, label: &str, value: impl Into<String>) {
     inspector_meta_row(ui, label, value);
 }
@@ -234,9 +277,9 @@ pub(super) fn asset_lab_version_row(
         active.then_some(kit::PRIMARY),
         |ui, content_rect| {
             let title = if active {
-                format!("{}  ACTIVE", record.version)
+                format!("Output {}  ON TIMELINE", record.version)
             } else {
-                record.version.clone()
+                format!("Output {}", record.version)
             };
             paint_truncated_row_text_top(
                 ui,
@@ -262,6 +305,101 @@ pub(super) fn asset_lab_version_row(
             );
         },
     )
+}
+
+fn asset_lab_type_badge(asset: &Asset) -> (&'static str, Color32) {
+    if asset.is_video() {
+        ("Video Asset", kit::VIDEO)
+    } else if asset.is_image() {
+        ("Image Asset", kit::IMAGE)
+    } else {
+        ("Audio Asset", kit::AUDIO)
+    }
+}
+
+fn asset_lab_output_type_badge(asset: &Asset) -> (&'static str, Color32) {
+    if asset.is_video() {
+        ("Video", kit::VIDEO)
+    } else if asset.is_image() {
+        ("Image", kit::IMAGE)
+    } else {
+        ("Audio", kit::AUDIO)
+    }
+}
+
+fn asset_lab_generation_ref_for_input(
+    asset: &Asset,
+    input: &ProviderInputField,
+    version: &str,
+) -> Option<InputValue> {
+    match input.input_type {
+        ProviderInputType::Image if asset.is_image() => Some(InputValue::GenerationRef {
+            asset_id: asset.id,
+            version: version.to_string(),
+            frame_reference: None,
+        }),
+        ProviderInputType::Video if asset.is_video() => Some(InputValue::GenerationRef {
+            asset_id: asset.id,
+            version: version.to_string(),
+            frame_reference: None,
+        }),
+        ProviderInputType::Image if asset.is_video() => Some(InputValue::GenerationRef {
+            asset_id: asset.id,
+            version: version.to_string(),
+            frame_reference: Some(SourceFrameReference::First),
+        }),
+        ProviderInputType::Audio if asset.is_audio() => Some(InputValue::GenerationRef {
+            asset_id: asset.id,
+            version: version.to_string(),
+            frame_reference: None,
+        }),
+        _ => None,
+    }
+}
+
+fn asset_lab_input_label(input: &ProviderInputField) -> String {
+    let raw = if input.label.trim().is_empty() {
+        input.name.trim()
+    } else {
+        input.label.trim()
+    };
+    let mut label = raw
+        .trim_start_matches("NLA ")
+        .trim_start_matches("NLA_")
+        .trim_start_matches("nla ")
+        .trim_start_matches("nla_")
+        .replace('_', " ")
+        .replace('-', " ");
+    while label.contains("  ") {
+        label = label.replace("  ", " ");
+    }
+    let normalized = label.trim().to_ascii_uppercase();
+    match normalized.as_str() {
+        "POS PROMPT" | "POSITIVE" | "POSITIVE PROMPT" => "Positive Prompt".to_string(),
+        "NEG PROMPT" | "NEGATIVE" | "NEGATIVE PROMPT" => "Negative Prompt".to_string(),
+        "LWDNESS" => "Wildness".to_string(),
+        "CFG" | "CFG SCALE" => "CFG Scale".to_string(),
+        "STEPS" => "Steps".to_string(),
+        "SEED" => "Seed".to_string(),
+        "WIDTH" => "Width".to_string(),
+        "HEIGHT" => "Height".to_string(),
+        _ if label.chars().any(|ch| ch.is_ascii_lowercase()) => label.trim().to_string(),
+        _ => label
+            .split_whitespace()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => format!(
+                        "{}{}",
+                        first.to_ascii_uppercase(),
+                        chars.as_str().to_ascii_lowercase()
+                    ),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 pub(super) fn asset_lab_preview(
@@ -482,6 +620,7 @@ pub(super) fn resolve_generative_file(
                 return Some(candidate);
             }
         }
+        return None;
     }
 
     let mut entries: Vec<PathBuf> = std::fs::read_dir(folder_path)
@@ -590,7 +729,26 @@ impl NlaEguiApp {
         let mut action: Option<AssetLabAction> = None;
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "asset_lab", true);
         let size = modal_size(ctx, ASSET_LAB_MODAL_SIZE, [660.0, 460.0]);
-        let subtitle = format!("{}  |  {}", asset.name, asset_kind_label(&asset.kind));
+        let subtitle = if asset.is_generative() {
+            let active = config_snapshot
+                .as_ref()
+                .and_then(|config| config.active_version.as_deref())
+                .or_else(|| asset.active_version())
+                .unwrap_or("none");
+            let output_count = config_snapshot
+                .as_ref()
+                .map(|config| config.versions.len())
+                .unwrap_or_default();
+            format!(
+                "{}  |  {}  |  Timeline: {}  |  Lab outputs: {}",
+                asset.name,
+                asset_kind_label(&asset.kind),
+                active,
+                output_count
+            )
+        } else {
+            format!("{}  |  {}", asset.name, asset_kind_label(&asset.kind))
+        };
 
         egui::Window::new("Asset Lab")
             .title_bar(false)
@@ -637,42 +795,36 @@ impl NlaEguiApp {
         let selected_version = self.asset_lab.selected_version.clone();
         let active_version = asset.active_version().map(str::to_string);
         let pending_delete = self.asset_lab.pending_delete_version.clone();
+        let selected_node_id = config
+            .and_then(|config| config.lab_graph.selected_node_id)
+            .or_else(|| {
+                config.and_then(|config| config.lab_graph.nodes.first().map(|node| node.id))
+            });
+        let compatible_providers: Vec<ProviderEntry> = self
+            .editor
+            .provider_entries
+            .iter()
+            .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
+            .cloned()
+            .collect();
 
         StripBuilder::new(ui)
             .clip(true)
-            .size(Size::exact(285.0))
-            .size(Size::remainder().at_least(320.0))
+            .size(Size::exact(330.0))
+            .size(Size::remainder().at_least(360.0))
+            .size(Size::exact(330.0))
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
-                    kit::card_frame().show(ui, |ui| {
-                        kit::field_label(ui, "Versions");
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        if versions.is_empty() {
-                            ui.label(kit::caption("No generated versions yet."));
-                        } else {
-                            let list_height = (ui.available_height() - 4.0).max(120.0);
-                            egui::ScrollArea::vertical()
-                                .id_salt(("asset_lab_versions", asset.id))
-                                .max_height(list_height)
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-                                    for record in versions.iter() {
-                                        let selected = selected_version.as_deref()
-                                            == Some(record.version.as_str());
-                                        let active = active_version.as_deref()
-                                            == Some(record.version.as_str());
-                                        let response =
-                                            asset_lab_version_row(ui, record, selected, active);
-                                        if response.clicked() {
-                                            *action = Some(AssetLabAction::SelectVersion(
-                                                record.version.clone(),
-                                            ));
-                                        }
-                                    }
-                                });
-                        }
-                    });
+                    self.asset_lab_flow_column(
+                        ui,
+                        asset,
+                        config,
+                        &versions,
+                        selected_node_id,
+                        active_version.as_deref(),
+                        &compatible_providers,
+                        action,
+                    );
                 });
                 strip.cell(|ui| {
                     kit::card_frame().show(ui, |ui| {
@@ -725,16 +877,35 @@ impl NlaEguiApp {
                         }
 
                         ui.add_space(kit::ACTION_GAP);
+                        self.asset_lab_timeline_status_row(
+                            ui,
+                            asset,
+                            selected_version.as_deref(),
+                            active_version.as_deref(),
+                            action,
+                        );
+
+                        ui.add_space(kit::ACTION_GAP);
+                        self.asset_lab_outputs_section(
+                            ui,
+                            asset,
+                            &versions,
+                            selected_version.as_deref(),
+                            active_version.as_deref(),
+                            action,
+                        );
+
+                        ui.add_space(kit::ACTION_GAP);
                         let details_height = ui.available_height().max(80.0);
                         egui::ScrollArea::vertical()
                             .id_salt(("asset_lab_details", asset.id))
                             .max_height(details_height)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                kit::field_label(ui, "Version Details");
+                                kit::field_label(ui, "Selected Output");
                                 ui.add_space(kit::FORM_ROW_GAP);
                                 if let Some(version) = selected_version.as_deref() {
-                                    asset_lab_meta_row(ui, "Version", version);
+                                    asset_lab_meta_row(ui, "Output", version);
                                     if asset.is_video() {
                                         asset_lab_meta_row(
                                             ui,
@@ -775,7 +946,9 @@ impl NlaEguiApp {
                                         asset_lab_meta_row(ui, "File", path_label(path));
                                     }
                                 } else {
-                                    ui.label(kit::caption("Select a generated version."));
+                                    ui.label(kit::caption(
+                                        "Run a step or select a lab output to inspect it.",
+                                    ));
                                 }
 
                                 ui.add_space(kit::ACTION_GAP);
@@ -790,7 +963,752 @@ impl NlaEguiApp {
                             });
                     });
                 });
+                strip.cell(|ui| {
+                    self.asset_lab_node_inspector(
+                        ui,
+                        asset,
+                        config,
+                        &versions,
+                        selected_node_id,
+                        &compatible_providers,
+                        action,
+                    );
+                });
             });
+    }
+
+    pub(super) fn asset_lab_flow_column(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        versions: &[GenerationRecord],
+        selected_node_id: Option<Uuid>,
+        active_version: Option<&str>,
+        compatible_providers: &[ProviderEntry],
+        action: &mut Option<AssetLabAction>,
+    ) {
+        kit::card_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                kit::field_label(ui, "Flow");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::secondary_button(ui, "+ Step", 82.0).clicked() {
+                        let provider_id = compatible_providers.first().map(|provider| provider.id);
+                        *action = Some(AssetLabAction::AddNode(provider_id));
+                    }
+                });
+            });
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.add(
+                egui::Label::new(kit::caption(
+                    "Steps capture provider settings and lineage. Outputs are selected in the preview panel.",
+                ))
+                .wrap(),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+            self.asset_lab_flow_canvas(
+                ui,
+                asset,
+                config,
+                versions,
+                selected_node_id,
+                active_version,
+                action,
+            );
+        });
+    }
+
+    pub(super) fn asset_lab_outputs_section(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        versions: &[GenerationRecord],
+        selected_version: Option<&str>,
+        active_version: Option<&str>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        ui.horizontal(|ui| {
+            kit::field_label(ui, "Lab Outputs");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(active_version) = active_version {
+                    kit::media_pill(ui, &format!("Timeline: {active_version}"), kit::PRIMARY);
+                } else {
+                    kit::media_pill(ui, "No Timeline Output", kit::TEXT_MUTED);
+                }
+            });
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+        if versions.is_empty() {
+            let (label, color) = asset_lab_output_type_badge(asset);
+            ui.horizontal(|ui| {
+                kit::media_pill(ui, label, color);
+                ui.label(kit::caption("Run a step to create the first lab output."));
+            });
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt(("asset_lab_outputs", asset.id))
+                .max_height(78.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                    for record in versions.iter() {
+                        let selected = selected_version == Some(record.version.as_str());
+                        let active = active_version == Some(record.version.as_str());
+                        let response = asset_lab_version_row(ui, record, selected, active);
+                        if response.clicked() {
+                            *action = Some(AssetLabAction::SelectVersion(record.version.clone()));
+                        }
+                    }
+                });
+        }
+    }
+
+    pub(super) fn asset_lab_flow_canvas(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        versions: &[GenerationRecord],
+        selected_node_id: Option<Uuid>,
+        active_version: Option<&str>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let nodes = config
+            .map(|config| config.lab_graph.nodes.as_slice())
+            .unwrap_or(&[]);
+        let available = ui.available_size();
+        let viewport_h = available.y.max(220.0);
+
+        if nodes.is_empty() {
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(available.x, viewport_h), Sense::hover());
+            ui.painter()
+                .rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+            ui.painter().rect_stroke(
+                rect,
+                kit::field_radius(),
+                Stroke::new(1.0, kit::BORDER_SOFT),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                rect.center_top() + Vec2::new(0.0, 72.0),
+                egui::Align2::CENTER_CENTER,
+                "Add a generation step",
+                FontId::proportional(13.0),
+                kit::TEXT_MUTED,
+            );
+            ui.painter().text(
+                rect.center_top() + Vec2::new(0.0, 94.0),
+                egui::Align2::CENTER_CENTER,
+                "Run it to create lab outputs without changing the timeline.",
+                FontId::proportional(11.0),
+                kit::TEXT_DIM,
+            );
+            return;
+        }
+
+        egui::ScrollArea::vertical()
+            .id_salt(("asset_lab_flow_canvas", asset.id))
+            .max_height(viewport_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let row_count = nodes.len().max(versions.len()).max(1);
+                let content_h = 18.0 + row_count as f32 * (ASSET_LAB_NODE_CARD_H + 16.0);
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), content_h),
+                    Sense::hover(),
+                );
+                let painter = ui.painter().with_clip_rect(rect);
+                painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+                painter.rect_stroke(
+                    rect,
+                    kit::field_radius(),
+                    Stroke::new(1.0, kit::BORDER_SOFT),
+                    egui::StrokeKind::Inside,
+                );
+
+                let source_x = rect.left() + 12.0;
+                let node_x = rect.right() - ASSET_LAB_NODE_CARD_W - 12.0;
+                let source_rects: Vec<(String, Rect)> = versions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, record)| {
+                        let y = rect.top() + 16.0 + index as f32 * (ASSET_LAB_SOURCE_H + 10.0);
+                        (
+                            record.version.clone(),
+                            Rect::from_min_size(
+                                Pos2::new(source_x, y),
+                                Vec2::new(ASSET_LAB_SOURCE_W, ASSET_LAB_SOURCE_H),
+                            ),
+                        )
+                    })
+                    .collect();
+                let node_rects: Vec<(Uuid, Rect)> = nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, node)| {
+                        let y = rect.top()
+                            + 16.0
+                            + index as f32 * (ASSET_LAB_NODE_CARD_H + ASSET_LAB_NODE_GAP);
+                        (
+                            node.id,
+                            Rect::from_min_size(
+                                Pos2::new(node_x.max(source_x + ASSET_LAB_SOURCE_W + 20.0), y),
+                                Vec2::new(ASSET_LAB_NODE_CARD_W, ASSET_LAB_NODE_CARD_H),
+                            ),
+                        )
+                    })
+                    .collect();
+
+                for node in nodes {
+                    let Some((_, node_rect)) =
+                        node_rects.iter().find(|(node_id, _)| *node_id == node.id)
+                    else {
+                        continue;
+                    };
+                    for input in node.inputs.values() {
+                        let InputValue::GenerationRef { version, .. } = input else {
+                            continue;
+                        };
+                        let Some((_, source_rect)) = source_rects
+                            .iter()
+                            .find(|(source_version, _)| source_version == version)
+                        else {
+                            continue;
+                        };
+                        let start = source_rect.right_center();
+                        let end = node_rect.left_center();
+                        let mid_x = start.x + (end.x - start.x) * 0.5;
+                        let stroke = Stroke::new(1.35, kit::PRIMARY.gamma_multiply(0.82));
+                        painter.line_segment([start, Pos2::new(mid_x, start.y)], stroke);
+                        painter.line_segment(
+                            [Pos2::new(mid_x, start.y), Pos2::new(mid_x, end.y)],
+                            stroke,
+                        );
+                        painter.line_segment([Pos2::new(mid_x, end.y), end], stroke);
+                    }
+                }
+
+                for (version, source_rect) in source_rects {
+                    let active = active_version == Some(version.as_str());
+                    let fill = if active {
+                        kit::PRIMARY.gamma_multiply(0.16)
+                    } else {
+                        Color32::from_rgb(22, 24, 27)
+                    };
+                    painter.rect_filled(source_rect, kit::field_radius(), fill);
+                    painter.rect_stroke(
+                        source_rect,
+                        kit::field_radius(),
+                        Stroke::new(
+                            1.0,
+                            if active {
+                                kit::PRIMARY
+                            } else {
+                                kit::BORDER_SOFT
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    painter.text(
+                        source_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("Output {version}"),
+                        FontId::proportional(11.0),
+                        if active {
+                            kit::PRIMARY_HOVER
+                        } else {
+                            kit::TEXT_MUTED
+                        },
+                    );
+                }
+
+                for (node_index, node) in nodes.iter().enumerate() {
+                    let Some((_, node_rect)) =
+                        node_rects.iter().find(|(node_id, _)| *node_id == node.id)
+                    else {
+                        continue;
+                    };
+                    let provider_label = node
+                        .provider_id
+                        .map(|id| asset_lab_provider_name(&self.editor.provider_entries, id))
+                        .unwrap_or_else(|| "Select provider".to_string());
+                    let response = crate::core::automation::instrument_response(
+                        ui.interact(
+                            *node_rect,
+                            ui.id().with(("asset_lab_node", node.id)),
+                            Sense::click(),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand),
+                        "step",
+                        Some(provider_label.clone()),
+                        true,
+                        false,
+                    );
+                    if response.clicked() {
+                        *action = Some(AssetLabAction::SelectNode(node.id));
+                    }
+                    let selected = selected_node_id == Some(node.id);
+                    let output_count = versions
+                        .iter()
+                        .filter(|record| record.lab_node_id == Some(node.id))
+                        .count();
+                    let active_output = node
+                        .output_version
+                        .as_deref()
+                        .is_some_and(|version| active_version == Some(version));
+                    let fill = if selected {
+                        Color32::from_rgb(28, 44, 38)
+                    } else if response.hovered() {
+                        Color32::from_rgb(27, 29, 33)
+                    } else {
+                        Color32::from_rgb(21, 23, 26)
+                    };
+                    painter.rect_filled(*node_rect, kit::field_radius(), fill);
+                    painter.rect_stroke(
+                        *node_rect,
+                        kit::field_radius(),
+                        Stroke::new(
+                            1.0,
+                            if active_output {
+                                kit::PRIMARY
+                            } else if selected {
+                                kit::BORDER_FOCUS
+                            } else {
+                                kit::BORDER_SOFT
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    painter.rect_filled(
+                        Rect::from_min_size(
+                            node_rect.left_top(),
+                            Vec2::new(4.0, node_rect.height()),
+                        ),
+                        kit::field_radius(),
+                        asset_accent(asset),
+                    );
+                    painter.text(
+                        node_rect.left_top() + Vec2::new(12.0, 12.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("Step {} - {}", node_index + 1, provider_label),
+                        FontId::proportional(12.0),
+                        kit::TEXT,
+                    );
+                    let output = node
+                        .output_version
+                        .as_deref()
+                        .map(|version| {
+                            if active_output {
+                                format!("Output {version} on timeline")
+                            } else {
+                                format!("Latest output {version}")
+                            }
+                        })
+                        .unwrap_or_else(|| "Run step to create output".to_string());
+                    painter.text(
+                        node_rect.left_top() + Vec2::new(12.0, 36.0),
+                        egui::Align2::LEFT_TOP,
+                        output,
+                        FontId::proportional(11.0),
+                        if active_output {
+                            kit::PRIMARY_HOVER
+                        } else {
+                            kit::TEXT_MUTED
+                        },
+                    );
+                    painter.text(
+                        node_rect.left_bottom() + Vec2::new(12.0, -14.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{} inputs  |  {} outputs", node.inputs.len(), output_count),
+                        FontId::proportional(10.5),
+                        kit::TEXT_DIM,
+                    );
+                }
+            });
+    }
+
+    pub(super) fn asset_lab_node_inspector(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        versions: &[GenerationRecord],
+        selected_node_id: Option<Uuid>,
+        compatible_providers: &[ProviderEntry],
+        action: &mut Option<AssetLabAction>,
+    ) {
+        kit::card_frame().show(ui, |ui| {
+            kit::field_label(ui, "Step Settings");
+            ui.add_space(kit::FORM_ROW_GAP);
+
+            let selected_node = config
+                .and_then(|config| {
+                    selected_node_id
+                        .and_then(|id| config.lab_graph.nodes.iter().find(|node| node.id == id))
+                })
+                .or_else(|| config.and_then(|config| config.lab_graph.nodes.first()));
+
+            let Some(node) = selected_node else {
+                ui.label(kit::caption(
+                    "Add a step to choose a provider, wire inputs, and create lab outputs.",
+                ));
+                return;
+            };
+
+            let selected_provider = node.provider_id.and_then(|provider_id| {
+                compatible_providers
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+            });
+            let provider_label = selected_provider
+                .map(|provider| provider.name.clone())
+                .unwrap_or_else(|| "Select provider".to_string());
+            let mut provider_choice = node.provider_id;
+            kit::labeled_combo_field(
+                ui,
+                "Provider",
+                ("asset_lab_node_provider", node.id),
+                provider_label,
+                |ui| {
+                    automation_selectable_value(ui, &mut provider_choice, None, "None");
+                    for provider in compatible_providers {
+                        automation_selectable_value(
+                            ui,
+                            &mut provider_choice,
+                            Some(provider.id),
+                            &provider.name,
+                        );
+                    }
+                },
+            );
+            if provider_choice != node.provider_id {
+                *action = Some(AssetLabAction::SetNodeProvider {
+                    node_id: node.id,
+                    provider_id: provider_choice,
+                });
+            }
+
+            ui.add_space(kit::ACTION_GAP);
+            if let Some(provider) = selected_provider {
+                kit::field_label(ui, "Inputs");
+                ui.add_space(kit::FORM_ROW_GAP);
+                egui::ScrollArea::vertical()
+                    .id_salt(("asset_lab_node_inputs", asset.id, node.id))
+                    .max_height((ui.available_height() - 220.0).max(120.0))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (index, input) in provider.inputs.iter().enumerate() {
+                            if index > 0 {
+                                ui.add_space(kit::FORM_ROW_GAP);
+                            }
+                            self.asset_lab_node_input_field(
+                                ui, asset, node, input, versions, action,
+                            );
+                        }
+                    });
+            } else {
+                ui.label(kit::caption("Choose a provider before wiring inputs."));
+            }
+
+            ui.add_space(kit::ACTION_GAP);
+            kit::field_label(ui, "Run");
+            ui.add_space(kit::FORM_ROW_GAP);
+            let can_generate = selected_provider.is_some() && asset.is_generative();
+            ui.add_enabled_ui(can_generate, |ui| {
+                if kit::primary_button(ui, "Run Step", ui.available_width()).clicked() {
+                    *action = Some(AssetLabAction::GenerateNode(node.id));
+                }
+            });
+            ui.add(
+                egui::Label::new(kit::caption(
+                    "Creates a new lab output. The timeline is unchanged until Use on Timeline.",
+                ))
+                .wrap(),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+            if kit::danger_button(ui, "Delete Step", ui.available_width()).clicked() {
+                *action = Some(AssetLabAction::DeleteNode(node.id));
+            }
+        });
+    }
+
+    pub(super) fn asset_lab_node_input_field(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        node: &AssetLabNode,
+        input: &ProviderInputField,
+        versions: &[GenerationRecord],
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let clean_label = asset_lab_input_label(input);
+        let label = if input.required {
+            format!("{clean_label} *")
+        } else {
+            clean_label
+        };
+        let current_value = node
+            .inputs
+            .get(&input.name)
+            .and_then(|value| match value {
+                InputValue::Literal { value } => Some(value.clone()),
+                InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
+            })
+            .or_else(|| input.default.clone());
+
+        match &input.input_type {
+            ProviderInputType::Text => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_string)
+                    .unwrap_or_default();
+                let multiline = input.ui.as_ref().map(|ui| ui.multiline).unwrap_or(false);
+                let changed = if multiline {
+                    inspector_multiline_text_field(
+                        ui,
+                        &label,
+                        &mut value,
+                        kit::MultilineTextFieldOptions::rows(3),
+                    )
+                } else {
+                    inspector_text_field(ui, &label, &mut value)
+                };
+                if changed {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal {
+                            value: serde_json::Value::String(value),
+                        },
+                    });
+                }
+            }
+            ProviderInputType::Number => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_f64)
+                    .unwrap_or(0.0);
+                let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(0.1);
+                let width = ui.available_width();
+                if inspector_drag_f64(ui, &label, &mut value, step, width) {
+                    if let Some(number) = serde_json::Number::from_f64(value) {
+                        *action = Some(AssetLabAction::UpdateNodeInput {
+                            node_id: node.id,
+                            input_name: input.name.clone(),
+                            value: InputValue::Literal {
+                                value: serde_json::Value::Number(number),
+                            },
+                        });
+                    }
+                }
+            }
+            ProviderInputType::Integer => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_i64)
+                    .unwrap_or(0);
+                let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
+                let width = ui.available_width();
+                if inspector_drag_i64(ui, &label, &mut value, step, width) {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal {
+                            value: serde_json::Value::Number(value.into()),
+                        },
+                    });
+                }
+            }
+            ProviderInputType::Boolean => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_bool)
+                    .unwrap_or(false);
+                if inspector_bool_field(ui, &label, &mut value) {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal {
+                            value: serde_json::Value::Bool(value),
+                        },
+                    });
+                }
+            }
+            ProviderInputType::Enum { options } => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_string)
+                    .or_else(|| options.first().cloned())
+                    .unwrap_or_default();
+                let before = value.clone();
+                kit::labeled_combo_field(
+                    ui,
+                    &label,
+                    ("asset_lab_node_enum", node.id, &input.name),
+                    empty_dash(&value).to_string(),
+                    |ui| {
+                        for option in options {
+                            automation_selectable_value(ui, &mut value, option.clone(), option);
+                        }
+                    },
+                );
+                if value != before {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal {
+                            value: serde_json::Value::String(value),
+                        },
+                    });
+                }
+            }
+            ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
+                self.asset_lab_node_media_input_field(ui, asset, node, input, versions, action);
+            }
+        }
+    }
+
+    pub(super) fn asset_lab_node_media_input_field(
+        &self,
+        ui: &mut Ui,
+        asset: &Asset,
+        node: &AssetLabNode,
+        input: &ProviderInputField,
+        versions: &[GenerationRecord],
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let current_value = node.inputs.get(&input.name).cloned();
+        let current_label = current_value
+            .as_ref()
+            .and_then(|value| self.asset_lab_node_input_label(value))
+            .unwrap_or_else(|| "None selected".to_string());
+        let mut next_value = current_value.clone();
+        kit::labeled_combo_field(
+            ui,
+            &asset_lab_input_label(input),
+            ("asset_lab_node_media_input", node.id, &input.name),
+            current_label,
+            |ui| {
+                automation_selectable_value(ui, &mut next_value, None, "None");
+
+                let internal_sources =
+                    self.asset_lab_internal_generation_sources(asset, node, input, versions);
+                if !internal_sources.is_empty() {
+                    ui.separator();
+                    ui.label(kit::caption("This asset outputs"));
+                    for (label, value) in internal_sources {
+                        automation_selectable_value(ui, &mut next_value, Some(value), &label);
+                    }
+                }
+
+                let external_candidates: Vec<_> = self
+                    .asset_input_candidates(input, None)
+                    .into_iter()
+                    .filter(|candidate| candidate.asset_id != asset.id)
+                    .collect();
+                if !external_candidates.is_empty() {
+                    ui.separator();
+                    ui.label(kit::caption("Project / Timeline sources"));
+                    for candidate in external_candidates {
+                        let value = InputValue::AssetRef {
+                            asset_id: candidate.asset_id,
+                            source_clip_id: candidate.source_clip_id,
+                            pinned: true,
+                            frame_reference: candidate.frame_reference,
+                        };
+                        let label =
+                            format!("External source: {}  {}", candidate.label, candidate.detail);
+                        automation_selectable_value(ui, &mut next_value, Some(value), &label);
+                    }
+                }
+            },
+        );
+        if next_value != current_value {
+            *action = match next_value {
+                Some(value) => Some(AssetLabAction::UpdateNodeInput {
+                    node_id: node.id,
+                    input_name: input.name.clone(),
+                    value,
+                }),
+                None => Some(AssetLabAction::ClearNodeInput {
+                    node_id: node.id,
+                    input_name: input.name.clone(),
+                }),
+            };
+        }
+    }
+
+    pub(super) fn asset_lab_internal_generation_sources(
+        &self,
+        asset: &Asset,
+        node: &AssetLabNode,
+        input: &ProviderInputField,
+        versions: &[GenerationRecord],
+    ) -> Vec<(String, InputValue)> {
+        let mut values = Vec::new();
+        let (type_label, _) = asset_lab_output_type_badge(asset);
+        for record in versions {
+            if node.output_version.as_deref() == Some(record.version.as_str()) {
+                continue;
+            }
+            if let Some(value) = asset_lab_generation_ref_for_input(asset, input, &record.version) {
+                let frame_suffix = match &value {
+                    InputValue::GenerationRef {
+                        frame_reference: Some(frame_reference),
+                        ..
+                    } => format!(" · {}", frame_reference.label()),
+                    _ => String::new(),
+                };
+                values.push((
+                    format!(
+                        "Lab Output {} · {}{}",
+                        record.version, type_label, frame_suffix
+                    ),
+                    value,
+                ));
+            }
+            if matches!(input.input_type, ProviderInputType::Image) && asset.is_video() {
+                for frame_reference in [SourceFrameReference::First, SourceFrameReference::Last] {
+                    if frame_reference == SourceFrameReference::First {
+                        continue;
+                    }
+                    values.push((
+                        format!(
+                            "Lab Output {} · {}",
+                            record.version,
+                            frame_reference.label()
+                        ),
+                        InputValue::GenerationRef {
+                            asset_id: asset.id,
+                            version: record.version.clone(),
+                            frame_reference: Some(frame_reference),
+                        },
+                    ));
+                }
+            }
+        }
+        values
+    }
+
+    pub(super) fn asset_lab_node_input_label(&self, value: &InputValue) -> Option<String> {
+        match value {
+            InputValue::GenerationRef {
+                asset_id,
+                version,
+                frame_reference,
+            } => {
+                self.editor.project.find_asset(*asset_id)?;
+                let frame = frame_reference
+                    .map(|frame| format!(" · {}", frame.label()))
+                    .unwrap_or_default();
+                Some(format!("This Asset · Output {}{}", version, frame))
+            }
+            InputValue::AssetRef { .. } => self
+                .asset_input_label(value, None)
+                .map(|label| format!("External · {label}")),
+            InputValue::Literal { .. } => None,
+        }
     }
 
     pub(super) fn asset_lab_basic_asset_contents(
@@ -905,6 +1823,80 @@ impl NlaEguiApp {
         }
     }
 
+    pub(super) fn asset_lab_timeline_status_row(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        selected_version: Option<&str>,
+        active_version: Option<&str>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let (asset_badge, asset_color) = asset_lab_type_badge(asset);
+        ui.horizontal_wrapped(|ui| {
+            kit::media_pill(ui, asset_badge, asset_color);
+            match (selected_version, active_version) {
+                (Some(selected), Some(active)) if selected == active => {
+                    kit::media_pill(ui, "On Timeline", kit::PRIMARY);
+                    ui.label(kit::caption("This selected output is visible on the timeline."));
+                }
+                (Some(_), _) => {
+                    kit::media_pill(ui, "Lab Draft", kit::MARKER);
+                    ui.label(kit::caption(
+                        "Saved inside this asset. Timeline changes only when you choose Use on Timeline.",
+                    ));
+                }
+                (None, Some(_)) => {
+                    kit::media_pill(ui, "No Selection", kit::TEXT_MUTED);
+                    ui.label(kit::caption("Select a lab output to preview or reuse it."));
+                }
+                (None, None) => {
+                    kit::media_pill(ui, "No Output", kit::TEXT_MUTED);
+                    ui.label(kit::caption("Run a step to create a lab output."));
+                }
+            }
+        });
+
+        ui.add_space(kit::FORM_ROW_GAP);
+        kit::equal_width_action_row(
+            ui,
+            2,
+            kit::SECONDARY_BUTTON_H,
+            kit::FIELD_COMPOUND_GAP,
+            |ui, index, width| match index {
+                0 => {
+                    let can_use = selected_version.is_some() && selected_version != active_version;
+                    if can_use {
+                        if kit::primary_button(ui, "Use on Timeline", width).clicked() {
+                            if let Some(version) = selected_version {
+                                *action = Some(AssetLabAction::SetActive(version.to_string()));
+                            }
+                        }
+                    } else {
+                        let label = if selected_version.is_some() {
+                            "Already on Timeline"
+                        } else {
+                            "Use on Timeline"
+                        };
+                        ui.add_enabled_ui(false, |ui| {
+                            kit::secondary_button(ui, label, width);
+                        });
+                    }
+                }
+                _ => {
+                    ui.add_enabled_ui(selected_version.is_some(), |ui| {
+                        if kit::secondary_button(ui, "Create Edit Step", width).clicked() {
+                            if let Some(version) = selected_version {
+                                *action = Some(AssetLabAction::CreateEditStepFromVersion(
+                                    version.to_string(),
+                                ));
+                            }
+                        }
+                    });
+                }
+            },
+        );
+    }
+
     pub(super) fn asset_lab_action_rows(
         &mut self,
         ui: &mut Ui,
@@ -939,7 +1931,7 @@ impl NlaEguiApp {
                         }
                     }
                     _ => {
-                        if kit::danger_button(ui, "Delete Version", width).clicked() {
+                        if kit::danger_button(ui, "Delete Output", width).clicked() {
                             *action =
                                 Some(AssetLabAction::ConfirmDelete(pending_version.to_string()));
                         }
@@ -949,7 +1941,6 @@ impl NlaEguiApp {
             return;
         }
 
-        let can_set_active = active_version != Some(version);
         kit::equal_width_action_row(
             ui,
             2,
@@ -957,15 +1948,13 @@ impl NlaEguiApp {
             kit::FIELD_COMPOUND_GAP,
             |ui, index, width| match index {
                 0 => {
-                    ui.add_enabled_ui(can_set_active, |ui| {
-                        if kit::secondary_button(ui, "Set Active", width).clicked() {
-                            *action = Some(AssetLabAction::SetActive(version.to_string()));
-                        }
-                    });
+                    if kit::secondary_button(ui, "Duplicate Output", width).clicked() {
+                        *action = Some(AssetLabAction::DuplicateVersion(version.to_string()));
+                    }
                 }
                 _ => {
-                    if kit::secondary_button(ui, "Duplicate Version", width).clicked() {
-                        *action = Some(AssetLabAction::DuplicateVersion(version.to_string()));
+                    if kit::secondary_button(ui, "Extract as Asset", width).clicked() {
+                        *action = Some(AssetLabAction::ExtractVersion(version.to_string()));
                     }
                 }
             },
@@ -978,13 +1967,8 @@ impl NlaEguiApp {
             kit::FIELD_COMPOUND_GAP,
             |ui, index, width| match index {
                 0 => {
-                    if kit::secondary_button(ui, "Extract Version", width).clicked() {
-                        *action = Some(AssetLabAction::ExtractVersion(version.to_string()));
-                    }
-                }
-                _ => {
                     if asset.is_video() {
-                        if kit::secondary_button(ui, "Extract Current Frame", width).clicked() {
+                        if kit::secondary_button(ui, "Extract Frame", width).clicked() {
                             *action =
                                 Some(AssetLabAction::ExtractCurrentFrame(version.to_string()));
                         }
@@ -992,23 +1976,22 @@ impl NlaEguiApp {
                         *action = Some(AssetLabAction::OpenLocation);
                     }
                 }
+                _ => {
+                    if kit::secondary_button(ui, "Open Location", width).clicked() {
+                        *action = Some(AssetLabAction::OpenLocation);
+                    }
+                }
             },
         );
         ui.add_space(kit::FORM_ROW_GAP);
-        if asset.is_video() {
-            if kit::secondary_button(ui, "Open Location", ui.available_width()).clicked() {
-                *action = Some(AssetLabAction::OpenLocation);
-            }
-            ui.add_space(kit::FORM_ROW_GAP);
-        }
-        if kit::danger_button(ui, "Delete Version", ui.available_width()).clicked() {
+        if kit::danger_button(ui, "Delete Output", ui.available_width()).clicked() {
             *action = Some(AssetLabAction::RequestDelete(version.to_string()));
         }
 
         if active_version != Some(version) {
             ui.add_space(kit::FORM_ROW_GAP);
             ui.label(kit::caption(
-                "Timeline and preview use the active version. Set this version active to route it into existing clips.",
+                "This lab draft is saved, but timeline clips keep using the current timeline output.",
             ));
         }
         if !asset.is_visual() {
@@ -1134,6 +2117,40 @@ impl NlaEguiApp {
             AssetLabAction::ExtractCurrentFrame(version) => {
                 self.extract_asset_lab_current_frame(asset_id, &version);
             }
+            AssetLabAction::AddNode(provider_id) => {
+                self.add_asset_lab_node(asset_id, provider_id);
+            }
+            AssetLabAction::SelectNode(node_id) => {
+                self.select_asset_lab_node(asset_id, node_id);
+            }
+            AssetLabAction::SetNodeProvider {
+                node_id,
+                provider_id,
+            } => {
+                self.set_asset_lab_node_provider(asset_id, node_id, provider_id);
+            }
+            AssetLabAction::UpdateNodeInput {
+                node_id,
+                input_name,
+                value,
+            } => {
+                self.update_asset_lab_node_input(asset_id, node_id, input_name, Some(value));
+            }
+            AssetLabAction::ClearNodeInput {
+                node_id,
+                input_name,
+            } => {
+                self.update_asset_lab_node_input(asset_id, node_id, input_name, None);
+            }
+            AssetLabAction::GenerateNode(node_id) => {
+                self.generate_asset_lab_node(asset_id, node_id);
+            }
+            AssetLabAction::CreateEditStepFromVersion(version) => {
+                self.create_asset_lab_edit_step_from_version(asset_id, &version);
+            }
+            AssetLabAction::DeleteNode(node_id) => {
+                self.delete_asset_lab_node(asset_id, node_id);
+            }
             AssetLabAction::DuplicateAsset => match self.editor.duplicate_asset(asset_id) {
                 Ok(new_asset_id) => self.warm_asset_thumbnails(&[new_asset_id]),
                 Err(err) => self.editor.status = err,
@@ -1178,6 +2195,330 @@ impl NlaEguiApp {
                     self.editor.status = err;
                 }
             }
+        }
+    }
+
+    pub(super) fn add_asset_lab_node(&mut self, asset_id: Uuid, provider_id: Option<Uuid>) {
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.editor.status = "Asset not found.".to_string();
+            return;
+        };
+        let provider_id = match provider_id {
+            Some(provider_id) => {
+                let Some(provider) = self
+                    .editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+                else {
+                    self.editor.status = "Provider is unavailable.".to_string();
+                    return;
+                };
+                if !asset_lab_provider_is_compatible(&asset, provider) {
+                    self.editor.status =
+                        "Provider output type does not match this asset.".to_string();
+                    return;
+                }
+                Some(provider_id)
+            }
+            None => None,
+        };
+
+        let node = AssetLabNode::new(provider_id);
+        let node_id = node.id;
+        if !self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.lab_graph.selected_node_id = Some(node_id);
+                config.lab_graph.nodes.push(node);
+            })
+        {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        }
+        self.save_asset_lab_config(asset_id, "Added step.");
+    }
+
+    pub(super) fn create_asset_lab_edit_step_from_version(
+        &mut self,
+        asset_id: Uuid,
+        version: &str,
+    ) {
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.editor.status = "Asset not found.".to_string();
+            return;
+        };
+        let Some(config) = self.editor.project.generative_config(asset_id) else {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        };
+        if !config
+            .versions
+            .iter()
+            .any(|record| record.version == version)
+        {
+            self.editor.status = format!("Output {version} was not found.");
+            return;
+        }
+
+        let provider = self
+            .editor
+            .provider_entries
+            .iter()
+            .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+            .find(|provider| {
+                provider.inputs.iter().any(|input| {
+                    asset_lab_generation_ref_for_input(&asset, input, version).is_some()
+                })
+            })
+            .or_else(|| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| asset_lab_provider_is_compatible(&asset, provider))
+            })
+            .cloned();
+
+        let mut node = AssetLabNode::new(provider.as_ref().map(|provider| provider.id));
+        if let Some(provider) = provider.as_ref() {
+            if let Some((input_name, value)) = provider.inputs.iter().find_map(|input| {
+                asset_lab_generation_ref_for_input(&asset, input, version)
+                    .map(|value| (input.name.clone(), value))
+            }) {
+                node.inputs.insert(input_name, value);
+            }
+        }
+        let node_id = node.id;
+        let updated = self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.lab_graph.selected_node_id = Some(node_id);
+                config.lab_graph.nodes.push(node);
+            });
+        if !updated {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        }
+        self.asset_lab.selected_version = Some(version.to_string());
+        self.save_asset_lab_config(
+            asset_id,
+            &format!("Created edit step from output {version}. Timeline unchanged."),
+        );
+    }
+
+    pub(super) fn select_asset_lab_node(&mut self, asset_id: Uuid, node_id: Uuid) {
+        if !self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.lab_graph.selected_node_id = Some(node_id);
+            })
+        {
+            return;
+        }
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Failed to save step selection: {err}");
+        }
+    }
+
+    pub(super) fn set_asset_lab_node_provider(
+        &mut self,
+        asset_id: Uuid,
+        node_id: Uuid,
+        provider_id: Option<Uuid>,
+    ) {
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            self.editor.status = "Asset not found.".to_string();
+            return;
+        };
+        let valid_input_names: Option<Vec<String>> = match provider_id {
+            Some(provider_id) => {
+                let Some(provider) = self
+                    .editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+                else {
+                    self.editor.status = "Provider is unavailable.".to_string();
+                    return;
+                };
+                if !asset_lab_provider_is_compatible(&asset, provider) {
+                    self.editor.status =
+                        "Provider output type does not match this asset.".to_string();
+                    return;
+                }
+                Some(
+                    provider
+                        .inputs
+                        .iter()
+                        .map(|input| input.name.clone())
+                        .collect(),
+                )
+            }
+            None => None,
+        };
+
+        let updated = self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                if let Some(node) = config
+                    .lab_graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == node_id)
+                {
+                    node.provider_id = provider_id;
+                    if let Some(valid_input_names) = valid_input_names.as_ref() {
+                        node.inputs
+                            .retain(|name, _| valid_input_names.iter().any(|valid| valid == name));
+                    } else {
+                        node.inputs.clear();
+                    }
+                    config.lab_graph.selected_node_id = Some(node_id);
+                }
+            });
+        if !updated {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        }
+        self.save_asset_lab_config(asset_id, "Updated step provider.");
+    }
+
+    pub(super) fn update_asset_lab_node_input(
+        &mut self,
+        asset_id: Uuid,
+        node_id: Uuid,
+        input_name: String,
+        value: Option<InputValue>,
+    ) {
+        let updated = self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                if let Some(node) = config
+                    .lab_graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == node_id)
+                {
+                    match value {
+                        Some(value) => {
+                            node.inputs.insert(input_name.clone(), value);
+                        }
+                        None => {
+                            node.inputs.remove(&input_name);
+                        }
+                    }
+                    config.lab_graph.selected_node_id = Some(node_id);
+                }
+            });
+        if !updated {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        }
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Failed to save step input: {err}");
+        }
+    }
+
+    pub(super) fn generate_asset_lab_node(&mut self, asset_id: Uuid, node_id: Uuid) {
+        let Some((folder, output_type)) =
+            generative_output_for_asset(&self.editor.project, asset_id)
+        else {
+            self.editor.status = "Asset does not support generation.".to_string();
+            return;
+        };
+        let Some(project_root) = self.editor.project.project_path.clone() else {
+            self.editor.status = "Project folder is unavailable.".to_string();
+            return;
+        };
+        let asset_label = self
+            .editor
+            .project
+            .find_asset(asset_id)
+            .map(|asset| asset.name.clone())
+            .unwrap_or_else(|| "Generative Asset".to_string());
+        let config_snapshot = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .cloned()
+            .unwrap_or_default();
+        let Some(node) = config_snapshot
+            .lab_graph
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .cloned()
+        else {
+            self.editor.status = "Step was not found.".to_string();
+            return;
+        };
+        let Some(provider_id) = node.provider_id else {
+            self.editor.status = "Select a provider for this step first.".to_string();
+            return;
+        };
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .cloned()
+        else {
+            self.editor.status = "Selected provider is unavailable.".to_string();
+            return;
+        };
+        if provider.output_type != output_type {
+            self.editor.status = "Provider output type does not match this asset.".to_string();
+            return;
+        }
+
+        let mut node_config = config_snapshot;
+        node_config.provider_id = Some(provider.id);
+        node_config.inputs = node.inputs.clone();
+        node_config.lab_graph.selected_node_id = Some(node_id);
+        let folder_path = project_root.join(folder);
+        match self.enqueue_generation_jobs(
+            asset_id,
+            None,
+            Some(node_id),
+            provider,
+            node_config,
+            folder_path,
+            asset_label,
+        ) {
+            Ok(status) => {
+                self.editor.status = format!("{status} from Asset Lab step.");
+            }
+            Err(err) => self.editor.status = err,
+        }
+    }
+
+    pub(super) fn delete_asset_lab_node(&mut self, asset_id: Uuid, node_id: Uuid) {
+        let updated = self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                config.lab_graph.nodes.retain(|node| node.id != node_id);
+                if config.lab_graph.selected_node_id == Some(node_id) {
+                    config.lab_graph.selected_node_id =
+                        config.lab_graph.nodes.first().map(|node| node.id);
+                }
+            });
+        if !updated {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        }
+        self.save_asset_lab_config(asset_id, "Deleted step. Outputs were kept.");
+    }
+
+    pub(super) fn save_asset_lab_config(&mut self, asset_id: Uuid, status: &str) {
+        match self.editor.project.save_generative_config(asset_id) {
+            Ok(_) => self.editor.status = status.to_string(),
+            Err(err) => self.editor.status = format!("Failed to save Asset Lab config: {err}"),
         }
     }
 
@@ -1259,6 +2600,17 @@ impl NlaEguiApp {
                 config.active_version = Some(version.to_string());
                 config.provider_id = Some(record.provider_id);
                 config.inputs = record.inputs_snapshot;
+                if let Some(node_id) = record.lab_node_id {
+                    config.lab_graph.selected_node_id = Some(node_id);
+                    if let Some(node) = config
+                        .lab_graph
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == node_id)
+                    {
+                        node.output_version = Some(version.to_string());
+                    }
+                }
             });
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
             self.editor.status = format!("Failed to save active version: {err}");
@@ -1306,6 +2658,7 @@ impl NlaEguiApp {
             timestamp: chrono::Utc::now(),
             provider_id: source_record.provider_id,
             inputs_snapshot: source_record.inputs_snapshot,
+            lab_node_id: source_record.lab_node_id,
         };
         self.editor
             .project
@@ -1313,6 +2666,17 @@ impl NlaEguiApp {
                 config.active_version = Some(new_version.clone());
                 config.provider_id = Some(new_record.provider_id);
                 config.inputs = new_record.inputs_snapshot.clone();
+                if let Some(node_id) = new_record.lab_node_id {
+                    config.lab_graph.selected_node_id = Some(node_id);
+                    if let Some(node) = config
+                        .lab_graph
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == node_id)
+                    {
+                        node.output_version = Some(new_version.clone());
+                    }
+                }
                 config.versions.push(new_record);
             });
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
@@ -1346,6 +2710,41 @@ impl NlaEguiApp {
             .project
             .update_generative_config(asset_id, |config| {
                 config.versions.retain(|record| record.version != version);
+                config.inputs.retain(|_, input| {
+                    !matches!(
+                        input,
+                        InputValue::GenerationRef {
+                            asset_id: ref_asset_id,
+                            version: ref_version,
+                            ..
+                        } if *ref_asset_id == asset_id && ref_version == version
+                    )
+                });
+                config.reference_slots.retain(|_, input| {
+                    !matches!(
+                        input,
+                        InputValue::GenerationRef {
+                            asset_id: ref_asset_id,
+                            version: ref_version,
+                            ..
+                        } if *ref_asset_id == asset_id && ref_version == version
+                    )
+                });
+                for node in config.lab_graph.nodes.iter_mut() {
+                    if node.output_version.as_deref() == Some(version) {
+                        node.output_version = None;
+                    }
+                    node.inputs.retain(|_, input| {
+                        !matches!(
+                            input,
+                            InputValue::GenerationRef {
+                                asset_id: ref_asset_id,
+                                version: ref_version,
+                                ..
+                            } if *ref_asset_id == asset_id && ref_version == version
+                        )
+                    });
+                }
                 if config.active_version.as_deref() == Some(version) {
                     config.active_version = preferred_asset_lab_version(config);
                     if let Some(active) = config.active_version.clone() {

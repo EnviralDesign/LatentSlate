@@ -1,82 +1,73 @@
-# Desktop Test Harness Plan
+# Desktop Test Harness
 
-This app cannot be exercised like a browser tab. The current egui/eframe shell is native desktop UI, so the harness uses three layers: fast core checks that do not launch the UI, a loopback REST API for semantic/editor operations, and a UI-level registry that lets automation discover and invoke visible egui widgets.
+The app is a native egui/eframe desktop program, so smoke testing uses a local executable plus an opt-in loopback automation API.
 
-## Current Smoke Scripts
+## Smoke Scripts
 
-- `scripts/stage-runtime-dlls.ps1` copies the vcpkg FFmpeg runtime DLLs required by the executable into `target/<profile>`.
-- `scripts/desktop-smoke.ps1` optionally builds, stages DLLs, launches the app, waits for the largest visible top-level window owned by the app process, verifies loaded FFmpeg modules, captures that application window under `.tmp/desktop-smoke/`, then stops the process unless `-KeepRunning` is used.
-- `scripts/automation-scenario.ps1` launches the app with the loopback automation API enabled, generates a fixture PNG, creates a temporary project, imports the fixture, adds it to the timeline, seeks, adds a marker, selects the clip, saves, captures the app window, opens the Providers modal, captures again, then writes final state JSON.
+Stage FFmpeg runtime DLLs beside the executable:
 
-Example:
+```powershell
+.\scripts\stage-runtime-dlls.ps1 -Profile release
+```
+
+Launch and capture the app window:
 
 ```powershell
 .\scripts\desktop-smoke.ps1 -Profile release -WaitSeconds 10
 ```
 
-Launch on the right-most monitor before capturing:
-
-```powershell
-.\scripts\desktop-smoke.ps1 -Profile release -Monitor RightMost
-```
-
-Use a specific Windows monitor index:
-
-```powershell
-.\scripts\desktop-smoke.ps1 -Profile release -Monitor Index -MonitorIndex 1
-```
-
-Run the narrow native-like automation scenario on the right-most monitor:
+Run a scripted project/timeline scenario:
 
 ```powershell
 .\scripts\automation-scenario.ps1 -Profile release -Monitor RightMost
 ```
 
-Capture a broader reference set during UI migration work:
+Capture a broader reference set:
 
 ```powershell
 .\scripts\automation-scenario.ps1 -Profile release -Monitor RightMost -CaptureReferenceSet
 ```
 
-The scenario writes artifacts under `.tmp/desktop-smoke/`:
+Artifacts are written under `.tmp/desktop-smoke/`.
 
-- `automation-*-timeline.png` - app-window-only screenshot after project/import/timeline/selection/save commands.
-- `automation-*-providers.png` - app-window-only screenshot with the Providers modal open.
-- `automation-*-state.json` - final semantic app state returned by the automation API.
-- `legacy-ui-reference-*/*.png` - preserved pre-egui startup, timeline, selection variants, modals, queue, providers, collapsed panels, and preview stats reference screenshots.
-- `ui-reference-*/*.png` - newly captured screenshots for the same scenario set.
-- `egui-reference-*/*.png` - earlier egui migration screenshots for the same scenario set.
+## Automation Mode
 
-Latest reference capture:
+Launch arguments:
 
-```text
-.tmp/desktop-smoke/legacy-ui-reference-20260519-173555/
-.tmp/desktop-smoke/egui-reference-ready/
+```powershell
+.\target\release\nla-ai-videocreator.exe --automation --automation-port 47890
 ```
 
-## Automation API
+Environment alternative:
 
-The executable accepts `--automation --automation-port <port>` or `NLA_AUTOMATION=1` plus optional `NLA_AUTOMATION_PORT`. The server binds only to `127.0.0.1`.
+```powershell
+$env:NLA_AUTOMATION = "1"
+$env:NLA_AUTOMATION_PORT = "47890"
+```
 
-Endpoints:
+The server binds only to `127.0.0.1`.
 
-- `GET /health` confirms the control plane is enabled.
-- `GET /state` returns project, current time, selection, startup, and provider-modal state.
-- `GET /ui` returns the visible widget registry from the last completed egui frame.
-- `POST /ui/click` invokes a visible clickable widget by its current `/ui` ID.
-- `POST /ui/text` replaces or appends text in a visible editable widget by its current `/ui` ID.
-- `POST /screenshot` captures the current egui viewport and writes a PNG under `.tmp/automation-screenshots/`.
-- `POST /command` accepts JSON commands tagged with `type`.
+## Endpoints
 
-Current commands:
+- `GET /health`
+- `GET /state`
+- `GET /ui`
+- `POST /ui/click`
+- `POST /ui/text`
+- `POST /screenshot`
+- `POST /command`
+
+UI commands are consumed by registered egui widgets during normal rendering. Semantic commands are applied through the editor state/controller path where possible.
+
+## Useful Commands
+
+Current command types include:
 
 - `create_project`
 - `open_project`
 - `import_asset`
 - `add_asset_to_timeline`
 - `seek`
-- `get_performance_diagnostics`
-- `scrub_timeline_profile`
 - `select_clip`
 - `select_asset`
 - `select_track`
@@ -95,46 +86,52 @@ Current commands:
 - `close_generative_video`
 - `set_layout`
 - `close_all_overlays`
+- `get_performance_diagnostics`
+- `scrub_timeline_profile`
 
-The UI-level endpoints are also accepted through `POST /command` as `get_ui`, `click_ui`, `text_ui`, and `screenshot`.
-
-Preview performance diagnostics are exposed through the same command endpoint:
+Example:
 
 ```powershell
 $base = "http://127.0.0.1:47890"
+
 Invoke-RestMethod "$base/command" -Method Post -ContentType "application/json" -Body (@{
     type = "get_performance_diagnostics"
 } | ConvertTo-Json)
 
 Invoke-RestMethod "$base/command" -Method Post -ContentType "application/json" -Depth 4 -Body (@{
     type = "scrub_timeline_profile"
-    start_time = 75.0
-    end_time = 90.0
-    steps = 48
+    start_time = 0.0
+    end_time = 5.0
+    steps = 24
     repeats = 2
     scrub_audio = $true
 } | ConvertTo-Json)
 ```
 
-`scrub_timeline_profile` drives the same egui-side seek path used by ruler/playhead dragging, then uses the direct renderer for each requested sample so stage timings are deterministic. It is intended for repeatable renderer/cache optimization passes, not for pixel-click simulation. To measure the non-blocking async UI path, issue repeated `seek` commands and read `get_performance_diagnostics`; the diagnostics include async render state, stale result count, worker time, delivery time, cache occupancy, and recent accepted render samples.
+## Preview Diagnostics
 
-Example UI-level flow:
+When Preview Stats is enabled, the overlay and automation diagnostics expose:
 
-```powershell
-$base = "http://127.0.0.1:47890"
-$ui = Invoke-RestMethod "$base/ui"
-$button = $ui.data.elements | Where-Object { $_.kind -eq "button" -and $_.label -eq "New Project..." } | Select-Object -First 1
-Invoke-RestMethod "$base/ui/click" -Method Post -ContentType "application/json" -Body (@{ id = $button.id } | ConvertTo-Json)
-$shot = Invoke-RestMethod "$base/screenshot" -Method Post -ContentType "application/json" -Body (@{ name = "new-project" } | ConvertTo-Json)
-```
+- `async`: worker state and current busy time
+- `worker`: background render worker time
+- `delivery`: schedule-to-UI acceptance time
+- `total`: total wall-clock time
+- `scan`: track/asset/cache scan time
+- `vdec`: video decode time
+- `seek`, `pkt`, `xfer`, `scale`, `copy`: video decode sub-stages
+- `hwdec`: percent of decoded frames using hardware acceleration
+- `still`: still-image load time
+- `comp`: CPU RGBA composition time; normally `0` for the interactive egui layer-texture path
+- `upload`: preview layer texture preparation/upload time
+- `hit`: frame-cache hit percentage
+- `layers`: active visual layer count
+- `stale`: discarded async render count
 
-`/ui/click` returns `404` when the element ID is no longer present and `409` when the element is visible but disabled or not clickable. `/ui/text` uses the same visibility checks and additionally requires `editable: true`.
+Timeline clips may also draw cache bucket strips when preview stats are enabled.
 
-This is intentionally not a separate testing model. Semantic HTTP requests are consumed by the egui app loop and applied through `EditorState`, the same model/controller used by visible UI actions. UI-level HTTP requests are consumed by shared egui widget helpers during the normal render pass, so automation follows the real button/text-field path rather than a hidden parallel UI path.
+## DLL Staging
 
-## Why DLL Staging Exists
-
-The executable imports these FFmpeg DLLs at process startup:
+The executable needs FFmpeg runtime DLLs at launch:
 
 - `avcodec-61.dll`
 - `avformat-61.dll`
@@ -142,32 +139,11 @@ The executable imports these FFmpeg DLLs at process startup:
 - `swresample-5.dll`
 - `swscale-8.dll`
 
-They are available in the local vcpkg install, but launching `target\release\nla-ai-videocreator.exe` directly does not reliably put `C:\vcpkg2\installed\x64-windows\bin` on the loader path. Staging them beside the exe makes direct launches and smoke tests deterministic.
+`scripts/stage-runtime-dlls.ps1` copies these from `VCPKG_ROOT`, `C:\vcpkg2`, `C:\vcpkg`, or an explicit `-SourceBin`.
 
-## Target Harness Shape
+## Test Strategy
 
-1. Keep pure logic testable without a desktop window.
-   - Project mutation, provider manifest handling, snapping, media path resolution, and preview frame collection should be callable from tests.
-   - A later `src/lib.rs` split would let integration tests import `state` and `core` directly instead of only relying on unit tests inside modules.
-
-2. Put UI work behind commands.
-   - `core::automation` queues semantic commands from loopback HTTP and the app runtime applies them through existing project/state operations.
-   - Shared `ui_kit` widgets register current-frame egui responses and consume queued UI actions, which gives automation a self-assembling control surface as more UI is moved onto the kit.
-   - egui should render the model and dispatch commands; tests should execute the same commands headlessly or through the loopback harness.
-
-3. Treat screenshot tests as smoke checks, not exact goldens.
-   - Use app-window screenshots to confirm startup, modal visibility, and gross layout state.
-   - Prefer structural assertions and image sanity checks over brittle full-pixel comparisons while the UI is still moving.
-
-4. For the egui refactor, prefer a native scenario runner.
-   - egui is much easier to drive off a single model because the UI is immediate-mode.
-   - The ideal loop is: build model state, run a scripted command sequence, render one or more frames, capture the window or an offscreen surface, and compare targeted visual invariants.
-   - Prefer `POST /screenshot` over external window-capture scripts when automation mode is available; it captures the egui viewport directly from the renderer and writes deterministic files under `.tmp`.
-
-## Near-Term Scenarios
-
-- Startup smoke: app launches, main window appears, startup modal is visible.
-- Project smoke: create a temporary project, verify default tracks and project file on disk.
-- Timeline smoke: add generated fixture image/audio assets, place clips, seek, render preview frame.
-- Modal smoke: open provider list and provider builder without suspending the preview surface incorrectly.
-- Preview smoke: render a still-image clip through `PreviewRenderer` and assert non-empty preview bytes.
+- Prefer `cargo check` and focused Rust tests for pure logic.
+- Use automation commands for desktop smoke checks.
+- Use screenshots for gross layout and visibility validation, not brittle pixel-perfect goldens.
+- Keep provider/network behavior opt-in. Routine CI should not require ComfyUI, OpenAI, xAI, or other external services.

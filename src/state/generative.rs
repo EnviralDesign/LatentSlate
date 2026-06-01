@@ -48,6 +48,12 @@ pub enum InputValue {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frame_reference: Option<SourceFrameReference>,
     },
+    GenerationRef {
+        asset_id: Uuid,
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        frame_reference: Option<SourceFrameReference>,
+    },
     Literal {
         value: serde_json::Value,
     },
@@ -122,6 +128,40 @@ pub struct GenerationRecord {
     pub timestamp: DateTime<Utc>,
     pub provider_id: Uuid,
     pub inputs_snapshot: HashMap<String, InputValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lab_node_id: Option<Uuid>,
+}
+
+/// A provider node inside a generative asset's Asset Lab graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssetLabNode {
+    pub id: Uuid,
+    #[serde(default)]
+    pub provider_id: Option<Uuid>,
+    #[serde(default)]
+    pub inputs: HashMap<String, InputValue>,
+    #[serde(default)]
+    pub output_version: Option<String>,
+}
+
+impl AssetLabNode {
+    pub fn new(provider_id: Option<Uuid>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            provider_id,
+            inputs: HashMap::new(),
+            output_version: None,
+        }
+    }
+}
+
+/// Persistent node graph state for internal asset iteration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AssetLabGraph {
+    #[serde(default)]
+    pub nodes: Vec<AssetLabNode>,
+    #[serde(default)]
+    pub selected_node_id: Option<Uuid>,
 }
 
 /// Persistent config stored in `generated/.../config.json`.
@@ -139,6 +179,8 @@ pub struct GenerativeConfig {
     pub versions: Vec<GenerationRecord>,
     #[serde(default)]
     pub active_version: Option<String>,
+    #[serde(default)]
+    pub lab_graph: AssetLabGraph,
 }
 
 impl Default for GenerativeConfig {
@@ -150,6 +192,7 @@ impl Default for GenerativeConfig {
             batch: BatchSettings::default(),
             versions: Vec::new(),
             active_version: None,
+            lab_graph: AssetLabGraph::default(),
         }
     }
 }
@@ -332,5 +375,6 @@ pub struct GenerationJob {
     pub inputs_snapshot: HashMap<String, InputValue>,
     pub seed_advance: Option<GenerationSeedAdvance>,
     pub version: Option<String>,
+    pub lab_node_id: Option<Uuid>,
     pub error: Option<String>,
 }

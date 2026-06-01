@@ -260,12 +260,21 @@ impl NlaEguiApp {
         self.editor
             .project
             .update_generative_config(job.asset_id, |config| {
-                config.inputs.insert(
-                    seed_advance.field.clone(),
-                    InputValue::Literal {
-                        value: next_seed_value,
-                    },
-                );
+                let next_input = InputValue::Literal {
+                    value: next_seed_value,
+                };
+                if let Some(node_id) = job.lab_node_id {
+                    if let Some(node) = config
+                        .lab_graph
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == node_id)
+                    {
+                        node.inputs.insert(seed_advance.field.clone(), next_input);
+                    }
+                } else {
+                    config.inputs.insert(seed_advance.field.clone(), next_input);
+                }
             });
 
         self.editor
@@ -289,13 +298,28 @@ impl NlaEguiApp {
             timestamp: chrono::Utc::now(),
             provider_id: job.provider.id,
             inputs_snapshot: job.inputs_snapshot.clone(),
+            lab_node_id: job.lab_node_id,
         };
         self.editor
             .project
             .update_generative_config(job.asset_id, |config| {
-                config.provider_id = Some(job.provider.id);
-                config.active_version = Some(version.clone());
-                config.inputs = job.inputs_snapshot.clone();
+                if let Some(node_id) = job.lab_node_id {
+                    if let Some(node) = config
+                        .lab_graph
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == node_id)
+                    {
+                        node.provider_id = Some(job.provider.id);
+                        node.inputs = job.inputs_snapshot.clone();
+                        node.output_version = Some(version.clone());
+                    }
+                    config.lab_graph.selected_node_id = Some(node_id);
+                } else {
+                    config.provider_id = Some(job.provider.id);
+                    config.active_version = Some(version.clone());
+                    config.inputs = job.inputs_snapshot.clone();
+                }
                 if let Some(existing) = config
                     .versions
                     .iter_mut()
@@ -320,6 +344,11 @@ impl NlaEguiApp {
         self.editor.previewer.invalidate_folder(&job.folder_path);
         self.invalidate_asset_visual_cache(job.asset_id);
         self.editor.preview_dirty = true;
+        if self.asset_lab.asset_id == Some(job.asset_id) {
+            self.asset_lab.selected_version = Some(version.clone());
+            self.asset_lab.pending_delete_version = None;
+            self.asset_lab_preview_texture = None;
+        }
 
         if let (Some(runtime), Some(asset)) = (
             self.generation_runtime.as_ref(),
@@ -377,6 +406,7 @@ impl NlaEguiApp {
         &mut self,
         asset_id: Uuid,
         context_clip_id: Option<Uuid>,
+        lab_node_id: Option<Uuid>,
         provider: ProviderEntry,
         config_snapshot: GenerativeConfig,
         folder_path: PathBuf,
@@ -463,6 +493,7 @@ impl NlaEguiApp {
                 inputs_snapshot,
                 seed_advance,
                 version: None,
+                lab_node_id,
                 error: None,
             });
         }

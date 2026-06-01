@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible app bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please remove private media paths, provider URLs, API keys, and workflow details you cannot share publicly.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Start from a fresh app launch when possible.
+      placeholder: |
+        1. Open...
+        2. Import...
+        3. Click...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or version
+      placeholder: "git rev-parse --short HEAD"
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11 23H2"
+    validations:
+      required: true
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      placeholder: "rustc --version"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant console output or attach screenshots. Remove sensitive data first.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Include whether FFmpeg, ComfyUI, provider credentials, or a specific project file is involved.

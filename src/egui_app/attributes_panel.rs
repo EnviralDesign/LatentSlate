@@ -1226,6 +1226,7 @@ impl NlaEguiApp {
             match self.enqueue_generation_jobs(
                 asset_id,
                 context_clip_id,
+                None,
                 provider,
                 config_for_generation,
                 folder_path,
@@ -1551,49 +1552,64 @@ impl NlaEguiApp {
         value: &InputValue,
         context_clip_id: Option<Uuid>,
     ) -> Option<String> {
-        let InputValue::AssetRef {
-            asset_id,
-            source_clip_id,
-            pinned,
-            frame_reference,
-        } = value
-        else {
-            return None;
-        };
-        let asset = self.editor.project.find_asset(*asset_id)?;
-        let prefix = if *pinned {
-            "Pinned"
-        } else if context_clip_id.is_some() {
-            "Auto"
-        } else {
-            "Saved"
-        };
-        let clip_suffix = source_clip_id
-            .and_then(|clip_id| {
-                self.editor
-                    .project
-                    .clips
-                    .iter()
-                    .find(|clip| clip.id == clip_id)
-            })
-            .map(|clip| {
-                let anchor = if *frame_reference == Some(SourceFrameReference::Last) {
-                    clip.end_time()
+        match value {
+            InputValue::AssetRef {
+                asset_id,
+                source_clip_id,
+                pinned,
+                frame_reference,
+            } => {
+                let asset = self.editor.project.find_asset(*asset_id)?;
+                let prefix = if *pinned {
+                    "Pinned"
+                } else if context_clip_id.is_some() {
+                    "Auto"
                 } else {
-                    clip.start_time
+                    "Saved"
                 };
-                format!(" @ {}", timecode(anchor))
-            })
-            .unwrap_or_default();
-        let frame_suffix = frame_reference
-            .map(|frame| format!(" ({})", frame.label()))
-            .unwrap_or_default();
-        Some(format!(
-            "{prefix}: {}{}{}",
-            asset_display_name(asset),
-            clip_suffix,
-            frame_suffix
-        ))
+                let clip_suffix = source_clip_id
+                    .and_then(|clip_id| {
+                        self.editor
+                            .project
+                            .clips
+                            .iter()
+                            .find(|clip| clip.id == clip_id)
+                    })
+                    .map(|clip| {
+                        let anchor = if *frame_reference == Some(SourceFrameReference::Last) {
+                            clip.end_time()
+                        } else {
+                            clip.start_time
+                        };
+                        format!(" @ {}", timecode(anchor))
+                    })
+                    .unwrap_or_default();
+                let frame_suffix = frame_reference
+                    .map(|frame| format!(" ({})", frame.label()))
+                    .unwrap_or_default();
+                Some(format!(
+                    "{prefix}: {}{}{}",
+                    asset_display_name(asset),
+                    clip_suffix,
+                    frame_suffix
+                ))
+            }
+            InputValue::GenerationRef {
+                asset_id,
+                version,
+                frame_reference,
+            } => {
+                let asset = self.editor.project.find_asset(*asset_id)?;
+                let frame_suffix = frame_reference
+                    .map(|frame| format!(" ({})", frame.label()))
+                    .unwrap_or_default();
+                Some(format!(
+                    "Internal: {} {}{}",
+                    asset.name, version, frame_suffix
+                ))
+            }
+            InputValue::Literal { .. } => None,
+        }
     }
 
     pub(super) fn asset_input_candidates(

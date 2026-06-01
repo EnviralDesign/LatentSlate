@@ -2,7 +2,7 @@
 name = "nla-ai-videocreator"
 version = "0.1.0"
 edition = "2021"
-description = "A local-first, AI-native Non-Linear Animation editor for generative video production"
+description = "Local-first Rust desktop timeline editor for AI-generated media and ComfyUI workflows"
 license = "MIT"
 authors = ["NLA AI Video Creator Contributors"]
 

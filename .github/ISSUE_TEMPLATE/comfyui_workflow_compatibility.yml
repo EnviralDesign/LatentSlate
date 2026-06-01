@@ -1,0 +1,62 @@
+name: ComfyUI workflow compatibility issue
+description: Report a workflow that does not work through the Provider Builder or runtime.
+title: "[ComfyUI]: "
+labels: ["comfyui", "provider", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please confirm the workflow succeeds inside ComfyUI before filing. Remove private prompts, paths, and model details if needed.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What fails in NLA AI Video Creator?
+    validations:
+      required: true
+  - type: input
+    id: comfy_version
+    attributes:
+      label: ComfyUI version
+      placeholder: "Commit hash or release date"
+    validations:
+      required: true
+  - type: textarea
+    id: custom_nodes
+    attributes:
+      label: Custom nodes
+      description: List custom nodes required by the workflow.
+  - type: dropdown
+    id: output_type
+    attributes:
+      label: Provider output type
+      options:
+        - Image
+        - Video
+        - Audio
+    validations:
+      required: true
+  - type: textarea
+    id: builder_steps
+    attributes:
+      label: Provider Builder steps
+      description: Which workflow file, output node, and exposed inputs did you select?
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message or runtime behavior
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Shareable workflow/manifest
+      description: Attach sanitized API workflow JSON and manifest if you can share them.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Include whether the selected output node writes the expected file type in ComfyUI history.

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  VCPKG_ROOT: C:\vcpkg
+
+jobs:
+  rust-windows:
+    name: Rust checks (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install FFmpeg development libraries
+        shell: pwsh
+        run: vcpkg install ffmpeg:x64-windows
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      # Clippy is intentionally not a required CI gate yet. The current codebase
+      # has pre-existing lint debt with `cargo clippy --all-targets -- -D warnings`.

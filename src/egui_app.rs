@@ -167,7 +167,7 @@ const API_KEYS_MODAL_SIZE: [f32; 2] = [480.0, 280.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
-const ASSET_LAB_MODAL_SIZE: [f32; 2] = [900.0, 640.0];
+const ASSET_LAB_MODAL_SIZE: [f32; 2] = [1160.0, 760.0];
 const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
 const TRACK_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 300.0];
 const BRIDGE_KEYFRAME_MODAL_SIZE: [f32; 2] = [500.0, 340.0];
@@ -185,7 +185,7 @@ const QUEUE_JOB_RUNNING_H: f32 = 106.0;
 const QUEUE_JOB_FAILED_H: f32 = 84.0;
 const MAX_GENERATION_BATCH_COUNT: u32 = 50;
 const ASSET_LAB_VERSION_ROW_H: f32 = 54.0;
-const ASSET_LAB_PREVIEW_H: f32 = 220.0;
+const ASSET_LAB_PREVIEW_H: f32 = 200.0;
 const ASSET_LAB_PREVIEW_SCRUB_GAP: f32 = 6.0;
 
 fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
@@ -1338,7 +1338,7 @@ fn generative_output_for_asset(
 fn literal_config_input(config: &GenerativeConfig, name: &str) -> Option<serde_json::Value> {
     config.inputs.get(name).and_then(|input| match input {
         InputValue::Literal { value } => Some(value.clone()),
-        InputValue::AssetRef { .. } => None,
+        InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
     })
 }
 

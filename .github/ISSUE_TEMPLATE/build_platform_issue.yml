@@ -1,0 +1,48 @@
+name: Build/platform issue
+description: Report local build, FFmpeg, platform, or launch problems.
+title: "[Build]: "
+labels: ["build", "platform"]
+body:
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Windows 11 23H2"
+    validations:
+      required: true
+  - type: input
+    id: rust
+    attributes:
+      label: Rust version
+      placeholder: "rustc --version"
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      placeholder: "git rev-parse --short HEAD"
+  - type: textarea
+    id: command
+    attributes:
+      label: Command that failed
+      render: powershell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Full output
+      description: Include the complete compiler/linker/runtime error.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: ffmpeg
+    attributes:
+      label: FFmpeg setup
+      description: vcpkg path, staged DLLs, `ffmpeg.exe -version`, or other relevant details.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context

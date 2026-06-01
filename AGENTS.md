@@ -4,6 +4,42 @@ description: Best practices and rules for AI developers working on this project
 
 # AI Developer Guidelines
 
+## Repository Overview
+
+NLA AI Video Creator is a Windows-first Rust desktop application built with
+`egui`/`eframe`. It is a local-first timeline editor for AI-generated media,
+with project-local assets, FFmpeg-backed preview/export, audio playback and
+waveforms, generative asset versioning, and bring-your-own ComfyUI provider
+workflows.
+
+Important directories:
+
+```
+src/
+├── main.rs              # Entry point and automation startup
+├── egui_app.rs          # eframe/egui desktop shell root
+├── egui_app/            # UI panels, modals, preview, timeline, provider UI
+├── editor.rs            # Editor model/controller shared by UI and automation
+├── state/               # Project, asset, selection, provider, generative state
+├── core/                # Non-UI logic, automation, FFmpeg, preview, export, audio
+└── providers/           # ComfyUI, OpenAI, xAI, and future provider adapters
+```
+
+Other useful paths:
+
+- `workflows/` contains intentionally tracked example ComfyUI workflow/manifest pairs.
+- `scripts/desktop-smoke.ps1` and `scripts/automation-scenario.ps1` drive native desktop smoke checks.
+- `docs/PROJECT.md` is the concise living source of truth for current status, roadmap, and decisions.
+- `docs/ARCHITECTURE.md` summarizes the current system/data model.
+- `docs/PROVIDERS.md` covers ComfyUI/provider setup and manifest behavior.
+- `docs/DESKTOP_TEST_HARNESS.md` documents the loopback automation harness.
+
+## Sub-agent defaults
+
+- Use mini roles for exploration, triage, and mechanical edits.
+- Use full Codex for final decisions, tricky reasoning, deep work, and review.
+- Use fuzzfolioworker specifically for scoring profile exploration. The lead agent must keep that worker on track.
+
 ## Build & Test Rules
 
 ### Cargo Build
@@ -16,6 +52,11 @@ description: Best practices and rules for AI developers working on this project
 
 ### Cargo Check
 - **Always run** `cargo check` before yielding back to the user
+
+### CI Reality
+- `cargo fmt --check`, `cargo check`, and `cargo test` currently pass locally.
+- `cargo clippy --all-targets -- -D warnings` currently fails on existing lint debt and should not be added as a required gate until that cleanup is done.
+- External provider behavior (ComfyUI/OpenAI/xAI) should be opt-in for tests and must not be required for routine CI.
 
 ## Development Workflow
 
@@ -41,18 +82,6 @@ description: Best practices and rules for AI developers working on this project
 - Prefer native egui widgets and custom painting over hidden parallel UI logic
 - State management goes in `src/state/`
 - Core logic (non-UI) goes in `src/core/`
-
-## File Organization
-
-```
-src/
-├── main.rs              # Entry point only
-├── egui_app.rs          # eframe/egui desktop shell
-├── editor.rs            # Editor model/controller shared by UI and automation
-├── state/               # State management
-├── core/                # Non-UI logic plus the opt-in automation control plane
-└── providers/           # Provider adapters
-```
 
 ## Communication
 
@@ -118,16 +147,12 @@ When debugging complex state flows or asynchronous behavior, static code analysi
 5. **Clean Up After**
    - Once bug is fixed and verified, remove or comment out debug logs
    - Or leave strategic ones if they might help future debugging
-   - Update PROJECT.md with the root cause and fix
+   - Update `docs/PROJECT.md` or another retained doc only when the result changes current status, decisions, or operational guidance.
 
 **This approach saved hours on the Provider Builder re-initialization bug—logs immediately revealed that the `initialized` flag was blocking seed processing on the second modal open.**
 
 ## Documentation
 
-**IMPORTANT: Always update PROJECT.md after making changes/progress.** This includes:
-- Marking completed features in the MVP checklist
-- Adding new decisions to the Decision Log
-- Updating the roadmap if milestones are reached
-- Documenting any architectural changes or new patterns established
+**IMPORTANT: Keep docs lean and current.** Update `docs/PROJECT.md` for status, roadmap, or decision changes; `docs/ARCHITECTURE.md` for stable system/data model changes; `docs/PROVIDERS.md` for provider setup/manifest behavior; and `docs/DESKTOP_TEST_HARNESS.md` for harness changes.
 
-This keeps the project documentation as the living source of truth.
+Do not add long session logs, one-off implementation plans, or research dumps to `docs/`. Use git history and issues for that.

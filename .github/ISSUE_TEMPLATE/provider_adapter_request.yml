@@ -1,0 +1,51 @@
+name: Provider adapter request
+description: Request support for a generation provider or service.
+title: "[Provider]: "
+labels: ["provider", "enhancement"]
+body:
+  - type: input
+    id: provider
+    attributes:
+      label: Provider/service
+      placeholder: "ComfyUI custom endpoint, fal.ai, Replicate, local API, etc."
+    validations:
+      required: true
+  - type: dropdown
+    id: output
+    attributes:
+      label: Output type
+      options:
+        - Image
+        - Video
+        - Audio
+        - Multiple
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Required inputs
+      description: Prompt, seed, image, video, audio, duration, aspect ratio, model, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: API or workflow documentation
+      description: Link public docs. Do not paste private API keys.
+  - type: textarea
+    id: auth
+    attributes:
+      label: Authentication model
+      description: API key, OAuth, local server only, no auth, etc.
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected result handling
+      description: How does the provider return downloadable files, URLs, job IDs, progress, or errors?
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes
+      description: Include pricing/rate-limit caveats only if they affect implementation.

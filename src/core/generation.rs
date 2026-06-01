@@ -149,6 +149,7 @@ fn resolve_unpinned_asset_ref(
                 ))
             }
         }
+        InputValue::GenerationRef { .. } => Some(value),
         InputValue::Literal { .. } => None,
     }
 }
@@ -270,83 +271,153 @@ fn asset_ref_path(
     value: &InputValue,
     input_type: &ProviderInputType,
 ) -> Option<std::path::PathBuf> {
-    let InputValue::AssetRef {
-        asset_id,
-        source_clip_id,
-        frame_reference,
-        ..
-    } = value
-    else {
-        return None;
-    };
-    let root = project.project_path.as_ref()?;
-    let asset = project.find_asset(*asset_id)?;
-    if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
-        let source_path = video_asset_source_path(root, asset)?;
-        let frame = (*frame_reference).unwrap_or(SourceFrameReference::First);
-        let time_seconds = (*source_clip_id)
-            .and_then(|clip_id| project.clips.iter().find(|clip| clip.id == clip_id))
-            .map(|clip| source_frame_time(clip, frame, project.settings.fps))
-            .unwrap_or_else(|| asset_level_frame_time(asset, frame, project.settings.fps));
-        return extract_video_reference_frame(
-            root,
-            *asset_id,
-            *source_clip_id,
-            frame,
-            time_seconds,
-            &source_path,
-        );
-    }
-    match &asset.kind {
-        AssetKind::Image { path } | AssetKind::Video { path } | AssetKind::Audio { path } => {
-            Some(root.join(path))
-        }
-        AssetKind::GenerativeImage {
-            folder,
-            active_version,
-        } => resolve_generative_source(
-            root,
-            folder,
-            active_version.as_deref(),
-            &["png", "jpg", "jpeg", "webp"],
-        ),
-        AssetKind::GenerativeVideo {
-            folder,
-            active_version,
+    match value {
+        InputValue::AssetRef {
+            asset_id,
+            source_clip_id,
+            frame_reference,
             ..
-        } => resolve_generative_source(
-            root,
-            folder,
-            active_version.as_deref(),
-            &["mp4", "mov", "mkv", "webm"],
-        ),
-        AssetKind::GenerativeAudio {
-            folder,
-            active_version,
-        } => resolve_generative_source(
-            root,
-            folder,
-            active_version.as_deref(),
-            &["wav", "mp3", "ogg", "flac", "m4a"],
-        ),
+        } => {
+            let root = project.project_path.as_ref()?;
+            let asset = project.find_asset(*asset_id)?;
+            if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
+                let source_path = video_asset_source_path(root, asset)?;
+                let frame = (*frame_reference).unwrap_or(SourceFrameReference::First);
+                let time_seconds = (*source_clip_id)
+                    .and_then(|clip_id| project.clips.iter().find(|clip| clip.id == clip_id))
+                    .map(|clip| source_frame_time(clip, frame, project.settings.fps))
+                    .unwrap_or_else(|| asset_level_frame_time(asset, frame, project.settings.fps));
+                return extract_video_reference_frame(
+                    root,
+                    *asset_id,
+                    *source_clip_id,
+                    None,
+                    frame,
+                    time_seconds,
+                    &source_path,
+                );
+            }
+            if !compatible_asset_for_provider_input(asset, input_type) {
+                return None;
+            }
+            active_asset_source_path(root, asset)
+        }
+        InputValue::GenerationRef {
+            asset_id,
+            version,
+            frame_reference,
+        } => {
+            let root = project.project_path.as_ref()?;
+            let asset = project.find_asset(*asset_id)?;
+            if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
+                let source_path = generative_asset_source_path(root, asset, Some(version))?;
+                let frame = (*frame_reference).unwrap_or(SourceFrameReference::First);
+                let time_seconds = asset_level_frame_time(asset, frame, project.settings.fps);
+                return extract_video_reference_frame(
+                    root,
+                    *asset_id,
+                    None,
+                    Some(version),
+                    frame,
+                    time_seconds,
+                    &source_path,
+                );
+            }
+            if !compatible_asset_for_provider_input(asset, input_type) {
+                return None;
+            }
+            generative_asset_source_path(root, asset, Some(version))
+        }
+        InputValue::Literal { .. } => None,
     }
 }
 
 fn video_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
     match &asset.kind {
         AssetKind::Video { path } => Some(project_root.join(path)),
-        AssetKind::GenerativeVideo {
-            folder,
-            active_version,
-            ..
-        } => resolve_generative_source(
+        AssetKind::GenerativeVideo { active_version, .. } => {
+            generative_asset_source_path(project_root, asset, active_version.as_deref())
+        }
+        _ => None,
+    }
+}
+
+fn active_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
+    match &asset.kind {
+        AssetKind::Image { path } | AssetKind::Video { path } | AssetKind::Audio { path } => {
+            Some(project_root.join(path))
+        }
+        AssetKind::GenerativeImage { active_version, .. }
+        | AssetKind::GenerativeVideo { active_version, .. }
+        | AssetKind::GenerativeAudio { active_version, .. } => {
+            generative_asset_source_path(project_root, asset, active_version.as_deref())
+        }
+    }
+}
+
+fn generative_asset_source_path(
+    project_root: &Path,
+    asset: &Asset,
+    version: Option<&str>,
+) -> Option<PathBuf> {
+    match &asset.kind {
+        AssetKind::GenerativeImage { folder, .. } => resolve_generative_source(
             project_root,
             folder,
-            active_version.as_deref(),
+            version,
+            &["png", "jpg", "jpeg", "webp"],
+        ),
+        AssetKind::GenerativeVideo { folder, .. } => resolve_generative_source(
+            project_root,
+            folder,
+            version,
             &["mp4", "mov", "mkv", "webm"],
+        ),
+        AssetKind::GenerativeAudio { folder, .. } => resolve_generative_source(
+            project_root,
+            folder,
+            version,
+            &["wav", "mp3", "ogg", "flac", "m4a"],
         ),
         _ => None,
     }
+}
+
+fn resolve_generative_source(
+    project_root: &std::path::Path,
+    folder: &std::path::Path,
+    active_version: Option<&str>,
+    extensions: &[&str],
+) -> Option<std::path::PathBuf> {
+    let folder_path = project_root.join(folder);
+    if let Some(version) = active_version {
+        for extension in extensions {
+            let candidate = folder_path.join(format!("{version}.{extension}"));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(folder_path)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        extensions
+                            .iter()
+                            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
+                    })
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
 }
 
 fn source_frame_time(clip: &Clip, frame: SourceFrameReference, fps: f64) -> f64 {
@@ -376,6 +447,7 @@ fn extract_video_reference_frame(
     project_root: &Path,
     asset_id: Uuid,
     source_clip_id: Option<Uuid>,
+    source_version: Option<&str>,
     frame: SourceFrameReference,
     time_seconds: f64,
     source_path: &Path,
@@ -386,10 +458,14 @@ fn extract_video_reference_frame(
     let clip_part = source_clip_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "asset".to_string());
+    let version_part = source_version
+        .map(|version| format!("_{}", sanitize_cache_key(version)))
+        .unwrap_or_default();
     let output_path = cache_dir.join(format!(
-        "{}_{}_{}_{}.png",
+        "{}_{}{}_{}_{}.png",
         asset_id,
         clip_part,
+        version_part,
         frame.as_str(),
         time_millis
     ));
@@ -419,40 +495,11 @@ fn extract_video_reference_frame(
     }
 }
 
-fn resolve_generative_source(
-    project_root: &std::path::Path,
-    folder: &std::path::Path,
-    active_version: Option<&str>,
-    extensions: &[&str],
-) -> Option<std::path::PathBuf> {
-    let folder_path = project_root.join(folder);
-    if let Some(version) = active_version {
-        for extension in extensions {
-            let candidate = folder_path.join(format!("{version}.{extension}"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(folder_path)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        extensions
-                            .iter()
-                            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
-                    })
-        })
-        .collect();
-    entries.sort();
-    entries.into_iter().next()
+fn sanitize_cache_key(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
 }
 
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {

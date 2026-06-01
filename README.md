@@ -1,212 +1,86 @@
-<p align="center">
-  <img src="media/image.png" alt="NLA AI Video Creator" width="800"/>
-</p>
+# NLA AI Video Creator
 
-<h1 align="center">🎬 NLA AI Video Creator</h1>
+**A local-first Rust desktop timeline for AI-generated video workflows.**
 
-<p align="center">
-  <sub><em>(official name coming soon™ — we're open to suggestions)</em></sub>
-</p>
+Build and arrange generated images, video clips, audio, markers, and ComfyUI-driven generations in one project folder. This is a functional alpha for technically capable creators and contributors, not a polished production release.
 
 <p align="center">
-  <strong>A local-first, AI-native video editor for generative content creation.</strong><br/>
-  <em>Bring Your Own Workflow. Keep your data. Own your creative pipeline.</em>
+  <img src="media/screenshots/timeline-selected-clip.png" alt="NLA AI Video Creator timeline with preview, assets, inspector, and transform handles" width="92%">
 </p>
 
 <p align="center">
-  <a href="#-whats-this">What's This?</a> •
-  <a href="#-current-status">Status</a> •
-  <a href="#-comfyui-integration">ComfyUI</a> •
-  <a href="#%EF%B8%8F-under-the-hood">Under the Hood</a> •
-  <a href="#-get-involved">Get Involved</a>
+  <img src="media/screenshots/generative-video-modal.png" alt="New generative video modal" width="30%">
+  <img src="media/screenshots/generation-queue.png" alt="Generation queue popover" width="30%">
+  <img src="media/screenshots/preview-stats.png" alt="Preview stats overlay" width="30%">
 </p>
 
----
+> Screenshots are current automation-harness captures using a synthetic fixture project. They are placeholders for better public demo assets, but they show the real desktop shell.
 
-## 🤔 What's This?
+## The Gap
 
-**NLA AI Video Creator** is an open-source desktop app that bridges the gap between AI generation tools and video editing. If you've ever found yourself:
+ComfyUI is excellent for graph-based generation, but it is not a timeline editor. Traditional NLEs are excellent timeline editors, but they are not built around iterative AI generation, prompt/schema inputs, versioned outputs, or workflow-specific provider wiring.
 
-- Juggling between ComfyUI, file explorers, and video editors
-- Manually renaming and organizing generated assets
-- Wishing you could see your AI-generated clips on a timeline *with* your audio
-- Wanting to iterate on generations without losing your creative flow
+NLA AI Video Creator is exploring the missing middle: a local desktop editor where generated media, source clips, timeline context, provider inputs, and exports stay together.
 
-...then this project is for you.
+## What It Is Today
 
-### The Vision
+- Windows-first Rust/egui desktop app.
+- Project-local asset import for images, audio, and video.
+- Timeline with video, audio, and marker tracks.
+- Preview panel with transform handles, cached thumbnails, audio waveforms, playback, scrubbing, and diagnostics.
+- Generative image/video/audio assets with config files and version history.
+- ComfyUI Provider Builder for turning API workflow JSON into timeline-editable provider inputs.
+- Experimental OpenAI image, xAI image, and xAI video adapters.
+- FFmpeg-backed MP4 export with optional audio mixdown.
 
-A purpose-built timeline editor where:
+The accurate status, limitations, and roadmap are in [docs/PROJECT.md](./docs/PROJECT.md).
 
-- 🎵 **Audio, images, and video live together** — See your soundtrack alongside AI-generated visuals
-- 🔌 **ComfyUI is a first-class citizen** — Connect your local workflows directly to the editor
-- 🧠 **Generation happens in-context** — Select a clip, tweak parameters, hit generate, see results
-- 💾 **Everything stays local** — Your projects, your machine, your data
+## ComfyUI First
 
-> **Philosophy:** This isn't trying to replace Premiere or DaVinci. It's the missing link between "I have cool AI workflows" and "I have a finished video."
+The main open-source provider path is bring-your-own ComfyUI:
 
----
+1. Build and test a workflow in ComfyUI.
+2. Export it as API JSON.
+3. Open the Provider Builder in the app.
+4. Pick an output node and expose only the inputs you want on the timeline.
+5. Generate versions directly into the project.
 
-## 🚧 Current Status
+See [docs/PROVIDERS.md](./docs/PROVIDERS.md) for setup, manifest behavior, and current adapter limits.
 
-**⚠️ Active Development — Not Production Ready**
+## Try It
 
-This is a passion project in early stages. Things work, things break, APIs change. If you're looking for a polished tool to use *today*, check back later!
+There is no installer yet. Current builds are source-first.
 
-**If you're here to:**
-- ⭐ Watch the project evolve
-- 🛠️ Contribute code or ideas
-- 🧪 Experiment with early builds
+```powershell
+git clone https://github.com/EnviralDesign/nla-ai-videocreator-rust.git
+cd nla-ai-videocreator-rust
 
-...you're in the right place. Star the repo to follow along!
+cargo check
+cargo build --release
 
-### What Works Today
-
-| Feature | Status |
-|---------|--------|
-| Timeline with tracks (video/audio/markers) | ✅ |
-| Drag, resize, and manage clips | ✅ |
-| Timeline preview with transforms | ✅ |
-| ComfyUI workflow integration (image gen) | ✅ |
-| Generative assets with version history | ✅ |
-| Provider Builder UI (no JSON editing required) | ✅ |
-| Project save/load | ✅ |
-
-### What's Coming
-
-- [ ] Audio playback & waveform visualization
-- [ ] Video generation workflow support (backend mostly complete)
-- [ ] Smart input suggestions (timeline as implicit wiring)
-- [ ] More provider adapters (fal.ai, Replicate, etc.)
-- [ ] Export to video file
-- [ ] macOS & Linux builds
-
-See the full roadmap in [docs/PROJECT.md](./docs/PROJECT.md).
-
----
-
-## 🔌 ComfyUI Integration
-
-This is where things get interesting. **Bring Your Own Workflow™** — your ComfyUI setups become first-class providers in the editor.
-
-### How It Works
-
-1. **Point the app at your local ComfyUI** instance
-2. **Use the Provider Builder** to select which workflow inputs to expose (prompts, seeds, steps, CFG, etc.)
-3. **Bind parameters** via a visual node browser — no JSON editing required
-4. **Generate directly from the timeline** — results land in your project with version history
-
-No vendor lock-in. No cloud dependency. Your workflows, your way.
-
-### Why This Matters
-
-ComfyUI has become the power-user's playground for AI image and video generation. But it's a *workflow tool*, not an *editing tool*. This project aims to be the bridge — letting you orchestrate your ComfyUI outputs in a timeline-based environment without leaving your creative flow.
-
-The provider system is designed to be extensible. ComfyUI is the first adapter, but the architecture supports:
-- Custom HTTP endpoints
-- Commercial APIs (fal.ai, Replicate, etc.) — planned
-- Any backend that can accept parameters and return media
-
----
-
-## ⚙️ Under the Hood
-
-For the developers curious about what makes this tick — the preview and compositing pipeline is where we've invested significant effort. Here's the architecture:
-
-### 🎞️ Preview Pipeline
-
-The challenge: the editor needs responsive timeline preview, media decoding, and UI overlays in one native desktop window. The current shell uses egui/eframe so dialogs, panels, timeline controls, and preview output are composed in the same UI stack.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Preview Pipeline                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │   FFmpeg     │    │    Frame     │    │   egui Preview   │   │
-│  │   Decode     │── ▶│    Cache     │──▶│   Texture Path    │   │
-│  │   Workers    │    │   (LRU)      │    │                  │   │
-│  └──────────────┘    └──────────────┘    └──────────────────┘   │
-│         │                   │                     │             │
-│         ▼                   ▼                     ▼             │
-│   • In-process decode   • 8GB budget         • Layer stacking   │
-│   • HW accel (D3D11VA)  • Prefetch window    • Per-clip xforms  │
-│   • Parallel workers    • Latest-wins        • GPU compositing  │
-│   • CPU fallback        • Per-asset keying   • Native window   │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+.\scripts\stage-runtime-dlls.ps1 -Profile release
+.\target\release\nla-ai-videocreator.exe
 ```
 
-**Three key components:**
+You will need Rust stable, FFmpeg development/runtime libraries for `ffmpeg-next`, `ffmpeg.exe` on `PATH` for export, and optionally a local ComfyUI instance at `http://127.0.0.1:8188`.
 
-1. **FFmpeg Decode Workers** — In-process video decoding via `ffmpeg-next`. Supports hardware acceleration on Windows (D3D11VA/DXVA2) with automatic CPU fallback. Parallel decode workers keyed by track to avoid decoder contention.
+## Documentation
 
-2. **Frame Cache** — LRU cache with an 8GB budget for smooth scrubbing. Prefetch windows (5s ahead, 1s behind) warm the cache when idle. Latest-wins scheduling cancels stale decode jobs when you scrub quickly — only the frames you need get decoded.
+- [Current status, roadmap, and decisions](./docs/PROJECT.md)
+- [Architecture overview](./docs/ARCHITECTURE.md)
+- [Provider and ComfyUI guide](./docs/PROVIDERS.md)
+- [Desktop automation harness](./docs/DESKTOP_TEST_HARNESS.md)
+- [Contributing](./CONTRIBUTING.md)
+- [Security](./SECURITY.md)
 
-3. **egui Preview Texture Path** — Preview frames are rendered into an egui texture inside the native UI. This keeps overlays, modals, and editor controls in the same composition layer while we rebuild the deeper preview compositor.
+## Contributing
 
-### 📊 Diagnostic Tools
+This project is most useful to ComfyUI power users, AI video creators, Rust desktop contributors, and people willing to test rough Windows builds.
 
-We built in visibility for optimization work:
-- **Preview stats overlay** with per-stage timing (seek, decode, transfer, scale, upload)
-- **Hardware decode percentage** — see how much is offloaded to the GPU
-- **Cache hit rate** tracking — know when you're hitting vs. missing
-- **HW Dec toggle** — force CPU decode for A/B comparisons
+Good early contribution areas: ComfyUI workflow compatibility, provider adapters, export validation, tests/CI, platform bring-up, and sanitized demo assets.
 
-> **Work in Progress:** We're still optimizing. The GPU currently receives RGBA after CPU conversion — a future path keeps YUV/NV12 on the GPU to avoid the round-trip. There's headroom to improve.
+Start with [CONTRIBUTING.md](./CONTRIBUTING.md).
 
----
+## License
 
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Language | **Rust** — Fast, safe, no runtime |
-| UI Framework | **egui/eframe 0.34** — Native immediate-mode desktop UI |
-| Preview Rendering | **egui textures + image processing** — In-window preview path while the compositor evolves |
-| Video Decode | **FFmpeg** (ffmpeg-next) — In-process decode with HW accel |
-| Async | **Tokio** — Background tasks, provider communication |
-
----
-
-## 📚 Documentation
-
-Detailed docs live in the `/docs` folder:
-
-- **[PROJECT.md](./docs/PROJECT.md)** — Vision, architecture, roadmap, and session changelog
-- **[CONTENT_ARCHITECTURE.md](./docs/CONTENT_ARCHITECTURE.md)** — How assets, generation, and the timeline work together
-- **[PROVIDER_SETUP_GUIDE.md](./docs/PROVIDER_SETUP_GUIDE.md)** — Setting up ComfyUI and other providers
-- **[DECODE-STRATEGIES.md](./docs/DECODE-STRATEGIES.md)** — Deep dive on NLE preview pipeline architecture
-
-> 📝 **Full setup guides coming soon.** For now, adventurous developers can explore the docs and source code.
-
----
-
-## 🤝 Get Involved
-
-This is an open source project and contributions are welcome!
-
-**Ways to help:**
-- ⭐ **Star the repo** — Helps visibility
-- 🐛 **Report issues** — Found a bug? Let us know
-- 💡 **Suggest features** — Open a discussion
-- 🔧 **Contribute code** — PRs welcome
-
-### Areas We'd Love Help With
-
-- Provider adapters for other services (fal.ai, Replicate, etc.)
-- macOS and Linux testing/builds
-
----
-
-## 📜 License
-
-**MIT License** — See [LICENSE](./LICENSE) for details.
-
-Use it, fork it, build on it. 🤖
-
----
-
-<p align="center">
-  <em>Built with 🦀 Rust and ☕ too much coffee</em>
-</p>
+MIT. See [LICENSE](./LICENSE).
