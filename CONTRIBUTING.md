@@ -1,6 +1,6 @@
 # Contributing
 
-NLA AI Video Creator is a functional alpha. Contributions are welcome, but please keep changes small, reviewable, and honest about the current state of the app.
+LatentSlate is a functional alpha. Contributions are welcome, but please keep changes small, reviewable, and honest about the current state of the app.
 
 ## Development Setup
 
@@ -26,7 +26,7 @@ cargo build --release
 Run the app from the built executable after staging FFmpeg DLLs:
 
 ```powershell
-.\target\release\nla-ai-videocreator.exe
+.\target\release\latentslate.exe
 ```
 
 Useful docs:

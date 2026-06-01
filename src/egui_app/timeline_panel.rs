@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn timeline_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.timeline_collapsed {
             let response = egui::Panel::bottom(self.project_panel_id("timeline_collapsed"))

@@ -4,7 +4,7 @@ This is the concise public roadmap. The living project status and decisions live
 
 ## Current Status
 
-NLA AI Video Creator is a Windows-first functional alpha. Core project editing, timeline operations, preview, audio playback/waveforms, generative asset versioning, ComfyUI manifest-based providers, experimental cloud provider adapters, and FFmpeg MP4 export are implemented enough for development and early testing.
+LatentSlate is a Windows-first functional alpha. Core project editing, timeline operations, preview, audio playback/waveforms, generative asset versioning, ComfyUI manifest-based providers, experimental cloud provider adapters, and FFmpeg MP4 export are implemented enough for development and early testing.
 
 It is not production-ready and does not have packaged releases yet.
 

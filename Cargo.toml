@@ -1,10 +1,10 @@
 [package]
-name = "nla-ai-videocreator"
+name = "latentslate"
 version = "0.1.0"
 edition = "2021"
 description = "Local-first Rust desktop timeline editor for AI-generated media and ComfyUI workflows"
 license = "MIT"
-authors = ["NLA AI Video Creator Contributors"]
+authors = ["LatentSlate Contributors"]
 
 [dependencies]
 eframe = { version = "0.34.2", default-features = false, features = ["glow", "default_fonts"] }

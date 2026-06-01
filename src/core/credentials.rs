@@ -95,7 +95,7 @@ fn app_config_root() -> PathBuf {
         .or_else(|_| std::env::var("APPDATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("NLA-AI-VideoCreator")
+    base.join("LatentSlate")
 }
 
 fn load_file() -> io::Result<CredentialFile> {
@@ -223,5 +223,5 @@ fn unprotect_secret(_bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn credential_entropy() -> &'static [u8] {
-    b"NLA-AI-VideoCreator credential store v1"
+    b"LatentSlate credential store v1"
 }

@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn open_export_modal(&mut self) {
         if self.export_cancel.is_none() {
             self.export_modal = ExportModalState::for_project(&self.editor.project);

@@ -4,7 +4,7 @@
   "name": "Vanilla SDXL Juggernaut",
   "output_type": "image",
   "workflow": {
-    "workflow_path": "C:\\repos\\nla-ai-videocreator-rust\\workflows\\SDXL-VANILLA-API.json"
+    "workflow_path": "workflows/SDXL-VANILLA-API.json"
   },
   "inputs": [
     {

@@ -42,7 +42,7 @@ pub fn global_providers_root() -> PathBuf {
         .or_else(|_| std::env::var("APPDATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("NLA-AI-VideoCreator").join("providers")
+    base.join("LatentSlate").join("providers")
 }
 
 pub fn list_global_provider_files() -> Vec<PathBuf> {

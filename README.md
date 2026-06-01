@@ -1,11 +1,11 @@
-# NLA AI Video Creator
+# LatentSlate
 
 **A local-first Rust desktop timeline for AI-generated video workflows.**
 
 Build and arrange generated images, video clips, audio, markers, and ComfyUI-driven generations in one project folder. This is a functional alpha for technically capable creators and contributors, not a polished production release.
 
 <p align="center">
-  <img src="media/screenshots/timeline-selected-clip.png" alt="NLA AI Video Creator timeline with preview, assets, inspector, and transform handles" width="92%">
+  <img src="media/screenshots/timeline-selected-clip.png" alt="LatentSlate timeline with preview, assets, inspector, and transform handles" width="92%">
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@ Build and arrange generated images, video clips, audio, markers, and ComfyUI-dri
 
 ComfyUI is excellent for graph-based generation, but it is not a timeline editor. Traditional NLEs are excellent timeline editors, but they are not built around iterative AI generation, prompt/schema inputs, versioned outputs, or workflow-specific provider wiring.
 
-NLA AI Video Creator is exploring the missing middle: a local desktop editor where generated media, source clips, timeline context, provider inputs, and exports stay together.
+LatentSlate is exploring the missing middle: a local desktop editor where generated media, source clips, timeline context, provider inputs, and exports stay together.
 
 ## What It Is Today
 
@@ -52,14 +52,14 @@ See [docs/PROVIDERS.md](./docs/PROVIDERS.md) for setup, manifest behavior, and c
 There is no installer yet. Current builds are source-first.
 
 ```powershell
-git clone https://github.com/EnviralDesign/nla-ai-videocreator-rust.git
-cd nla-ai-videocreator-rust
+git clone <repository-url>
+cd <repository-folder>
 
 cargo check
 cargo build --release
 
 .\scripts\stage-runtime-dlls.ps1 -Profile release
-.\target\release\nla-ai-videocreator.exe
+.\target\release\latentslate.exe
 ```
 
 You will need Rust stable, FFmpeg development/runtime libraries for `ffmpeg-next`, `ffmpeg.exe` on `PATH` for export, and optionally a local ComfyUI instance at `http://127.0.0.1:8188`.

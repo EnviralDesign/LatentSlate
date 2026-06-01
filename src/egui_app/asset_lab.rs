@@ -364,10 +364,10 @@ fn asset_lab_input_label(input: &ProviderInputField) -> String {
         input.label.trim()
     };
     let mut label = raw
-        .trim_start_matches("NLA ")
-        .trim_start_matches("NLA_")
-        .trim_start_matches("nla ")
-        .trim_start_matches("nla_")
+        .trim_start_matches("LatentSlate ")
+        .trim_start_matches("LatentSlate_")
+        .trim_start_matches("latentslate ")
+        .trim_start_matches("latentslate_")
         .replace('_', " ")
         .replace('-', " ");
     while label.contains("  ") {
@@ -658,7 +658,7 @@ pub(super) fn load_preview_image(path: &Path, max_edge: u32) -> Option<(ColorIma
     let color_image = ColorImage::from_rgba_unmultiplied(size, image.as_raw());
     Some((color_image, display_size))
 }
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn open_asset_lab(&mut self, asset_id: Uuid) {
         self.open_asset_lab_at_time(asset_id, None);
     }

@@ -1,6 +1,6 @@
 # Project Status
 
-NLA AI Video Creator is a Windows-first functional alpha for local AI video workflows. It combines a Rust/egui desktop timeline, project-local media management, FFmpeg-backed preview/export, audio playback, generative asset versioning, and bring-your-own ComfyUI providers.
+LatentSlate is a Windows-first functional alpha for local AI video workflows. It combines a Rust/egui desktop timeline, project-local media management, FFmpeg-backed preview/export, audio playback, generative asset versioning, and bring-your-own ComfyUI providers.
 
 This file is the living project status page. Keep it current, concise, and factual.
 
@@ -71,6 +71,7 @@ Not a primary goal:
 
 | Area | Decision |
 |---|---|
+| Project identity | Public name, executable, package, automation env vars, and app-local storage roots use `LatentSlate`. |
 | UI runtime | `egui`/`eframe` native desktop shell. |
 | Language | Rust. |
 | Project model | Project equals folder; imported media is copied into project-local folders. |

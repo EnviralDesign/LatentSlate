@@ -399,7 +399,7 @@ fn queue_output_label(output_type: ProviderOutputType) -> &'static str {
         ProviderOutputType::Audio => "Audio",
     }
 }
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn queue_panel(&mut self, ctx: &Context) {
         let mut close_clicked = false;
         let mut clear_clicked = false;

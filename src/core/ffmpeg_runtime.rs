@@ -15,7 +15,7 @@ pub fn init_ffmpeg() -> Result<(), String> {
 }
 
 fn ffmpeg_log_level() -> ffmpeg::util::log::Level {
-    std::env::var("NLA_FFMPEG_LOG")
+    std::env::var("LATENTSLATE_FFMPEG_LOG")
         .ok()
         .and_then(|value| parse_ffmpeg_log_level(&value))
         .unwrap_or(ffmpeg::util::log::Level::Error)

@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use uuid::Uuid;
 
-const PEAK_MAGIC: [u8; 4] = *b"NLA1";
+const PEAK_MAGIC: [u8; 4] = *b"LTS1";
 const PEAK_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug)]

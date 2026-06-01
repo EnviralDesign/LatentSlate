@@ -21,7 +21,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$exe = Join-Path $repoRoot "target\$Profile\nla-ai-videocreator.exe"
+$exe = Join-Path $repoRoot "target\$Profile\latentslate.exe"
 $artifactDir = Join-Path $repoRoot ".tmp\desktop-smoke"
 New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
 
@@ -45,12 +45,12 @@ if ($ScreenshotPath.Trim().Length -eq 0) {
     $ScreenshotPath = Join-Path $artifactDir ("smoke-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".png")
 }
 
-if (!("NlaDesktopSmokeNative" -as [type])) {
+if (!("LatentSlateDesktopSmokeNative" -as [type])) {
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 
-public static class NlaDesktopSmokeNative
+public static class LatentSlateDesktopSmokeNative
 {
     public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lparam);
 
@@ -206,7 +206,7 @@ function Move-WindowToMonitor {
     $SWP_NOZORDER = 0x0004
     $SWP_NOACTIVATE = 0x0010
 
-    [NlaDesktopSmokeNative]::SetWindowPos(
+    [LatentSlateDesktopSmokeNative]::SetWindowPos(
         $WindowHandle,
         [IntPtr]::Zero,
         $x,
@@ -228,7 +228,7 @@ do {
     Start-Sleep -Milliseconds 250
     $process.Refresh()
     if (!$process.HasExited) {
-        $windowHandle = [NlaDesktopSmokeNative]::FindLargestVisibleWindow($process.Id)
+        $windowHandle = [LatentSlateDesktopSmokeNative]::FindLargestVisibleWindow($process.Id)
     }
 } until ($process.HasExited -or $windowHandle -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline)
 
@@ -244,7 +244,7 @@ if ($windowHandle -eq [IntPtr]::Zero) {
     throw "Application did not expose a main window within $WaitSeconds seconds. A missing-DLL popup may be blocking startup."
 }
 
-$windowTitle = [NlaDesktopSmokeNative]::GetTitle($windowHandle)
+$windowTitle = [LatentSlateDesktopSmokeNative]::GetTitle($windowHandle)
 Write-Host "Process running. PID=$($process.Id) WindowHandle=$windowHandle Title='$windowTitle'"
 
 $ffmpegModules = Get-Process -Id $process.Id -Module -ErrorAction SilentlyContinue |
@@ -257,12 +257,12 @@ if ($ffmpegModules) {
     Write-Warning "No FFmpeg DLL modules were visible yet."
 }
 
-[NlaDesktopSmokeNative]::ShowWindow($windowHandle, 9) | Out-Null
-[NlaDesktopSmokeNative]::SetForegroundWindow($windowHandle) | Out-Null
+[LatentSlateDesktopSmokeNative]::ShowWindow($windowHandle, 9) | Out-Null
+[LatentSlateDesktopSmokeNative]::SetForegroundWindow($windowHandle) | Out-Null
 Start-Sleep -Milliseconds 1500
 
-$rect = New-Object NlaDesktopSmokeNative+Rect
-if (![NlaDesktopSmokeNative]::GetCaptureRect($windowHandle, [ref]$rect)) {
+$rect = New-Object LatentSlateDesktopSmokeNative+Rect
+if (![LatentSlateDesktopSmokeNative]::GetCaptureRect($windowHandle, [ref]$rect)) {
     if (!$KeepRunning) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
@@ -282,7 +282,7 @@ $targetMonitor = Get-TargetMonitor -Mode $Monitor -Index $MonitorIndex
 if ($targetMonitor) {
     Move-WindowToMonitor -WindowHandle $windowHandle -Screen $targetMonitor -Width $width -Height $height
     Start-Sleep -Milliseconds 500
-    if (![NlaDesktopSmokeNative]::GetCaptureRect($windowHandle, [ref]$rect)) {
+    if (![LatentSlateDesktopSmokeNative]::GetCaptureRect($windowHandle, [ref]$rect)) {
         if (!$KeepRunning) {
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         }

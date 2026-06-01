@@ -7,7 +7,7 @@ use crate::ui_kit as kit;
 
 use super::{
     inspector_drag_f64, inspector_drag_i64, inspector_two_drag_f64, inspector_two_drag_u32,
-    ExportModalState, NlaEguiApp,
+    ExportModalState, LatentSlateApp,
 };
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
@@ -26,7 +26,7 @@ pub(super) fn project_wizard_size(ctx: &Context) -> Vec2 {
     )
 }
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn startup_modal(&mut self, ctx: &Context) {
         let wizard_size = project_wizard_size(ctx);
         kit::modal_scrim(ctx, "startup");
@@ -41,7 +41,7 @@ impl NlaEguiApp {
             .show(ctx, |ui| {
                 kit::modal_header(
                     ui,
-                    "NLA AI Video Creator",
+                    "LatentSlate",
                     Some("Create a new project or open an existing one"),
                 );
                 kit::modal_body(ui, |ui| self.new_project_modal_contents(ui, true));

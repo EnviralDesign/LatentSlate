@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn poll_automation(&mut self, ctx: &Context) {
         if !crate::core::automation::is_enabled() {
             return;

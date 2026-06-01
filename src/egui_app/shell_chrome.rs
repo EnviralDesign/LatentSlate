@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn top_bar(&mut self, root: &mut Ui) {
         let response = egui::Panel::top("top_bar")
             .exact_size(kit::TOP_BAR_H)
@@ -137,7 +137,7 @@ impl NlaEguiApp {
                         ui,
                         "Help",
                         |ui, this: &mut Self| {
-                            ui.label(RichText::new("NLA AI Video Creator").strong());
+                            ui.label(RichText::new("LatentSlate").strong());
                             ui.label(
                                 RichText::new("egui migration build")
                                     .small()
@@ -261,7 +261,7 @@ impl NlaEguiApp {
     }
 }
 
-impl eframe::App for NlaEguiApp {
+impl eframe::App for LatentSlateApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_automation_screenshot_events(&ctx);

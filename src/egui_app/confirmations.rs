@@ -5,8 +5,8 @@ use crate::state::ClipImageMode;
 use crate::ui_kit as kit;
 
 use super::{
-    modal_size, unique_uuid_list, NlaEguiApp, ASSET_DELETE_MODAL_SIZE, BRIDGE_KEYFRAME_MODAL_SIZE,
-    TRACK_DELETE_MODAL_SIZE,
+    modal_size, unique_uuid_list, LatentSlateApp, ASSET_DELETE_MODAL_SIZE,
+    BRIDGE_KEYFRAME_MODAL_SIZE, TRACK_DELETE_MODAL_SIZE,
 };
 #[derive(Clone, Debug)]
 pub(super) struct AssetDeleteConfirmation {
@@ -33,7 +33,7 @@ pub(super) struct BridgeKeyframeConfirmation {
     pub(super) provider_id: Option<Uuid>,
 }
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn request_delete_selected_assets(&mut self) {
         let asset_ids = self.editor.selection.asset_ids.clone();
         self.request_delete_assets(&asset_ids);

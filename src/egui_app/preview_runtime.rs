@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn record_preview_perf_sample(
         &mut self,
         playhead_seconds: f64,

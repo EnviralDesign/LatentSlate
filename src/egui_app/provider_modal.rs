@@ -9,7 +9,7 @@ pub(super) struct ApiKeyModalState {
     pub(super) error: Option<String>,
 }
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn open_api_key_modal(&mut self, credential_id: &str, label: &str) {
         let saved = crate::core::credentials::has_secret(credential_id);
         let mut error = None;

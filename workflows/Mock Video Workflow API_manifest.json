@@ -4,7 +4,7 @@
   "name": "Video Provider",
   "output_type": "video",
   "workflow": {
-    "workflow_path": "C:\\repos\\nla-ai-videocreator-rust\\workflows\\Mock Video Workflow API.json"
+    "workflow_path": "workflows/Mock Video Workflow API.json"
   },
   "inputs": [
     {

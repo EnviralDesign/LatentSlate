@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn central_preview(&mut self, root: &mut Ui) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(kit::PANEL_SUNKEN))

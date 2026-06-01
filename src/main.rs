@@ -1,6 +1,6 @@
-//! NLA AI Video Creator
+//! LatentSlate
 //!
-//! A local-first, AI-native Non-Linear Animation editor for generative video production.
+//! A local-first, AI-native timeline editor for generative video production.
 
 mod constants;
 mod core;

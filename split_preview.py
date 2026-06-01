@@ -1,8 +1,7 @@
-import os
 from pathlib import Path
 
-os.chdir('C:/repos/nla-ai-videocreator-rust')
-text = Path('src/core/preview.rs').read_text(encoding='utf-8')
+repo_root = Path(__file__).resolve().parent
+text = (repo_root / 'src/core/preview.rs').read_text(encoding='utf-8')
 
 frame_cache_start = text.index('struct FrameCache')
 frame_cache_impl_end = text.index('/// Generates composited preview frames')
@@ -40,7 +39,8 @@ for line in lines[:const_start]:
 const_block = '\n'.join(lines[const_start:const_end]).strip()
 type_block = '\n'.join(lines[preview_stats_idx:]).strip()
 
-Path('src/core/preview').mkdir(exist_ok=True)
+preview_dir = repo_root / 'src/core/preview'
+preview_dir.mkdir(exist_ok=True)
 
 mod_rs = '''//! Preview rendering system\n//!\n//! Generates composited preview frames for the current timeline time.\n\nmod renderer;\nmod cache;\nmod layers;\nmod types;\nmod utils;\n\npub use renderer::PreviewRenderer;\npub use cache::{FrameCache, CachedFrame};\npub use layers::{PreviewLayer, PreviewLayerStack, PreviewLayerGpu};\npub use types::*;\npub use utils::*;\n'''
 
@@ -102,11 +102,11 @@ utils_rs = (
     + '\n'
 )
 
-Path('src/core/preview/mod.rs').write_text(mod_rs, encoding='utf-8')
-Path('src/core/preview/types.rs').write_text(types_rs, encoding='utf-8')
-Path('src/core/preview/cache.rs').write_text(cache_rs, encoding='utf-8')
-Path('src/core/preview/renderer.rs').write_text(renderer_rs, encoding='utf-8')
-Path('src/core/preview/layers.rs').write_text(layers_rs, encoding='utf-8')
-Path('src/core/preview/utils.rs').write_text(utils_rs, encoding='utf-8')
+(preview_dir / 'mod.rs').write_text(mod_rs, encoding='utf-8')
+(preview_dir / 'types.rs').write_text(types_rs, encoding='utf-8')
+(preview_dir / 'cache.rs').write_text(cache_rs, encoding='utf-8')
+(preview_dir / 'renderer.rs').write_text(renderer_rs, encoding='utf-8')
+(preview_dir / 'layers.rs').write_text(layers_rs, encoding='utf-8')
+(preview_dir / 'utils.rs').write_text(utils_rs, encoding='utf-8')
 
-Path('src/core/preview.rs').unlink(missing_ok=True)
+(repo_root / 'src/core/preview.rs').unlink(missing_ok=True)

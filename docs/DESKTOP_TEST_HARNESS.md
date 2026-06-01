@@ -35,14 +35,14 @@ Artifacts are written under `.tmp/desktop-smoke/`.
 Launch arguments:
 
 ```powershell
-.\target\release\nla-ai-videocreator.exe --automation --automation-port 47890
+.\target\release\latentslate.exe --automation --automation-port 47890
 ```
 
 Environment alternative:
 
 ```powershell
-$env:NLA_AUTOMATION = "1"
-$env:NLA_AUTOMATION_PORT = "47890"
+$env:LATENTSLATE_AUTOMATION = "1"
+$env:LATENTSLATE_AUTOMATION_PORT = "47890"
 ```
 
 The server binds only to `127.0.0.1`.

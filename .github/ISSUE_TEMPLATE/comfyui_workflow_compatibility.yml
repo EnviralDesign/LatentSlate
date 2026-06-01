@@ -11,7 +11,7 @@ body:
     id: summary
     attributes:
       label: Summary
-      description: What fails in NLA AI Video Creator?
+      description: What fails in LatentSlate?
     validations:
       required: true
   - type: input

@@ -51,5 +51,5 @@ pub fn app_cache_root() -> PathBuf {
         .or_else(|_| std::env::var("APPDATA"))
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("NLA-AI-VideoCreator").join("cache")
+    base.join("LatentSlate").join("cache")
 }

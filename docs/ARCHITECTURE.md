@@ -40,7 +40,7 @@ Important rules:
 - Imported media is copied into the project folder.
 - Assets store project-relative paths where possible.
 - Generated assets have their own folder with `config.json` plus versioned output files.
-- Provider entries are global on Windows under `%LOCALAPPDATA%\NLA-AI-VideoCreator\providers\`.
+- Provider entries are global on Windows under `%LOCALAPPDATA%\LatentSlate\providers\`.
 
 ## Timeline Model
 
@@ -115,6 +115,6 @@ Export:
 
 ## Automation
 
-The desktop automation API is loopback-only and opt-in through `--automation` or `NLA_AUTOMATION=1`. It exposes semantic commands, current UI registry data, screenshots, and preview diagnostics for smoke testing.
+The desktop automation API is loopback-only and opt-in through `--automation` or `LATENTSLATE_AUTOMATION=1`. It exposes semantic commands, current UI registry data, screenshots, and preview diagnostics for smoke testing.
 
 See [DESKTOP_TEST_HARNESS.md](./DESKTOP_TEST_HARNESS.md).

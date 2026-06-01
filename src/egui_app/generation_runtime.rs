@@ -25,7 +25,7 @@ pub(super) enum GenerationFailure {
     Canceled,
 }
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn cancel_generation_job(&mut self, job_id: Uuid) {
         let mut cancelled_label = None;
         if let Some(job) = self

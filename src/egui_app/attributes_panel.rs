@@ -1,6 +1,6 @@
 use super::*;
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn right_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.right_collapsed {
             let response = egui::Panel::right(self.project_panel_id("attributes_collapsed"))

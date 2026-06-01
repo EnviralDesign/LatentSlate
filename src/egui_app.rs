@@ -201,20 +201,20 @@ fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
 pub fn run() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("NLA AI Video Creator")
+            .with_title("LatentSlate")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([960.0, 620.0]),
         ..Default::default()
     };
 
     eframe::run_native(
-        "NLA AI Video Creator",
+        "LatentSlate",
         native_options,
-        Box::new(|cc| Ok(Box::new(NlaEguiApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(LatentSlateApp::new(cc)))),
     )
 }
 
-pub struct NlaEguiApp {
+pub struct LatentSlateApp {
     editor: EditorState,
     preview_layers: Option<PreviewLayerStack>,
     preview_layer_textures: HashMap<u64, PreviewLayerTexture>,
@@ -437,7 +437,7 @@ enum SingleI2VReference {
     VideoLastFrame,
 }
 
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         kit::configure_style(&cc.egui_ctx);
         let mut editor = EditorState::new();
@@ -450,7 +450,7 @@ impl NlaEguiApp {
         };
         let generation_runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("nla-generation")
+            .thread_name("latentslate-generation")
             .build()
         {
             Ok(runtime) => Some(runtime),
@@ -897,8 +897,8 @@ async fn execute_generation_job_async(
 fn menu_button(
     ui: &mut Ui,
     label: &str,
-    add_contents: impl FnOnce(&mut Ui, &mut NlaEguiApp),
-    app: &mut NlaEguiApp,
+    add_contents: impl FnOnce(&mut Ui, &mut LatentSlateApp),
+    app: &mut LatentSlateApp,
 ) {
     kit::top_bar_menu_button(ui, label, |ui| add_contents(ui, app));
 }

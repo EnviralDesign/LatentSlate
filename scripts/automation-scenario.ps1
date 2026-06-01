@@ -31,7 +31,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$exe = Join-Path $repoRoot "target\$Profile\nla-ai-videocreator.exe"
+$exe = Join-Path $repoRoot "target\$Profile\latentslate.exe"
 $artifactDir = Join-Path $repoRoot ".tmp\desktop-smoke"
 $projectParent = Join-Path $repoRoot ".tmp\automation-projects"
 $fixtureDir = Join-Path $repoRoot ".tmp\automation-fixtures"
@@ -80,12 +80,12 @@ try {
     throw "Automation port $AutomationPort is already in use."
 }
 
-if (!("NlaAutomationScenarioNative" -as [type])) {
+if (!("LatentSlateAutomationScenarioNative" -as [type])) {
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 
-public static class NlaAutomationScenarioNative
+public static class LatentSlateAutomationScenarioNative
 {
     public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lparam);
 
@@ -241,7 +241,7 @@ function Move-WindowToMonitor {
     $SWP_NOZORDER = 0x0004
     $SWP_NOACTIVATE = 0x0010
 
-    [NlaAutomationScenarioNative]::SetWindowPos(
+    [LatentSlateAutomationScenarioNative]::SetWindowPos(
         $WindowHandle,
         [IntPtr]::Zero,
         $x,
@@ -260,12 +260,12 @@ function Capture-AppWindow {
         [string]$Path
     )
 
-    [NlaAutomationScenarioNative]::ShowWindow($WindowHandle, 9) | Out-Null
-    [NlaAutomationScenarioNative]::SetForegroundWindow($WindowHandle) | Out-Null
+    [LatentSlateAutomationScenarioNative]::ShowWindow($WindowHandle, 9) | Out-Null
+    [LatentSlateAutomationScenarioNative]::SetForegroundWindow($WindowHandle) | Out-Null
     Start-Sleep -Milliseconds 750
 
-    $rect = New-Object NlaAutomationScenarioNative+Rect
-    if (![NlaAutomationScenarioNative]::GetCaptureRect($WindowHandle, [ref]$rect)) {
+    $rect = New-Object LatentSlateAutomationScenarioNative+Rect
+    if (![LatentSlateAutomationScenarioNative]::GetCaptureRect($WindowHandle, [ref]$rect)) {
         throw "Could not read application window bounds."
     }
 
@@ -404,7 +404,7 @@ try {
         Start-Sleep -Milliseconds 250
         $process.Refresh()
         if (!$process.HasExited) {
-            $windowHandle = [NlaAutomationScenarioNative]::FindLargestVisibleWindow($process.Id)
+            $windowHandle = [LatentSlateAutomationScenarioNative]::FindLargestVisibleWindow($process.Id)
         }
     } until ($process.HasExited -or $windowHandle -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline)
 
@@ -415,11 +415,11 @@ try {
         throw "Application did not expose a main window within $WaitSeconds seconds."
     }
 
-    $windowTitle = [NlaAutomationScenarioNative]::GetTitle($windowHandle)
+    $windowTitle = [LatentSlateAutomationScenarioNative]::GetTitle($windowHandle)
     Write-Host "Process running. PID=$($process.Id) WindowHandle=$windowHandle Title='$windowTitle'"
 
-    $rect = New-Object NlaAutomationScenarioNative+Rect
-    if (![NlaAutomationScenarioNative]::GetWindowRect($windowHandle, [ref]$rect)) {
+    $rect = New-Object LatentSlateAutomationScenarioNative+Rect
+    if (![LatentSlateAutomationScenarioNative]::GetWindowRect($windowHandle, [ref]$rect)) {
         throw "Could not read application window bounds."
     }
     $width = [Math]::Max(1, $rect.Right - $rect.Left)

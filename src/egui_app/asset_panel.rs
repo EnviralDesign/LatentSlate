@@ -229,7 +229,7 @@ pub(super) fn asset_kind_label(kind: &AssetKind) -> &'static str {
         AssetKind::GenerativeAudio { .. } => "Generative Audio",
     }
 }
-impl NlaEguiApp {
+impl LatentSlateApp {
     pub(super) fn left_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.left_collapsed {
             let response = egui::Panel::left(self.project_panel_id("assets_collapsed"))

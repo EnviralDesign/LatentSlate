@@ -4,7 +4,7 @@
   "name": "New Providerrrr",
   "output_type": "image",
   "workflow": {
-    "workflow_path": "C:\\repos\\nla-ai-videocreator-rust\\workflows\\sdxl_simple_example_API.json"
+    "workflow_path": "workflows/sdxl_simple_example_API.json"
   },
   "inputs": [],
   "output": {

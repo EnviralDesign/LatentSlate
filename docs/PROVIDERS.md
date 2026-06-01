@@ -1,6 +1,6 @@
 # Providers
 
-NLA AI Video Creator is built around user-owned providers. ComfyUI is the primary open-source path today.
+LatentSlate is built around user-owned providers. ComfyUI is the primary open-source path today.
 
 ## Current Adapter Status
 
@@ -18,7 +18,7 @@ NLA AI Video Creator is built around user-owned providers. ComfyUI is the primar
 1. Start ComfyUI and confirm it responds at `http://127.0.0.1:8188`.
 2. Build and test the workflow inside ComfyUI first.
 3. Export the workflow as **API JSON**.
-4. In NLA AI Video Creator, open `Settings > AI Providers...`.
+4. In LatentSlate, open `Settings > AI Providers...`.
 5. Add a `ComfyUI Workflow` provider.
 6. Use the Provider Builder to pick the workflow JSON.
 7. Select the output node and output type.
@@ -27,7 +27,7 @@ NLA AI Video Creator is built around user-owned providers. ComfyUI is the primar
 
 The builder writes:
 
-- a global provider JSON file under `%LOCALAPPDATA%\NLA-AI-VideoCreator\providers\`
+- a global provider JSON file under `%LOCALAPPDATA%\LatentSlate\providers\`
 - a manifest JSON file beside the workflow JSON
 
 ## Provider Entries

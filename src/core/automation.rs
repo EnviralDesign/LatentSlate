@@ -377,12 +377,12 @@ fn default_scrub_profile_repeats() -> usize {
 
 /// Parse automation configuration from CLI args and environment variables.
 pub fn config_from_args(args: &[String]) -> Option<AutomationConfig> {
-    let env_enabled = std::env::var("NLA_AUTOMATION")
+    let env_enabled = std::env::var("LATENTSLATE_AUTOMATION")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false);
 
     let mut enabled = env_enabled;
-    let mut port = std::env::var("NLA_AUTOMATION_PORT")
+    let mut port = std::env::var("LATENTSLATE_AUTOMATION_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(DEFAULT_AUTOMATION_PORT);
@@ -425,7 +425,7 @@ pub fn start(config: AutomationConfig) -> Result<(), String> {
         .map_err(|_| "automation config already initialized".to_string())?;
 
     std::thread::Builder::new()
-        .name("nla-automation-http".to_string())
+        .name("latentslate-automation-http".to_string())
         .spawn(move || run_server(config))
         .map_err(|err| err.to_string())?;
 

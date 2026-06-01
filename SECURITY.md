@@ -1,6 +1,6 @@
 # Security Policy
 
-NLA AI Video Creator is functional alpha software. There are no stable release channels yet, so security reports should target the current `main` branch unless a maintainer says otherwise.
+LatentSlate is functional alpha software. There are no stable release channels yet, so security reports should target the current `main` branch unless a maintainer says otherwise.
 
 ## Responsible Disclosure
 
