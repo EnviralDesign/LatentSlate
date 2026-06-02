@@ -2,27 +2,28 @@
 
 **From latent space to timeline.**
 
-A local-first generative NLE for ComfyUI and AI video workflows, by [Enviral Design](https://www.enviral-design.com/).
+A local-first generative NLE desktop app supporting a range of generation providers, starting with ComfyUI and your own workflows. By [Enviral Design](https://www.enviral-design.com/).
 
-Build and arrange generated images, video clips, audio, markers, and ComfyUI-driven generations in one project folder. This is a functional alpha for technically capable creators and contributors, not a polished production release.
-
-<p align="center">
-  <img src="media/screenshots/timeline-selected-clip.png" alt="LatentSlate timeline with preview, assets, inspector, and transform handles" width="92%">
-</p>
 
 <p align="center">
-  <img src="media/screenshots/generative-video-modal.png" alt="New generative video modal" width="30%">
-  <img src="media/screenshots/generation-queue.png" alt="Generation queue popover" width="30%">
-  <img src="media/screenshots/preview-stats.png" alt="Preview stats overlay" width="30%">
+<img src="media/app/banner.png" alt="LatentSlate banner" width="100%">
 </p>
 
-> Screenshots are current automation-harness captures using a synthetic fixture project. They are placeholders for better public demo assets, but they show the real desktop shell.
+<img src="media/screenshots/mainUI.png" alt="LatentSlate banner" width="100%">
+
+<p align="center">
+<img src="media/screenshots/new-project.png" alt="LatentSlate banner" width="49%">
+<img src="media/screenshots/generation-que.png" alt="LatentSlate banner" width="49%">
+</p>
+
 
 ## The Gap
 
 ComfyUI is excellent for graph-based generation, but it is not a timeline editor. Traditional NLEs are excellent timeline editors, but they are not built around iterative AI generation, prompt/schema inputs, versioned outputs, or workflow-specific provider wiring.
 
-LatentSlate is exploring the missing middle: a local generative NLE where generated media, source clips, timeline context, provider inputs, and exports stay together.
+LatentSlate is exploring the missing middle: a fully local, rust native NLE with a streamlined and opinionated UX combined with a completely un opinionated provider system that can support any workflow, but is focused on ComfyUI first. 
+
+The goal is to let you build and test your workflow in ComfyUI, then bring it into LatentSlate exposing only the parameters and settings you need to care about to create, version, and iterate on your vision.
 
 ## What It Is Today
 
