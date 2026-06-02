@@ -39,7 +39,7 @@ Important rules:
 
 - Imported media is copied into the project folder.
 - Assets store project-relative paths where possible.
-- Generated assets have their own folder with `config.json` plus versioned output files.
+- Generated assets have their own UUID-keyed folder with `config.json` plus versioned output files.
 - Repo-local runtime state lives under `.latentslate/`.
 - Provider entries are written to `.latentslate/providers/`.
 - API credentials are written to `.latentslate/secrets/credentials.json` and are encrypted on Windows.
@@ -57,7 +57,7 @@ Important rules:
 
 ## Assets And Generative Versions
 
-All media is represented as an asset. Standard assets point at imported files. Generative assets point at a generated folder and a config file.
+All media is represented as an asset. Standard assets point at imported files. Generative assets point at a UUID-keyed generated folder and a config file.
 
 Generative config tracks:
 
@@ -68,7 +68,7 @@ Generative config tracks:
 - active version
 - Asset Lab node lineage
 
-The active version is the file shown on the timeline and used when another generation references that asset.
+The active version is the file shown on the timeline and used when another generation references that asset. A generative asset with no active version is intentionally hollow; the preview and provider-input paths do not scan its folder for arbitrary leftover files.
 
 ## Provider Flow
 

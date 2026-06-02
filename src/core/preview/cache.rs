@@ -108,14 +108,14 @@ impl FrameCache {
     // Used by the preserved cache invalidation path when thumbnail/generation
     // refreshes are reconnected to the egui shell.
     pub(crate) fn invalidate_path(&mut self, path: &Path) {
-        let Some(frames) = self.asset_index.remove(path) else {
-            return;
-        };
-        for frame_index in frames {
-            let key = FrameKey {
-                path: path.to_path_buf(),
-                frame_index,
-            };
+        self.asset_index.remove(path);
+        let keys: Vec<FrameKey> = self
+            .entries
+            .keys()
+            .filter(|key| key.path == path)
+            .cloned()
+            .collect();
+        for key in keys {
             if let Some(entry) = self.entries.remove(&key) {
                 self.total_bytes = self.total_bytes.saturating_sub(entry.size_bytes);
             }

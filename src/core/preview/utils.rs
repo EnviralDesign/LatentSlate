@@ -94,32 +94,15 @@ pub(crate) fn resolve_generative_path(
     active_version: Option<&str>,
     extensions: &[&str],
 ) -> Option<std::path::PathBuf> {
+    let active_version = active_version?;
     let folder_path = project_root.join(folder);
 
-    if let Some(version) = active_version {
-        for ext in extensions {
-            let candidate = folder_path.join(format!("{}.{}", version, ext));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    for ext in extensions {
+        let candidate = folder_path.join(format!("{}.{}", active_version, ext));
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
-
-    let entries = std::fs::read_dir(&folder_path).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
-                {
-                    return Some(path);
-                }
-            }
-        }
-    }
-
     None
 }
 

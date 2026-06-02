@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::json;
@@ -482,12 +482,12 @@ impl EditorState {
             .clone()
             .ok_or_else(|| "Create or open a project first.".to_string())?;
         let index = next_generative_index(&self.project.assets, "Gen Image", is_generative_image);
-        let folder = PathBuf::from("generated")
-            .join("image")
-            .join(format!("gen_image_{index:03}"));
+        let asset_id = Uuid::new_v4();
+        let folder = generative_asset_folder("image", asset_id);
         std::fs::create_dir_all(project_root.join(&folder))
             .map_err(|err| format!("Failed to create generated image folder: {err}"))?;
-        let asset = Asset::new_generative_image(format!("Gen Image {index}"), folder);
+        let mut asset = Asset::new_generative_image(format!("Gen Image {index}"), folder);
+        asset.id = asset_id;
         let id = self.project.add_asset(asset);
         self.preview_dirty = true;
         Ok(id)
@@ -500,12 +500,12 @@ impl EditorState {
             .clone()
             .ok_or_else(|| "Create or open a project first.".to_string())?;
         let index = next_generative_index(&self.project.assets, "Gen Audio", is_generative_audio);
-        let folder = PathBuf::from("generated")
-            .join("audio")
-            .join(format!("gen_audio_{index:03}"));
+        let asset_id = Uuid::new_v4();
+        let folder = generative_asset_folder("audio", asset_id);
         std::fs::create_dir_all(project_root.join(&folder))
             .map_err(|err| format!("Failed to create generated audio folder: {err}"))?;
-        let asset = Asset::new_generative_audio(format!("Gen Audio {index}"), folder);
+        let mut asset = Asset::new_generative_audio(format!("Gen Audio {index}"), folder);
+        asset.id = asset_id;
         let id = self.project.add_asset(asset);
         self.preview_dirty = true;
         Ok(id)
@@ -518,9 +518,8 @@ impl EditorState {
             .clone()
             .ok_or_else(|| "Create or open a project first.".to_string())?;
         let index = next_generative_index(&self.project.assets, "Gen Video", is_generative_video);
-        let folder = PathBuf::from("generated")
-            .join("video")
-            .join(format!("gen_video_{index:03}"));
+        let asset_id = Uuid::new_v4();
+        let folder = generative_asset_folder("video", asset_id);
         std::fs::create_dir_all(project_root.join(&folder))
             .map_err(|err| format!("Failed to create generated video folder: {err}"))?;
         let fps = if fps.is_finite() && fps > 0.0 {
@@ -529,8 +528,9 @@ impl EditorState {
             DEFAULT_GENERATIVE_VIDEO_FPS
         };
         let frame_count = frame_count.max(1);
-        let asset =
+        let mut asset =
             Asset::new_generative_video(format!("Gen Video {index}"), folder, fps, frame_count);
+        asset.id = asset_id;
         let id = self.project.add_asset(asset);
         self.preview_dirty = true;
         Ok(id)
@@ -597,14 +597,36 @@ impl EditorState {
             .filter(|clip| unique_asset_ids.contains(&clip.asset_id))
             .count();
 
+        let project_root = self.project.project_path.clone();
         let mut removed_assets = 0usize;
+        let mut folders_to_delete = Vec::new();
         for asset_id in unique_asset_ids {
+            let folder_to_delete = project_root.as_ref().and_then(|root| {
+                self.project
+                    .find_asset(asset_id)
+                    .and_then(generative_folder)
+                    .and_then(|folder| project_local_folder(root, folder))
+            });
             if self.project.remove_asset(asset_id) {
                 removed_assets += 1;
+                if let Some(folder) = folder_to_delete {
+                    folders_to_delete.push(folder);
+                }
             }
         }
 
         if removed_assets > 0 {
+            for folder in folders_to_delete {
+                self.previewer.invalidate_folder(&folder);
+                if let Err(err) = fs::remove_dir_all(&folder) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        println!(
+                            "Failed to delete generated folder {}: {err}",
+                            folder.display()
+                        );
+                    }
+                }
+            }
             self.selection.clear();
             self.preview_dirty = true;
             self.status = deleted_assets_status(removed_assets, removed_clips);
@@ -897,7 +919,9 @@ impl EditorState {
             let source_folder = generative_folder(&source)
                 .cloned()
                 .ok_or_else(|| "Generative asset has no output folder.".to_string())?;
-            let target_folder = unique_generative_copy_folder(&project_root, &source_folder);
+            let media_type = generative_media_type(&source)
+                .ok_or_else(|| "Generative asset has no media type.".to_string())?;
+            let target_folder = generative_asset_folder(media_type, asset.id);
             copy_dir_recursive(
                 &project_root.join(&source_folder),
                 &project_root.join(&target_folder),
@@ -988,11 +1012,26 @@ fn is_generative_audio(kind: &AssetKind) -> bool {
     matches!(kind, AssetKind::GenerativeAudio { .. })
 }
 
+fn generative_asset_folder(media_type: &str, asset_id: Uuid) -> PathBuf {
+    PathBuf::from("generated")
+        .join(media_type)
+        .join(asset_id.to_string())
+}
+
 fn generative_folder(asset: &Asset) -> Option<&PathBuf> {
     match &asset.kind {
         AssetKind::GenerativeVideo { folder, .. }
         | AssetKind::GenerativeImage { folder, .. }
         | AssetKind::GenerativeAudio { folder, .. } => Some(folder),
+        _ => None,
+    }
+}
+
+fn generative_media_type(asset: &Asset) -> Option<&'static str> {
+    match &asset.kind {
+        AssetKind::GenerativeVideo { .. } => Some("video"),
+        AssetKind::GenerativeImage { .. } => Some("image"),
+        AssetKind::GenerativeAudio { .. } => Some("audio"),
         _ => None,
     }
 }
@@ -1004,6 +1043,20 @@ fn set_generative_folder(asset: &mut Asset, next_folder: PathBuf) {
         | AssetKind::GenerativeAudio { folder, .. } => *folder = next_folder,
         _ => {}
     }
+}
+
+fn project_local_folder(project_root: &Path, folder: &Path) -> Option<PathBuf> {
+    if folder.is_absolute()
+        || folder.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return None;
+    }
+    Some(project_root.join(folder))
 }
 
 fn unique_asset_copy_name(assets: &[Asset], source_name: &str) -> String {
@@ -1021,29 +1074,6 @@ fn unique_asset_name(assets: &[Asset], base_name: &str) -> String {
     loop {
         let candidate = format!("{base} {index}");
         if !assets.iter().any(|asset| asset.name == candidate) {
-            return candidate;
-        }
-        index += 1;
-    }
-}
-
-fn unique_generative_copy_folder(project_root: &Path, source_folder: &Path) -> PathBuf {
-    let parent = source_folder
-        .parent()
-        .unwrap_or_else(|| Path::new("generated"));
-    let stem = source_folder
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("asset");
-    let mut index = 1u32;
-    loop {
-        let folder_name = if index == 1 {
-            format!("{stem}_copy")
-        } else {
-            format!("{stem}_copy_{index}")
-        };
-        let candidate = parent.join(folder_name);
-        if !project_root.join(&candidate).exists() {
             return candidate;
         }
         index += 1;
@@ -1168,34 +1198,15 @@ fn resolve_generative_output_file(
     active_version: Option<&str>,
     extensions: &[&str],
 ) -> Option<PathBuf> {
+    let active_version = active_version?;
     let folder_path = project_root.join(folder);
-    if let Some(version) = active_version {
-        for extension in extensions {
-            let candidate = folder_path.join(format!("{version}.{extension}"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    for extension in extensions {
+        let candidate = folder_path.join(format!("{active_version}.{extension}"));
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
-
-    let mut entries: Vec<PathBuf> = fs::read_dir(folder_path)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        extensions
-                            .iter()
-                            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
-                    })
-        })
-        .collect();
-    entries.sort();
-    entries.into_iter().next()
+    None
 }
 
 fn sanitize_file_stem(value: &str) -> String {

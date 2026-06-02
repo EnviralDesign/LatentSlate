@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 /// The kind of asset - either a simple file reference or a generative asset
-/// The kind of asset - either a simple file reference or a generative asset
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[allow(dead_code)]
@@ -29,7 +28,7 @@ pub enum AssetKind {
     },
     /// A generative video asset with version history
     GenerativeVideo {
-        /// Folder path relative to project root (e.g., "generated/video/gen_001")
+        /// Folder path relative to project root (e.g., `generated/video/<asset-id>`)
         folder: PathBuf,
         /// Currently active version (e.g., "v1")
         active_version: Option<String>,
@@ -269,7 +268,7 @@ mod tests {
 
         let gen_video = Asset::new_generative_video(
             "Gen Video",
-            PathBuf::from("generated/video/gen_001"),
+            PathBuf::from("generated/video/550e8400-e29b-41d4-a716-446655440000"),
             DEFAULT_GENERATIVE_VIDEO_FPS,
             DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
         );

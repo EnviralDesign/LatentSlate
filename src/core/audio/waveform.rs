@@ -262,33 +262,16 @@ fn resolve_generative_audio_source(
     folder: &std::path::PathBuf,
     active_version: Option<&str>,
 ) -> Option<std::path::PathBuf> {
+    let active_version = active_version?;
     let folder_path = project_root.join(folder);
     let extensions = ["wav", "mp3", "ogg", "flac", "m4a"];
 
-    if let Some(version) = active_version {
-        for ext in extensions.iter() {
-            let candidate = folder_path.join(format!("{}.{}", version, ext));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    for ext in extensions.iter() {
+        let candidate = folder_path.join(format!("{}.{}", active_version, ext));
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
-
-    let entries = std::fs::read_dir(&folder_path).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
-                {
-                    return Some(path);
-                }
-            }
-        }
-    }
-
     None
 }
 
@@ -297,32 +280,15 @@ fn resolve_generative_video_source(
     folder: &std::path::PathBuf,
     active_version: Option<&str>,
 ) -> Option<std::path::PathBuf> {
+    let active_version = active_version?;
     let folder_path = project_root.join(folder);
     let extensions = ["mp4", "mov", "mkv", "webm", "avi"];
 
-    if let Some(version) = active_version {
-        for ext in extensions.iter() {
-            let candidate = folder_path.join(format!("{}.{}", version, ext));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    for ext in extensions.iter() {
+        let candidate = folder_path.join(format!("{}.{}", active_version, ext));
+        if candidate.exists() {
+            return Some(candidate);
         }
     }
-
-    let entries = std::fs::read_dir(&folder_path).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
-                if extensions
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(ext))
-                {
-                    return Some(path);
-                }
-            }
-        }
-    }
-
     None
 }

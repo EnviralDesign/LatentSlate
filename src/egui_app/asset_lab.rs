@@ -144,7 +144,12 @@ pub(super) fn generative_output_file_for_version(
 ) -> Option<PathBuf> {
     let folder = generative_folder_for_asset(asset)?;
     let extensions = generative_output_extensions(asset)?;
-    resolve_generative_file(project_root, folder, version, extensions)
+    resolve_generative_file(
+        project_root,
+        folder,
+        version.or_else(|| asset.active_version()),
+        extensions,
+    )
 }
 
 pub(super) fn asset_lab_media_path(
@@ -612,35 +617,15 @@ pub(super) fn resolve_generative_file(
     active_version: Option<&str>,
     extensions: &[&str],
 ) -> Option<PathBuf> {
+    let active_version = active_version?;
     let folder_path = project_root.join(folder);
-    if let Some(version) = active_version {
-        for ext in extensions {
-            let candidate = folder_path.join(format!("{version}.{ext}"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    for ext in extensions {
+        let candidate = folder_path.join(format!("{active_version}.{ext}"));
+        if candidate.exists() {
+            return Some(candidate);
         }
-        return None;
     }
-
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(folder_path)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        extensions
-                            .iter()
-                            .any(|allowed| allowed.eq_ignore_ascii_case(ext))
-                    })
-        })
-        .collect();
-    entries.sort();
-    entries.into_iter().next()
+    None
 }
 
 pub(super) fn load_thumbnail_image(path: &Path) -> Option<(ColorImage, Vec2)> {

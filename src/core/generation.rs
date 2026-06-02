@@ -389,35 +389,15 @@ fn resolve_generative_source(
     active_version: Option<&str>,
     extensions: &[&str],
 ) -> Option<std::path::PathBuf> {
+    let active_version = active_version?;
     let folder_path = project_root.join(folder);
-    if let Some(version) = active_version {
-        for extension in extensions {
-            let candidate = folder_path.join(format!("{version}.{extension}"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    for extension in extensions {
+        let candidate = folder_path.join(format!("{active_version}.{extension}"));
+        if candidate.exists() {
+            return Some(candidate);
         }
-        return None;
     }
-
-    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(folder_path)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| {
-                        extensions
-                            .iter()
-                            .any(|allowed| allowed.eq_ignore_ascii_case(extension))
-                    })
-        })
-        .collect();
-    entries.sort();
-    entries.into_iter().next()
+    None
 }
 
 fn source_frame_time(clip: &Clip, frame: SourceFrameReference, fps: f64) -> f64 {

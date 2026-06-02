@@ -98,6 +98,7 @@ pub struct RenderOutput {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct FrameKey {
+    pub asset_id: Uuid,
     pub path: PathBuf,
     pub frame_index: i64,
 }

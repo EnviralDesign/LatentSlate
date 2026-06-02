@@ -380,6 +380,7 @@ impl PreviewRenderer {
             };
 
             let cache_key = FrameKey {
+                asset_id: asset.id,
                 path: path.clone(),
                 frame_index,
             };
@@ -678,6 +679,7 @@ impl PreviewRenderer {
         };
 
         let cache_key = FrameKey {
+            asset_id: asset.id,
             path: path.clone(),
             frame_index,
         };

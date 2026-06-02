@@ -77,7 +77,7 @@ Not a primary goal:
 | Project model | Project equals folder; imported media is copied into project-local folders. |
 | Timeline model | Video/audio clips are range-based; markers are point-based. |
 | Image references | Images live on video tracks as still clips or keyframe-reference display clips; there is no separate keyframe track. |
-| Generative assets | Explicit assets under `generated/{image,video,audio}/...` with config, active version, and version history. |
+| Generative assets | Explicit assets under UUID-keyed `generated/{image,video,audio}/...` folders with config, active version, and version history. Hollow assets do not fall back to leftover files. |
 | Provider model | Single-purpose provider entries grouped by output type; input schema defines workflow intent. |
 | ComfyUI binding | Provider manifests bind exposed fields to ComfyUI node IDs plus input keys. |
 | Credentials | Cloud provider configs store credential IDs; Windows credentials use app-managed DPAPI protection. |
