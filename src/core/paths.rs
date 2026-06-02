@@ -50,11 +50,19 @@ pub fn resource_dir(name: &str) -> Option<PathBuf> {
 }
 
 pub fn app_data_root() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
+    local_app_base().join(MAKER_DATA_DIR).join(APP_DATA_DIR)
+}
+
+pub fn legacy_app_data_roots() -> Vec<PathBuf> {
+    let base = local_app_base();
+    vec![base.join(APP_DATA_DIR), base.join("NLA-AI-VideoCreator")]
+}
+
+fn local_app_base() -> PathBuf {
+    std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join(MAKER_DATA_DIR).join(APP_DATA_DIR)
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 pub fn app_cache_root() -> PathBuf {
