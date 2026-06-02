@@ -1,8 +1,8 @@
 //! App-managed credential storage.
 //!
 //! On Windows, secrets are protected with DPAPI before being written to the
-//! app's local config folder. The provider JSON stores stable credential IDs,
-//! not the API key material itself.
+//! repo-local ignored runtime folder. Provider JSON stores stable credential
+//! IDs, not the API key material itself.
 
 use std::collections::HashMap;
 use std::fs;
@@ -40,7 +40,9 @@ impl Default for CredentialFile {
 }
 
 pub fn credentials_path() -> PathBuf {
-    crate::core::paths::app_data_root().join("credentials.json")
+    crate::core::paths::app_runtime_root()
+        .join("secrets")
+        .join("credentials.json")
 }
 
 pub fn has_secret(id: &str) -> bool {

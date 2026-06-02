@@ -66,6 +66,8 @@ cargo build --release
 
 You will need Rust stable, FFmpeg development/runtime libraries for `ffmpeg-next`, `ffmpeg.exe` on `PATH` for export, and optionally a local ComfyUI instance at `http://127.0.0.1:8188`.
 
+Local runtime state lives under `.latentslate/` in this repository folder. The directory skeleton is tracked, but provider JSONs, encrypted credentials, and caches are ignored so the app stays inspectable without committing private state.
+
 ## Documentation
 
 - [Current status, roadmap, and decisions](./docs/PROJECT.md)

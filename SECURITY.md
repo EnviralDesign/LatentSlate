@@ -39,9 +39,15 @@ Provider and workflow risks:
 
 ## Credentials
 
-Cloud provider configs should store credential IDs, not raw API keys. On Windows, app-managed API keys use user-scoped DPAPI protection through the local credential store.
+Cloud provider configs should store credential IDs, not raw API keys. On Windows, app-managed API keys use user-scoped DPAPI protection through the repo-local credential store.
 
-The current Windows app-local root is `%LOCALAPPDATA%\EnviralDesign\LatentSlate\`. Treat files under that folder as private local configuration.
+LatentSlate stores local runtime state under `.latentslate/` in the repository folder:
+
+- `.latentslate/providers/` for local provider JSON files.
+- `.latentslate/secrets/credentials.json` for encrypted API key records.
+- `.latentslate/cache/` for cache and scratch files.
+
+The folder contents are ignored by git except for `.gitkeep` placeholders. Treat `.latentslate/` as private local configuration.
 
 Do not commit:
 

@@ -40,6 +40,21 @@ logs/
 /projects/
 /test-projects/
 
+# Repo-local LatentSlate runtime state.
+# Keep the folder structure visible, but keep user providers, credentials, and
+# caches out of git.
+/.latentslate/*
+!/.latentslate/.gitkeep
+!/.latentslate/providers/
+/.latentslate/providers/*
+!/.latentslate/providers/.gitkeep
+!/.latentslate/secrets/
+/.latentslate/secrets/*
+!/.latentslate/secrets/.gitkeep
+!/.latentslate/cache/
+/.latentslate/cache/*
+!/.latentslate/cache/.gitkeep
+
 # Local/personal ComfyUI workflows.
 # Keep this deny-by-default and opt in only blessed default workflows.
 /workflows/*

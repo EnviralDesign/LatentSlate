@@ -15,12 +15,12 @@ pub fn load_provider_entries(project_root: &Path) -> io::Result<Vec<ProviderEntr
     load_provider_entries_from(&providers_root(project_root))
 }
 
-pub fn load_global_provider_entries() -> io::Result<Vec<ProviderEntry>> {
-    load_provider_entries_from(&global_providers_root())
+pub fn load_local_provider_entries() -> io::Result<Vec<ProviderEntry>> {
+    load_provider_entries_from(&local_providers_root())
 }
 
-pub fn load_global_provider_entries_or_empty() -> Vec<ProviderEntry> {
-    match load_global_provider_entries() {
+pub fn load_local_provider_entries_or_empty() -> Vec<ProviderEntry> {
+    match load_local_provider_entries() {
         Ok(entries) => entries,
         Err(err) => {
             println!("Failed to load provider entries: {}", err);
@@ -33,16 +33,16 @@ pub fn save_provider_entry(project_root: &Path, entry: &ProviderEntry) -> io::Re
     save_provider_entry_to(&providers_root(project_root), entry)
 }
 
-pub fn save_global_provider_entry(entry: &ProviderEntry) -> io::Result<PathBuf> {
-    save_provider_entry_to(&global_providers_root(), entry)
+pub fn save_local_provider_entry(entry: &ProviderEntry) -> io::Result<PathBuf> {
+    save_provider_entry_to(&local_providers_root(), entry)
 }
 
-pub fn global_providers_root() -> PathBuf {
-    crate::core::paths::app_data_root().join("providers")
+pub fn local_providers_root() -> PathBuf {
+    crate::core::paths::app_runtime_root().join("providers")
 }
 
-pub fn list_global_provider_files() -> Vec<PathBuf> {
-    let root = global_providers_root();
+pub fn list_local_provider_files() -> Vec<PathBuf> {
+    let root = local_providers_root();
     let mut files = Vec::new();
     let read_dir = match fs::read_dir(&root) {
         Ok(read_dir) => read_dir,
@@ -71,7 +71,7 @@ pub fn write_provider_file(path: &Path, contents: &str) -> io::Result<()> {
 }
 
 pub fn provider_path_for_entry(entry: &ProviderEntry) -> PathBuf {
-    global_providers_root().join(format!("{}.json", entry.id))
+    local_providers_root().join(format!("{}.json", entry.id))
 }
 
 pub fn default_provider_entry() -> ProviderEntry {

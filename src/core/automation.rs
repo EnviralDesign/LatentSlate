@@ -152,9 +152,9 @@ pub enum AutomationCommand {
     },
     /// Save the current project.
     SaveProject,
-    /// Open the global providers modal.
+    /// Open the local providers modal.
     OpenProviders,
-    /// Close the global providers modal.
+    /// Close the local providers modal.
     CloseProviders,
     /// Open the project settings modal.
     OpenProjectSettings,

@@ -4,8 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-const MAKER_DATA_DIR: &str = "EnviralDesign";
-const APP_DATA_DIR: &str = "LatentSlate";
+const LOCAL_RUNTIME_DIR: &str = ".latentslate";
 
 fn resource_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
@@ -49,17 +48,33 @@ pub fn resource_dir(name: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn app_data_root() -> PathBuf {
-    local_app_base().join(MAKER_DATA_DIR).join(APP_DATA_DIR)
+pub fn app_runtime_root() -> PathBuf {
+    workspace_root().join(LOCAL_RUNTIME_DIR)
 }
 
-fn local_app_base() -> PathBuf {
-    std::env::var("LOCALAPPDATA")
-        .or_else(|_| std::env::var("APPDATA"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir())
+fn workspace_root() -> PathBuf {
+    let mut candidates = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.to_path_buf());
+        }
+    }
+    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for candidate in &candidates {
+        for ancestor in candidate.ancestors() {
+            if ancestor.join("Cargo.toml").is_file() && ancestor.join("workflows").is_dir() {
+                return ancestor.to_path_buf();
+            }
+        }
+    }
+
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 pub fn app_cache_root() -> PathBuf {
-    app_data_root().join("cache")
+    app_runtime_root().join("cache")
 }

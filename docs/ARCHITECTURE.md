@@ -40,7 +40,11 @@ Important rules:
 - Imported media is copied into the project folder.
 - Assets store project-relative paths where possible.
 - Generated assets have their own folder with `config.json` plus versioned output files.
-- Provider entries are global on Windows under `%LOCALAPPDATA%\EnviralDesign\LatentSlate\providers\`.
+- Repo-local runtime state lives under `.latentslate/`.
+- Provider entries are written to `.latentslate/providers/`.
+- API credentials are written to `.latentslate/secrets/credentials.json` and are encrypted on Windows.
+- Caches and scratch files are written under `.latentslate/cache/`.
+- `.latentslate/` contents are ignored except for `.gitkeep` files that preserve the folder layout.
 
 ## Timeline Model
 

@@ -28,6 +28,7 @@ src/
 Other useful paths:
 
 - `workflows/` contains intentionally tracked example ComfyUI workflow/manifest pairs.
+- `.latentslate/` is the repo-local ignored runtime folder for provider JSONs, encrypted credentials, and caches; track only its `.gitkeep` placeholders.
 - `scripts/desktop-smoke.ps1` and `scripts/automation-scenario.ps1` drive native desktop smoke checks.
 - `docs/PROJECT.md` is the concise living source of truth for current status, roadmap, and decisions.
 - `docs/ARCHITECTURE.md` summarizes the current system/data model.

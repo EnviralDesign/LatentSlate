@@ -179,7 +179,7 @@ impl LatentSlateApp {
                 close_clicked = kit::modal_header_with_close(
                     ui,
                     "AI Providers",
-                    Some("Global provider definitions and manifests."),
+                    Some("Local provider definitions and workflow manifests."),
                     true,
                 );
                 kit::modal_body(ui, |ui| {
@@ -225,7 +225,7 @@ impl LatentSlateApp {
                     kit::empty_state(
                         ui,
                         "No providers yet",
-                        "Create a provider or reload the global provider folder.",
+                        "Create a provider or reload the local provider folder.",
                     );
                 }
                 for path in provider_files.iter() {
@@ -324,7 +324,7 @@ impl LatentSlateApp {
                 kit::empty_state(
                     ui,
                     "Select a provider",
-                    "Choose an installed provider to edit, or add one from the cloud provider catalog.",
+                    "Choose a local provider to edit, or add one from the provider catalog.",
                 );
                 return;
             };
@@ -494,7 +494,7 @@ impl LatentSlateApp {
     }
 
     pub(super) fn save_provider_template(&mut self, entry: ProviderEntry) {
-        match crate::core::provider_store::save_global_provider_entry(&entry) {
+        match crate::core::provider_store::save_local_provider_entry(&entry) {
             Ok(path) => {
                 self.selected_provider_file = Some(path.clone());
                 self.refresh_provider_files();

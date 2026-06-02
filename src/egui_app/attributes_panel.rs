@@ -989,7 +989,7 @@ impl LatentSlateApp {
             if show_missing_provider {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(
-                    RichText::new("Selected provider is missing from global providers.")
+                    RichText::new("Selected provider is missing from local providers.")
                         .color(kit::MARKER)
                         .size(11.0),
                 );

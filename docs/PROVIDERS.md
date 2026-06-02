@@ -27,7 +27,7 @@ LatentSlate is built around user-owned providers. ComfyUI is the primary open-so
 
 The builder writes:
 
-- a global provider JSON file under `%LOCALAPPDATA%\EnviralDesign\LatentSlate\providers\`
+- a repo-local provider JSON file under `.latentslate/providers/`
 - a manifest JSON file beside the workflow JSON
 
 ## Provider Entries
@@ -133,4 +133,4 @@ Automatic drift detection is a roadmap item, not current behavior.
 
 ## Example Workflows
 
-Tracked examples live in [../workflows](../workflows). Personal workflows are intentionally not tracked unless they are sanitized and useful to contributors.
+Tracked examples live in [../workflows](../workflows). Personal workflows are intentionally ignored by default unless they are sanitized and useful to contributors.

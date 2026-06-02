@@ -9,7 +9,7 @@ use crate::constants::{DEFAULT_CLIP_DURATION_SECONDS, PREVIEW_CACHE_BUDGET_BYTES
 use crate::core::automation::{AutomationCommand, AutomationResponse};
 use crate::core::media::{probe_missing_duration, resolve_asset_duration_seconds};
 use crate::core::provider_store::{
-    list_global_provider_files, load_global_provider_entries_or_empty,
+    list_local_provider_files, load_local_provider_entries_or_empty,
 };
 use crate::core::thumbnailer::Thumbnailer;
 use crate::state::{
@@ -126,8 +126,8 @@ impl EditorState {
         Self {
             project: Project::default(),
             selection: SelectionState::default(),
-            provider_entries: load_global_provider_entries_or_empty(),
-            provider_files: list_global_provider_files(),
+            provider_entries: load_local_provider_entries_or_empty(),
+            provider_files: list_local_provider_files(),
             thumbnailer: Arc::new(Thumbnailer::new(scratch.clone())),
             previewer: Arc::new(crate::core::preview::PreviewRenderer::new_with_limits(
                 scratch,
@@ -154,8 +154,8 @@ impl EditorState {
     }
 
     pub fn refresh_providers(&mut self) {
-        self.provider_entries = load_global_provider_entries_or_empty();
-        self.provider_files = list_global_provider_files();
+        self.provider_entries = load_local_provider_entries_or_empty();
+        self.provider_files = list_local_provider_files();
     }
 
     pub fn project_root(&self) -> Option<&Path> {
