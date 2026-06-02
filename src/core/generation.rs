@@ -98,6 +98,24 @@ pub fn compatible_asset_for_provider_input(asset: &Asset, input_type: &ProviderI
     }
 }
 
+pub fn asset_source_available_for_provider_input(
+    project: &Project,
+    asset: &Asset,
+    input_type: &ProviderInputType,
+) -> bool {
+    let Some(project_root) = project.project_path.as_ref() else {
+        return false;
+    };
+    let source = if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
+        video_asset_source_path(project_root, asset)
+    } else if compatible_asset_for_provider_input(asset, input_type) {
+        active_asset_source_path(project_root, asset)
+    } else {
+        None
+    };
+    source.is_some_and(|path| path.exists())
+}
+
 fn asset_input_value(
     project: &Project,
     context_clip_id: Option<Uuid>,
@@ -186,6 +204,9 @@ fn best_timeline_asset_ref_for_input(
         .filter(|clip| clip.id != context.id)
         .filter_map(|clip| {
             let asset = project.find_asset(clip.asset_id)?;
+            if !asset_source_available_for_provider_input(project, asset, &input.input_type) {
+                return None;
+            }
             let (time_distance, frame_reference) =
                 timeline_asset_candidate(asset, clip, &input.input_type, slot, target_time)?;
             let track_penalty = match (

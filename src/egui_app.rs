@@ -26,8 +26,9 @@ use crate::core::export::{
     VideoExportFrameFormat, VideoExportJob, VideoExportPreview, VideoExportQuality,
 };
 use crate::core::generation::{
-    compatible_asset_for_provider_input, next_version_label, random_seed_i64,
-    resolve_provider_inputs, resolve_seed_field, semantic_reference_slot, update_seed_inputs,
+    asset_source_available_for_provider_input, compatible_asset_for_provider_input,
+    next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
+    semantic_reference_slot, update_seed_inputs,
 };
 use crate::core::media::probe_duration_seconds;
 use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};

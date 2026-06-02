@@ -257,7 +257,12 @@ impl LatentSlateApp {
                     } else {
                         self.editor.status.clone()
                     };
-                    ui.label(RichText::new(status_text).small().color(kit::TEXT_MUTED));
+                    let status_color = status_text_color(&self.editor.status);
+                    let mut status_rich = RichText::new(status_text).small().color(status_color);
+                    if status_color == kit::DANGER {
+                        status_rich = status_rich.strong();
+                    }
+                    ui.label(status_rich);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(format!("{:.0} fps", self.editor.project.settings.fps))
@@ -268,6 +273,28 @@ impl LatentSlateApp {
                 });
             });
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
+    }
+}
+
+fn status_text_color(status: &str) -> Color32 {
+    let lower = status.to_ascii_lowercase();
+    if [
+        "failed",
+        "missing",
+        "error",
+        "unavailable",
+        "not found",
+        "cannot",
+        "could not",
+        "unsupported",
+        "offline",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        kit::DANGER
+    } else {
+        kit::TEXT_MUTED
     }
 }
 

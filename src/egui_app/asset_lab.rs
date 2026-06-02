@@ -374,6 +374,10 @@ fn retain_node_inputs_for_provider(
     inputs.retain(|name, _| input_names.contains(name.as_str()));
 }
 
+fn retain_literal_node_inputs(inputs: &mut HashMap<String, InputValue>) {
+    inputs.retain(|_, value| matches!(value, InputValue::Literal { .. }));
+}
+
 fn asset_lab_input_label(input: &ProviderInputField) -> String {
     let raw = if input.label.trim().is_empty() {
         input.name.trim()
@@ -2299,6 +2303,7 @@ impl LatentSlateApp {
 
         let mut node = AssetLabNode::new(provider.as_ref().map(|provider| provider.id));
         node.inputs = generation_record_source_inputs(config, &source_record);
+        retain_literal_node_inputs(&mut node.inputs);
         if let Some(provider) = provider.as_ref() {
             retain_node_inputs_for_provider(&mut node.inputs, provider);
         }

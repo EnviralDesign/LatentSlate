@@ -427,7 +427,11 @@ impl LatentSlateApp {
         let fps = default_generative_video_fps();
         let frame_count = default_generative_video_frames();
         let duration = frame_count as f64 / fps.max(1.0);
-        let target_track_id = self.bridge_target_track_id(source_clip.track_id);
+        let target_track_id = if reference == SingleI2VReference::VideoLastFrame {
+            source_clip.track_id
+        } else {
+            self.bridge_target_track_id(source_clip.track_id)
+        };
         let asset_id = match self.editor.create_generative_video(fps, frame_count) {
             Ok(asset_id) => asset_id,
             Err(err) => {
@@ -708,6 +712,7 @@ impl LatentSlateApp {
             }
         }
 
+        retain_literal_inputs(&mut config.inputs);
         if provider_override.is_some() {
             config.provider_id = provider_override;
         }
@@ -1733,6 +1738,13 @@ impl LatentSlateApp {
             let Some(asset) = self.editor.project.find_asset(clip.asset_id) else {
                 continue;
             };
+            if !asset_source_available_for_provider_input(
+                &self.editor.project,
+                asset,
+                &input.input_type,
+            ) {
+                continue;
+            }
             let Some((time_distance, detail, frame_reference)) =
                 self.asset_input_clip_candidate(input, slot, target_time, clip, asset)
             else {
@@ -1772,6 +1784,11 @@ impl LatentSlateApp {
         for asset in self.editor.project.assets.iter() {
             if seen_assets.contains(&asset.id)
                 || !compatible_asset_for_provider_input(asset, &input.input_type)
+                || !asset_source_available_for_provider_input(
+                    &self.editor.project,
+                    asset,
+                    &input.input_type,
+                )
             {
                 continue;
             }
@@ -2107,6 +2124,10 @@ impl LatentSlateApp {
             self.refresh_audio_playback_items();
         }
     }
+}
+
+fn retain_literal_inputs(inputs: &mut HashMap<String, InputValue>) {
+    inputs.retain(|_, value| matches!(value, InputValue::Literal { .. }));
 }
 
 fn provider_choice_menu_row(ui: &mut Ui, provider: &ProviderEntry) -> egui::Response {
