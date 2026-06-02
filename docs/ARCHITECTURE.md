@@ -41,7 +41,6 @@ Important rules:
 - Assets store project-relative paths where possible.
 - Generated assets have their own folder with `config.json` plus versioned output files.
 - Provider entries are global on Windows under `%LOCALAPPDATA%\EnviralDesign\LatentSlate\providers\`.
-- Recognized alpha provider folders are imported into the current root when global providers are loaded.
 
 ## Timeline Model
 

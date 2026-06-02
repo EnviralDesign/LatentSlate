@@ -39,28 +39,14 @@ impl Default for CredentialFile {
     }
 }
 
-#[derive(Clone, Copy)]
-enum CredentialEntropy {
-    Current,
-    LatentSlateAlpha,
-    NlaAlpha,
-}
-
-struct CredentialLocation {
-    path: PathBuf,
-    entropy: CredentialEntropy,
-}
-
 pub fn credentials_path() -> PathBuf {
     crate::core::paths::app_data_root().join("credentials.json")
 }
 
 pub fn has_secret(id: &str) -> bool {
-    credential_locations().into_iter().any(|location| {
-        load_file_from(&location.path)
-            .map(|file| file.credentials.contains_key(id))
-            .unwrap_or(false)
-    })
+    load_file()
+        .map(|file| file.credentials.contains_key(id))
+        .unwrap_or(false)
 }
 
 pub fn save_secret(id: &str, label: &str, secret: &str) -> Result<(), String> {
@@ -69,7 +55,7 @@ pub fn save_secret(id: &str, label: &str, secret: &str) -> Result<(), String> {
         return Err("API key is empty.".to_string());
     }
     let encrypted = protect_secret(trimmed.as_bytes())?;
-    let mut file = load_current_file().unwrap_or_default();
+    let mut file = load_file().unwrap_or_default();
     file.credentials.insert(
         id.to_string(),
         StoredCredential {
@@ -82,85 +68,30 @@ pub fn save_secret(id: &str, label: &str, secret: &str) -> Result<(), String> {
 }
 
 pub fn delete_secret(id: &str) -> Result<(), String> {
-    let mut file = load_current_file().unwrap_or_default();
+    let mut file = load_file().unwrap_or_default();
     file.credentials.remove(id);
-    save_file(&file).map_err(|err| format!("Failed to save credentials: {err}"))?;
-
-    for location in legacy_credential_locations() {
-        let mut legacy_file = match load_file_from(&location.path) {
-            Ok(file) => file,
-            Err(_) => continue,
-        };
-        if legacy_file.credentials.remove(id).is_some() {
-            save_file_to(&location.path, &legacy_file)
-                .map_err(|err| format!("Failed to update legacy credentials: {err}"))?;
-        }
-    }
-
-    Ok(())
+    save_file(&file).map_err(|err| format!("Failed to save credentials: {err}"))
 }
 
 pub fn load_secret(id: &str) -> Result<String, String> {
-    for location in credential_locations() {
-        let file = load_file_from(&location.path)
-            .map_err(|err| format!("Failed to load credentials: {err}"))?;
-        let Some(record) = file.credentials.get(id) else {
-            continue;
-        };
-        let encrypted = BASE64_STANDARD
-            .decode(record.protected_value.as_bytes())
-            .map_err(|err| format!("Credential record is not valid base64: {err}"))?;
-        let bytes = unprotect_secret(&encrypted, location.entropy.bytes())?;
-        return String::from_utf8(bytes)
-            .map_err(|err| format!("Credential value is not UTF-8: {err}"));
-    }
-
-    Err(format!(
-        "Missing API key for {id}. Add it in Settings > API Keys."
-    ))
+    let file = load_file().map_err(|err| format!("Failed to load credentials: {err}"))?;
+    let record = file
+        .credentials
+        .get(id)
+        .ok_or_else(|| format!("Missing API key for {id}. Add it in Settings > API Keys."))?;
+    let encrypted = BASE64_STANDARD
+        .decode(record.protected_value.as_bytes())
+        .map_err(|err| format!("Credential record is not valid base64: {err}"))?;
+    let bytes = unprotect_secret(&encrypted)?;
+    String::from_utf8(bytes).map_err(|err| format!("Credential value is not UTF-8: {err}"))
 }
 
 pub fn secret_char_count(id: &str) -> Result<usize, String> {
     load_secret(id).map(|secret| secret.chars().count())
 }
 
-fn credential_locations() -> Vec<CredentialLocation> {
-    let mut locations = vec![CredentialLocation {
-        path: credentials_path(),
-        entropy: CredentialEntropy::Current,
-    }];
-    locations.extend(legacy_credential_locations());
-    locations
-}
-
-fn legacy_credential_locations() -> Vec<CredentialLocation> {
-    crate::core::paths::legacy_app_data_roots()
-        .into_iter()
-        .map(|root| {
-            let entropy = if root
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.eq_ignore_ascii_case("NLA-AI-VideoCreator"))
-                .unwrap_or(false)
-            {
-                CredentialEntropy::NlaAlpha
-            } else {
-                CredentialEntropy::LatentSlateAlpha
-            };
-            CredentialLocation {
-                path: root.join("credentials.json"),
-                entropy,
-            }
-        })
-        .collect()
-}
-
-fn load_current_file() -> io::Result<CredentialFile> {
+fn load_file() -> io::Result<CredentialFile> {
     let path = credentials_path();
-    load_file_from(&path)
-}
-
-fn load_file_from(path: &PathBuf) -> io::Result<CredentialFile> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -173,10 +104,6 @@ fn load_file_from(path: &PathBuf) -> io::Result<CredentialFile> {
 
 fn save_file(file: &CredentialFile) -> io::Result<()> {
     let path = credentials_path();
-    save_file_to(&path, file)
-}
-
-fn save_file_to(path: &PathBuf, file: &CredentialFile) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -193,7 +120,7 @@ fn protect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
         CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
 
-    let entropy = CredentialEntropy::Current.bytes();
+    let entropy = credential_entropy();
     let input = CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
         pbData: bytes.as_ptr() as *mut u8,
@@ -232,13 +159,14 @@ fn protect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(windows)]
-fn unprotect_secret(bytes: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
+fn unprotect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
 
+    let entropy = credential_entropy();
     let input = CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
         pbData: bytes.as_ptr() as *mut u8,
@@ -282,16 +210,10 @@ fn protect_secret(_bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(windows))]
-fn unprotect_secret(_bytes: &[u8], _entropy: &[u8]) -> Result<Vec<u8>, String> {
+fn unprotect_secret(_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Err("Encrypted app credentials are only implemented on Windows for now.".to_string())
 }
 
-impl CredentialEntropy {
-    fn bytes(self) -> &'static [u8] {
-        match self {
-            CredentialEntropy::Current => b"EnviralDesign LatentSlate credential store v1",
-            CredentialEntropy::LatentSlateAlpha => b"LatentSlate credential store v1",
-            CredentialEntropy::NlaAlpha => b"NLA-AI-VideoCreator credential store v1",
-        }
-    }
+fn credential_entropy() -> &'static [u8] {
+    b"EnviralDesign LatentSlate credential store v1"
 }

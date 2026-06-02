@@ -16,7 +16,6 @@ pub fn load_provider_entries(project_root: &Path) -> io::Result<Vec<ProviderEntr
 }
 
 pub fn load_global_provider_entries() -> io::Result<Vec<ProviderEntry>> {
-    migrate_legacy_global_provider_files();
     load_provider_entries_from(&global_providers_root())
 }
 
@@ -43,7 +42,6 @@ pub fn global_providers_root() -> PathBuf {
 }
 
 pub fn list_global_provider_files() -> Vec<PathBuf> {
-    migrate_legacy_global_provider_files();
     let root = global_providers_root();
     let mut files = Vec::new();
     let read_dir = match fs::read_dir(&root) {
@@ -74,53 +72,6 @@ pub fn write_provider_file(path: &Path, contents: &str) -> io::Result<()> {
 
 pub fn provider_path_for_entry(entry: &ProviderEntry) -> PathBuf {
     global_providers_root().join(format!("{}.json", entry.id))
-}
-
-fn legacy_global_provider_roots() -> Vec<PathBuf> {
-    crate::core::paths::legacy_app_data_roots()
-        .into_iter()
-        .map(|root| root.join("providers"))
-        .collect()
-}
-
-fn migrate_legacy_global_provider_files() {
-    let current_root = global_providers_root();
-    for legacy_root in legacy_global_provider_roots() {
-        if legacy_root == current_root || !legacy_root.exists() {
-            continue;
-        }
-        let read_dir = match fs::read_dir(&legacy_root) {
-            Ok(read_dir) => read_dir,
-            Err(err) => {
-                println!(
-                    "Failed to read legacy provider folder {:?}: {}",
-                    legacy_root, err
-                );
-                continue;
-            }
-        };
-        for entry in read_dir.flatten() {
-            let source = entry.path();
-            if !is_json_file(&source) {
-                continue;
-            }
-            let Some(file_name) = source.file_name() else {
-                continue;
-            };
-            let destination = current_root.join(file_name);
-            if destination.exists() {
-                continue;
-            }
-            if let Err(err) = fs::create_dir_all(&current_root)
-                .and_then(|_| fs::copy(&source, &destination).map(|_| ()))
-            {
-                println!(
-                    "Failed to migrate provider config {:?} to {:?}: {}",
-                    source, destination, err
-                );
-            }
-        }
-    }
 }
 
 pub fn default_provider_entry() -> ProviderEntry {

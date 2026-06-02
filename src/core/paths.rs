@@ -53,11 +53,6 @@ pub fn app_data_root() -> PathBuf {
     local_app_base().join(MAKER_DATA_DIR).join(APP_DATA_DIR)
 }
 
-pub fn legacy_app_data_roots() -> Vec<PathBuf> {
-    let base = local_app_base();
-    vec![base.join(APP_DATA_DIR), base.join("NLA-AI-VideoCreator")]
-}
-
 fn local_app_base() -> PathBuf {
     std::env::var("LOCALAPPDATA")
         .or_else(|_| std::env::var("APPDATA"))

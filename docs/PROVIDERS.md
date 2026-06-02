@@ -30,8 +30,6 @@ The builder writes:
 - a global provider JSON file under `%LOCALAPPDATA%\EnviralDesign\LatentSlate\providers\`
 - a manifest JSON file beside the workflow JSON
 
-Earlier alpha builds may have used a different app-local storage root. Current builds import recognized legacy provider JSON files into the current root. Legacy credential stores remain readable with their original encryption entropy, while new credential saves write to the current root.
-
 ## Provider Entries
 
 A provider entry stores:

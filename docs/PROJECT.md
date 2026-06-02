@@ -71,7 +71,7 @@ Not a primary goal:
 
 | Area | Decision |
 |---|---|
-| Project identity | Public name, executable, package, automation env vars, and app-local storage roots use `LatentSlate`; maker identity is Enviral Design; recognized alpha provider/credential roots are handled for compatibility. |
+| Project identity | Public name, executable, package, automation env vars, and app-local storage roots use `LatentSlate`; maker identity is Enviral Design. |
 | UI runtime | `egui`/`eframe` native desktop shell. |
 | Language | Rust. |
 | Project model | Project equals folder; imported media is copied into project-local folders. |
