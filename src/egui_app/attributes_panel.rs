@@ -436,19 +436,25 @@ impl LatentSlateApp {
             }
         };
 
+        let mut next_config =
+            self.continuation_config_from_source_asset(source_clip.asset_id, provider_id);
+        next_config.reference_slots.remove("end_image");
+        let start_reference = InputValue::AssetRef {
+            asset_id: source_clip.asset_id,
+            source_clip_id: Some(source_clip.id),
+            pinned: true,
+            frame_reference,
+        };
+        next_config
+            .reference_slots
+            .insert("start_image".to_string(), start_reference.clone());
+        next_config
+            .reference_slots
+            .insert("image".to_string(), start_reference);
         self.editor
             .project
-            .update_generative_config(asset_id, |config| {
-                config.provider_id = provider_id;
-                config.reference_slots.insert(
-                    "start_image".to_string(),
-                    InputValue::AssetRef {
-                        asset_id: source_clip.asset_id,
-                        source_clip_id: Some(source_clip.id),
-                        pinned: true,
-                        frame_reference,
-                    },
-                );
+            .update_generative_config(asset_id, move |config| {
+                *config = next_config;
             });
         let config_save_error = self.editor.project.save_generative_config(asset_id).err();
 
@@ -499,19 +505,21 @@ impl LatentSlateApp {
             }
         };
 
+        let mut next_config =
+            self.continuation_config_from_source_asset(source_clip.asset_id, provider_id);
+        next_config.reference_slots.insert(
+            "image".to_string(),
+            InputValue::AssetRef {
+                asset_id: source_clip.asset_id,
+                source_clip_id: Some(source_clip.id),
+                pinned: true,
+                frame_reference: None,
+            },
+        );
         self.editor
             .project
-            .update_generative_config(asset_id, |config| {
-                config.provider_id = provider_id;
-                config.reference_slots.insert(
-                    "image".to_string(),
-                    InputValue::AssetRef {
-                        asset_id: source_clip.asset_id,
-                        source_clip_id: Some(source_clip.id),
-                        pinned: true,
-                        frame_reference: None,
-                    },
-                );
+            .update_generative_config(asset_id, move |config| {
+                *config = next_config;
             });
         let config_save_error = self.editor.project.save_generative_config(asset_id).err();
 
@@ -619,28 +627,34 @@ impl LatentSlateApp {
             }
         };
 
+        let seed_source_asset_id = [first.clip.asset_id, last.clip.asset_id]
+            .into_iter()
+            .find(|asset_id| self.editor.project.generative_config(*asset_id).is_some())
+            .unwrap_or(first.clip.asset_id);
+        let mut next_config =
+            self.continuation_config_from_source_asset(seed_source_asset_id, provider_id);
+        next_config.reference_slots.insert(
+            "start_image".to_string(),
+            InputValue::AssetRef {
+                asset_id: first.clip.asset_id,
+                source_clip_id: Some(first.clip.id),
+                pinned: true,
+                frame_reference: first.frame_reference,
+            },
+        );
+        next_config.reference_slots.insert(
+            "end_image".to_string(),
+            InputValue::AssetRef {
+                asset_id: last.clip.asset_id,
+                source_clip_id: Some(last.clip.id),
+                pinned: true,
+                frame_reference: last.frame_reference,
+            },
+        );
         self.editor
             .project
-            .update_generative_config(asset_id, |config| {
-                config.provider_id = provider_id;
-                config.reference_slots.insert(
-                    "start_image".to_string(),
-                    InputValue::AssetRef {
-                        asset_id: first.clip.asset_id,
-                        source_clip_id: Some(first.clip.id),
-                        pinned: true,
-                        frame_reference: first.frame_reference,
-                    },
-                );
-                config.reference_slots.insert(
-                    "end_image".to_string(),
-                    InputValue::AssetRef {
-                        asset_id: last.clip.asset_id,
-                        source_clip_id: Some(last.clip.id),
-                        pinned: true,
-                        frame_reference: last.frame_reference,
-                    },
-                );
+            .update_generative_config(asset_id, move |config| {
+                *config = next_config;
             });
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
             self.editor.status = format!("Bridge created, but config save failed: {err}");
@@ -653,6 +667,82 @@ impl LatentSlateApp {
         self.editor.preview_dirty = true;
         self.editor.status =
             "Created generative video bridge from selected references.".to_string();
+    }
+
+    fn continuation_config_from_source_asset(
+        &self,
+        source_asset_id: Uuid,
+        provider_override: Option<Uuid>,
+    ) -> GenerativeConfig {
+        let Some(source_config) = self.editor.project.generative_config(source_asset_id) else {
+            let mut config = GenerativeConfig {
+                provider_id: provider_override,
+                ..Default::default()
+            };
+            self.retain_config_inputs_for_provider(&mut config);
+            return config;
+        };
+
+        let mut config = GenerativeConfig {
+            provider_id: source_config.provider_id,
+            inputs: source_config.inputs.clone(),
+            reference_slots: source_config.reference_slots.clone(),
+            batch: source_config.batch.clone(),
+            ..Default::default()
+        };
+
+        if let Some(active_version) = self
+            .editor
+            .project
+            .find_asset(source_asset_id)
+            .and_then(|asset| asset.active_version())
+            .or(source_config.active_version.as_deref())
+        {
+            if let Some(record) = source_config
+                .versions
+                .iter()
+                .find(|record| record.version == active_version)
+            {
+                config.provider_id = Some(record.provider_id);
+                config.inputs = generation_record_source_inputs(source_config, record);
+            }
+        }
+
+        if provider_override.is_some() {
+            config.provider_id = provider_override;
+        }
+        self.retain_config_inputs_for_provider(&mut config);
+        config
+    }
+
+    fn retain_config_inputs_for_provider(&self, config: &mut GenerativeConfig) {
+        let Some(provider_id) = config.provider_id else {
+            return;
+        };
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| provider.id == provider_id)
+        else {
+            return;
+        };
+        let input_names: HashSet<&str> = provider
+            .inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect();
+        config
+            .inputs
+            .retain(|name, _| input_names.contains(name.as_str()));
+        if config
+            .batch
+            .seed_field
+            .as_deref()
+            .is_some_and(|seed_field| !input_names.contains(seed_field))
+        {
+            config.batch.seed_field = None;
+        }
     }
 
     pub(super) fn bridge_target_track_id(&mut self, source_track_id: Uuid) -> Uuid {

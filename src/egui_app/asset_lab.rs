@@ -362,6 +362,18 @@ fn asset_lab_generation_ref_for_input(
     }
 }
 
+fn retain_node_inputs_for_provider(
+    inputs: &mut HashMap<String, InputValue>,
+    provider: &ProviderEntry,
+) {
+    let input_names: HashSet<&str> = provider
+        .inputs
+        .iter()
+        .map(|input| input.name.as_str())
+        .collect();
+    inputs.retain(|name, _| input_names.contains(name.as_str()));
+}
+
 fn asset_lab_input_label(input: &ProviderInputField) -> String {
     let raw = if input.label.trim().is_empty() {
         input.name.trim()
@@ -2238,14 +2250,15 @@ impl LatentSlateApp {
             self.editor.status = "Asset does not support Asset Lab steps.".to_string();
             return;
         };
-        if !config
+        let Some(source_record) = config
             .versions
             .iter()
-            .any(|record| record.version == version)
-        {
+            .find(|record| record.version == version)
+            .cloned()
+        else {
             self.editor.status = format!("Output {version} was not found.");
             return;
-        }
+        };
 
         let provider = self
             .editor
@@ -2253,10 +2266,29 @@ impl LatentSlateApp {
             .iter()
             .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
             .find(|provider| {
-                provider.inputs.iter().any(|input| {
-                    asset_lab_generation_ref_for_input(&asset, input, version).is_some()
-                })
+                provider.id == source_record.provider_id
+                    && provider.inputs.iter().any(|input| {
+                        asset_lab_generation_ref_for_input(&asset, input, version).is_some()
+                    })
             })
+            .or_else(|| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+                    .find(|provider| {
+                        provider.inputs.iter().any(|input| {
+                            asset_lab_generation_ref_for_input(&asset, input, version).is_some()
+                        })
+                    })
+            })
+            .or_else(|| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == source_record.provider_id)
+            })
+            .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
             .or_else(|| {
                 self.editor
                     .provider_entries
@@ -2266,6 +2298,10 @@ impl LatentSlateApp {
             .cloned();
 
         let mut node = AssetLabNode::new(provider.as_ref().map(|provider| provider.id));
+        node.inputs = generation_record_source_inputs(config, &source_record);
+        if let Some(provider) = provider.as_ref() {
+            retain_node_inputs_for_provider(&mut node.inputs, provider);
+        }
         if let Some(provider) = provider.as_ref() {
             if let Some((input_name, value)) = provider.inputs.iter().find_map(|input| {
                 asset_lab_generation_ref_for_input(&asset, input, version)

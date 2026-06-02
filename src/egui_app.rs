@@ -42,12 +42,13 @@ use crate::editor::{
 };
 use crate::providers::ProviderProgress;
 use crate::state::{
-    asset_display_name, delete_generative_version_files, input_value_as_bool, input_value_as_f64,
-    input_value_as_i64, input_value_as_string, parse_version_index, Asset, AssetKind, Clip,
-    ClipImageMode, ClipTransform, GenerationJob, GenerationJobStatus, GenerationRecord,
-    GenerationSeedAdvance, GenerativeConfig, InputValue, Project, ProjectSettings,
-    ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType, ProviderOutputType,
-    ProviderWorkflowKind, SeedStrategy, SourceFrameReference, TrackType,
+    asset_display_name, delete_generative_version_files, generation_record_source_inputs,
+    input_value_as_bool, input_value_as_f64, input_value_as_i64, input_value_as_string,
+    parse_version_index, Asset, AssetKind, Clip, ClipImageMode, ClipTransform, GenerationJob,
+    GenerationJobStatus, GenerationRecord, GenerationSeedAdvance, GenerativeConfig, InputValue,
+    Project, ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField,
+    ProviderInputType, ProviderOutputType, ProviderWorkflowKind, SeedStrategy,
+    SourceFrameReference, TrackType,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};

@@ -241,6 +241,25 @@ impl GenerativeConfig {
     }
 }
 
+pub fn generation_record_source_inputs(
+    config: &GenerativeConfig,
+    record: &GenerationRecord,
+) -> HashMap<String, InputValue> {
+    if let Some(node_id) = record.lab_node_id {
+        if let Some(node) = config
+            .lab_graph
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+        {
+            if !node.inputs.is_empty() {
+                return node.inputs.clone();
+            }
+        }
+    }
+    record.inputs_snapshot.clone()
+}
+
 fn config_path(folder: &Path) -> PathBuf {
     folder.join("config.json")
 }
