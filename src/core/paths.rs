@@ -22,6 +22,12 @@ fn resource_roots() -> Vec<PathBuf> {
 
 pub fn resolve_resource_path(path: &Path) -> PathBuf {
     if path.is_absolute() {
+        if path.exists() {
+            return path.to_path_buf();
+        }
+        if let Some(rebased) = rebase_missing_workflow_path(path) {
+            return rebased;
+        }
         return path.to_path_buf();
     }
     let roots = resource_roots();
@@ -35,6 +41,20 @@ pub fn resolve_resource_path(path: &Path) -> PathBuf {
         .first()
         .map(|root| root.join(path))
         .unwrap_or_else(|| path.to_path_buf())
+}
+
+pub fn storage_resource_path(path: &Path) -> String {
+    let resolved = resolve_resource_path(path);
+    for root in resource_roots() {
+        if let Ok(relative) = resolved.strip_prefix(&root) {
+            return normalize_path_for_storage(relative);
+        }
+    }
+    if path.is_relative() {
+        normalize_path_for_storage(path)
+    } else {
+        path.display().to_string()
+    }
 }
 
 pub fn resource_dir(name: &str) -> Option<PathBuf> {
@@ -73,6 +93,39 @@ fn workspace_root() -> PathBuf {
     }
 
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn rebase_missing_workflow_path(path: &Path) -> Option<PathBuf> {
+    let workflow_suffix = workflow_path_suffix(path)?;
+    for root in resource_roots() {
+        let candidate = root.join(&workflow_suffix);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn workflow_path_suffix(path: &Path) -> Option<PathBuf> {
+    let mut suffix = PathBuf::new();
+    let mut in_workflows = false;
+    for component in path.components() {
+        let text = component.as_os_str().to_string_lossy();
+        if in_workflows {
+            suffix.push(component.as_os_str());
+        } else if text.eq_ignore_ascii_case("workflows") {
+            suffix.push("workflows");
+            in_workflows = true;
+        }
+    }
+    in_workflows.then_some(suffix)
+}
+
+fn normalize_path_for_storage(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub fn app_cache_root() -> PathBuf {

@@ -148,8 +148,12 @@ impl ProviderBuilderState {
                 manifest_path,
             } => (
                 base_url.clone(),
-                workflow_path.as_ref().map(PathBuf::from),
-                manifest_path.as_ref().map(PathBuf::from),
+                workflow_path
+                    .as_deref()
+                    .map(|path| crate::core::paths::resolve_resource_path(Path::new(path))),
+                manifest_path
+                    .as_deref()
+                    .map(|path| crate::core::paths::resolve_resource_path(Path::new(path))),
             ),
             ProviderConnection::OpenAiImage { base_url, .. }
             | ProviderConnection::XaiImage { base_url, .. }
@@ -369,7 +373,9 @@ impl ProviderBuilderState {
                     self.provider_name = name;
                 }
                 self.output_type = output_type;
-                self.workflow_path = Some(PathBuf::from(workflow.workflow_path));
+                self.workflow_path = Some(crate::core::paths::resolve_resource_path(Path::new(
+                    &workflow.workflow_path,
+                )));
                 self.output_key = if output.selector.input_key.trim().is_empty() {
                     default_output_key(output_type).to_string()
                 } else {
@@ -552,14 +558,14 @@ impl ProviderBuilderState {
                 inputs: Vec::new(),
                 connection: ProviderConnection::ComfyUi {
                     base_url: base_url.to_string(),
-                    workflow_path: Some(workflow_path.display().to_string()),
-                    manifest_path: Some(manifest_path.display().to_string()),
+                    workflow_path: Some(crate::core::paths::storage_resource_path(&workflow_path)),
+                    manifest_path: Some(crate::core::paths::storage_resource_path(&manifest_path)),
                 },
             })
         });
 
-        let workflow_path_string = workflow_path.display().to_string();
-        let manifest_path_string = manifest_path.display().to_string();
+        let workflow_path_string = crate::core::paths::storage_resource_path(&workflow_path);
+        let manifest_path_string = crate::core::paths::storage_resource_path(&manifest_path);
         let manifest = ProviderManifest::ComfyUi {
             schema_version: 1,
             name: Some(provider_name.to_string()),
