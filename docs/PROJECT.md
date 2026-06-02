@@ -16,6 +16,7 @@ This file is the living project status page. Keep it current, concise, and factu
 ## What Works Today
 
 - Native desktop shell built with `egui`/`eframe`.
+- LatentSlate app icon is embedded for the Windows taskbar and title/headerbar window icon.
 - Project create/open/save with self-contained project folders.
 - Project-local asset import for images, audio, and video.
 - Timeline with video, audio, and marker tracks.

@@ -190,6 +190,8 @@ const ASSET_LAB_VERSION_ROW_H: f32 = 54.0;
 const ASSET_LAB_PREVIEW_H: f32 = 200.0;
 const ASSET_LAB_PREVIEW_SCRUB_GAP: f32 = 6.0;
 
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
+
 fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
     let available = ctx.content_rect().size();
     let max_w = (available.x - 24.0).max(min[0].min(available.x));
@@ -200,10 +202,23 @@ fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
     )
 }
 
+fn app_icon() -> egui::IconData {
+    let icon = image::load_from_memory(APP_ICON_PNG)
+        .expect("embedded LatentSlate app icon should decode")
+        .into_rgba8();
+    let (width, height) = icon.dimensions();
+    egui::IconData {
+        rgba: icon.into_raw(),
+        width,
+        height,
+    }
+}
+
 pub fn run() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("LatentSlate")
+            .with_icon(app_icon())
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([960.0, 620.0]),
         ..Default::default()
