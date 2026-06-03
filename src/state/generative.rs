@@ -136,6 +136,8 @@ pub struct GenerationRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssetLabNode {
     pub id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_node_id: Option<Uuid>,
     #[serde(default)]
     pub provider_id: Option<Uuid>,
     #[serde(default)]
@@ -148,10 +150,99 @@ impl AssetLabNode {
     pub fn new(provider_id: Option<Uuid>) -> Self {
         Self {
             id: Uuid::new_v4(),
+            parent_node_id: None,
             provider_id,
             inputs: HashMap::new(),
             output_version: None,
         }
+    }
+
+    pub fn new_with_parent(provider_id: Option<Uuid>, parent_node_id: Option<Uuid>) -> Self {
+        Self {
+            parent_node_id,
+            ..Self::new(provider_id)
+        }
+    }
+}
+
+impl GenerativeConfig {
+    pub fn normalize_lab_graph_lineage(&mut self) {
+        let existing_ids: HashSet<Uuid> = self.lab_graph.nodes.iter().map(|node| node.id).collect();
+        let outputs_by_version: HashMap<String, Uuid> = self
+            .lab_graph
+            .nodes
+            .iter()
+            .filter_map(|node| node.output_version.as_ref().map(|version| (version.clone(), node.id)))
+            .collect();
+
+        for node in self.lab_graph.nodes.iter_mut() {
+            if node
+                .parent_node_id
+                .is_some_and(|parent_id| !existing_ids.contains(&parent_id))
+            {
+                node.parent_node_id = None;
+            }
+            if node.parent_node_id.is_some() {
+                continue;
+            }
+
+            let inferred_parent = node.inputs.values().find_map(|input| match input {
+                InputValue::GenerationRef { version, .. } => {
+                    outputs_by_version.get(version.as_str()).copied()
+                }
+                _ => None,
+            });
+
+            if inferred_parent.is_some() {
+                node.parent_node_id = inferred_parent;
+            }
+        }
+    }
+
+    pub fn root_nodes(&self) -> Vec<&AssetLabNode> {
+        self.lab_graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.parent_node_id
+                    .is_none_or(|parent_id| !self.lab_graph.nodes.iter().any(|candidate| candidate.id == parent_id))
+            })
+            .collect()
+    }
+
+    pub fn children_of(&self, node_id: Uuid) -> Vec<&AssetLabNode> {
+        self.lab_graph
+            .nodes
+            .iter()
+            .filter(|node| node.parent_node_id == Some(node_id))
+            .collect()
+    }
+
+    pub fn lineage_depth(&self, node_id: Uuid) -> usize {
+        let mut depth = 0usize;
+        let mut current_id = Some(node_id);
+        while let Some(id) = current_id {
+            let Some(node) = self.lab_graph.nodes.iter().find(|node| node.id == id) else {
+                break;
+            };
+            current_id = node.parent_node_id.filter(|parent_id| {
+                self.lab_graph.nodes.iter().any(|candidate| candidate.id == *parent_id)
+            });
+            if current_id.is_some() {
+                depth += 1;
+            }
+        }
+        depth
+    }
+
+    pub fn resolve_primary_media_version<'a>(&'a self, node: &'a AssetLabNode) -> Option<&'a str> {
+        node.parent_node_id.and_then(|parent_id| {
+            self.lab_graph
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == parent_id)
+                .and_then(|parent| parent.output_version.as_deref())
+        })
     }
 }
 
@@ -212,12 +303,16 @@ impl GenerativeConfig {
             }
             Err(err) => return Err(err),
         };
-        match serde_json::from_str(&json) {
-            Ok(config) => Ok(config),
+        match serde_json::from_str::<Self>(&json) {
+            Ok(mut config) => {
+                config.normalize_lab_graph_lineage();
+                Ok(config)
+            }
             Err(err) => {
                 if let Ok(tmp_json) = fs::read_to_string(&tmp_path) {
-                    let config = serde_json::from_str(&tmp_json)
+                    let mut config = serde_json::from_str::<Self>(&tmp_json)
                         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+                    config.normalize_lab_graph_lineage();
                     Ok(config)
                 } else {
                     Err(io::Error::new(io::ErrorKind::InvalidData, err))
