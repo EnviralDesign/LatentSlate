@@ -59,7 +59,7 @@ impl LatentSlateApp {
                             });
                             ui.separator();
                             if automation_button(ui.button("Quit"), "Quit").clicked() {
-                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                                this.request_app_close(ui.ctx());
                                 ui.close();
                             }
                         },
@@ -166,6 +166,21 @@ impl LatentSlateApp {
                         self,
                     );
 
+                    if self.editor.project.project_path.is_some() {
+                        ui.separator();
+                        let project_label = if self.editor.project_dirty {
+                            format!("{} *", self.editor.project_name())
+                        } else {
+                            self.editor.project_name().to_string()
+                        };
+                        let color = if self.editor.project_dirty {
+                            kit::MARKER
+                        } else {
+                            kit::TEXT_MUTED
+                        };
+                        ui.label(RichText::new(project_label).small().color(color));
+                    }
+
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let active_count = self
                             .editor
@@ -229,6 +244,9 @@ impl LatentSlateApp {
         if self.editor.overlays.asset_lab {
             self.asset_lab_modal(ctx);
         }
+        if self.unsaved_close_confirmation_open {
+            self.unsaved_close_confirmation_modal(ctx);
+        }
         if self.asset_delete_confirmation.is_some() {
             self.asset_delete_confirmation_modal(ctx);
         }
@@ -253,7 +271,13 @@ impl LatentSlateApp {
             .show_inside(root, |ui| {
                 ui.horizontal(|ui| {
                     let status_text = if self.editor.project.project_path.is_some() {
-                        format!("{} ({})", self.editor.status, self.editor.project_name())
+                        let suffix = if self.editor.project_dirty { " *" } else { "" };
+                        format!(
+                            "{} ({}{})",
+                            self.editor.status,
+                            self.editor.project_name(),
+                            suffix
+                        )
                     } else {
                         self.editor.status.clone()
                     };
@@ -273,6 +297,92 @@ impl LatentSlateApp {
                 });
             });
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
+    }
+}
+
+impl LatentSlateApp {
+    fn update_window_dirty_title(&mut self, ctx: &Context) {
+        let dirty = self.editor.project_dirty;
+        if self.last_window_title_dirty == Some(dirty) {
+            return;
+        }
+        let title = if dirty {
+            "LatentSlate *"
+        } else {
+            "LatentSlate"
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_string()));
+        self.last_window_title_dirty = Some(dirty);
+    }
+
+    fn handle_viewport_close_request(&mut self, ctx: &Context) {
+        let close_requested = ctx.input(|input| input.viewport().close_requested());
+        if !close_requested || self.allow_close_without_prompt {
+            return;
+        }
+        if self.editor.project_dirty {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.unsaved_close_confirmation_open = true;
+        }
+    }
+
+    fn request_app_close(&mut self, ctx: &Context) {
+        self.editor.refresh_project_dirty_state();
+        if self.editor.project_dirty {
+            self.unsaved_close_confirmation_open = true;
+        } else {
+            self.allow_close_without_prompt = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    fn unsaved_close_confirmation_modal(&mut self, ctx: &Context) {
+        let _ = kit::dismissible_modal_scrim(ctx, "unsaved_close_confirmation", false);
+        let mut open = true;
+        egui::Window::new("Unsaved Changes")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([460.0, 250.0])
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                kit::modal_header(ui, "Unsaved Changes", Some("Save before closing LatentSlate?"));
+                kit::modal_body(ui, |ui| {
+                    ui.add(egui::Label::new(kit::caption(
+                        "The current project has unsaved changes. Save now, discard them, or cancel closing.",
+                    ))
+                    .wrap());
+                    ui.add_space(18.0);
+                    ui.horizontal(|ui| {
+                        if kit::secondary_button(ui, "Cancel", 110.0).clicked() {
+                            self.unsaved_close_confirmation_open = false;
+                        }
+                        if kit::danger_button(ui, "Don't Save", 130.0).clicked() {
+                            self.allow_close_without_prompt = true;
+                            self.unsaved_close_confirmation_open = false;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if kit::primary_button(ui, "Save", 110.0).clicked() {
+                            match self.editor.save() {
+                                Ok(()) => {
+                                    self.allow_close_without_prompt = true;
+                                    self.unsaved_close_confirmation_open = false;
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                Err(err) => {
+                                    self.editor.status = err;
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+        if !open {
+            self.unsaved_close_confirmation_open = false;
+        }
     }
 }
 
@@ -301,6 +411,9 @@ fn status_text_color(status: &str) -> Color32 {
 impl eframe::App for LatentSlateApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.editor.refresh_project_dirty_state();
+        self.handle_viewport_close_request(&ctx);
+        self.update_window_dirty_title(&ctx);
         self.handle_automation_screenshot_events(&ctx);
         self.poll_automation(&ctx);
         self.keep_automation_responsive(&ctx);
@@ -324,5 +437,7 @@ impl eframe::App for LatentSlateApp {
         self.modals(&ctx);
         self.service_audio_decode_warmup(&ctx);
         self.finish_automation_ui_actions();
+        self.editor.refresh_project_dirty_state();
+        self.update_window_dirty_title(&ctx);
     }
 }

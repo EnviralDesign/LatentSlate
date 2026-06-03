@@ -186,6 +186,7 @@ const QUEUE_JOB_CARD_H: f32 = 64.0;
 const QUEUE_JOB_RUNNING_H: f32 = 106.0;
 const QUEUE_JOB_FAILED_H: f32 = 84.0;
 const MAX_GENERATION_BATCH_COUNT: u32 = 50;
+#[allow(dead_code)]
 const ASSET_LAB_VERSION_ROW_H: f32 = 54.0;
 const ASSET_LAB_PREVIEW_H: f32 = 200.0;
 const ASSET_LAB_PREVIEW_SCRUB_GAP: f32 = 6.0;
@@ -293,6 +294,7 @@ pub struct LatentSlateApp {
     api_key_modal: ApiKeyModalState,
     asset_lab: AssetLabState,
     asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
+    asset_lab_node_preview_textures: HashMap<AssetLabNodePreviewKey, AssetLabPreviewTexture>,
     asset_lab_video_decoder: VideoDecodeWorker,
     provider_template_kind: ProviderTemplateKind,
     asset_delete_confirmation: Option<AssetDeleteConfirmation>,
@@ -311,6 +313,9 @@ pub struct LatentSlateApp {
     queue_button_rect: Option<Rect>,
     asset_drop_target_rect: Option<Rect>,
     asset_drop_target_hovered: bool,
+    unsaved_close_confirmation_open: bool,
+    allow_close_without_prompt: bool,
+    last_window_title_dirty: Option<bool>,
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
 }
@@ -433,6 +438,10 @@ enum TimelineDrag {
         marker_id: Uuid,
         start_time: f64,
     },
+    TrackReorder {
+        track_id: Uuid,
+        insertion_index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -544,6 +553,7 @@ impl LatentSlateApp {
             api_key_modal: ApiKeyModalState::default(),
             asset_lab: AssetLabState::default(),
             asset_lab_preview_texture: None,
+            asset_lab_node_preview_textures: HashMap::new(),
             asset_lab_video_decoder: VideoDecodeWorker::new(8192, 8192),
             provider_template_kind: ProviderTemplateKind::default(),
             asset_delete_confirmation: None,
@@ -562,6 +572,9 @@ impl LatentSlateApp {
             queue_button_rect: None,
             asset_drop_target_rect: None,
             asset_drop_target_hovered: false,
+            unsaved_close_confirmation_open: false,
+            allow_close_without_prompt: false,
+            last_window_title_dirty: None,
             pending_automation_ui_actions: Vec::new(),
             pending_automation_screenshot: None,
         }
@@ -598,6 +611,7 @@ impl LatentSlateApp {
             || self.editor.overlays.api_keys
             || self.editor.overlays.asset_lab
             || self.editor.overlays.queue
+            || self.unsaved_close_confirmation_open
             || self.asset_delete_confirmation.is_some()
             || self.track_delete_confirmation.is_some()
             || self.bridge_keyframe_confirmation.is_some()

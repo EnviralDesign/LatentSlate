@@ -13,15 +13,19 @@ A local-first generative NLE desktop app supporting a range of generation provid
 
 <p align="center">
 <img src="media/screenshots/new-project.png" alt="LatentSlate banner" width="49%">
-<img src="media/screenshots/generation-que.png" alt="LatentSlate banner" width="49%">
+<img src="media/screenshots/generation-que2.png" alt="LatentSlate banner" width="49%">
 </p>
+
+<img src="media/screenshots/asset-lab.png" alt="Asset Lab" width="100%">
+<img src="media/screenshots/provider-builder.png" alt="Provider Builder" width="100%">
+<img src="media/screenshots/transformrotatesnap.png" alt="Provider Builder" width="100%">
 
 
 ## The Gap
 
 ComfyUI is excellent for graph-based generation, but it is not a timeline editor. Traditional NLEs are excellent timeline editors, but they are not built around iterative AI generation, prompt/schema inputs, versioned outputs, or workflow-specific provider wiring.
 
-LatentSlate is exploring the missing middle: a fully local, rust native NLE with a streamlined and opinionated UX combined with a completely un opinionated provider system that can support any workflow, but is focused on ComfyUI first. 
+LatentSlate is exploring the missing middle: a fully local, rust native NLE with a streamlined and opinionated UX combined with a completely un opinionated provider system that can support any API, but is focused on ComfyUI as the intended first class pathway. 
 
 The goal is to let you build and test your workflow in ComfyUI, then bring it into LatentSlate exposing only the parameters and settings you need to care about to create, version, and iterate on your vision.
 

@@ -328,10 +328,38 @@ impl LatentSlateApp {
             let track_response = ui.interact(
                 label_hit_rect,
                 ui.id().with(("timeline-track-label", track.id)),
-                Sense::click(),
+                Sense::click_and_drag(),
             );
             if !timeline_input_frozen && track_response.clicked() {
                 self.editor.selection.select_track(track.id);
+            }
+            if !timeline_input_frozen
+                && track_response.drag_started_by(egui::PointerButton::Primary)
+            {
+                self.editor.selection.select_track(track.id);
+                let insertion_index = track_response
+                    .interact_pointer_pos()
+                    .map(|pos| timeline_track_insert_index_at_pos(pos, rects, tracks.len()))
+                    .unwrap_or(row);
+                self.timeline_drag = Some(TimelineDrag::TrackReorder {
+                    track_id: track.id,
+                    insertion_index,
+                });
+            }
+            if !timeline_input_frozen
+                && track_response.dragged_by(egui::PointerButton::Primary)
+                && matches!(self.timeline_drag, Some(TimelineDrag::TrackReorder { .. }))
+            {
+                if let Some(pos) = track_response.interact_pointer_pos() {
+                    self.apply_timeline_drag(
+                        0.0,
+                        pos,
+                        rects,
+                        duration,
+                        zoom,
+                        timeline_snapping_enabled(ui),
+                    );
+                }
             }
             track_response.context_menu(|ui| {
                 self.editor.selection.select_track(track.id);
@@ -375,6 +403,9 @@ impl LatentSlateApp {
                     }
                     ui.close();
                 }
+                ui.separator();
+                self.track_insert_menu(ui, row, true);
+                self.track_insert_menu(ui, row, false);
                 if track.track_type != TrackType::Marker {
                     ui.separator();
                     let label = if track.muted {
@@ -556,6 +587,9 @@ impl LatentSlateApp {
 
         self.paint_add_track_row(ui, &painter, rects);
         self.paint_timeline_grid_overlay(&track_painter, rects, duration, zoom);
+        if let Some(insertion_index) = self.track_reorder_insertion_index() {
+            self.paint_track_reorder_indicator(&painter, rects, insertion_index);
+        }
         self.paint_timeline_playhead(&overlay_painter, rects, duration, zoom);
         if let Some(time) = self.timeline_snap_preview {
             let x = time_to_timeline_x(
@@ -620,6 +654,9 @@ impl LatentSlateApp {
             let context_track = context_pos
                 .and_then(|pos| timeline_track_row_at_pos(pos, rects, &tracks))
                 .cloned();
+            let context_track_index = context_track
+                .as_ref()
+                .and_then(|track| tracks.iter().position(|candidate| candidate.id == track.id));
 
             if let Some(pos) = context_pos {
                 match timeline_hit(pos, rects, &tracks, &clip_geoms, &marker_geoms) {
@@ -639,6 +676,12 @@ impl LatentSlateApp {
                     .add_marker_to_track(Some(marker_time), marker_track_id);
                 ui.close();
                 return;
+            }
+
+            if let Some(track_index) = context_track_index {
+                ui.separator();
+                self.track_insert_menu(ui, track_index, true);
+                self.track_insert_menu(ui, track_index, false);
             }
 
             let t2i_track_id = context_track
@@ -866,6 +909,95 @@ impl LatentSlateApp {
             }
             Err(err) => {
                 self.editor.status = err;
+            }
+        }
+    }
+
+    pub(super) fn add_timeline_track_at_index(
+        &mut self,
+        track_type: TrackType,
+        index: usize,
+    ) -> Uuid {
+        let track_id = self.editor.project.insert_track(track_type, index);
+        self.editor.selection.select_track(track_id);
+        self.editor.status = format!(
+            "Added {} track",
+            timeline_track_type_label(track_type).to_ascii_lowercase()
+        );
+        track_id
+    }
+
+    pub(super) fn track_insert_menu(&mut self, ui: &mut Ui, anchor_index: usize, above: bool) {
+        let menu_label = if above {
+            "Add Track Above"
+        } else {
+            "Add Track Below"
+        };
+        let insertion_index = if above {
+            anchor_index
+        } else {
+            anchor_index.saturating_add(1)
+        };
+
+        ui.menu_button(menu_label, |ui| {
+            for track_type in [TrackType::Video, TrackType::Audio, TrackType::Marker] {
+                let label = timeline_track_type_label(track_type);
+                let action_label = format!("{label} Track");
+                if automation_button(ui.button(&action_label), &action_label).clicked() {
+                    let track_id = self.add_timeline_track_at_index(track_type, insertion_index);
+                    let track_name = self
+                        .editor
+                        .project
+                        .find_track(track_id)
+                        .map(|track| track.name.clone())
+                        .unwrap_or_else(|| action_label.clone());
+                    let relation = if above { "above" } else { "below" };
+                    self.editor.status = format!("Added {track_name} {relation}");
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    pub(super) fn track_reorder_insertion_index(&self) -> Option<usize> {
+        match self.timeline_drag {
+            Some(TimelineDrag::TrackReorder {
+                insertion_index, ..
+            }) => Some(insertion_index),
+            _ => None,
+        }
+    }
+
+    pub(super) fn paint_track_reorder_indicator(
+        &self,
+        painter: &egui::Painter,
+        rects: TimelineRects,
+        insertion_index: usize,
+    ) {
+        let y = timeline_track_divider_y(rects, insertion_index)
+            .clamp(rects.tracks.top(), rects.tracks.bottom());
+        let x0 = rects.outer.left() + 10.0;
+        let x1 = rects.tracks.right() - 10.0;
+        let color = Color32::from_rgba_unmultiplied(55, 205, 128, 150);
+        painter.line_segment(
+            [Pos2::new(x0, y), Pos2::new(x1, y)],
+            Stroke::new(2.0, color),
+        );
+        painter.circle_filled(Pos2::new(rects.tracks.left(), y), 3.0, color);
+    }
+
+    pub(super) fn finish_track_reorder(&mut self, track_id: Uuid, insertion_index: usize) {
+        if self
+            .editor
+            .project
+            .move_track_to_index(track_id, insertion_index)
+        {
+            self.editor.selection.select_track(track_id);
+            self.editor.preview_dirty = true;
+            if let Some(track) = self.editor.project.find_track(track_id) {
+                self.editor.status = format!("Moved {}", track.name);
+            } else {
+                self.editor.status = "Moved track".to_string();
             }
         }
     }
@@ -1531,19 +1663,13 @@ impl LatentSlateApp {
         );
         let input_frozen = ui.ctx().any_popup_open();
         if !input_frozen && video_resp.clicked() {
-            let track_id = self.editor.project.add_video_track();
-            self.editor.selection.select_track(track_id);
-            self.editor.status = "Added video track".to_string();
+            self.add_timeline_track_at_index(TrackType::Video, self.editor.project.tracks.len());
         }
         if !input_frozen && audio_resp.clicked() {
-            let track_id = self.editor.project.add_audio_track();
-            self.editor.selection.select_track(track_id);
-            self.editor.status = "Added audio track".to_string();
+            self.add_timeline_track_at_index(TrackType::Audio, self.editor.project.tracks.len());
         }
         if !input_frozen && marker_resp.clicked() {
-            let track_id = self.editor.project.add_marker_track();
-            self.editor.selection.select_track(track_id);
-            self.editor.status = "Added marker track".to_string();
+            self.add_timeline_track_at_index(TrackType::Marker, self.editor.project.tracks.len());
         }
         paint_dashed_timeline_button(
             painter,
@@ -1698,14 +1824,16 @@ impl LatentSlateApp {
                     | Some(TimelineDrag::ClipResizeRight { .. })
                     | Some(TimelineDrag::MarkerMove { .. })
                     | Some(TimelineDrag::Playhead) => egui::CursorIcon::ResizeHorizontal,
-                    Some(TimelineDrag::ClipMove { .. }) => egui::CursorIcon::Grabbing,
+                    Some(TimelineDrag::ClipMove { .. })
+                    | Some(TimelineDrag::TrackReorder { .. }) => egui::CursorIcon::Grabbing,
                     None => match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
                         TimelineHit::ClipLeftEdge(_)
                         | TimelineHit::ClipRightEdge(_)
                         | TimelineHit::Marker(_)
                         | TimelineHit::Ruler => egui::CursorIcon::ResizeHorizontal,
-                        TimelineHit::ClipBody(_) => egui::CursorIcon::Grab,
-                        TimelineHit::TrackLabel(_) => egui::CursorIcon::PointingHand,
+                        TimelineHit::ClipBody(_) | TimelineHit::TrackLabel(_) => {
+                            egui::CursorIcon::Grab
+                        }
                         TimelineHit::EmptyTrack | TimelineHit::Empty => egui::CursorIcon::Default,
                     },
                 }
@@ -1786,7 +1914,15 @@ impl LatentSlateApp {
                             });
                         }
                     }
-                    TimelineHit::TrackLabel(id) => self.editor.selection.select_track(id),
+                    TimelineHit::TrackLabel(id) => {
+                        self.editor.selection.select_track(id);
+                        let insertion_index =
+                            timeline_track_insert_index_at_pos(pos, rects, tracks.len());
+                        self.timeline_drag = Some(TimelineDrag::TrackReorder {
+                            track_id: id,
+                            insertion_index,
+                        });
+                    }
                     TimelineHit::EmptyTrack | TimelineHit::Empty => {}
                 }
             }
@@ -1811,7 +1947,15 @@ impl LatentSlateApp {
 
         let primary_down = ui.input(|input| input.pointer.primary_down());
         if !primary_down && self.timeline_drag.is_some() {
-            let was_playhead_drag = matches!(self.timeline_drag, Some(TimelineDrag::Playhead));
+            let drag = self.timeline_drag;
+            let was_playhead_drag = matches!(drag, Some(TimelineDrag::Playhead));
+            if let Some(TimelineDrag::TrackReorder {
+                track_id,
+                insertion_index,
+            }) = drag
+            {
+                self.finish_track_reorder(track_id, insertion_index);
+            }
             self.timeline_drag = None;
             self.timeline_snap_preview = None;
             if was_playhead_drag {
@@ -2063,6 +2207,23 @@ impl LatentSlateApp {
                     self.editor.preview_dirty = true;
                 }
             }
+            TimelineDrag::TrackReorder { track_id, .. } => {
+                let insertion_index = timeline_track_insert_index_at_pos(
+                    pos,
+                    rects,
+                    self.editor.project.tracks.len(),
+                );
+                self.timeline_snap_preview = None;
+                if let Some(TimelineDrag::TrackReorder {
+                    track_id: active_track_id,
+                    insertion_index: active_insertion_index,
+                }) = self.timeline_drag.as_mut()
+                {
+                    if *active_track_id == track_id {
+                        *active_insertion_index = insertion_index;
+                    }
+                }
+            }
         }
     }
 
@@ -2136,5 +2297,13 @@ impl LatentSlateApp {
             });
         }
         None
+    }
+}
+
+fn timeline_track_type_label(track_type: TrackType) -> &'static str {
+    match track_type {
+        TrackType::Video => "Video",
+        TrackType::Audio => "Audio",
+        TrackType::Marker => "Marker",
     }
 }

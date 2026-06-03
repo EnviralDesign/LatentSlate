@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::AssetLabNode;
 #[derive(Debug)]
 pub(super) enum GenerationEvent {
     Progress {
@@ -270,9 +271,11 @@ impl LatentSlateApp {
                         .iter_mut()
                         .find(|node| node.id == node_id)
                     {
-                        node.inputs.insert(seed_advance.field.clone(), next_input);
+                        node.inputs
+                            .insert(seed_advance.field.clone(), next_input.clone());
                     }
-                } else {
+                }
+                if job.activate_on_success || job.lab_node_id.is_none() {
                     config.inputs.insert(seed_advance.field.clone(), next_input);
                 }
             });
@@ -315,7 +318,8 @@ impl LatentSlateApp {
                         node.output_version = Some(version.clone());
                     }
                     config.lab_graph.selected_node_id = Some(node_id);
-                } else {
+                }
+                if job.activate_on_success || job.lab_node_id.is_none() {
                     config.provider_id = Some(job.provider.id);
                     config.active_version = Some(version.clone());
                     config.inputs = job.inputs_snapshot.clone();
@@ -448,6 +452,27 @@ impl LatentSlateApp {
             seed_base_randomized = true;
         }
 
+        let activate_on_success = lab_node_id.is_none();
+        let mut next_parent_node_id = if activate_on_success {
+            self.ensure_asset_lab_graph_for_versions(asset_id);
+            self.editor
+                .project
+                .generative_config(asset_id)
+                .and_then(|config| {
+                    config.active_version.as_ref().and_then(|active_version| {
+                        config
+                            .versions
+                            .iter()
+                            .find(|record| record.version == *active_version)
+                            .and_then(|record| record.lab_node_id)
+                    })
+                })
+        } else {
+            None
+        };
+        let mut jobs = Vec::new();
+        let mut graph_save_needed = false;
+
         for index in 0..batch_count {
             let (inputs, inputs_snapshot, seed_advance) =
                 match (batch.seed_strategy, seed_field.as_ref()) {
@@ -475,7 +500,29 @@ impl LatentSlateApp {
                     }
                 };
 
-            self.editor.generation_queue.push(GenerationJob {
+            let job_lab_node_id = if activate_on_success {
+                let mut node =
+                    AssetLabNode::new_with_parent(Some(provider.id), next_parent_node_id);
+                node.inputs = inputs_snapshot.clone();
+                let node_id = node.id;
+                let updated = self
+                    .editor
+                    .project
+                    .update_generative_config(asset_id, |config| {
+                        config.lab_graph.selected_node_id = Some(node_id);
+                        config.lab_graph.nodes.push(node);
+                    });
+                if !updated {
+                    return Err("Asset does not support Asset Lab lineage.".to_string());
+                }
+                next_parent_node_id = Some(node_id);
+                graph_save_needed = true;
+                Some(node_id)
+            } else {
+                lab_node_id
+            };
+
+            jobs.push(GenerationJob {
                 id: Uuid::new_v4(),
                 created_at: chrono::Utc::now(),
                 status: GenerationJobStatus::Queued,
@@ -493,10 +540,20 @@ impl LatentSlateApp {
                 inputs_snapshot,
                 seed_advance,
                 version: None,
-                lab_node_id,
+                lab_node_id: job_lab_node_id,
+                activate_on_success,
                 error: None,
             });
         }
+
+        if graph_save_needed {
+            self.editor
+                .project
+                .save_generative_config(asset_id)
+                .map_err(|err| format!("Failed to save generation lineage: {err}"))?;
+        }
+
+        self.editor.generation_queue.extend(jobs);
 
         let mut status = if batch_count > 1 {
             format!("Queued {batch_count} jobs")

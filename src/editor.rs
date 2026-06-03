@@ -118,6 +118,8 @@ pub struct EditorState {
     pub generation_queue: Vec<GenerationJob>,
     pub status: String,
     pub preview_dirty: bool,
+    pub project_dirty: bool,
+    project_saved_fingerprint: Option<String>,
 }
 
 impl EditorState {
@@ -146,6 +148,8 @@ impl EditorState {
             generation_queue: Vec::new(),
             status: "Ready".to_string(),
             preview_dirty: true,
+            project_dirty: false,
+            project_saved_fingerprint: None,
         }
     }
 
@@ -219,6 +223,52 @@ impl EditorState {
         self.status = "Project loaded".to_string();
         self.preview_dirty = true;
         probe_missing_duration(&mut self.project);
+        self.mark_project_clean();
+    }
+
+    fn project_fingerprint(&self) -> Option<String> {
+        if self.project.project_path.is_none() {
+            return None;
+        }
+
+        let mut project = self.project.clone();
+        project.workspace_layout = self.layout.workspace_layout();
+        let project_value = serde_json::to_value(&project).ok()?;
+        let mut generative_configs: Vec<_> = self
+            .project
+            .generative_configs
+            .iter()
+            .filter_map(|(asset_id, config)| {
+                serde_json::to_value(config)
+                    .ok()
+                    .map(|value| (asset_id.to_string(), value))
+            })
+            .collect();
+        generative_configs.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        serde_json::to_string(&json!({
+            "project": project_value,
+            "generative_configs": generative_configs,
+        }))
+        .ok()
+    }
+
+    pub fn refresh_project_dirty_state(&mut self) {
+        let Some(current) = self.project_fingerprint() else {
+            self.project_dirty = false;
+            self.project_saved_fingerprint = None;
+            return;
+        };
+
+        self.project_dirty = self
+            .project_saved_fingerprint
+            .as_ref()
+            .is_some_and(|saved| saved != &current);
+    }
+
+    fn mark_project_clean(&mut self) {
+        self.project_saved_fingerprint = self.project_fingerprint();
+        self.project_dirty = false;
     }
 
     pub fn import_asset(&mut self, path: impl AsRef<Path>) -> Result<Uuid, String> {
@@ -471,6 +521,7 @@ impl EditorState {
         self.project
             .save()
             .map_err(|err| format!("Failed to save project: {err}"))?;
+        self.mark_project_clean();
         self.status = "Saved".to_string();
         Ok(())
     }

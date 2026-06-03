@@ -254,46 +254,44 @@ impl Project {
 
     /// Add a new video track
     pub fn add_video_track(&mut self) -> Uuid {
-        let count = self
-            .tracks
-            .iter()
-            .filter(|t| t.track_type == TrackType::Video)
-            .count();
-        let track = Track::new(format!("Video {}", count + 1), TrackType::Video);
-        let id = track.id;
-        self.tracks.push(track);
-        id
+        self.add_track(TrackType::Video)
     }
 
     /// Add a new audio track
     pub fn add_audio_track(&mut self) -> Uuid {
-        let count = self
-            .tracks
-            .iter()
-            .filter(|t| t.track_type == TrackType::Audio)
-            .count();
-        let track = Track::new(format!("Audio {}", count + 1), TrackType::Audio);
-        let id = track.id;
-        self.tracks.push(track);
-        id
+        self.add_track(TrackType::Audio)
     }
 
     /// Add a new marker track.
     pub fn add_marker_track(&mut self) -> Uuid {
+        self.add_track(TrackType::Marker)
+    }
+
+    /// Add a new track of the requested type at the bottom of the timeline.
+    pub fn add_track(&mut self, track_type: TrackType) -> Uuid {
+        self.insert_track(track_type, self.tracks.len())
+    }
+
+    /// Insert a new track of the requested type before the given track index.
+    pub fn insert_track(&mut self, track_type: TrackType, index: usize) -> Uuid {
+        let track = Track::new(self.next_track_name(track_type), track_type);
+        let id = track.id;
+        self.tracks.insert(index.min(self.tracks.len()), track);
+        id
+    }
+
+    fn next_track_name(&self, track_type: TrackType) -> String {
         let count = self
             .tracks
             .iter()
-            .filter(|t| t.track_type == TrackType::Marker)
+            .filter(|t| t.track_type == track_type)
             .count();
-        let name = if count == 0 {
-            "Markers".to_string()
-        } else {
-            format!("Markers {}", count + 1)
-        };
-        let track = Track::new(name, TrackType::Marker);
-        let id = track.id;
-        self.tracks.push(track);
-        id
+        match track_type {
+            TrackType::Video => format!("Video {}", count + 1),
+            TrackType::Audio => format!("Audio {}", count + 1),
+            TrackType::Marker if count == 0 => "Markers".to_string(),
+            TrackType::Marker => format!("Markers {}", count + 1),
+        }
     }
 
     /// Return the first marker track, used for legacy unassigned markers.
@@ -739,6 +737,28 @@ impl Project {
             }
         }
         false
+    }
+
+    /// Move a track to a top-to-bottom insertion gap in the current track list.
+    pub fn move_track_to_index(&mut self, id: Uuid, insertion_index: usize) -> bool {
+        let Some(current_index) = self.tracks.iter().position(|track| track.id == id) else {
+            return false;
+        };
+
+        let bounded_insertion_index = insertion_index.min(self.tracks.len());
+        let target_index = if current_index < bounded_insertion_index {
+            bounded_insertion_index.saturating_sub(1)
+        } else {
+            bounded_insertion_index
+        };
+        if target_index == current_index {
+            return false;
+        }
+
+        let track = self.tracks.remove(current_index);
+        self.tracks
+            .insert(target_index.min(self.tracks.len()), track);
+        true
     }
 }
 

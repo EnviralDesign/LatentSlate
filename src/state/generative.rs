@@ -172,7 +172,11 @@ impl GenerativeConfig {
             .lab_graph
             .nodes
             .iter()
-            .filter_map(|node| node.output_version.as_ref().map(|version| (version.clone(), node.id)))
+            .filter_map(|node| {
+                node.output_version
+                    .as_ref()
+                    .map(|version| (version.clone(), node.id))
+            })
             .collect();
 
         for node in self.lab_graph.nodes.iter_mut() {
@@ -186,12 +190,16 @@ impl GenerativeConfig {
                 continue;
             }
 
-            let inferred_parent = node.inputs.values().find_map(|input| match input {
-                InputValue::GenerationRef { version, .. } => {
-                    outputs_by_version.get(version.as_str()).copied()
-                }
-                _ => None,
-            });
+            let mut ordered_inputs: Vec<(&String, &InputValue)> = node.inputs.iter().collect();
+            ordered_inputs.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let inferred_parent = ordered_inputs
+                .into_iter()
+                .find_map(|(_, input)| match input {
+                    InputValue::GenerationRef { version, .. } => {
+                        outputs_by_version.get(version.as_str()).copied()
+                    }
+                    _ => None,
+                });
 
             if inferred_parent.is_some() {
                 node.parent_node_id = inferred_parent;
@@ -204,8 +212,13 @@ impl GenerativeConfig {
             .nodes
             .iter()
             .filter(|node| {
-                node.parent_node_id
-                    .is_none_or(|parent_id| !self.lab_graph.nodes.iter().any(|candidate| candidate.id == parent_id))
+                node.parent_node_id.is_none_or(|parent_id| {
+                    !self
+                        .lab_graph
+                        .nodes
+                        .iter()
+                        .any(|candidate| candidate.id == parent_id)
+                })
             })
             .collect()
     }
@@ -226,7 +239,10 @@ impl GenerativeConfig {
                 break;
             };
             current_id = node.parent_node_id.filter(|parent_id| {
-                self.lab_graph.nodes.iter().any(|candidate| candidate.id == *parent_id)
+                self.lab_graph
+                    .nodes
+                    .iter()
+                    .any(|candidate| candidate.id == *parent_id)
             });
             if current_id.is_some() {
                 depth += 1;
@@ -490,5 +506,6 @@ pub struct GenerationJob {
     pub seed_advance: Option<GenerationSeedAdvance>,
     pub version: Option<String>,
     pub lab_node_id: Option<Uuid>,
+    pub activate_on_success: bool,
     pub error: Option<String>,
 }

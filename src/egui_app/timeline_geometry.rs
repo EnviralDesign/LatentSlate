@@ -343,3 +343,18 @@ pub(super) fn timeline_track_row_at_pos<'a>(
         .max(0.0) as usize;
     tracks.get(row)
 }
+
+pub(super) fn timeline_track_insert_index_at_pos(
+    pos: Pos2,
+    rects: TimelineRects,
+    track_count: usize,
+) -> usize {
+    let local_y = pos.y - rects.tracks.top() + rects.track_scroll_y;
+    (local_y / TIMELINE_TRACK_H)
+        .round()
+        .clamp(0.0, track_count as f32) as usize
+}
+
+pub(super) fn timeline_track_divider_y(rects: TimelineRects, insertion_index: usize) -> f32 {
+    rects.tracks.top() + insertion_index as f32 * TIMELINE_TRACK_H - rects.track_scroll_y
+}
