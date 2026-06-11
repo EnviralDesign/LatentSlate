@@ -1673,6 +1673,23 @@ pub fn primary_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     )
 }
 
+pub fn primary_button_sized(ui: &mut Ui, label: &str, width: f32, height: f32) -> Response {
+    painted_button(
+        ui,
+        label,
+        Vec2::new(width, height),
+        ButtonSkin {
+            fill: PRIMARY,
+            hover_fill: PRIMARY_HOVER,
+            active_fill: Color32::from_rgb(24, 145, 77),
+            stroke: Color32::from_rgb(27, 138, 74),
+            text: TEXT_ON_ACCENT,
+            text_size: STANDALONE_BUTTON_TEXT_SIZE,
+            radius: STANDALONE_BUTTON_RADIUS,
+        },
+    )
+}
+
 pub fn secondary_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     standalone_button(
         ui,

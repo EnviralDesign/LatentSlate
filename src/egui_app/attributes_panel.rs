@@ -28,8 +28,45 @@ impl LatentSlateApp {
     }
 
     pub(super) fn attributes_panel(&mut self, ui: &mut Ui) {
-        kit::panel_header(ui, "ATTRIBUTES", Some("▶"), || {
-            self.editor.layout.right_collapsed = true;
+        let header_generate_target = if self.editor.selection.clip_ids.len() == 1 {
+            self.editor
+                .selected_clip_id()
+                .and_then(|clip_id| {
+                    let asset_id = self
+                        .editor
+                        .project
+                        .clips
+                        .iter()
+                        .find(|clip| clip.id == clip_id)
+                        .map(|clip| clip.asset_id)?;
+                    generative_output_for_asset(&self.editor.project, asset_id)
+                        .map(|_| (asset_id, Some(clip_id)))
+                })
+        } else if self.editor.selection.asset_ids.len() == 1 {
+            self.editor
+                .selected_asset_id()
+                .and_then(|asset_id| {
+                    generative_output_for_asset(&self.editor.project, asset_id)
+                        .map(|_| (asset_id, None))
+                })
+        } else {
+            None
+        };
+
+        let mut header_generate_clicked = false;
+        ui.horizontal(|ui| {
+            ui.label(kit::section_label("ATTRIBUTES"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if kit::icon_button(ui, "▶").clicked() {
+                    self.editor.layout.right_collapsed = true;
+                }
+                if header_generate_target.is_some() {
+                    if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H).clicked() {
+                        header_generate_clicked = true;
+                    }
+                }
+            });
         });
         ui.add_space(8.0);
 
@@ -57,6 +94,12 @@ impl LatentSlateApp {
                 });
             }
         });
+
+        if header_generate_clicked {
+            if let Some((asset_id, context_clip_id)) = header_generate_target {
+                self.start_generative_generation(asset_id, context_clip_id);
+            }
+        }
     }
 
     pub(super) fn multi_clip_attributes(&mut self, ui: &mut Ui) {
@@ -895,7 +938,7 @@ impl LatentSlateApp {
         asset_id: Uuid,
         context_clip_id: Option<Uuid>,
     ) {
-        let Some((folder, output_type)) =
+        let Some((_, output_type)) =
             generative_output_for_asset(&self.editor.project, asset_id)
         else {
             return;
@@ -906,19 +949,6 @@ impl LatentSlateApp {
             .generative_config(asset_id)
             .cloned()
             .unwrap_or_default();
-        let folder_path = self
-            .editor
-            .project
-            .project_path
-            .as_ref()
-            .map(|root| root.join(&folder));
-        let asset_label = self
-            .editor
-            .project
-            .find_asset(asset_id)
-            .map(|asset| asset.name.clone())
-            .unwrap_or_else(|| "Generative Asset".to_string());
-
         let compatible_providers: Vec<ProviderEntry> = self
             .editor
             .provider_entries
@@ -1297,40 +1327,65 @@ impl LatentSlateApp {
         }
 
         if generate_clicked {
-            let config_for_generation = self
-                .editor
-                .project
-                .generative_config(asset_id)
-                .cloned()
-                .unwrap_or(config_snapshot);
-            let Some(provider_id) = config_for_generation.provider_id else {
-                self.editor.status = "Select a provider first.".to_string();
-                return;
-            };
-            let Some(provider) = compatible_providers
-                .into_iter()
-                .find(|provider| provider.id == provider_id)
-            else {
-                self.editor.status = "Selected provider is unavailable.".to_string();
-                return;
-            };
-            let Some(folder_path) = folder_path else {
-                self.editor.status = "Project folder is unavailable.".to_string();
-                return;
-            };
-            match self.enqueue_generation_jobs(
-                asset_id,
-                context_clip_id,
-                None,
-                provider,
-                config_for_generation,
-                folder_path,
-                asset_label,
-            ) {
-                Ok(status) => {
-                    self.editor.status = status;
-                }
-                Err(err) => self.editor.status = err,
+            self.start_generative_generation(asset_id, context_clip_id);
+        }
+    }
+
+    fn start_generative_generation(&mut self, asset_id: Uuid, context_clip_id: Option<Uuid>) {
+        let Some((folder, output_type)) =
+            generative_output_for_asset(&self.editor.project, asset_id)
+        else {
+            self.editor.status = "Selected asset is no longer generative.".to_string();
+            return;
+        };
+        let config_for_generation = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .cloned()
+            .unwrap_or_default();
+        let Some(provider_id) = config_for_generation.provider_id else {
+            self.editor.status = "Select a provider first.".to_string();
+            return;
+        };
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| {
+                provider.id == provider_id && provider.output_type == output_type
+            })
+            .cloned()
+        else {
+            self.editor.status = "Selected provider is unavailable.".to_string();
+            return;
+        };
+        let Some(folder_path) = self.editor.project.project_path.as_ref().map(|root| root.join(&folder))
+        else {
+            self.editor.status = "Project folder is unavailable.".to_string();
+            return;
+        };
+        let asset_label = self
+            .editor
+            .project
+            .find_asset(asset_id)
+            .map(|asset| asset.name.clone())
+            .unwrap_or_else(|| "Generative Asset".to_string());
+
+        match self.enqueue_generation_jobs(
+            asset_id,
+            context_clip_id,
+            None,
+            provider,
+            config_for_generation,
+            folder_path,
+            asset_label,
+        ) {
+            Ok(status) => {
+                self.editor.status = status;
+            }
+            Err(err) => {
+                self.editor.status = err;
             }
         }
     }
