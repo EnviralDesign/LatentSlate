@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::state::{
     ClipImageMode, ComfyOutputSelector, ComfyWorkflowRef, InputBinding, InputUi, ManifestInput,
     NodeSelector, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
-    ProviderManifest, ProviderOutputType, ProviderWorkflowKind,
+    ProviderManifest, ProviderOutputType, ProviderWorkflowKind, InputRole,
 };
 use crate::ui_kit as kit;
 
@@ -91,6 +91,7 @@ pub(super) struct ProviderBuilderInput {
     pub(super) label: String,
     pub(super) input_type_key: String,
     pub(super) required: bool,
+    pub(super) role: Option<InputRole>,
     pub(super) default_text: String,
     pub(super) enum_options: String,
     pub(super) tag: String,
@@ -452,7 +453,63 @@ impl ProviderBuilderState {
             })
     }
 
+    pub(super) fn role_validation_error(&self) -> Option<String> {
+        let mut role_inputs: HashMap<InputRole, Vec<String>> = HashMap::new();
+        let mut invalid_type_inputs = Vec::new();
+
+        for input in &self.inputs {
+            let Some(role) = input.role else {
+                continue;
+            };
+            role_inputs.entry(role).or_default().push(input.name.clone());
+            if !is_numeric_type_value(&input.input_type_key) {
+                invalid_type_inputs.push(format!(
+                    "{} ({}) set to {}",
+                    input.name,
+                    input.label,
+                    provider_input_role_label(Some(role))
+                ));
+            }
+        }
+
+        let mut missing_roles = Vec::new();
+        let required_roles = if self.output_type == ProviderOutputType::Audio {
+            vec![InputRole::Seed]
+        } else {
+            vec![InputRole::Width, InputRole::Height, InputRole::Seed]
+        };
+        for role in required_roles {
+            let names = role_inputs.get(&role).map_or(&[][..], |inputs| inputs.as_slice());
+            if names.is_empty() {
+                missing_roles.push(provider_input_role_label(Some(role)).to_string());
+                continue;
+            }
+            if names.len() > 1 {
+                return Some(format!(
+                    "Role {} is assigned to multiple inputs ({}). Only one input can be marked as {}.",
+                    provider_input_role_label(Some(role)),
+                    names.join(", "),
+                    provider_input_role_label(Some(role)).to_ascii_lowercase()
+                ));
+            }
+        }
+        if !invalid_type_inputs.is_empty() {
+            return Some(format!(
+                "Invalid role assignment: {}. Roles must be set on a number/integer input.",
+                invalid_type_inputs.join(", ")
+            ));
+        }
+        if !missing_roles.is_empty() {
+            Some(format!("Missing required roles: {}.", missing_roles.join(", ")))
+        } else {
+            None
+        }
+    }
+
     pub(super) fn build_save_payload(&self) -> Result<ProviderBuilderSave, String> {
+        if let Some(error) = self.role_validation_error() {
+            return Err(error);
+        }
         let workflow_path = self
             .workflow_path
             .clone()
@@ -507,6 +564,7 @@ impl ProviderBuilderState {
                 input_type: input_type.clone(),
                 required: input.required,
                 default: default.clone(),
+                role: input.role,
                 ui: input_ui.clone(),
                 bind: InputBinding {
                     selector,
@@ -519,6 +577,7 @@ impl ProviderBuilderState {
                 input_type,
                 required: input.required,
                 default,
+                role: input.role,
                 ui: input_ui,
             });
         }
@@ -633,6 +692,7 @@ impl ProviderBuilderInput {
             label,
             input_type_key,
             required: schema.map(|schema| schema.required).unwrap_or(false),
+            role: None,
             default_text,
             enum_options,
             tag: String::new(),
@@ -659,6 +719,7 @@ impl ProviderBuilderInput {
             required: input.required,
             default_text: default_value_to_text(input.default.as_ref()),
             enum_options,
+            role: input.role,
             tag: String::new(),
             multiline: ui_meta.is_some_and(|ui| ui.multiline),
             ui_min: ui_meta.and_then(|ui| ui.min),
@@ -686,6 +747,7 @@ impl ProviderBuilderInput {
             required: input.required,
             default_text: default_value_to_text(input.default.as_ref()),
             enum_options,
+            role: input.role,
             tag: input.bind.selector.tag.unwrap_or_default(),
             multiline,
             ui_min,
@@ -713,6 +775,7 @@ impl ProviderBuilderInput {
             required: input.required,
             default_text: default_value_to_text(input.default.as_ref()),
             enum_options,
+            role: input.role,
             tag: String::new(),
             multiline,
             ui_min,
@@ -737,6 +800,7 @@ impl ProviderBuilderInput {
             self.required,
             self.default_text.clone(),
             self.enum_options.clone(),
+            self.role,
             self.multiline,
             self.ui_min,
             self.ui_max,
@@ -793,13 +857,13 @@ impl ProviderBuilderInput {
                 );
             }
         }
-
         before
             != (
                 self.input_type_key.clone(),
                 self.required,
                 self.default_text.clone(),
                 self.enum_options.clone(),
+                self.role,
                 self.multiline,
                 self.ui_min,
                 self.ui_max,
@@ -1062,6 +1126,8 @@ pub(super) fn provider_builder_input_editor_contents(
         _ => {}
     });
     ui.add_space(kit::FORM_ROW_GAP);
+    provider_input_role_field(ui, "Role", &input.name, &mut input.role);
+    ui.add_space(kit::FORM_ROW_GAP);
     if input.input_type_key == "enum" {
         kit::field_label(ui, "Enum Options");
         ui.add_space(kit::FIELD_LABEL_GAP);
@@ -1114,6 +1180,35 @@ pub(super) fn provider_builder_input_editor_contents(
             *action = Some(ProviderInputAction::Delete(index));
         }
     });
+}
+
+pub(super) fn provider_input_role_label(value: Option<InputRole>) -> &'static str {
+    match value {
+        Some(InputRole::Width) => "Width",
+        Some(InputRole::Height) => "Height",
+        Some(InputRole::Seed) => "Seed",
+        None => "None",
+    }
+}
+
+pub(super) fn provider_input_role_field(
+    ui: &mut Ui,
+    label: &str,
+    input_name: &str,
+    role: &mut Option<InputRole>,
+) {
+    kit::labeled_combo_field(
+        ui,
+        label,
+        ("provider_input_role", input_name),
+        provider_input_role_label(*role),
+        |ui| {
+            automation_selectable_value(ui, role, None, "None");
+            automation_selectable_value(ui, role, Some(InputRole::Width), "Width");
+            automation_selectable_value(ui, role, Some(InputRole::Height), "Height");
+            automation_selectable_value(ui, role, Some(InputRole::Seed), "Seed");
+        },
+    );
 }
 
 pub(super) fn provider_builder_default_field(ui: &mut Ui, input: &mut ProviderBuilderInput) {
@@ -1290,6 +1385,10 @@ pub(super) fn parse_provider_input_type(
         }
         other => Err(format!("Unknown input type: {other}")),
     }
+}
+
+fn is_numeric_type_value(input_type: &str) -> bool {
+    matches!(input_type, "number" | "integer")
 }
 
 pub(super) fn parse_provider_default_value(

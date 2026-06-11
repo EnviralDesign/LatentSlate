@@ -727,6 +727,7 @@ impl LatentSlateApp {
                 ..Default::default()
             };
             self.retain_config_inputs_for_provider(&mut config);
+            self.apply_continuation_source_dimensions(&mut config, source_asset_id);
             return config;
         };
 
@@ -760,7 +761,75 @@ impl LatentSlateApp {
             config.provider_id = provider_override;
         }
         self.retain_config_inputs_for_provider(&mut config);
+        self.apply_continuation_source_dimensions(&mut config, source_asset_id);
         config
+    }
+
+    fn apply_continuation_source_dimensions(
+        &self,
+        config: &mut GenerativeConfig,
+        source_asset_id: Uuid,
+    ) {
+        let Some(project_root) = self.editor.project.project_path.as_ref() else {
+            return;
+        };
+        let Some(provider_id) = config.provider_id else {
+            return;
+        };
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| provider.id == provider_id)
+        else {
+            return;
+        };
+        let Some(source_asset) = self.editor.project.find_asset(source_asset_id) else {
+            return;
+        };
+        let Some(source_path) =
+            self.resolve_asset_source_path_for_continuation(project_root, source_asset)
+        else {
+            return;
+        };
+        let Some((width, height)) = crate::core::media::probe_media_dimensions(&source_path) else {
+            return;
+        };
+        let to_number = |value: u32| serde_json::Value::Number(value.into());
+
+        for input in &provider.inputs {
+            let Some(role) = input.role else {
+                continue;
+            };
+            if !matches!(input.input_type, ProviderInputType::Number | ProviderInputType::Integer) {
+                continue;
+            }
+            let input_value = match role {
+                crate::state::InputRole::Width => Some(to_number(width)),
+                crate::state::InputRole::Height => Some(to_number(height)),
+                crate::state::InputRole::Seed => None,
+            };
+            if let Some(value) = input_value {
+                config.inputs.insert(
+                    input.name.clone(),
+                    InputValue::Literal { value },
+                );
+            }
+        }
+    }
+
+    fn resolve_asset_source_path_for_continuation(
+        &self,
+        project_root: &std::path::Path,
+        asset: &Asset,
+    ) -> Option<std::path::PathBuf> {
+        match &asset.kind {
+            AssetKind::Image { path } | AssetKind::Video { path } => Some(project_root.join(path)),
+            AssetKind::GenerativeImage { active_version, folder }
+            | AssetKind::GenerativeVideo { active_version, folder, .. } => self
+                .resolve_generative_source_path(project_root, folder, active_version.as_deref()),
+            _ => None,
+        }
     }
 
     fn retain_config_inputs_for_provider(&self, config: &mut GenerativeConfig) {
@@ -791,6 +860,23 @@ impl LatentSlateApp {
         {
             config.batch.seed_field = None;
         }
+    }
+
+    fn resolve_generative_source_path(
+        &self,
+        project_root: &std::path::Path,
+        folder: &std::path::Path,
+        active_version: Option<&str>,
+    ) -> Option<std::path::PathBuf> {
+        let active_version = active_version?;
+        let folder_path = project_root.join(folder);
+        for extension in ["png", "jpg", "jpeg", "webp", "mp4", "mov", "mkv", "webm"] {
+            let candidate = folder_path.join(format!("{active_version}.{extension}"));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     pub(super) fn bridge_target_track_id(&mut self, source_track_id: Uuid) -> Uuid {
@@ -992,38 +1078,16 @@ impl LatentSlateApp {
             .unwrap_or_else(|| "None selected".to_string());
 
         let batch = config_snapshot.batch.clone();
-        let seed_field_options = selected_provider
-            .as_ref()
-            .map(seed_field_options_for_provider)
-            .unwrap_or_default();
-        let seed_field_missing = batch
-            .seed_field
-            .as_ref()
-            .map(|field| !seed_field_options.iter().any(|(name, _)| name == field))
-            .unwrap_or(false);
         let resolved_seed_field = selected_provider
             .as_ref()
-            .and_then(|provider| resolve_seed_field(provider, batch.seed_field.as_deref()));
-        let seed_hint = if seed_field_missing {
-            batch
-                .seed_field
-                .as_ref()
-                .map(|field| format!("Seed field '{field}' not found in provider inputs."))
-        } else if batch.seed_field.is_none() && selected_provider.is_some() {
-            Some(match resolved_seed_field.as_ref() {
-                Some(field) => format!("Auto-detect: {field}"),
-                None => "Auto-detect: none".to_string(),
-            })
-        } else {
-            None
-        };
+            .and_then(|provider| resolve_seed_field(provider));
         let batch_hint = if batch.count > 1 {
             match batch.seed_strategy {
                 SeedStrategy::Keep => {
                     Some("Identical inputs can be cached; use Increment or Random.".to_string())
                 }
                 _ if resolved_seed_field.is_none() => {
-                    Some("No numeric seed field detected. Pick one to offset seeds.".to_string())
+                    Some("No seed role detected. Assign a numeric input role in Provider Builder before generating batches.".to_string())
                 }
                 _ => None,
             }
@@ -1035,7 +1099,6 @@ impl LatentSlateApp {
         let mut next_provider_id = selected_provider_id;
         let mut next_batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT) as i64;
         let mut next_seed_strategy = batch.seed_strategy;
-        let mut next_seed_field = batch.seed_field.clone().unwrap_or_default();
         let mut open_asset_lab = false;
         let mut generate_clicked = false;
 
@@ -1177,58 +1240,7 @@ impl LatentSlateApp {
                     },
                 );
             };
-            let mut draw_seed_field = |ui: &mut Ui| {
-                let selected_text = if next_seed_field.trim().is_empty() {
-                    "Auto-detect".to_string()
-                } else {
-                    seed_field_options
-                        .iter()
-                        .find(|(name, _)| name == &next_seed_field)
-                        .map(|(_, label)| label.clone())
-                        .unwrap_or_else(|| next_seed_field.clone())
-                };
-                kit::labeled_combo_field(
-                    ui,
-                    "Seed Field",
-                    ("seed_field", asset_id),
-                    selected_text,
-                    |ui| {
-                        automation_selectable_value(
-                            ui,
-                            &mut next_seed_field,
-                            String::new(),
-                            "Auto-detect",
-                        );
-                        for (name, label) in seed_field_options.iter() {
-                            automation_selectable_value(
-                                ui,
-                                &mut next_seed_field,
-                                name.clone(),
-                                label,
-                            );
-                        }
-                    },
-                );
-            };
-            if ui.available_width() >= 210.0 {
-                ui.columns(2, |columns| {
-                    draw_strategy(&mut columns[0]);
-                    draw_seed_field(&mut columns[1]);
-                });
-            } else {
-                draw_strategy(ui);
-                ui.add_space(kit::FORM_ROW_GAP);
-                draw_seed_field(ui);
-            }
-            if let Some(hint) = seed_hint {
-                ui.add_space(kit::FORM_ROW_GAP);
-                let color = if seed_field_missing {
-                    kit::MARKER
-                } else {
-                    kit::TEXT_DIM
-                };
-                ui.label(RichText::new(hint).color(color).size(11.0));
-            }
+            draw_strategy(ui);
             if let Some(hint) = batch_hint {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(RichText::new(hint).color(kit::MARKER).size(11.0));
@@ -1278,21 +1290,14 @@ impl LatentSlateApp {
         }
         let clamped_batch_count =
             next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
-        let next_seed_field_opt = if next_seed_field.trim().is_empty() {
-            None
-        } else {
-            Some(next_seed_field.trim().to_string())
-        };
         if clamped_batch_count != batch.count
             || next_seed_strategy != batch.seed_strategy
-            || next_seed_field_opt != batch.seed_field
         {
             self.editor
                 .project
                 .update_generative_config(asset_id, |config| {
                     config.batch.count = clamped_batch_count;
                     config.batch.seed_strategy = next_seed_strategy;
-                    config.batch.seed_field = next_seed_field_opt;
                 });
             config_dirty = true;
         }

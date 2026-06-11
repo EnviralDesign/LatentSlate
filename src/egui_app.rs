@@ -1382,27 +1382,6 @@ fn literal_config_input(config: &GenerativeConfig, name: &str) -> Option<serde_j
     })
 }
 
-fn seed_field_options_for_provider(provider: &ProviderEntry) -> Vec<(String, String)> {
-    provider
-        .inputs
-        .iter()
-        .filter(|input| {
-            matches!(
-                input.input_type,
-                ProviderInputType::Integer | ProviderInputType::Number
-            )
-        })
-        .map(|input| {
-            let label = if input.label.trim().is_empty() || input.label == input.name {
-                input.name.clone()
-            } else {
-                format!("{} ({})", input.label, input.name)
-            };
-            (input.name.clone(), label)
-        })
-        .collect()
-}
-
 fn seed_strategy_label(strategy: SeedStrategy) -> &'static str {
     match strategy {
         SeedStrategy::Increment => "Increment",

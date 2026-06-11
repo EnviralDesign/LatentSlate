@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::Command;
+use serde_json::Value;
 
 /// Probe media duration in seconds using ffprobe.
 pub fn probe_duration_seconds(path: &Path) -> Option<f64> {
@@ -25,6 +26,41 @@ pub fn probe_duration_seconds(path: &Path) -> Option<f64> {
     }
 
     duration_str.parse::<f64>().ok()
+}
+
+/// Probe image or video frame dimensions in pixels, if available.
+pub fn probe_media_dimensions(path: &Path) -> Option<(u32, u32)> {
+    if let Ok((width, height)) = image::image_dimensions(path) {
+        return Some((width, height));
+    }
+
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=width,height")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_ffprobe_dimensions(&output.stdout)
+}
+
+fn parse_ffprobe_dimensions(raw: &[u8]) -> Option<(u32, u32)> {
+    let parsed: Value = serde_json::from_slice(raw).ok()?;
+    let streams = parsed.get("streams")?.as_array()?;
+    let stream = streams.first()?;
+    let width = stream.get("width").and_then(|value| value.as_u64())?;
+    let height = stream.get("height").and_then(|value| value.as_u64())?;
+    Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
 }
 
 pub fn probe_asset_duration(

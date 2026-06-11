@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
     Asset, AssetKind, Clip, GenerativeConfig, InputValue, Project, ProviderEntry,
-    ProviderInputField, ProviderInputType, SourceFrameReference,
+    ProviderInputField, ProviderInputType, SourceFrameReference, InputRole,
 };
 
 #[derive(Debug, Clone)]
@@ -651,21 +651,13 @@ fn parse_version_number(version: &str) -> Option<u32> {
 }
 
 /// Resolve which provider input should be treated as the seed for batching.
-pub fn resolve_seed_field(provider: &ProviderEntry, preferred: Option<&str>) -> Option<String> {
-    if let Some(preferred) = preferred {
-        if provider
-            .inputs
-            .iter()
-            .any(|input| input.name == preferred && is_seed_candidate(input))
-        {
-            return Some(preferred.to_string());
-        }
-    }
-
+pub fn resolve_seed_field(provider: &ProviderEntry) -> Option<String> {
     provider
         .inputs
         .iter()
-        .find(|input| is_seed_candidate(input) && seed_like(&input.name, &input.label))
+        .find(|input| {
+            input.role == Some(InputRole::Seed) && is_seed_compatible_type(input)
+        })
         .map(|input| input.name.clone())
 }
 
@@ -693,11 +685,7 @@ pub fn random_seed_i64() -> i64 {
     (raw % i64::MAX as u128) as i64
 }
 
-fn seed_like(name: &str, label: &str) -> bool {
-    name.to_ascii_lowercase().contains("seed") || label.to_ascii_lowercase().contains("seed")
-}
-
-fn is_seed_candidate(input: &ProviderInputField) -> bool {
+fn is_seed_compatible_type(input: &ProviderInputField) -> bool {
     matches!(
         input.input_type,
         ProviderInputType::Integer | ProviderInputType::Number

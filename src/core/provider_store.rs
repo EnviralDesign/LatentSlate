@@ -203,6 +203,7 @@ fn text_input(
         input_type: ProviderInputType::Text,
         required,
         default: default.map(serde_json::Value::String),
+        role: None,
         ui: Some(InputUi {
             placeholder,
             multiline: true,
@@ -225,6 +226,7 @@ fn enum_input(
         },
         required: true,
         default: default.map(|value| serde_json::Value::String(value.to_string())),
+        role: None,
         ui: None,
     }
 }
@@ -242,6 +244,7 @@ fn integer_input(
         input_type: ProviderInputType::Integer,
         required: true,
         default: Some(serde_json::Value::Number(default.into())),
+        role: None,
         ui: Some(InputUi {
             min,
             max,

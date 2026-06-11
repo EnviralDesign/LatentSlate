@@ -564,6 +564,8 @@ impl LatentSlateApp {
         let mut open = true;
         let mut close_clicked = false;
         let mut save_clicked = false;
+        let role_validation_error = self.provider_builder.role_validation_error();
+        let save_enabled = role_validation_error.is_none();
         let size = modal_size(ctx, PROVIDER_BUILDER_MODAL_SIZE, [780.0, 560.0]);
 
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "provider_builder", true);
@@ -599,8 +601,19 @@ impl LatentSlateApp {
                         kit::SECONDARY_BUTTON_H,
                         |ui| self.provider_builder_columns(ui),
                         |ui| {
+                            let tooltip_error = role_validation_error.as_deref();
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if kit::primary_button(ui, "Save Provider", 150.0).clicked() {
+                                let mut save_response = ui
+                                    .add_enabled_ui(save_enabled, |ui| {
+                                        kit::primary_button(ui, "Save Provider", 150.0)
+                                    })
+                                    .inner;
+                                if !save_enabled {
+                                    if let Some(error) = tooltip_error {
+                                        save_response = save_response.on_disabled_hover_text(error);
+                                    }
+                                }
+                                if save_response.clicked() {
                                     save_clicked = true;
                                 }
                                 if kit::secondary_button(ui, "Cancel", 110.0).clicked() {
@@ -656,6 +669,9 @@ impl LatentSlateApp {
     }
 
     pub(super) fn provider_builder_errors(&mut self, ui: &mut Ui) {
+        if let Some(error) = self.provider_builder.role_validation_error() {
+            ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+        }
         if let Some(error) = &self.provider_builder.workflow_error {
             ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
         }

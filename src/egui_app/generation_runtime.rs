@@ -435,7 +435,13 @@ impl LatentSlateApp {
 
         let batch = config_snapshot.batch.clone();
         let batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT);
-        let seed_field = resolve_seed_field(&provider, batch.seed_field.as_deref());
+        let seed_field = resolve_seed_field(&provider);
+        if batch_count > 1 && batch.seed_strategy != SeedStrategy::Keep && seed_field.is_none() {
+            return Err(
+                "Seed role is required for batch generation. Open Provider Builder and assign a numeric input as Role: Seed."
+                    .to_string(),
+            );
+        }
         let mut seed_base = seed_field
             .as_ref()
             .and_then(|field| resolved.values.get(field))
@@ -564,7 +570,7 @@ impl LatentSlateApp {
             if batch.seed_strategy == SeedStrategy::Keep {
                 status.push_str(" (identical inputs may be cached)");
             } else if seed_field.is_none() {
-                status.push_str(" (no seed field detected)");
+                status.push_str(" (seed role missing)");
             } else if seed_base_randomized {
                 status.push_str(" (seed missing, randomized base)");
             }
