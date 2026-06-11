@@ -10,6 +10,7 @@ use std::process::Command;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
     Asset, AssetKind, Clip, GenerativeConfig, InputValue, Project, ProviderEntry,
     ProviderInputField, ProviderInputType, SourceFrameReference,
@@ -51,8 +52,16 @@ pub fn resolve_provider_inputs(
                 }
             }
             _ => {
-                let value =
+                let mut value =
                     literal_input_value(config, &input.name).or_else(|| input.default.clone());
+                if value.is_none()
+                    && matches!(
+                        input.input_type,
+                        ProviderInputType::Integer | ProviderInputType::Number
+                    )
+                {
+                    value = infer_frame_input_from_reference(project, config, input);
+                }
 
                 if let Some(value) = value {
                     values.insert(input.name.clone(), value.clone());
@@ -68,6 +77,73 @@ pub fn resolve_provider_inputs(
         values,
         snapshot,
         missing_required,
+    }
+}
+
+fn infer_frame_input_from_reference(
+    project: &Project,
+    config: &GenerativeConfig,
+    input: &ProviderInputField,
+) -> Option<Value> {
+    let key = format!("{} {}", input.name, input.label).to_ascii_lowercase();
+    if !contains_any(&key, &["frame"]) {
+        return None;
+    }
+    let slot = if contains_any(&key, &["end", "last", "final"]) {
+        "end_image"
+    } else if contains_any(&key, &["start", "first", "initial", "init"]) {
+        "start_image"
+    } else {
+        "image"
+    };
+
+    let reference = config.reference_slots.get(slot)?;
+    let fps = project.settings.fps.max(1.0);
+    let frame_time = reference_frame_time(project, reference, fps)?;
+    let frame = (frame_time.max(0.0) * fps).round() as i64;
+    if frame >= 0 {
+        Some(Value::Number(serde_json::Number::from(frame)))
+    } else {
+        None
+    }
+}
+
+fn reference_frame_time(project: &Project, reference: &InputValue, fps: f64) -> Option<f64> {
+    match reference {
+        InputValue::AssetRef {
+            asset_id,
+            source_clip_id,
+            frame_reference,
+            ..
+        } => {
+            let frame = SourceFrameReference::First;
+            let frame_ref = frame_reference.unwrap_or(frame);
+            let asset = project.find_asset(*asset_id)?;
+            let media_fps = source_media_fps(asset, fps);
+            source_clip_id
+                .and_then(|clip_id| {
+                    project
+                        .clips
+                        .iter()
+                        .find(|clip| clip.id == clip_id)
+                        .map(|clip| source_frame_time(clip, frame_ref, media_fps))
+                })
+                .or_else(|| Some(asset_level_frame_time(asset, frame_ref, media_fps)))
+        }
+        InputValue::GenerationRef {
+            asset_id,
+            frame_reference,
+            ..
+        } => {
+            let frame = frame_reference.unwrap_or(SourceFrameReference::First);
+            let asset = project.find_asset(*asset_id)?;
+            Some(asset_level_frame_time(
+                asset,
+                frame,
+                source_media_fps(asset, fps),
+            ))
+        }
+        InputValue::Literal { .. } => None,
     }
 }
 
@@ -304,10 +380,12 @@ fn asset_ref_path(
             if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
                 let source_path = video_asset_source_path(root, asset)?;
                 let frame = (*frame_reference).unwrap_or(SourceFrameReference::First);
-                let time_seconds = (*source_clip_id)
-                    .and_then(|clip_id| project.clips.iter().find(|clip| clip.id == clip_id))
-                    .map(|clip| source_frame_time(clip, frame, project.settings.fps))
-                    .unwrap_or_else(|| asset_level_frame_time(asset, frame, project.settings.fps));
+                let source_clip = (*source_clip_id)
+                    .and_then(|clip_id| project.clips.iter().find(|clip| clip.id == clip_id));
+                let media_fps = source_media_fps(asset, project.settings.fps);
+                let time_seconds = source_clip
+                    .map(|clip| source_frame_time(clip, frame, media_fps))
+                    .unwrap_or_else(|| asset_level_frame_time(asset, frame, media_fps));
                 return extract_video_reference_frame(
                     root,
                     *asset_id,
@@ -333,7 +411,8 @@ fn asset_ref_path(
             if matches!(input_type, ProviderInputType::Image) && asset.is_video() {
                 let source_path = generative_asset_source_path(root, asset, Some(version))?;
                 let frame = (*frame_reference).unwrap_or(SourceFrameReference::First);
-                let time_seconds = asset_level_frame_time(asset, frame, project.settings.fps);
+                let media_fps = source_media_fps(asset, project.settings.fps);
+                let time_seconds = asset_level_frame_time(asset, frame, media_fps);
                 return extract_video_reference_frame(
                     root,
                     *asset_id,
@@ -444,6 +523,13 @@ fn asset_level_frame_time(asset: &Asset, frame: SourceFrameReference, fps: f64) 
     }
 }
 
+fn source_media_fps(asset: &Asset, fallback_fps: f64) -> f64 {
+    match asset.kind {
+        AssetKind::GenerativeVideo { fps, .. } if fps > 0.0 => fps,
+        _ => fallback_fps.max(1.0),
+    }
+}
+
 fn extract_video_reference_frame(
     project_root: &Path,
     asset_id: Uuid,
@@ -474,6 +560,33 @@ fn extract_video_reference_frame(
         return Some(output_path);
     }
 
+    if let Some(path) =
+        extract_video_reference_frame_with_command(time_seconds, source_path, &output_path)
+    {
+        return Some(path);
+    }
+    decode_video_reference_frame(asset_id, time_seconds, source_path, &output_path)
+}
+
+fn decode_video_reference_frame(
+    asset_id: Uuid,
+    time_seconds: f64,
+    source_path: &Path,
+    output_path: &Path,
+) -> Option<PathBuf> {
+    let worker = VideoDecodeWorker::new(4096, 4096);
+    let lane_id = asset_id.as_u128() as u64;
+    let response = worker.decode(source_path, time_seconds.max(0.0), lane_id, false)?;
+    let image = response.image?;
+    image.save(output_path).ok()?;
+    output_path.exists().then(|| output_path.to_path_buf())
+}
+
+fn extract_video_reference_frame_with_command(
+    time_seconds: f64,
+    source_path: &Path,
+    output_path: &Path,
+) -> Option<PathBuf> {
     let status = Command::new("ffmpeg")
         .arg("-hide_banner")
         .arg("-loglevel")
@@ -485,12 +598,12 @@ fn extract_video_reference_frame(
         .arg(source_path)
         .arg("-frames:v")
         .arg("1")
-        .arg(&output_path)
+        .arg(output_path)
         .status()
         .ok()?;
 
     if status.success() && output_path.exists() {
-        Some(output_path)
+        Some(output_path.to_path_buf())
     } else {
         None
     }
