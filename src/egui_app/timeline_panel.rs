@@ -287,15 +287,20 @@ impl LatentSlateApp {
         let clip_drag_target_track_id = if timeline_input_frozen {
             None
         } else {
-            match self.timeline_drag {
-                Some(TimelineDrag::ClipMove { clip_id, .. }) => {
+            match self.timeline_drag.as_ref() {
+                Some(TimelineDrag::ClipMove { anchor_clip_id, .. }) => {
                     ui.ctx().pointer_hover_pos().and_then(|pos| {
-                        let clip = clips.iter().find(|clip| clip.id == clip_id)?;
-                        timeline_track_row_at_pos(pos, rects, &tracks)
-                            .filter(|track| {
-                                self.editor
-                                    .project
-                                    .asset_compatible_with_track(clip.asset_id, track.id)
+                        self.editor
+                            .project
+                            .clips
+                            .iter()
+                            .find(|clip| clip.id == *anchor_clip_id)
+                            .and_then(|anchor_clip| {
+                                timeline_track_row_at_pos(pos, rects, &tracks).filter(|track| {
+                                    self.editor
+                                        .project
+                                        .asset_compatible_with_track(anchor_clip.asset_id, track.id)
+                                })
                             })
                             .map(|track| track.id)
                     })
@@ -348,7 +353,10 @@ impl LatentSlateApp {
             }
             if !timeline_input_frozen
                 && track_response.dragged_by(egui::PointerButton::Primary)
-                && matches!(self.timeline_drag, Some(TimelineDrag::TrackReorder { .. }))
+                && matches!(
+                    self.timeline_drag.as_ref(),
+                    Some(TimelineDrag::TrackReorder { .. })
+                )
             {
                 if let Some(pos) = track_response.interact_pointer_pos() {
                     self.apply_timeline_drag(
@@ -972,10 +980,8 @@ impl LatentSlateApp {
     }
 
     pub(super) fn track_reorder_insertion_index(&self) -> Option<usize> {
-        match self.timeline_drag {
-            Some(TimelineDrag::TrackReorder {
-                insertion_index, ..
-            }) => Some(insertion_index),
+        match self.timeline_drag.as_ref() {
+            Some(TimelineDrag::TrackReorder { insertion_index, .. }) => Some(*insertion_index),
             _ => None,
         }
     }
@@ -1831,7 +1837,7 @@ impl LatentSlateApp {
                     })
                     .unwrap_or(egui::CursorIcon::NoDrop)
             } else {
-                match self.timeline_drag {
+                match self.timeline_drag.as_ref() {
                     Some(TimelineDrag::ClipResizeLeft { .. })
                     | Some(TimelineDrag::ClipResizeRight { .. })
                     | Some(TimelineDrag::MarkerMove { .. })
@@ -1904,10 +1910,32 @@ impl LatentSlateApp {
                             } else if !self.editor.selection.clip_ids.contains(&id) {
                                 self.editor.selection.select_clip(id);
                             }
+                            let move_clips = if self.editor.selection.clip_ids.contains(&id) {
+                                self.editor
+                                    .selection
+                                    .clip_ids
+                                    .iter()
+                                    .filter_map(|selected_clip_id| {
+                                        clips
+                                            .iter()
+                                            .find(|candidate| candidate.id == *selected_clip_id)
+                                            .map(|candidate| TimelineClipMoveData {
+                                                clip_id: candidate.id,
+                                                start_time: candidate.start_time,
+                                                duration: candidate.duration,
+                                            })
+                                    })
+                                    .collect()
+                            } else {
+                                vec![TimelineClipMoveData {
+                                    clip_id: clip.id,
+                                    start_time: clip.start_time,
+                                    duration: clip.duration,
+                                }]
+                            };
                             self.timeline_drag = Some(TimelineDrag::ClipMove {
-                                clip_id: id,
-                                start_time: clip.start_time,
-                                duration: clip.duration,
+                                anchor_clip_id: id,
+                                clips: move_clips,
                             });
                         }
                     }
@@ -1959,7 +1987,7 @@ impl LatentSlateApp {
 
         let primary_down = ui.input(|input| input.pointer.primary_down());
         if !primary_down && self.timeline_drag.is_some() {
-            let drag = self.timeline_drag;
+            let drag = self.timeline_drag.clone();
             let was_playhead_drag = matches!(drag, Some(TimelineDrag::Playhead));
             if let Some(TimelineDrag::TrackReorder {
                 track_id,
@@ -2039,7 +2067,7 @@ impl LatentSlateApp {
         let snap_threshold_frames =
             (TIMELINE_SNAP_THRESHOLD_PX / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64) * fps;
         let seek_frames = if snap_enabled {
-            let targets = self.timeline_snap_targets(None, None, false);
+            let targets = self.timeline_snap_targets(&[], None, false);
             if let Some(hit) =
                 best_snap_delta_frames(&[raw_frames], &targets, snap_threshold_frames)
             {
@@ -2071,7 +2099,7 @@ impl LatentSlateApp {
         zoom: f32,
         snap_enabled: bool,
     ) {
-        let Some(drag) = self.timeline_drag else {
+        let Some(drag) = self.timeline_drag.clone() else {
             return;
         };
         let fps = self.editor.project.settings.fps.max(1.0);
@@ -2083,22 +2111,32 @@ impl LatentSlateApp {
                 self.seek_from_timeline_pos(pos, rects, duration, zoom, true, snap_enabled)
             }
             TimelineDrag::ClipMove {
-                clip_id,
-                start_time,
-                duration: clip_duration,
+                anchor_clip_id,
+                clips,
             } => {
-                let start_frames = frames_from_seconds(start_time, fps).round();
-                let duration_frames = frames_from_seconds(clip_duration, fps).round();
-                let mut new_start_frames = start_frames + delta_frames;
+                let Some(anchor_clip) = clips
+                    .iter()
+                    .find(|clip| clip.clip_id == anchor_clip_id)
+                    .or_else(|| clips.first())
+                else {
+                    return;
+                };
+                let duration_frames = frames_from_seconds(anchor_clip.duration, fps).round();
+                let mut new_start_frames = frames_from_seconds(anchor_clip.start_time, fps).round()
+                    + delta_frames;
+                let exclude_clip_ids: Vec<Uuid> =
+                    clips.iter().map(|clip| clip.clip_id).collect();
                 if snap_enabled {
-                    let targets = self.timeline_snap_targets(Some(clip_id), None, true);
+                    let targets = self.timeline_snap_targets(&exclude_clip_ids, None, true);
                     let is_keyframe_reference = self
                         .editor
                         .project
                         .clips
                         .iter()
-                        .find(|clip| clip.id == clip_id)
-                        .is_some_and(|clip| self.editor.project.is_keyframe_reference_clip(clip));
+                        .find(|clip| clip.id == anchor_clip.clip_id)
+                        .is_some_and(|clip| {
+                            self.editor.project.is_keyframe_reference_clip(clip)
+                        });
                     let source_frames = if is_keyframe_reference {
                         vec![new_start_frames]
                     } else {
@@ -2116,13 +2154,25 @@ impl LatentSlateApp {
                 } else {
                     self.timeline_snap_preview = None;
                 }
-                let new_start = seconds_from_frames(new_start_frames.round().max(0.0), fps);
-                let mut changed = self.editor.project.move_clip(clip_id, new_start);
-                if let Some(track_id) =
-                    timeline_track_row_at_pos(pos, rects, &self.editor.project.tracks)
-                        .map(|track| track.id)
-                {
-                    changed |= self.editor.project.move_clip_to_track(clip_id, track_id);
+                let new_delta = new_start_frames - frames_from_seconds(anchor_clip.start_time, fps).round();
+                let mut changed = false;
+                for clip in &clips {
+                    let new_start = seconds_from_frames(
+                        (frames_from_seconds(clip.start_time, fps).round() + new_delta).max(0.0),
+                        fps,
+                    );
+                    changed |= self.editor.project.move_clip(clip.clip_id, new_start);
+                }
+                let track_id = timeline_track_row_at_pos(
+                    pos,
+                    rects,
+                    &self.editor.project.tracks,
+                )
+                .map(|track| track.id);
+                if let Some(track_id) = track_id {
+                    for clip in &clips {
+                        changed |= self.editor.project.move_clip_to_track(clip.clip_id, track_id);
+                    }
                 }
                 if changed {
                     self.editor.preview_dirty = true;
@@ -2137,7 +2187,7 @@ impl LatentSlateApp {
                 let mut new_start_frames =
                     frames_from_seconds(start_time, fps).round() + delta_frames;
                 if snap_enabled {
-                    let targets = self.timeline_snap_targets(Some(clip_id), None, true);
+                    let targets = self.timeline_snap_targets(&[clip_id], None, true);
                     if let Some(hit) =
                         best_snap_delta_frames(&[new_start_frames], &targets, snap_threshold_frames)
                     {
@@ -2171,7 +2221,7 @@ impl LatentSlateApp {
                 let mut new_end_frames =
                     start_frames + frames_from_seconds(clip_duration, fps).round() + delta_frames;
                 if snap_enabled {
-                    let targets = self.timeline_snap_targets(Some(clip_id), None, true);
+                    let targets = self.timeline_snap_targets(&[clip_id], None, true);
                     if let Some(hit) =
                         best_snap_delta_frames(&[new_end_frames], &targets, snap_threshold_frames)
                     {
@@ -2200,7 +2250,7 @@ impl LatentSlateApp {
             } => {
                 let mut new_frames = frames_from_seconds(start_time, fps).round() + delta_frames;
                 if snap_enabled {
-                    let targets = self.timeline_snap_targets(None, Some(marker_id), true);
+                    let targets = self.timeline_snap_targets(&[], Some(marker_id), true);
                     if let Some(hit) =
                         best_snap_delta_frames(&[new_frames], &targets, snap_threshold_frames)
                     {
@@ -2241,7 +2291,7 @@ impl LatentSlateApp {
 
     pub(super) fn timeline_snap_targets(
         &self,
-        exclude_clip: Option<Uuid>,
+        exclude_clips: &[Uuid],
         exclude_marker: Option<Uuid>,
         include_playhead: bool,
     ) -> Vec<SnapTarget> {
@@ -2254,7 +2304,7 @@ impl LatentSlateApp {
             )));
         }
         for clip in self.editor.project.clips.iter() {
-            if Some(clip.id) == exclude_clip {
+            if exclude_clips.contains(&clip.id) {
                 continue;
             }
             targets.push(SnapTarget::clip_edge(

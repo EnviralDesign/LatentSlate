@@ -417,12 +417,18 @@ struct AssetInputCandidate {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct TimelineClipMoveData {
+    clip_id: Uuid,
+    start_time: f64,
+    duration: f64,
+}
+
+#[derive(Clone, Debug)]
 enum TimelineDrag {
     Playhead,
     ClipMove {
-        clip_id: Uuid,
-        start_time: f64,
-        duration: f64,
+        anchor_clip_id: Uuid,
+        clips: Vec<TimelineClipMoveData>,
     },
     ClipResizeLeft {
         clip_id: Uuid,
@@ -711,7 +717,7 @@ impl LatentSlateApp {
         frames.push(0);
         frames.push(max_frame);
         frames.extend(
-            self.timeline_snap_targets(None, None, false)
+            self.timeline_snap_targets(&[], None, false)
                 .into_iter()
                 .map(|target| target.frame.round().clamp(0.0, max_frame as f64) as i64),
         );
