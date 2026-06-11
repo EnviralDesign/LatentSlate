@@ -288,22 +288,25 @@ impl LatentSlateApp {
             None
         } else {
             match self.timeline_drag.as_ref() {
-                Some(TimelineDrag::ClipMove { anchor_clip_id, .. }) => {
-                    ui.ctx().pointer_hover_pos().and_then(|pos| {
-                        self.editor
-                            .project
-                            .clips
-                            .iter()
-                            .find(|clip| clip.id == *anchor_clip_id)
-                            .and_then(|anchor_clip| {
-                                timeline_track_row_at_pos(pos, rects, &tracks).filter(|track| {
+                Some(TimelineDrag::ClipMove {
+                    clips,
+                    allow_track_move,
+                    ..
+                }) => {
+                    if *allow_track_move {
+                        ui.ctx().pointer_hover_pos().and_then(|pos| {
+                            timeline_track_row_at_pos(pos, rects, &tracks).filter(|track| {
+                                clips.iter().all(|clip| {
                                     self.editor
                                         .project
-                                        .asset_compatible_with_track(anchor_clip.asset_id, track.id)
+                                        .asset_compatible_with_track(clip.asset_id, track.id)
                                 })
                             })
-                            .map(|track| track.id)
-                    })
+                        })
+                        .map(|track| track.id)
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             }
@@ -1921,6 +1924,8 @@ impl LatentSlateApp {
                                             .find(|candidate| candidate.id == *selected_clip_id)
                                             .map(|candidate| TimelineClipMoveData {
                                                 clip_id: candidate.id,
+                                                asset_id: candidate.asset_id,
+                                                track_id: candidate.track_id,
                                                 start_time: candidate.start_time,
                                                 duration: candidate.duration,
                                             })
@@ -1929,13 +1934,19 @@ impl LatentSlateApp {
                             } else {
                                 vec![TimelineClipMoveData {
                                     clip_id: clip.id,
+                                    asset_id: clip.asset_id,
+                                    track_id: clip.track_id,
                                     start_time: clip.start_time,
                                     duration: clip.duration,
                                 }]
                             };
+                            let allow_track_move = move_clips
+                                .iter()
+                                .all(|candidate| candidate.track_id == move_clips[0].track_id);
                             self.timeline_drag = Some(TimelineDrag::ClipMove {
                                 anchor_clip_id: id,
                                 clips: move_clips,
+                                allow_track_move,
                             });
                         }
                     }
@@ -2113,6 +2124,7 @@ impl LatentSlateApp {
             TimelineDrag::ClipMove {
                 anchor_clip_id,
                 clips,
+                allow_track_move,
             } => {
                 let Some(anchor_clip) = clips
                     .iter()
@@ -2163,15 +2175,24 @@ impl LatentSlateApp {
                     );
                     changed |= self.editor.project.move_clip(clip.clip_id, new_start);
                 }
-                let track_id = timeline_track_row_at_pos(
-                    pos,
-                    rects,
-                    &self.editor.project.tracks,
-                )
-                .map(|track| track.id);
-                if let Some(track_id) = track_id {
-                    for clip in &clips {
-                        changed |= self.editor.project.move_clip_to_track(clip.clip_id, track_id);
+                if allow_track_move {
+                    let track_id = timeline_track_row_at_pos(
+                        pos,
+                        rects,
+                        &self.editor.project.tracks,
+                    )
+                    .map(|track| track.id)
+                    .filter(|track_id| {
+                        clips.iter().all(|clip| {
+                            self.editor
+                                .project
+                                .asset_compatible_with_track(clip.asset_id, *track_id)
+                        })
+                    });
+                    if let Some(track_id) = track_id {
+                        for clip in &clips {
+                            changed |= self.editor.project.move_clip_to_track(clip.clip_id, track_id);
+                        }
                     }
                 }
                 if changed {

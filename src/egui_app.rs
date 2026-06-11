@@ -419,6 +419,8 @@ struct AssetInputCandidate {
 #[derive(Clone, Copy, Debug)]
 struct TimelineClipMoveData {
     clip_id: Uuid,
+    asset_id: Uuid,
+    track_id: Uuid,
     start_time: f64,
     duration: f64,
 }
@@ -429,6 +431,7 @@ enum TimelineDrag {
     ClipMove {
         anchor_clip_id: Uuid,
         clips: Vec<TimelineClipMoveData>,
+        allow_track_move: bool,
     },
     ClipResizeLeft {
         clip_id: Uuid,
