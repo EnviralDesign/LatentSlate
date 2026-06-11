@@ -2348,15 +2348,20 @@ impl LatentSlateApp {
                     let can_generate = asset.is_generative()
                         && node.provider_id.is_some()
                         && pending_job_status.is_none();
-                    ui.allocate_ui_at_rect(generate_rect, |ui| {
-                        ui.add_enabled_ui(can_generate, |ui| {
-                            if kit::primary_button(ui, generate_label, ui.available_width())
-                                .clicked()
-                            {
-                                node_or_sidecar_clicked = true;
-                                *action = Some(AssetLabAction::GenerateNode(node.id));
-                            }
-                        });
+                    let mut generate_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(generate_rect)
+                            .layout(Layout::top_down(Align::Min)),
+                    );
+                    generate_ui.set_min_size(generate_rect.size());
+                    generate_ui.shrink_clip_rect(generate_rect);
+                    generate_ui.set_width(generate_rect.width());
+                    generate_ui.set_max_width(generate_rect.width());
+                    generate_ui.add_enabled_ui(can_generate, |ui| {
+                        if kit::primary_button(ui, generate_label, ui.available_width()).clicked() {
+                            node_or_sidecar_clicked = true;
+                            *action = Some(AssetLabAction::GenerateNode(node.id));
+                        }
                     });
                 }
                 if asset_lab_node_icon_button(
@@ -2378,14 +2383,21 @@ impl LatentSlateApp {
         }
 
         if let Some((sidecar_rect, source_node_id, can_generate)) = ghost_generate_overlay {
-            ui.allocate_ui_at_rect(sidecar_rect, |ui| {
-                let width = ui.available_width();
-                ui.add_enabled_ui(can_generate, |ui| {
-                    if kit::primary_button(ui, "Generate Variant", width).clicked() {
-                        node_or_sidecar_clicked = true;
-                        *action = Some(AssetLabAction::GenerateNode(source_node_id));
-                    }
-                });
+            let mut sidecar_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(sidecar_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            sidecar_ui.set_min_size(sidecar_rect.size());
+            sidecar_ui.shrink_clip_rect(sidecar_rect);
+            sidecar_ui.set_width(sidecar_rect.width());
+            sidecar_ui.set_max_width(sidecar_rect.width());
+            let width = sidecar_ui.available_width();
+            sidecar_ui.add_enabled_ui(can_generate, |ui| {
+                if kit::primary_button(ui, "Generate Variant", width).clicked() {
+                    node_or_sidecar_clicked = true;
+                    *action = Some(AssetLabAction::GenerateNode(source_node_id));
+                }
             });
         }
 

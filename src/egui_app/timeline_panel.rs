@@ -900,12 +900,24 @@ impl LatentSlateApp {
         let raw_time = ((pos.x - rects.tracks.left() + self.editor.layout.timeline_scroll_x) / zoom)
             .clamp(0.0, duration as f32) as f64;
         let time = snap_time_to_frame(raw_time, self.editor.project.settings.fps.max(1.0));
+        let asset_is_image = self
+            .editor
+            .project
+            .find_asset(asset_id)
+            .is_some_and(|asset| asset.is_image());
         match self
             .editor
             .add_asset_to_timeline_track(asset_id, track.id, Some(time))
         {
-            Ok(_) => {
-                self.editor.status = format!("Added clip to {}", track.name);
+            Ok(clip_id) => {
+                if asset_is_image {
+                    self.editor
+                        .project
+                        .set_clip_image_mode(clip_id, ClipImageMode::Keyframe);
+                    self.editor.status = format!("Added image keyframe to {}", track.name);
+                } else {
+                    self.editor.status = format!("Added clip to {}", track.name);
+                }
             }
             Err(err) => {
                 self.editor.status = err;
