@@ -164,7 +164,7 @@ impl LatentSlateApp {
     pub(super) fn providers_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
-        let modal_size = modal_size(ctx, PROVIDERS_MODAL_SIZE, [620.0, 460.0]);
+        let modal_size = modal_size(ctx, PROVIDERS_MODAL_SIZE, [744.0, 552.0]);
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "providers", true);
         egui::Window::new("AI Providers (Global)")
             .title_bar(false)
@@ -400,9 +400,33 @@ impl LatentSlateApp {
     }
 
     pub(super) fn delete_provider_file(&mut self, path: PathBuf) {
+        let manifest_path = provider_manifest_path_for_delete(&path);
         match std::fs::remove_file(&path) {
             Ok(()) => {
-                self.editor.status = format!("Deleted provider {}", path_label(&path));
+                let mut status = format!("Deleted provider {}", path_label(&path));
+                if let Some(manifest_path) = manifest_path {
+                    match std::fs::remove_file(&manifest_path) {
+                        Ok(()) => {
+                            status =
+                                format!("{} and manifest {}", status, path_label(&manifest_path));
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            status = format!(
+                                "{}; manifest was already missing at {}",
+                                status,
+                                path_label(&manifest_path)
+                            );
+                        }
+                        Err(err) => {
+                            status = format!(
+                                "{} but failed to delete manifest {}: {err}",
+                                status,
+                                path_label(&manifest_path)
+                            );
+                        }
+                    }
+                }
+                self.editor.status = status;
                 self.selected_provider_file = None;
                 self.refresh_provider_files();
             }
@@ -564,9 +588,9 @@ impl LatentSlateApp {
         let mut open = true;
         let mut close_clicked = false;
         let mut save_clicked = false;
-        let role_validation_error = self.provider_builder.role_validation_error();
-        let save_enabled = role_validation_error.is_none();
-        let size = modal_size(ctx, PROVIDER_BUILDER_MODAL_SIZE, [780.0, 560.0]);
+        let mut next_clicked = false;
+        let mut back_clicked = false;
+        let size = modal_size(ctx, PROVIDER_BUILDER_MODAL_SIZE, [936.0, 672.0]);
 
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "provider_builder", true);
         egui::Window::new("Provider Builder")
@@ -590,31 +614,48 @@ impl LatentSlateApp {
                     true,
                 );
                 kit::modal_body(ui, |ui| {
-                    self.provider_builder_topbar(ui);
+                    self.provider_builder_tabs(ui);
+                    self.provider_builder_step_hint(ui);
                     self.provider_builder_errors(ui);
                     ui.add_space(kit::FORM_ROW_GAP);
-                    self.provider_builder_tabs(ui);
-                    ui.add_space(kit::FORM_ROW_GAP);
+                    let final_step = self.provider_builder.tab == ProviderBuilderTab::Inputs;
+                    let blocker = if final_step {
+                        self.provider_builder.save_validation_error()
+                    } else {
+                        self.provider_builder.current_step_error()
+                    };
+                    let primary_enabled = blocker.is_none();
+                    let primary_label = if final_step { "Save Provider" } else { "Next" };
+                    let primary_width = if final_step { 150.0 } else { 110.0 };
+                    let back_enabled = self.provider_builder.previous_tab().is_some();
                     kit::body_with_footer(
                         ui,
                         360.0,
                         kit::SECONDARY_BUTTON_H,
                         |ui| self.provider_builder_columns(ui),
                         |ui| {
-                            let tooltip_error = role_validation_error.as_deref();
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                let mut save_response = ui
-                                    .add_enabled_ui(save_enabled, |ui| {
-                                        kit::primary_button(ui, "Save Provider", 150.0)
+                                let mut primary_response = ui
+                                    .add_enabled_ui(primary_enabled, |ui| {
+                                        kit::primary_button(ui, primary_label, primary_width)
                                     })
                                     .inner;
-                                if !save_enabled {
-                                    if let Some(error) = tooltip_error {
-                                        save_response = save_response.on_disabled_hover_text(error);
+                                if !primary_enabled {
+                                    if let Some(error) = blocker.as_deref() {
+                                        primary_response =
+                                            primary_response.on_disabled_hover_text(error);
                                     }
                                 }
-                                if save_response.clicked() {
-                                    save_clicked = true;
+                                if primary_response.clicked() {
+                                    if final_step {
+                                        save_clicked = true;
+                                    } else {
+                                        next_clicked = true;
+                                    }
+                                }
+                                if back_enabled && kit::secondary_button(ui, "Back", 92.0).clicked()
+                                {
+                                    back_clicked = true;
                                 }
                                 if kit::secondary_button(ui, "Cancel", 110.0).clicked() {
                                     close_clicked = true;
@@ -625,6 +666,14 @@ impl LatentSlateApp {
                 });
             });
 
+        if back_clicked {
+            if let Some(previous) = self.provider_builder.previous_tab() {
+                self.provider_builder.tab = previous;
+            }
+        }
+        if next_clicked {
+            self.advance_provider_builder_step();
+        }
         if save_clicked {
             self.save_provider_builder();
         }
@@ -635,45 +684,11 @@ impl LatentSlateApp {
         }
     }
 
-    pub(super) fn provider_builder_topbar(&mut self, ui: &mut Ui) {
-        let workflow_display = self
-            .provider_builder
-            .workflow_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "No workflow selected".to_string());
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [(ui.available_width() - 160.0).max(80.0), 18.0],
-                egui::Label::new(kit::caption(workflow_display)).truncate(),
-            );
-            if kit::secondary_button(ui, "Choose Workflow...", 148.0).clicked() {
-                let initial = self
-                    .provider_builder
-                    .workflow_path
-                    .as_ref()
-                    .and_then(|path| path.parent().map(Path::to_path_buf))
-                    .or_else(|| crate::core::paths::resource_dir("workflows"));
-                let mut options = kit::BrowseFileOptions::new()
-                    .id_salt("provider_builder_workflow")
-                    .filters(JSON_FILE_FILTERS)
-                    .remember_last_dir();
-                if let Some(initial) = initial.as_deref() {
-                    options = options.initial_dir(initial);
-                }
-                if let Some(path) = kit::pick_file_dialog(ui, options) {
-                    self.set_provider_builder_workflow(path);
-                }
-            }
-        });
-    }
-
     pub(super) fn provider_builder_errors(&mut self, ui: &mut Ui) {
-        if let Some(error) = self.provider_builder.role_validation_error() {
-            ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
-        }
-        if let Some(error) = &self.provider_builder.workflow_error {
-            ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+        if self.provider_builder.tab != ProviderBuilderTab::Workflow {
+            if let Some(error) = &self.provider_builder.workflow_error {
+                ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+            }
         }
         if let Some(error) = &self.provider_builder.error {
             ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
@@ -682,25 +697,26 @@ impl LatentSlateApp {
 
     pub(super) fn provider_builder_tabs(&mut self, ui: &mut Ui) {
         self.provider_builder.ensure_valid_tab();
-        let output_active = self.provider_builder.tab == ProviderBuilderTab::Output;
-        let inputs_active = self.provider_builder.tab == ProviderBuilderTab::Inputs;
-        let inputs_enabled = self.provider_builder.output_configured();
 
         ui.horizontal(|ui| {
-            if kit::timeline_tool_text_button(ui, "Output", 74.0, output_active).clicked() {
-                self.provider_builder.tab = ProviderBuilderTab::Output;
-            }
-            let inputs_response = ui
-                .add_enabled_ui(inputs_enabled, |ui| {
-                    kit::timeline_tool_text_button(ui, "Inputs", 74.0, inputs_active)
-                })
-                .inner;
-            let inputs_clicked = inputs_response.clicked();
-            if !inputs_enabled {
-                inputs_response.on_disabled_hover_text("Select an output node first.");
-            }
-            if inputs_clicked {
-                self.provider_builder.tab = ProviderBuilderTab::Inputs;
+            for step in ProviderBuilderTab::ALL {
+                let active = self.provider_builder.tab == step;
+                let enabled = self.provider_builder.tab_available(step);
+                let label = format!("{}. {}", step.step_number(), step.label());
+                let response = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        kit::timeline_tool_text_button(ui, &label, 104.0, active)
+                    })
+                    .inner;
+                let clicked = response.clicked();
+                if !enabled {
+                    if let Some(reason) = self.provider_builder.tab_unavailable_reason(step) {
+                        response.on_disabled_hover_text(reason);
+                    }
+                }
+                if clicked {
+                    self.provider_builder.tab = step;
+                }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(kit::caption(self.provider_builder.output_status_label()));
@@ -708,32 +724,191 @@ impl LatentSlateApp {
         });
     }
 
+    pub(super) fn provider_builder_step_hint(&self, ui: &mut Ui) {
+        let hint = match self.provider_builder.tab {
+            ProviderBuilderTab::Workflow => None,
+            ProviderBuilderTab::Settings => Some(
+                "Name the provider, choose its output type and generation shape, then confirm the local ComfyUI URL.",
+            ),
+            ProviderBuilderTab::Output => Some(
+                "Select the workflow node that produces the final media, usually a saver node.",
+            ),
+            ProviderBuilderTab::Inputs => Some(
+                "Expose the workflow parameters LatentSlate should control, then assign Width, Height, and Seed roles where needed.",
+            ),
+        };
+        if let Some(hint) = hint {
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            ui.label(kit::caption(hint));
+        }
+    }
+
     pub(super) fn provider_builder_columns(&mut self, ui: &mut Ui) {
-        kit::fixed_panel_body(ui, |ui| {
-            StripBuilder::new(ui)
-                .clip(true)
-                .size(Size::exact(280.0))
-                .size(Size::exact(12.0))
-                .size(Size::exact(230.0))
-                .size(Size::exact(12.0))
-                .size(Size::remainder().at_least(260.0))
-                .horizontal(|mut strip| {
-                    strip.cell(|ui| self.provider_builder_node_list(ui));
-                    strip.empty();
-                    strip.cell(|ui| self.provider_builder_node_details(ui));
-                    strip.empty();
-                    strip.cell(|ui| self.provider_builder_settings(ui));
+        kit::fixed_panel_body(ui, |ui| match self.provider_builder.tab {
+            ProviderBuilderTab::Workflow => self.provider_builder_workflow_step(ui),
+            ProviderBuilderTab::Settings => self.provider_builder_settings_step(ui),
+            ProviderBuilderTab::Output | ProviderBuilderTab::Inputs => {
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::exact(300.0))
+                    .size(Size::exact(12.0))
+                    .size(Size::exact(260.0))
+                    .size(Size::exact(12.0))
+                    .size(Size::remainder().at_least(320.0))
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| self.provider_builder_node_list(ui));
+                        strip.empty();
+                        strip.cell(|ui| self.provider_builder_node_details(ui));
+                        strip.empty();
+                        strip.cell(|ui| match self.provider_builder.tab {
+                            ProviderBuilderTab::Output => self.provider_builder_output_editor(ui),
+                            ProviderBuilderTab::Inputs => {
+                                kit::scroll_body(ui, |ui| self.provider_builder_inputs_editor(ui));
+                            }
+                            _ => {}
+                        });
+                    });
+            }
+        });
+    }
+
+    pub(super) fn provider_builder_workflow_step(&mut self, ui: &mut Ui) {
+        kit::card_panel(ui, ui.available_height(), |ui| {
+            kit::field_label(ui, "Workflow");
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.label(kit::body(
+                "Choose the ComfyUI API workflow JSON for this provider.",
+            ));
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            ui.label(kit::caption(
+                "The workflow defines the nodes you will select for the output and exposed inputs.",
+            ));
+            ui.add_space(kit::ACTION_GAP);
+
+            let workflow_display = self.provider_builder.workflow_path_display();
+            let workflow_fallback_dir = crate::core::paths::resource_dir("workflows");
+            let workflow_initial = self
+                .provider_builder
+                .workflow_path
+                .as_ref()
+                .and_then(|path| path.parent())
+                .or_else(|| {
+                    self.provider_builder
+                        .source_path
+                        .as_deref()
+                        .and_then(Path::parent)
+                })
+                .or(workflow_fallback_dir.as_deref());
+            let mut workflow_options = kit::BrowseFileOptions::new()
+                .id_salt("provider_builder_workflow_step")
+                .filters(JSON_FILE_FILTERS)
+                .remember_last_dir();
+            if let Some(initial) = workflow_initial {
+                workflow_options = workflow_options.initial_dir(initial);
+            }
+            if let Some(path) = kit::labeled_browse_file_field(
+                ui,
+                "Workflow JSON",
+                workflow_display,
+                workflow_options,
+            ) {
+                self.set_provider_builder_workflow(path);
+            }
+
+            ui.add_space(kit::ACTION_GAP);
+            if let Some(error) = self.provider_builder.workflow_validation_error() {
+                ui.label(RichText::new(error).color(kit::MARKER).size(12.0));
+            } else {
+                ui.label(kit::caption(format!(
+                    "Loaded {} workflow nodes.",
+                    self.provider_builder.workflow_nodes.len()
+                )));
+            }
+        });
+    }
+
+    pub(super) fn provider_builder_settings_step(&mut self, ui: &mut Ui) {
+        kit::scroll_body(ui, |ui| {
+            kit::card_frame().show(ui, |ui| {
+                kit::field_label(ui, "Provider Settings");
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::labeled_text_field(ui, "Name", &mut self.provider_builder.provider_name);
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::field_grid_row(ui, &[1.0, 0.46], |ui, index| match index {
+                    0 => {
+                        if let Some(choice) = provider_workflow_kind_field(
+                            ui,
+                            "Generation",
+                            self.provider_builder.generation_choice(),
+                        ) {
+                            self.provider_builder.apply_generation_choice(choice);
+                        }
+                    }
+                    1 => {
+                        provider_output_type_readout(
+                            ui,
+                            "Type",
+                            self.provider_builder
+                                .generation_choice()
+                                .map(|choice| choice.output_type),
+                        );
+                    }
+                    _ => {}
                 });
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.horizontal(|ui| {
+                    if kit::secondary_button(ui, "Refresh Schema", 130.0).clicked() {
+                        self.refresh_provider_builder_schema();
+                    }
+                    if let Some(status) = &self.provider_builder.schema_status {
+                        ui.add_sized(
+                            [(ui.available_width()).max(40.0), 18.0],
+                            egui::Label::new(kit::caption(status)).truncate(),
+                        );
+                    } else {
+                        ui.label(kit::caption(
+                            "Next refreshes the ComfyUI schema before node mapping.",
+                        ));
+                    }
+                });
+            });
+
+            ui.add_space(kit::ACTION_GAP);
+            kit::card_frame().show(ui, |ui| {
+                kit::field_label(ui, "Workflow");
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::value(
+                    self.provider_builder
+                        .workflow_path
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Workflow JSON"),
+                ));
+                ui.label(kit::caption(self.provider_builder.workflow_path_display()));
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(
+                    "The provider manifest will be saved next to this workflow unless an existing manifest path was loaded.",
+                ));
+            });
         });
     }
 
     pub(super) fn provider_builder_node_list(&mut self, ui: &mut Ui) {
         kit::card_panel(ui, ui.available_height(), |ui| {
+            kit::field_label(ui, "Search Workflow Nodes");
+            ui.add_space(kit::FIELD_LABEL_GAP);
             kit::singleline_text_field(
                 ui,
                 &mut self.provider_builder.workflow_search,
                 ui.available_width(),
             );
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            ui.label(kit::caption(
+                "Search titles, classes, node IDs, or input names in the selected workflow.",
+            ));
             ui.add_space(kit::FORM_ROW_GAP);
             let filtered = self.provider_builder.filtered_nodes();
             kit::scroll_body(ui, |ui| {
@@ -782,9 +957,9 @@ impl LatentSlateApp {
                     ui,
                     "Select a node",
                     if self.provider_builder.tab == ProviderBuilderTab::Inputs {
-                        "Expose workflow inputs from the selected node."
+                        "Expose the parameters you want LatentSlate to control."
                     } else {
-                        "Use the selected node as the output source."
+                        "Choose the saver node that produces the final media."
                     },
                 );
                 return;
@@ -807,7 +982,11 @@ impl LatentSlateApp {
                         );
                         return;
                     }
-                    kit::field_label(ui, "Inputs");
+                    kit::field_label(ui, "Inputs on This Node");
+                    ui.add_space(kit::FIELD_LABEL_GAP);
+                    ui.label(kit::caption(
+                        "Expose only the parameters you want to edit from LatentSlate.",
+                    ));
                     ui.add_space(kit::FORM_ROW_GAP);
                     if node.inputs.is_empty() {
                         ui.label(kit::caption("No inputs found on this node."));
@@ -885,121 +1064,11 @@ impl LatentSlateApp {
                             .unwrap_or_else(|| {
                                 default_output_key(self.provider_builder.output_type).to_string()
                             });
-                        self.provider_builder.output_tag = "output".to_string();
+                        self.provider_builder.output_tag.clear();
                         self.provider_builder.error = None;
                     }
                 }
-            }
-        });
-    }
-
-    pub(super) fn provider_builder_settings(&mut self, ui: &mut Ui) {
-        kit::scroll_body(ui, |ui| {
-            kit::card_frame().show(ui, |ui| {
-                kit::field_label(ui, "Provider Settings");
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::field_grid_row(ui, &[1.0, 0.46], |ui, index| match index {
-                    0 => {
-                        kit::labeled_text_field(
-                            ui,
-                            "Name",
-                            &mut self.provider_builder.provider_name,
-                        );
-                    }
-                    1 => {
-                        provider_output_type_field(
-                            ui,
-                            "Type",
-                            &mut self.provider_builder.output_type,
-                        );
-                    }
-                    _ => {}
-                });
-                ui.add_space(kit::FORM_ROW_GAP);
-                provider_workflow_kind_field(
-                    ui,
-                    "Generation",
-                    &mut self.provider_builder.workflow_kind,
-                );
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.horizontal(|ui| {
-                    if kit::secondary_button(ui, "Refresh Schema", 130.0).clicked() {
-                        self.refresh_provider_builder_schema();
-                    }
-                    if let Some(status) = &self.provider_builder.schema_status {
-                        ui.add_sized(
-                            [(ui.available_width()).max(40.0), 18.0],
-                            egui::Label::new(kit::caption(status)).truncate(),
-                        );
-                    }
-                });
-                ui.add_space(kit::FORM_ROW_GAP);
-
-                let workflow_display = self.provider_builder.workflow_path_display();
-                let workflow_initial = self
-                    .provider_builder
-                    .workflow_path
-                    .as_ref()
-                    .and_then(|path| path.parent())
-                    .or_else(|| {
-                        self.provider_builder
-                            .source_path
-                            .as_deref()
-                            .and_then(Path::parent)
-                    });
-                let mut workflow_options = kit::BrowseFileOptions::new()
-                    .id_salt("provider_builder_workflow_field")
-                    .filters(JSON_FILE_FILTERS)
-                    .remember_last_dir();
-                if let Some(initial) = workflow_initial {
-                    workflow_options = workflow_options.initial_dir(initial);
-                }
-                if let Some(path) = kit::labeled_browse_file_field(
-                    ui,
-                    "Workflow",
-                    workflow_display,
-                    workflow_options,
-                ) {
-                    self.set_provider_builder_workflow(path);
-                }
-                ui.add_space(kit::FORM_ROW_GAP);
-
-                let manifest_display = self.provider_builder.manifest_path_display();
-                let manifest_initial = self
-                    .provider_builder
-                    .manifest_path
-                    .as_ref()
-                    .and_then(|path| path.parent())
-                    .or_else(|| {
-                        self.provider_builder
-                            .workflow_path
-                            .as_deref()
-                            .and_then(Path::parent)
-                    });
-                let mut manifest_options = kit::BrowseFileOptions::new()
-                    .id_salt("provider_builder_manifest_field")
-                    .filters(JSON_FILE_FILTERS)
-                    .remember_last_dir();
-                if let Some(initial) = manifest_initial {
-                    manifest_options = manifest_options.initial_dir(initial);
-                }
-                if let Some(path) = kit::labeled_browse_file_field(
-                    ui,
-                    "Manifest",
-                    manifest_display,
-                    manifest_options,
-                ) {
-                    self.set_provider_builder_manifest(path);
-                }
-            });
-
-            ui.add_space(kit::ACTION_GAP);
-            self.provider_builder.ensure_valid_tab();
-            match self.provider_builder.tab {
-                ProviderBuilderTab::Inputs => self.provider_builder_inputs_editor(ui),
-                ProviderBuilderTab::Output => self.provider_builder_output_editor(ui),
+                ProviderBuilderTab::Workflow | ProviderBuilderTab::Settings => {}
             }
         });
     }
@@ -1013,9 +1082,11 @@ impl LatentSlateApp {
                 );
             });
             ui.add_space(kit::FORM_ROW_GAP);
+            self.provider_builder_input_role_checklist(ui);
+            ui.add_space(kit::FORM_ROW_GAP);
             if self.provider_builder.inputs.is_empty() {
                 ui.label(kit::caption(
-                    "No inputs exposed. Select a workflow node and expose its inputs.",
+                    "Select a workflow node on the left, expose a parameter in the middle, then assign a role when needed.",
                 ));
                 return;
             }
@@ -1038,6 +1109,32 @@ impl LatentSlateApp {
                 self.apply_provider_input_action(action);
             }
         });
+    }
+
+    pub(super) fn provider_builder_input_role_checklist(&self, ui: &mut Ui) {
+        kit::field_label(ui, "Roles");
+        ui.add_space(kit::FIELD_LABEL_GAP);
+        ui.horizontal_wrapped(|ui| {
+            for role in self.provider_builder.required_input_roles() {
+                let label = provider_input_role_label(Some(role));
+                let assigned = self.provider_builder.role_input_name(role);
+                let color = if assigned.is_some() {
+                    kit::PRIMARY
+                } else {
+                    kit::MARKER
+                };
+                kit::media_pill(ui, label, color);
+                if let Some(input_name) = assigned {
+                    ui.label(kit::caption(input_name));
+                } else {
+                    ui.label(kit::caption("missing"));
+                }
+            }
+        });
+        ui.add_space(kit::FIELD_LABEL_GAP);
+        ui.label(kit::caption(
+            "Expose the workflow parameters that control these values, then use the role buttons on each exposed input.",
+        ));
     }
 
     pub(super) fn provider_builder_output_editor(&mut self, ui: &mut Ui) {
@@ -1068,6 +1165,23 @@ impl LatentSlateApp {
         });
     }
 
+    pub(super) fn advance_provider_builder_step(&mut self) {
+        if let Some(error) = self.provider_builder.current_step_error() {
+            self.provider_builder.error = Some(error);
+            return;
+        }
+        if self.provider_builder.tab == ProviderBuilderTab::Settings {
+            self.refresh_provider_builder_schema();
+            if self.provider_builder.error.is_some() {
+                return;
+            }
+        }
+        if let Some(next) = self.provider_builder.next_tab() {
+            self.provider_builder.tab = next;
+            self.provider_builder.error = None;
+        }
+    }
+
     pub(super) fn set_provider_builder_workflow(&mut self, path: PathBuf) {
         if let Some(name) = provider_name_from_workflow_path(&path) {
             self.provider_builder.provider_name = name;
@@ -1086,33 +1200,7 @@ impl LatentSlateApp {
                 self.provider_builder.workflow_error = Some(err);
                 self.provider_builder.selected_node_id = None;
                 self.provider_builder.reset_workflow_bindings();
-            }
-        }
-    }
-
-    pub(super) fn set_provider_builder_manifest(&mut self, path: PathBuf) {
-        match load_provider_manifest_resolved(&path) {
-            Ok(manifest) => {
-                self.provider_builder.apply_manifest(manifest);
-                self.provider_builder.manifest_path = Some(path);
-                self.provider_builder.error = None;
-                if let Some(workflow_path) = self.provider_builder.workflow_path.clone() {
-                    match load_workflow_nodes_resolved(&workflow_path) {
-                        Ok(nodes) => {
-                            self.provider_builder.workflow_nodes = nodes;
-                            self.provider_builder.workflow_error = None;
-                            self.provider_builder.selected_node_id = None;
-                        }
-                        Err(err) => {
-                            self.provider_builder.workflow_nodes.clear();
-                            self.provider_builder.workflow_error = Some(err);
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                self.provider_builder.manifest_path = Some(path);
-                self.provider_builder.error = Some(err);
+                self.provider_builder.tab = ProviderBuilderTab::Workflow;
             }
         }
     }
@@ -1244,5 +1332,24 @@ impl LatentSlateApp {
         self.refresh_provider_files();
         self.provider_builder_open = false;
         self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
+    }
+}
+
+fn provider_manifest_path_for_delete(provider_path: &Path) -> Option<PathBuf> {
+    let text = crate::core::provider_store::read_provider_file(provider_path)?;
+    let entry = serde_json::from_str::<ProviderEntry>(&text).ok()?;
+    let ProviderConnection::ComfyUi {
+        manifest_path: Some(manifest_path),
+        ..
+    } = entry.connection
+    else {
+        return None;
+    };
+
+    let path = crate::core::paths::resolve_resource_path(Path::new(&manifest_path));
+    if path == provider_path {
+        None
+    } else {
+        Some(path)
     }
 }

@@ -5,16 +5,16 @@ use eframe::egui::{self, Color32, Pos2, Rect, Ui, Vec2};
 use uuid::Uuid;
 
 use crate::state::{
-    ClipImageMode, ComfyOutputSelector, ComfyWorkflowRef, InputBinding, InputUi, ManifestInput,
-    NodeSelector, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
-    ProviderManifest, ProviderOutputType, ProviderWorkflowKind, InputRole,
+    ClipImageMode, ComfyOutputSelector, ComfyWorkflowRef, InputBinding, InputRole, InputUi,
+    ManifestInput, NodeSelector, ProviderConnection, ProviderEntry, ProviderInputField,
+    ProviderInputType, ProviderManifest, ProviderOutputType, ProviderWorkflowKind,
 };
 use crate::ui_kit as kit;
 
 use super::{
     automation_checkbox, automation_selectable_value, inspector_numeric_field,
     inspector_numeric_rect, paint_truncated_row_text_bottom, paint_truncated_row_text_top,
-    path_label, INSPECTOR_NUMERIC_H,
+    INSPECTOR_NUMERIC_H,
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderTemplateKind {
@@ -41,8 +41,37 @@ impl ProviderTemplateKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderBuilderTab {
+    Workflow,
+    Settings,
     Output,
     Inputs,
+}
+
+impl ProviderBuilderTab {
+    pub(super) const ALL: [ProviderBuilderTab; 4] = [
+        ProviderBuilderTab::Workflow,
+        ProviderBuilderTab::Settings,
+        ProviderBuilderTab::Output,
+        ProviderBuilderTab::Inputs,
+    ];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            ProviderBuilderTab::Workflow => "Workflow",
+            ProviderBuilderTab::Settings => "Settings",
+            ProviderBuilderTab::Output => "Output",
+            ProviderBuilderTab::Inputs => "Inputs",
+        }
+    }
+
+    pub(super) fn step_number(self) -> usize {
+        match self {
+            ProviderBuilderTab::Workflow => 1,
+            ProviderBuilderTab::Settings => 2,
+            ProviderBuilderTab::Output => 3,
+            ProviderBuilderTab::Inputs => 4,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +81,7 @@ pub(super) struct ProviderBuilderState {
     pub(super) provider_name: String,
     pub(super) output_type: ProviderOutputType,
     pub(super) workflow_kind: ProviderWorkflowKind,
+    pub(super) workflow_kind_selected: bool,
     pub(super) base_url: String,
     pub(super) workflow_path: Option<PathBuf>,
     pub(super) manifest_path: Option<PathBuf>,
@@ -109,6 +139,62 @@ pub(super) enum ProviderInputAction {
     Delete(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ProviderGenerationChoice {
+    pub(super) workflow_kind: ProviderWorkflowKind,
+    pub(super) output_type: ProviderOutputType,
+}
+
+impl ProviderGenerationChoice {
+    pub(super) const ALL: [ProviderGenerationChoice; 11] = [
+        ProviderGenerationChoice::new(ProviderWorkflowKind::TextToImage, ProviderOutputType::Image),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::ImageToImage,
+            ProviderOutputType::Image,
+        ),
+        ProviderGenerationChoice::new(ProviderWorkflowKind::TextToVideo, ProviderOutputType::Video),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::ImageToVideo,
+            ProviderOutputType::Video,
+        ),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::FirstFrameLastFrameVideo,
+            ProviderOutputType::Video,
+        ),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::VideoToVideo,
+            ProviderOutputType::Video,
+        ),
+        ProviderGenerationChoice::new(ProviderWorkflowKind::TextToAudio, ProviderOutputType::Audio),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::AudioToAudio,
+            ProviderOutputType::Audio,
+        ),
+        ProviderGenerationChoice::new(ProviderWorkflowKind::Custom, ProviderOutputType::Image),
+        ProviderGenerationChoice::new(ProviderWorkflowKind::Custom, ProviderOutputType::Video),
+        ProviderGenerationChoice::new(ProviderWorkflowKind::Custom, ProviderOutputType::Audio),
+    ];
+
+    pub(super) const fn new(
+        workflow_kind: ProviderWorkflowKind,
+        output_type: ProviderOutputType,
+    ) -> Self {
+        Self {
+            workflow_kind,
+            output_type,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match (self.workflow_kind, self.output_type) {
+            (ProviderWorkflowKind::Custom, ProviderOutputType::Image) => "Custom Image",
+            (ProviderWorkflowKind::Custom, ProviderOutputType::Video) => "Custom Video",
+            (ProviderWorkflowKind::Custom, ProviderOutputType::Audio) => "Custom Audio",
+            _ => self.workflow_kind.label(),
+        }
+    }
+}
+
 pub(super) struct ProviderBuilderSave {
     pub(super) entry: ProviderEntry,
     pub(super) manifest: ProviderManifest,
@@ -142,6 +228,7 @@ impl ProviderBuilderState {
     }
 
     pub(super) fn from_entry(source_path: Option<PathBuf>, entry: ProviderEntry) -> Self {
+        let is_existing_entry = source_path.is_some();
         let (base_url, workflow_path, manifest_path) = match &entry.connection {
             ProviderConnection::ComfyUi {
                 base_url,
@@ -171,6 +258,11 @@ impl ProviderBuilderState {
                 Err(err) => (Vec::new(), Some(err)),
             })
             .unwrap_or_else(|| (Vec::new(), None));
+        let initial_tab = if workflow_path.is_some() {
+            ProviderBuilderTab::Settings
+        } else {
+            ProviderBuilderTab::Workflow
+        };
 
         let mut state = Self {
             source_path,
@@ -178,6 +270,8 @@ impl ProviderBuilderState {
             provider_name: entry.name.clone(),
             output_type: entry.output_type,
             workflow_kind: entry.workflow_kind,
+            workflow_kind_selected: is_existing_entry
+                && entry.workflow_kind != ProviderWorkflowKind::Auto,
             base_url,
             workflow_path,
             manifest_path: manifest_path.clone(),
@@ -196,7 +290,7 @@ impl ProviderBuilderState {
                 .iter()
                 .map(ProviderBuilderInput::from_provider_input)
                 .collect(),
-            tab: ProviderBuilderTab::Output,
+            tab: initial_tab,
             error: None,
         };
 
@@ -217,6 +311,7 @@ impl ProviderBuilderState {
                 }
             }
         }
+        state.sync_output_type_from_generation();
         state
     }
 
@@ -346,8 +441,122 @@ impl ProviderBuilderState {
             .is_some_and(|node_id| !node_id.trim().is_empty())
     }
 
+    pub(super) fn workflow_selected(&self) -> bool {
+        self.workflow_path.is_some()
+    }
+
+    pub(super) fn workflow_validation_error(&self) -> Option<String> {
+        if !self.workflow_selected() {
+            return Some("Choose a workflow JSON before continuing.".to_string());
+        }
+        if let Some(error) = &self.workflow_error {
+            return Some(error.clone());
+        }
+        if self.workflow_nodes.is_empty() {
+            return Some("The selected workflow did not expose any nodes.".to_string());
+        }
+        None
+    }
+
+    pub(super) fn settings_validation_error(&self) -> Option<String> {
+        if let Some(error) = self.workflow_validation_error() {
+            return Some(error);
+        }
+        if self.provider_name.trim().is_empty() {
+            return Some("Provider name is required.".to_string());
+        }
+        if !self.workflow_kind_selected || self.workflow_kind == ProviderWorkflowKind::Auto {
+            return Some("Choose the generation workflow.".to_string());
+        }
+        if self.base_url.trim().is_empty() {
+            return Some("Base URL is required.".to_string());
+        }
+        None
+    }
+
+    pub(super) fn output_validation_error(&self) -> Option<String> {
+        if let Some(error) = self.settings_validation_error() {
+            return Some(error);
+        }
+        if !self.output_configured() {
+            return Some("Select the workflow node that produces the final media.".to_string());
+        }
+        None
+    }
+
+    pub(super) fn inputs_validation_error(&self) -> Option<String> {
+        if let Some(error) = self.output_validation_error() {
+            return Some(error);
+        }
+        self.role_validation_error()
+    }
+
+    pub(super) fn current_step_error(&self) -> Option<String> {
+        match self.tab {
+            ProviderBuilderTab::Workflow => self.workflow_validation_error(),
+            ProviderBuilderTab::Settings => self.settings_validation_error(),
+            ProviderBuilderTab::Output => self.output_validation_error(),
+            ProviderBuilderTab::Inputs => self.inputs_validation_error(),
+        }
+    }
+
+    pub(super) fn save_validation_error(&self) -> Option<String> {
+        self.inputs_validation_error()
+    }
+
+    pub(super) fn tab_available(&self, tab: ProviderBuilderTab) -> bool {
+        match tab {
+            ProviderBuilderTab::Workflow => true,
+            ProviderBuilderTab::Settings => self.workflow_validation_error().is_none(),
+            ProviderBuilderTab::Output => self.settings_validation_error().is_none(),
+            ProviderBuilderTab::Inputs => self.output_validation_error().is_none(),
+        }
+    }
+
+    pub(super) fn tab_unavailable_reason(&self, tab: ProviderBuilderTab) -> Option<String> {
+        if self.tab_available(tab) {
+            return None;
+        }
+        match tab {
+            ProviderBuilderTab::Workflow => None,
+            ProviderBuilderTab::Settings => self.workflow_validation_error(),
+            ProviderBuilderTab::Output => self.settings_validation_error(),
+            ProviderBuilderTab::Inputs => self.output_validation_error(),
+        }
+    }
+
+    pub(super) fn next_tab(&self) -> Option<ProviderBuilderTab> {
+        match self.tab {
+            ProviderBuilderTab::Workflow => Some(ProviderBuilderTab::Settings),
+            ProviderBuilderTab::Settings => Some(ProviderBuilderTab::Output),
+            ProviderBuilderTab::Output => Some(ProviderBuilderTab::Inputs),
+            ProviderBuilderTab::Inputs => None,
+        }
+    }
+
+    pub(super) fn previous_tab(&self) -> Option<ProviderBuilderTab> {
+        match self.tab {
+            ProviderBuilderTab::Workflow => None,
+            ProviderBuilderTab::Settings => Some(ProviderBuilderTab::Workflow),
+            ProviderBuilderTab::Output => Some(ProviderBuilderTab::Settings),
+            ProviderBuilderTab::Inputs => Some(ProviderBuilderTab::Output),
+        }
+    }
+
     pub(super) fn ensure_valid_tab(&mut self) {
-        if !self.output_configured() && self.tab == ProviderBuilderTab::Inputs {
+        if self.workflow_validation_error().is_some() {
+            self.tab = ProviderBuilderTab::Workflow;
+            return;
+        }
+        if matches!(
+            self.tab,
+            ProviderBuilderTab::Output | ProviderBuilderTab::Inputs
+        ) && self.settings_validation_error().is_some()
+        {
+            self.tab = ProviderBuilderTab::Settings;
+            return;
+        }
+        if self.tab == ProviderBuilderTab::Inputs && self.output_validation_error().is_some() {
             self.tab = ProviderBuilderTab::Output;
         }
     }
@@ -357,7 +566,7 @@ impl ProviderBuilderState {
         self.output_key = default_output_key(self.output_type).to_string();
         self.output_tag.clear();
         self.inputs.clear();
-        self.tab = ProviderBuilderTab::Output;
+        self.tab = ProviderBuilderTab::Settings;
     }
 
     pub(super) fn apply_manifest(&mut self, manifest: ProviderManifest) {
@@ -415,6 +624,45 @@ impl ProviderBuilderState {
         }
     }
 
+    pub(super) fn generation_choice(&self) -> Option<ProviderGenerationChoice> {
+        if !self.workflow_kind_selected || self.workflow_kind == ProviderWorkflowKind::Auto {
+            return None;
+        }
+        ProviderGenerationChoice::ALL
+            .iter()
+            .copied()
+            .find(|choice| {
+                choice.workflow_kind == self.workflow_kind && choice.output_type == self.output_type
+            })
+            .or_else(|| {
+                derived_output_type_for_workflow_kind(self.workflow_kind).map(|output_type| {
+                    ProviderGenerationChoice::new(self.workflow_kind, output_type)
+                })
+            })
+    }
+
+    pub(super) fn apply_generation_choice(&mut self, choice: ProviderGenerationChoice) {
+        let previous_output_type = self.output_type;
+        self.workflow_kind = choice.workflow_kind;
+        self.workflow_kind_selected = true;
+        self.output_type = choice.output_type;
+        if self.output_type != previous_output_type {
+            self.output_node = None;
+            self.output_key = default_output_key(self.output_type).to_string();
+            self.output_tag.clear();
+        }
+    }
+
+    pub(super) fn sync_output_type_from_generation(&mut self) {
+        if !self.workflow_kind_selected {
+            return;
+        }
+        if let Some(output_type) = derived_output_type_for_workflow_kind(self.workflow_kind) {
+            self.output_type = output_type;
+            self.output_key = default_output_key(self.output_type).to_string();
+        }
+    }
+
     pub(super) fn output_status_label(&self) -> String {
         match self.output_node.as_ref() {
             Some(node)
@@ -441,19 +689,11 @@ impl ProviderBuilderState {
             .unwrap_or_else(|| "Choose a workflow JSON".to_string())
     }
 
-    pub(super) fn manifest_path_display(&self) -> String {
-        self.manifest_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| {
-                self.workflow_path
-                    .as_ref()
-                    .map(|path| derive_manifest_path(path).display().to_string())
-                    .unwrap_or_else(|| "Derived from workflow on save".to_string())
-            })
-    }
-
     pub(super) fn role_validation_error(&self) -> Option<String> {
+        if !self.workflow_selected() {
+            return None;
+        }
+
         let mut role_inputs: HashMap<InputRole, Vec<String>> = HashMap::new();
         let mut invalid_type_inputs = Vec::new();
 
@@ -461,7 +701,10 @@ impl ProviderBuilderState {
             let Some(role) = input.role else {
                 continue;
             };
-            role_inputs.entry(role).or_default().push(input.name.clone());
+            role_inputs
+                .entry(role)
+                .or_default()
+                .push(input.name.clone());
             if !is_numeric_type_value(&input.input_type_key) {
                 invalid_type_inputs.push(format!(
                     "{} ({}) set to {}",
@@ -473,13 +716,10 @@ impl ProviderBuilderState {
         }
 
         let mut missing_roles = Vec::new();
-        let required_roles = if self.output_type == ProviderOutputType::Audio {
-            vec![InputRole::Seed]
-        } else {
-            vec![InputRole::Width, InputRole::Height, InputRole::Seed]
-        };
-        for role in required_roles {
-            let names = role_inputs.get(&role).map_or(&[][..], |inputs| inputs.as_slice());
+        for role in self.required_input_roles() {
+            let names = role_inputs
+                .get(&role)
+                .map_or(&[][..], |inputs| inputs.as_slice());
             if names.is_empty() {
                 missing_roles.push(provider_input_role_label(Some(role)).to_string());
                 continue;
@@ -500,14 +740,32 @@ impl ProviderBuilderState {
             ));
         }
         if !missing_roles.is_empty() {
-            Some(format!("Missing required roles: {}.", missing_roles.join(", ")))
+            Some(format!(
+                "Missing required roles: {}.",
+                missing_roles.join(", ")
+            ))
         } else {
             None
         }
     }
 
+    pub(super) fn required_input_roles(&self) -> Vec<InputRole> {
+        if self.output_type == ProviderOutputType::Audio {
+            vec![InputRole::Seed]
+        } else {
+            vec![InputRole::Width, InputRole::Height, InputRole::Seed]
+        }
+    }
+
+    pub(super) fn role_input_name(&self, role: InputRole) -> Option<&str> {
+        self.inputs
+            .iter()
+            .find(|input| input.role == Some(role))
+            .map(|input| input.name.as_str())
+    }
+
     pub(super) fn build_save_payload(&self) -> Result<ProviderBuilderSave, String> {
-        if let Some(error) = self.role_validation_error() {
+        if let Some(error) = self.save_validation_error() {
             return Err(error);
         }
         let workflow_path = self
@@ -970,15 +1228,9 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             output_type: None,
         };
     };
-    let workflow_kind = entry.resolved_workflow_kind();
     ProviderFileSummary {
         name: entry.name,
-        subtitle: format!(
-            "{} {}  {}",
-            workflow_kind.short_label(),
-            provider_output_type_label(entry.output_type),
-            path_label(path)
-        ),
+        subtitle: provider_output_type_label(entry.output_type).to_string(),
         output_type: Some(entry.output_type),
     }
 }
@@ -1009,6 +1261,24 @@ pub(super) fn provider_output_type_label(output_type: ProviderOutputType) -> &'s
     }
 }
 
+pub(super) fn derived_output_type_for_workflow_kind(
+    workflow_kind: ProviderWorkflowKind,
+) -> Option<ProviderOutputType> {
+    match workflow_kind {
+        ProviderWorkflowKind::TextToImage | ProviderWorkflowKind::ImageToImage => {
+            Some(ProviderOutputType::Image)
+        }
+        ProviderWorkflowKind::TextToVideo
+        | ProviderWorkflowKind::ImageToVideo
+        | ProviderWorkflowKind::FirstFrameLastFrameVideo
+        | ProviderWorkflowKind::VideoToVideo => Some(ProviderOutputType::Video),
+        ProviderWorkflowKind::TextToAudio | ProviderWorkflowKind::AudioToAudio => {
+            Some(ProviderOutputType::Audio)
+        }
+        ProviderWorkflowKind::Auto | ProviderWorkflowKind::Custom => None,
+    }
+}
+
 pub(super) fn clip_image_mode_label(mode: ClipImageMode) -> &'static str {
     match mode {
         ClipImageMode::Still => "Still Image",
@@ -1016,35 +1286,43 @@ pub(super) fn clip_image_mode_label(mode: ClipImageMode) -> &'static str {
     }
 }
 
-pub(super) fn provider_output_type_field(ui: &mut Ui, label: &str, value: &mut ProviderOutputType) {
+pub(super) fn provider_output_type_readout(
+    ui: &mut Ui,
+    label: &str,
+    value: Option<ProviderOutputType>,
+) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
         kit::field_label(ui, label);
-        let width = ui.available_width();
-        kit::configure_field_widget_style(ui, width);
-        let combo_id = ui.next_auto_id();
-        ui.skip_ahead_auto_ids(1);
-        egui::ComboBox::from_id_salt(combo_id)
-            .width(width)
-            .selected_text(provider_output_type_label(*value))
-            .show_ui(ui, |ui| {
-                automation_selectable_value(ui, value, ProviderOutputType::Image, "Image");
-                automation_selectable_value(ui, value, ProviderOutputType::Video, "Video");
-                automation_selectable_value(ui, value, ProviderOutputType::Audio, "Audio");
-            });
+        let value = value
+            .map(provider_output_type_label)
+            .unwrap_or("Derived from generation");
+        kit::readonly_value_box(
+            ui,
+            value,
+            Vec2::new(ui.available_width(), kit::VALUE_FIELD_H),
+        );
     });
 }
 
 pub(super) fn provider_workflow_kind_field(
     ui: &mut Ui,
     label: &str,
-    value: &mut ProviderWorkflowKind,
-) {
-    kit::labeled_combo_field(ui, label, "provider_workflow_kind", value.label(), |ui| {
-        for kind in ProviderWorkflowKind::ALL {
-            automation_selectable_value(ui, value, kind, kind.label());
+    selected: Option<ProviderGenerationChoice>,
+) -> Option<ProviderGenerationChoice> {
+    let selected_text = selected.map_or("Choose generation...", ProviderGenerationChoice::label);
+    let mut selected_choice = selected.unwrap_or(ProviderGenerationChoice::ALL[0]);
+    let mut next_choice = None;
+    kit::labeled_combo_field(ui, label, "provider_workflow_kind", selected_text, |ui| {
+        for choice in ProviderGenerationChoice::ALL {
+            if automation_selectable_value(ui, &mut selected_choice, choice, choice.label())
+                .clicked()
+            {
+                next_choice = Some(choice);
+            }
         }
     });
+    next_choice
 }
 
 pub(super) fn workflow_node_row(
@@ -1084,7 +1362,8 @@ pub(super) fn provider_builder_input_editor(
     input: &mut ProviderBuilderInput,
     action: &mut Option<ProviderInputAction>,
 ) {
-    let card_w = ui.available_width().max(0.0);
+    let edge_guard = (2.0 / ui.ctx().pixels_per_point()).max(1.0);
+    let card_w = (ui.available_width().floor() - edge_guard).max(0.0);
     ui.scope(|ui| {
         ui.set_width(card_w);
         ui.set_min_width(card_w);
@@ -1139,31 +1418,25 @@ pub(super) fn provider_builder_input_editor_contents(
         );
         ui.add_space(kit::FORM_ROW_GAP);
     }
-    kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
-        0 => {
-            kit::labeled_text_field(ui, "Tag", &mut input.tag);
-        }
-        1 => {
-            ui.add_space(kit::FIELD_LABEL_H + kit::FIELD_LABEL_GAP);
-            ui.horizontal(|ui| {
-                automation_checkbox(ui, &mut input.required, "Required");
-                if input.input_type_key == "text" {
-                    automation_checkbox(ui, &mut input.multiline, "Multiline");
-                } else {
-                    input.multiline = false;
-                }
-            });
-        }
-        _ => {}
-    });
-    ui.add_space(kit::FORM_ROW_GAP);
+    if input.input_type_key == "text" {
+        automation_checkbox(ui, &mut input.multiline, "Multiline text");
+        ui.add_space(kit::FORM_ROW_GAP);
+    } else {
+        input.multiline = false;
+    }
     ui.horizontal(|ui| {
         let gap = ui.spacing().item_spacing.x;
         let buttons_w = 42.0 + 52.0 + 66.0 + gap * 3.0;
+        let required_label = if input.required {
+            "Required"
+        } else {
+            "Optional"
+        };
         ui.add_sized(
             [(ui.available_width() - buttons_w).max(0.0), 18.0],
             egui::Label::new(kit::caption(format!(
-                "-> node {} / {}.{}",
+                "{} -> node {} / {}.{}",
+                required_label,
                 input.selector.node_id.as_deref().unwrap_or("-"),
                 empty_dash(&input.selector.class_type),
                 empty_dash(&input.selector.input_key)
@@ -1194,21 +1467,47 @@ pub(super) fn provider_input_role_label(value: Option<InputRole>) -> &'static st
 pub(super) fn provider_input_role_field(
     ui: &mut Ui,
     label: &str,
-    input_name: &str,
+    _input_name: &str,
     role: &mut Option<InputRole>,
 ) {
-    kit::labeled_combo_field(
-        ui,
-        label,
-        ("provider_input_role", input_name),
-        provider_input_role_label(*role),
-        |ui| {
-            automation_selectable_value(ui, role, None, "None");
-            automation_selectable_value(ui, role, Some(InputRole::Width), "Width");
-            automation_selectable_value(ui, role, Some(InputRole::Height), "Height");
-            automation_selectable_value(ui, role, Some(InputRole::Seed), "Seed");
-        },
-    );
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+        kit::field_label(ui, label);
+        let row_w = ui.available_width().max(0.0);
+        let gap = kit::MEDIA_PILL_MIN_GAP;
+        let button_w = ((row_w - gap * 3.0) / 4.0).max(42.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            if kit::timeline_tool_text_button(ui, "Generic", button_w, role.is_none()).clicked() {
+                *role = None;
+            }
+            if kit::timeline_tool_text_button(
+                ui,
+                "Width",
+                button_w,
+                *role == Some(InputRole::Width),
+            )
+            .clicked()
+            {
+                *role = Some(InputRole::Width);
+            }
+            if kit::timeline_tool_text_button(
+                ui,
+                "Height",
+                button_w,
+                *role == Some(InputRole::Height),
+            )
+            .clicked()
+            {
+                *role = Some(InputRole::Height);
+            }
+            if kit::timeline_tool_text_button(ui, "Seed", button_w, *role == Some(InputRole::Seed))
+                .clicked()
+            {
+                *role = Some(InputRole::Seed);
+            }
+        });
+    });
 }
 
 pub(super) fn provider_builder_default_field(ui: &mut Ui, input: &mut ProviderBuilderInput) {

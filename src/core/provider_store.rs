@@ -80,7 +80,7 @@ pub fn default_provider_entry() -> ProviderEntry {
         ProviderOutputType::Image,
         ProviderConnection::ComfyUi {
             base_url: "http://127.0.0.1:8188".to_string(),
-            workflow_path: Some("workflows/sdxl_simple_example_API.json".to_string()),
+            workflow_path: None,
             manifest_path: None,
         },
     );

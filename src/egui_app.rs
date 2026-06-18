@@ -164,10 +164,10 @@ const MP4_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExtens
     name: "MP4 Video",
     extensions: MP4_EXTENSIONS,
 }];
-const PROVIDERS_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
+const PROVIDERS_MODAL_SIZE: [f32; 2] = [912.0, 672.0];
 const API_KEYS_MODAL_SIZE: [f32; 2] = [480.0, 280.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
-const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1080.0, 720.0];
+const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1296.0, 864.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
 const ASSET_LAB_MODAL_SIZE: [f32; 2] = [1520.0, 940.0];
 const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
