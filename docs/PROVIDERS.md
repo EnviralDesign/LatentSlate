@@ -36,9 +36,10 @@ A provider entry stores:
 
 - `id`: stable UUID referenced by generative assets
 - `name`: display name
+- `description`: optional multi-line guidance for humans and agents choosing a provider
 - `output_type`: `image`, `video`, or `audio`
 - `workflow_kind`: optional UX intent such as T2I, I2V, V2V, first/last-frame video
-- `inputs`: editor-visible schema fields
+- `inputs`: editor-visible schema fields; each input can include an optional multi-line `description`
 - `connection`: adapter-specific connection data
 
 Do not change provider IDs casually. Existing generative assets store provider IDs in their `config.json`.
@@ -61,6 +62,7 @@ Minimal shape:
   "schema_version": 1,
   "adapter_type": "comfyui",
   "name": "SDXL Simple",
+  "description": "Text-to-image workflow for generating still keyframes.",
   "output_type": "image",
   "workflow": {
     "workflow_path": "workflows/sdxl_simple_example_API.json",
@@ -70,6 +72,7 @@ Minimal shape:
     {
       "name": "prompt",
       "label": "Prompt",
+      "description": "Prompt text sent to the positive CLIP encoder.",
       "input_type": "text",
       "required": true,
       "ui": { "multiline": true, "group": "Prompt" },
@@ -110,7 +113,13 @@ Supported schema input types:
 - `video`
 - `audio`
 
-Media inputs can use project asset references and timeline-context suggestions, but compatibility still depends on the provider workflow and manifest binding.
+Media inputs can use project asset references and timeline-context suggestions,
+but compatibility still depends on the provider workflow and manifest binding.
+For the Agent API, `inputs.<provider_field>` is canonical for media parameters:
+`{ "type": "asset_ref", "asset_id": "...", "pinned": true }`.
+`reference_slots` are accepted as compatibility aliases when the slot name
+matches the provider field or a semantic media slot such as `image`,
+`start_image`, `end_image`, `video`, or `audio`.
 
 ## Workflow Drift
 
@@ -125,7 +134,7 @@ Automatic drift detection is a roadmap item, not current behavior.
 
 ## Troubleshooting
 
-- `Missing inputs`: fill required fields in the Attributes panel or asset/provider editor.
+- `Missing inputs`: fill required fields in the Attributes panel or asset/provider editor. For Agent API media fields, set `patch.inputs.<field>` to an `asset_ref`; matching `reference_slots` are compatibility aliases only.
 - `Workflow missing node_id`: the manifest references a node that no longer exists. Re-save through Provider Builder.
 - `ComfyUI rejected prompt`: base URL is wrong, ComfyUI is offline, or the workflow failed validation.
 - `Timed out waiting for ComfyUI ... output`: the workflow is still running, stalled, cached without a matching file, or producing an unexpected output type.

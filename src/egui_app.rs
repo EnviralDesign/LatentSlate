@@ -55,6 +55,7 @@ use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
 use serde::Serialize;
 
+mod agent_api_panel;
 mod asset_lab;
 mod asset_panel;
 mod attributes_panel;
@@ -311,11 +312,15 @@ pub struct LatentSlateApp {
     export_cancel: Option<Arc<AtomicBool>>,
     export_preview_texture: Option<TextureHandle>,
     queue_button_rect: Option<Rect>,
+    agent_api_button_rect: Option<Rect>,
+    top_bar_menu_open: bool,
     asset_drop_target_rect: Option<Rect>,
     asset_drop_target_hovered: bool,
     unsaved_close_confirmation_open: bool,
     allow_close_without_prompt: bool,
     last_window_title_dirty: Option<bool>,
+    agent_api_enabled: bool,
+    agent_api_port: u16,
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
 }
@@ -499,6 +504,9 @@ impl LatentSlateApp {
         let (preview_render_tx, preview_render_rx) = mpsc::channel();
         let export_modal = ExportModalState::for_project(&editor.project);
         let now = Instant::now();
+        let agent_api_enabled = crate::core::automation::is_active();
+        let agent_api_port = crate::core::automation::current_port()
+            .unwrap_or_else(crate::core::automation::default_port);
         Self {
             project_settings: editor.project.settings.clone(),
             editor,
@@ -579,11 +587,15 @@ impl LatentSlateApp {
             export_cancel: None,
             export_preview_texture: None,
             queue_button_rect: None,
+            agent_api_button_rect: None,
+            top_bar_menu_open: false,
             asset_drop_target_rect: None,
             asset_drop_target_hovered: false,
             unsaved_close_confirmation_open: false,
             allow_close_without_prompt: false,
             last_window_title_dirty: None,
+            agent_api_enabled,
+            agent_api_port,
             pending_automation_ui_actions: Vec::new(),
             pending_automation_screenshot: None,
         }
@@ -606,6 +618,36 @@ impl LatentSlateApp {
         }
     }
 
+    fn sync_agent_api_status(&mut self) {
+        self.agent_api_enabled = crate::core::automation::is_active();
+        if let Some(port) = crate::core::automation::current_port() {
+            self.agent_api_port = port;
+        }
+    }
+
+    fn set_agent_api_enabled(&mut self, enabled: bool) {
+        if enabled {
+            let config = crate::core::automation::AutomationConfig {
+                port: self.agent_api_port,
+            };
+            match crate::core::automation::start(config) {
+                Ok(()) => {
+                    self.sync_agent_api_status();
+                    self.editor.status =
+                        format!("Agent API enabled on 127.0.0.1:{}.", self.agent_api_port);
+                }
+                Err(err) => {
+                    self.agent_api_enabled = crate::core::automation::is_active();
+                    self.editor.status = format!("Failed to enable Agent API: {err}");
+                }
+            }
+        } else {
+            crate::core::automation::set_active(false);
+            self.sync_agent_api_status();
+            self.editor.status = "Agent API disabled.".to_string();
+        }
+    }
+
     fn keyboard_shortcuts_suppressed(&self, ctx: &Context) -> bool {
         ctx.text_edit_focused() || ctx.any_popup_open() || self.modal_background_input_blocked()
     }
@@ -620,6 +662,7 @@ impl LatentSlateApp {
             || self.editor.overlays.api_keys
             || self.editor.overlays.asset_lab
             || self.editor.overlays.queue
+            || self.editor.overlays.agent_api
             || self.unsaved_close_confirmation_open
             || self.asset_delete_confirmation.is_some()
             || self.track_delete_confirmation.is_some()
@@ -940,7 +983,8 @@ fn menu_button(
     add_contents: impl FnOnce(&mut Ui, &mut LatentSlateApp),
     app: &mut LatentSlateApp,
 ) {
-    kit::top_bar_menu_button(ui, label, |ui| add_contents(ui, app));
+    let (_, open) = kit::top_bar_menu_button(ui, label, |ui| add_contents(ui, app));
+    app.top_bar_menu_open |= open;
 }
 
 const ADD_ASSETS_CARD_H: f32 = kit::SECTION_PAD as f32 * 2.0
@@ -1382,6 +1426,127 @@ fn literal_config_input(config: &GenerativeConfig, name: &str) -> Option<serde_j
     })
 }
 
+fn provider_input_description(input: &ProviderInputField) -> Option<&str> {
+    input
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+}
+
+fn provider_input_field_label(ui: &mut Ui, label: &str, input: &ProviderInputField) {
+    let Some(description) = provider_input_description(input) else {
+        kit::field_label(ui, label);
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        kit::field_label(ui, label);
+        ui.add(
+            egui::Label::new(RichText::new("?").size(10.5).strong().color(kit::TEXT_DIM))
+                .sense(Sense::hover()),
+        )
+        .on_hover_text(description);
+    });
+}
+
+fn provider_input_text_field(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    value: &mut String,
+) -> bool {
+    provider_input_field_label(ui, label, input);
+    let width = ui.available_width();
+    kit::singleline_text_field(ui, value, width).changed()
+}
+
+fn provider_input_multiline_text_field(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    value: &mut String,
+    options: kit::MultilineTextFieldOptions,
+) -> bool {
+    provider_input_field_label(ui, label, input);
+    let width = ui.available_width();
+    kit::multiline_text_field(ui, value, width, options).changed()
+}
+
+fn provider_input_bool_field(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    value: &mut bool,
+) -> bool {
+    provider_input_field_label(ui, label, input);
+    let before = *value;
+    let label = if *value { "On" } else { "Off" };
+    let width = ui.available_width();
+    if kit::field_button(ui, label, width).clicked() {
+        *value = !*value;
+    }
+    *value != before
+}
+
+fn provider_input_drag_f64(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    value: &mut f64,
+    speed: f64,
+    width: f32,
+) -> bool {
+    provider_input_field_label(ui, label, input);
+    let rect = inspector_numeric_rect(ui, width);
+    inspector_numeric_field(ui, rect, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value).speed(speed),
+        )
+    })
+}
+
+fn provider_input_drag_i64(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    value: &mut i64,
+    speed: f64,
+    width: f32,
+) -> bool {
+    provider_input_field_label(ui, label, input);
+    let rect = inspector_numeric_rect(ui, width);
+    inspector_numeric_field(ui, rect, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value).speed(speed),
+        )
+    })
+}
+
+fn provider_input_labeled_combo_field<R>(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    id_salt: impl std::hash::Hash,
+    selected_text: impl Into<String>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::Response {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+        provider_input_field_label(ui, label, input);
+        kit::combo_field(
+            ui,
+            id_salt,
+            selected_text,
+            ui.available_width(),
+            add_contents,
+        )
+    })
+    .inner
+}
+
 fn seed_strategy_label(strategy: SeedStrategy) -> &'static str {
     match strategy {
         SeedStrategy::Increment => "Increment",
@@ -1411,17 +1576,6 @@ fn inspector_color_field(ui: &mut Ui, label: &str, color: &mut Color32) -> bool 
     kit::field_label(ui, label);
     let width = ui.available_width();
     kit::color_field(ui, color, width).changed()
-}
-
-fn inspector_bool_field(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
-    kit::field_label(ui, label);
-    let before = *value;
-    let label = if *value { "On" } else { "Off" };
-    let width = ui.available_width();
-    if kit::field_button(ui, label, width).clicked() {
-        *value = !*value;
-    }
-    *value != before
 }
 
 fn inspector_card(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {

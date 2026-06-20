@@ -110,6 +110,8 @@ pub enum InputRole {
 pub struct ProviderInputField {
     pub name: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub input_type: ProviderInputType,
     #[serde(default)]
     pub required: bool,
@@ -161,6 +163,8 @@ pub enum ProviderConnection {
 pub struct ProviderEntry {
     pub id: Uuid,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub output_type: ProviderOutputType,
     #[serde(default)]
     pub workflow_kind: ProviderWorkflowKind,
@@ -178,6 +182,7 @@ impl ProviderEntry {
         Self {
             id: Uuid::new_v4(),
             name: name.into(),
+            description: None,
             output_type,
             workflow_kind: ProviderWorkflowKind::Auto,
             inputs: Vec::new(),
@@ -298,6 +303,8 @@ pub enum ProviderManifest {
         schema_version: u32,
         #[serde(default)]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
         output_type: ProviderOutputType,
         workflow: ComfyWorkflowRef,
         #[serde(default)]
@@ -308,6 +315,8 @@ pub enum ProviderManifest {
         schema_version: u32,
         #[serde(default)]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
         output_type: ProviderOutputType,
         workflow: CustomHttpWorkflow,
         #[serde(default)]
@@ -327,6 +336,8 @@ pub struct ComfyWorkflowRef {
 pub struct ManifestInput {
     pub name: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub input_type: ProviderInputType,
     #[serde(default)]
     pub required: bool,
@@ -424,6 +435,8 @@ pub struct CustomHttpWorkflow {
 pub struct CustomHttpInput {
     pub name: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub input_type: ProviderInputType,
     #[serde(default)]
     pub required: bool,
@@ -449,4 +462,131 @@ pub struct CustomHttpOutput {
     pub url_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytes_path: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_descriptions_are_optional_for_legacy_json() {
+        let json = r#"{
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "name": "Legacy Provider",
+            "output_type": "image",
+            "workflow_kind": "text_to_image",
+            "inputs": [
+                {
+                    "name": "prompt",
+                    "label": "Prompt",
+                    "input_type": { "type": "text" },
+                    "required": true
+                }
+            ],
+            "connection": {
+                "type": "comfy_ui",
+                "base_url": "http://127.0.0.1:8188"
+            }
+        }"#;
+
+        let provider: ProviderEntry = serde_json::from_str(json).expect("legacy provider");
+        assert_eq!(provider.description, None);
+        assert_eq!(provider.inputs[0].description, None);
+    }
+
+    #[test]
+    fn provider_descriptions_round_trip_through_json() {
+        let mut provider = ProviderEntry::new(
+            "Described Provider",
+            ProviderOutputType::Image,
+            ProviderConnection::ComfyUi {
+                base_url: "http://127.0.0.1:8188".to_string(),
+                workflow_path: None,
+                manifest_path: None,
+            },
+        );
+        provider.description = Some("Use this for still keyframes.".to_string());
+        provider.inputs.push(ProviderInputField {
+            name: "prompt".to_string(),
+            label: "Prompt".to_string(),
+            description: Some("Describe the image content.".to_string()),
+            input_type: ProviderInputType::Text,
+            required: true,
+            default: None,
+            role: None,
+            ui: None,
+        });
+
+        let json = serde_json::to_string(&provider).expect("serialize provider");
+        assert!(json.contains("Use this for still keyframes."));
+        assert!(json.contains("Describe the image content."));
+
+        let parsed: ProviderEntry = serde_json::from_str(&json).expect("parse provider");
+        assert_eq!(parsed.description, provider.description);
+        assert_eq!(parsed.inputs[0].description, provider.inputs[0].description);
+    }
+
+    #[test]
+    fn manifest_input_descriptions_round_trip_through_json() {
+        let manifest = ProviderManifest::ComfyUi {
+            schema_version: 1,
+            name: Some("Manifest Provider".to_string()),
+            description: Some("Manifest-level guidance.".to_string()),
+            output_type: ProviderOutputType::Image,
+            workflow: ComfyWorkflowRef {
+                workflow_path: "workflow.json".to_string(),
+                workflow_hash: None,
+            },
+            inputs: vec![ManifestInput {
+                name: "prompt".to_string(),
+                label: "Prompt".to_string(),
+                description: Some("Positive prompt text.".to_string()),
+                input_type: ProviderInputType::Text,
+                required: true,
+                default: None,
+                role: None,
+                ui: None,
+                bind: InputBinding {
+                    selector: NodeSelector {
+                        node_id: Some("6".to_string()),
+                        tag: None,
+                        class_type: "CLIPTextEncode".to_string(),
+                        input_key: "text".to_string(),
+                        title: None,
+                    },
+                    transform: None,
+                },
+            }],
+            output: ComfyOutputSelector {
+                selector: NodeSelector {
+                    node_id: Some("9".to_string()),
+                    tag: None,
+                    class_type: "SaveImage".to_string(),
+                    input_key: "images".to_string(),
+                    title: None,
+                },
+                index: None,
+            },
+        };
+
+        let json = serde_json::to_string(&manifest).expect("serialize manifest");
+        assert!(json.contains("Manifest-level guidance."));
+        assert!(json.contains("Positive prompt text."));
+
+        let parsed: ProviderManifest = serde_json::from_str(&json).expect("parse manifest");
+        match parsed {
+            ProviderManifest::ComfyUi {
+                description,
+                inputs,
+                ..
+            } => {
+                assert_eq!(description.as_deref(), Some("Manifest-level guidance."));
+                assert_eq!(
+                    inputs[0].description.as_deref(),
+                    Some("Positive prompt text.")
+                );
+            }
+            ProviderManifest::CustomHttp { .. } => panic!("expected comfy manifest"),
+        }
+    }
 }

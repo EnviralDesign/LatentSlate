@@ -2,6 +2,7 @@ use super::*;
 
 impl LatentSlateApp {
     pub(super) fn top_bar(&mut self, root: &mut Ui) {
+        self.top_bar_menu_open = false;
         let response = egui::Panel::top("top_bar")
             .exact_size(kit::TOP_BAR_H)
             .frame(kit::chrome_frame())
@@ -124,6 +125,7 @@ impl LatentSlateApp {
                                 this.editor.overlays.providers = true;
                                 ui.close();
                             }
+                            ui.separator();
                             automation_checkbox(
                                 ui,
                                 &mut this.editor.layout.hardware_decode,
@@ -204,6 +206,22 @@ impl LatentSlateApp {
                         self.queue_button_rect = Some(queue_response.rect);
                         if queue_response.clicked() {
                             self.editor.overlays.queue = !self.editor.overlays.queue;
+                            if self.editor.overlays.queue {
+                                self.editor.overlays.agent_api = false;
+                            }
+                        }
+
+                        let api_response = kit::api_toggle_button(
+                            ui,
+                            crate::core::automation::is_active(),
+                            self.editor.overlays.agent_api,
+                        );
+                        self.agent_api_button_rect = Some(api_response.rect);
+                        if api_response.clicked() {
+                            self.editor.overlays.agent_api = !self.editor.overlays.agent_api;
+                            if self.editor.overlays.agent_api {
+                                self.editor.overlays.queue = false;
+                            }
                         }
                     });
                 });
@@ -216,6 +234,10 @@ impl LatentSlateApp {
     }
 
     pub(super) fn modals(&mut self, ctx: &Context) {
+        if self.top_bar_menu_open {
+            kit::paint_top_bar_menu_scrim(ctx);
+        }
+
         let startup_open = self.editor.show_startup();
         if startup_open {
             self.startup_modal(ctx);
@@ -234,6 +256,9 @@ impl LatentSlateApp {
         }
         if self.editor.overlays.queue {
             self.queue_panel(ctx);
+        }
+        if self.editor.overlays.agent_api {
+            self.agent_api_panel(ctx);
         }
         if self.editor.overlays.providers {
             self.providers_modal(ctx);
@@ -293,6 +318,16 @@ impl LatentSlateApp {
                                 .small()
                                 .color(kit::TEXT_MUTED),
                         );
+                        if crate::core::automation::is_active() {
+                            let port = crate::core::automation::current_port()
+                                .unwrap_or_else(crate::core::automation::default_port);
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("Agent API :{port}"))
+                                    .small()
+                                    .color(kit::PRIMARY),
+                            );
+                        }
                     });
                 });
             });

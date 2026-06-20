@@ -570,6 +570,7 @@ impl LatentSlateApp {
     }
 
     pub(super) fn open_provider_builder(&mut self, path: Option<PathBuf>) {
+        let editing_existing = path.is_some();
         let mut state = match path.as_ref() {
             Some(path) => ProviderBuilderState::from_path(path),
             None => ProviderBuilderState::from_entry(
@@ -579,6 +580,9 @@ impl LatentSlateApp {
         };
         if state.source_path.is_none() {
             state.source_path = path;
+        }
+        if editing_existing {
+            state.tab = state.preferred_edit_tab();
         }
         self.provider_builder = state;
         self.provider_builder_open = true;
@@ -747,7 +751,7 @@ impl LatentSlateApp {
         kit::fixed_panel_body(ui, |ui| match self.provider_builder.tab {
             ProviderBuilderTab::Workflow => self.provider_builder_workflow_step(ui),
             ProviderBuilderTab::Settings => self.provider_builder_settings_step(ui),
-            ProviderBuilderTab::Output | ProviderBuilderTab::Inputs => {
+            ProviderBuilderTab::Output => {
                 StripBuilder::new(ui)
                     .clip(true)
                     .size(Size::exact(300.0))
@@ -760,13 +764,27 @@ impl LatentSlateApp {
                         strip.empty();
                         strip.cell(|ui| self.provider_builder_node_details(ui));
                         strip.empty();
-                        strip.cell(|ui| match self.provider_builder.tab {
-                            ProviderBuilderTab::Output => self.provider_builder_output_editor(ui),
-                            ProviderBuilderTab::Inputs => {
-                                kit::scroll_body(ui, |ui| self.provider_builder_inputs_editor(ui));
-                            }
-                            _ => {}
-                        });
+                        strip.cell(|ui| self.provider_builder_output_editor(ui));
+                    });
+            }
+            ProviderBuilderTab::Inputs => {
+                StripBuilder::new(ui)
+                    .clip(true)
+                    .size(Size::exact(300.0))
+                    .size(Size::exact(12.0))
+                    .size(Size::exact(260.0))
+                    .size(Size::exact(12.0))
+                    .size(Size::exact(280.0))
+                    .size(Size::exact(12.0))
+                    .size(Size::remainder().at_least(260.0))
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| self.provider_builder_node_list(ui));
+                        strip.empty();
+                        strip.cell(|ui| self.provider_builder_node_details(ui));
+                        strip.empty();
+                        strip.cell(|ui| self.provider_builder_input_order_column(ui));
+                        strip.empty();
+                        strip.cell(|ui| self.provider_builder_input_inspector_column(ui));
                     });
             }
         });
@@ -833,6 +851,15 @@ impl LatentSlateApp {
                 kit::field_label(ui, "Provider Settings");
                 ui.add_space(kit::FORM_ROW_GAP);
                 kit::labeled_text_field(ui, "Name", &mut self.provider_builder.provider_name);
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::field_label(ui, "Description");
+                ui.add_space(kit::FIELD_LABEL_GAP);
+                kit::multiline_text_field(
+                    ui,
+                    &mut self.provider_builder.provider_description,
+                    ui.available_width(),
+                    kit::MultilineTextFieldOptions::rows(3),
+                );
                 ui.add_space(kit::FORM_ROW_GAP);
                 kit::field_grid_row(ui, &[1.0, 0.46], |ui, index| match index {
                     0 => {
@@ -951,6 +978,15 @@ impl LatentSlateApp {
 
     pub(super) fn provider_builder_node_details(&mut self, ui: &mut Ui) {
         kit::card_panel(ui, ui.available_height(), |ui| {
+            kit::field_label(
+                ui,
+                if self.provider_builder.tab == ProviderBuilderTab::Inputs {
+                    "Node Parameters"
+                } else {
+                    "Node Details"
+                },
+            );
+            ui.add_space(kit::FIELD_LABEL_GAP);
             let selected_node = self.provider_builder.selected_node();
             let Some(node) = selected_node else {
                 kit::empty_state(
@@ -965,6 +1001,7 @@ impl LatentSlateApp {
                 return;
             };
 
+            ui.add_space(kit::FORM_ROW_GAP);
             ui.label(kit::value(
                 node.title.clone().unwrap_or_else(|| "Untitled".to_string()),
             ));
@@ -982,12 +1019,8 @@ impl LatentSlateApp {
                         );
                         return;
                     }
-                    kit::field_label(ui, "Inputs on This Node");
+                    kit::field_label(ui, "Inputs");
                     ui.add_space(kit::FIELD_LABEL_GAP);
-                    ui.label(kit::caption(
-                        "Expose only the parameters you want to edit from LatentSlate.",
-                    ));
-                    ui.add_space(kit::FORM_ROW_GAP);
                     if node.inputs.is_empty() {
                         ui.label(kit::caption("No inputs found on this node."));
                         return;
@@ -1073,68 +1106,129 @@ impl LatentSlateApp {
         });
     }
 
-    pub(super) fn provider_builder_inputs_editor(&mut self, ui: &mut Ui) {
-        kit::card_frame().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                kit::field_label(
-                    ui,
-                    &format!("Exposed Inputs ({})", self.provider_builder.inputs.len()),
-                );
-            });
-            ui.add_space(kit::FORM_ROW_GAP);
-            self.provider_builder_input_role_checklist(ui);
-            ui.add_space(kit::FORM_ROW_GAP);
+    pub(super) fn provider_builder_input_order_column(&mut self, ui: &mut Ui) {
+        self.provider_builder.ensure_valid_selected_input();
+        let mut list_action = None;
+        let len = self.provider_builder.inputs.len();
+        let dragging_index = self.provider_builder.dragging_input_index;
+        let pointer_down = ui.ctx().input(|input| input.pointer.any_down());
+        let pointer_pos = ui.ctx().pointer_latest_pos();
+        let satisfied_roles = self.provider_builder.satisfied_input_roles();
+
+        kit::card_panel(ui, ui.available_height(), |ui| {
+            kit::field_label(
+                ui,
+                &format!("Exposed Inputs ({})", self.provider_builder.inputs.len()),
+            );
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            self.provider_builder_input_roles_summary(ui);
+            ui.add_space(kit::ACTION_GAP);
+            kit::field_label(ui, "Input Order");
+            ui.add_space(kit::FIELD_LABEL_GAP);
+
             if self.provider_builder.inputs.is_empty() {
-                ui.label(kit::caption(
-                    "Select a workflow node on the left, expose a parameter in the middle, then assign a role when needed.",
-                ));
+                kit::empty_state(
+                    ui,
+                    "No inputs exposed",
+                    "Select a node parameter, then expose it.",
+                );
                 return;
             }
 
-            let mut action = None;
-            let len = self.provider_builder.inputs.len();
-            for index in 0..len {
-                if index > 0 {
-                    ui.add_space(kit::FORM_ROW_GAP);
+            kit::scroll_body(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+                for index in 0..len {
+                    let row = provider_builder_input_summary_row(
+                        ui,
+                        index,
+                        &self.provider_builder.inputs[index],
+                        self.provider_builder.selected_input_index == Some(index),
+                        dragging_index == Some(index),
+                        self.provider_builder.inputs[index]
+                            .role
+                            .is_some_and(|role| satisfied_roles.contains(&role)),
+                    );
+                    if row.drag_response.drag_started() {
+                        list_action = Some(ProviderInputAction::StartDrag(index));
+                    } else if row.select_response.clicked() {
+                        list_action = Some(ProviderInputAction::Select(index));
+                    } else if let Some(from) = dragging_index {
+                        let pointer_over_row =
+                            pointer_pos.is_some_and(|pos| row.rect.contains(pos));
+                        if from != index && pointer_over_row {
+                            list_action = Some(ProviderInputAction::Move { from, to: index });
+                        } else if row.drag_response.drag_stopped() {
+                            list_action = Some(ProviderInputAction::StopDrag);
+                        }
+                    }
                 }
-                provider_builder_input_editor(
-                    ui,
-                    index,
-                    len,
-                    &mut self.provider_builder.inputs[index],
-                    &mut action,
-                );
-            }
-            if let Some(action) = action {
-                self.apply_provider_input_action(action);
-            }
+            });
         });
+
+        if dragging_index.is_some() && !pointer_down && list_action.is_none() {
+            list_action = Some(ProviderInputAction::StopDrag);
+        }
+        if let Some(action) = list_action {
+            self.apply_provider_input_action(action);
+        }
     }
 
-    pub(super) fn provider_builder_input_role_checklist(&self, ui: &mut Ui) {
-        kit::field_label(ui, "Roles");
+    pub(super) fn provider_builder_input_inspector_column(&mut self, ui: &mut Ui) {
+        self.provider_builder.ensure_valid_selected_input();
+        let mut editor_action = None;
+        let len = self.provider_builder.inputs.len();
+
+        kit::card_panel(ui, ui.available_height(), |ui| {
+            kit::field_label(ui, "Input Inspector");
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            let Some(index) = self.provider_builder.selected_input_index else {
+                kit::empty_state(
+                    ui,
+                    "No input selected",
+                    "Expose an input or select one from the order column.",
+                );
+                return;
+            };
+            provider_builder_input_inspector_editor(
+                ui,
+                index,
+                len,
+                &mut self.provider_builder.inputs[index],
+                &mut editor_action,
+            );
+        });
+
+        if let Some(action) = editor_action {
+            self.apply_provider_input_action(action);
+        }
+    }
+
+    pub(super) fn provider_builder_input_roles_summary(&self, ui: &mut Ui) {
+        kit::field_label(ui, "Required Roles");
         ui.add_space(kit::FIELD_LABEL_GAP);
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = kit::MEDIA_PILL_MIN_GAP;
+            let satisfied_roles = self.provider_builder.satisfied_input_roles();
             for role in self.provider_builder.required_input_roles() {
                 let label = provider_input_role_label(Some(role));
                 let assigned = self.provider_builder.role_input_name(role);
-                let color = if assigned.is_some() {
-                    kit::PRIMARY
-                } else {
-                    kit::MARKER
-                };
-                kit::media_pill(ui, label, color);
+                let satisfied = satisfied_roles.contains(&role);
+                let response = kit::media_pill(
+                    ui,
+                    label,
+                    if satisfied {
+                        provider_input_role_color(role)
+                    } else {
+                        kit::TEXT_MUTED
+                    },
+                );
                 if let Some(input_name) = assigned {
-                    ui.label(kit::caption(input_name));
+                    response.on_hover_text(format!("{label}: {input_name}"));
                 } else {
-                    ui.label(kit::caption("missing"));
+                    response.on_hover_text(format!("{label}: missing"));
                 }
             }
         });
-        ui.add_space(kit::FIELD_LABEL_GAP);
-        ui.label(kit::caption(
-            "Expose the workflow parameters that control these values, then use the role buttons on each exposed input.",
-        ));
     }
 
     pub(super) fn provider_builder_output_editor(&mut self, ui: &mut Ui) {
@@ -1260,25 +1354,38 @@ impl LatentSlateApp {
             .push(ProviderBuilderInput::from_node(
                 node, input_key, name, label, schema,
             ));
+        self.provider_builder.selected_input_index =
+            Some(self.provider_builder.inputs.len().saturating_sub(1));
+        self.provider_builder.dragging_input_index = None;
         self.provider_builder.error = None;
     }
 
     pub(super) fn apply_provider_input_action(&mut self, action: ProviderInputAction) {
         match action {
+            ProviderInputAction::Select(index) => {
+                self.provider_builder.select_input(index);
+            }
+            ProviderInputAction::StartDrag(index) => {
+                self.provider_builder.start_dragging_input(index);
+            }
+            ProviderInputAction::StopDrag => {
+                self.provider_builder.stop_dragging_input();
+            }
+            ProviderInputAction::Move { from, to } => {
+                self.provider_builder.move_input(from, to);
+            }
             ProviderInputAction::MoveUp(index) => {
                 if index > 0 && index < self.provider_builder.inputs.len() {
-                    self.provider_builder.inputs.swap(index - 1, index);
+                    self.provider_builder.move_input(index, index - 1);
                 }
             }
             ProviderInputAction::MoveDown(index) => {
                 if index + 1 < self.provider_builder.inputs.len() {
-                    self.provider_builder.inputs.swap(index, index + 1);
+                    self.provider_builder.move_input(index, index + 1);
                 }
             }
             ProviderInputAction::Delete(index) => {
-                if index < self.provider_builder.inputs.len() {
-                    self.provider_builder.inputs.remove(index);
-                }
+                self.provider_builder.delete_input(index);
             }
         }
     }

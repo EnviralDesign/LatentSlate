@@ -234,7 +234,11 @@ impl GenerativeConfig {
     pub fn lineage_depth(&self, node_id: Uuid) -> usize {
         let mut depth = 0usize;
         let mut current_id = Some(node_id);
+        let mut visited = HashSet::new();
         while let Some(id) = current_id {
+            if !visited.insert(id) {
+                break;
+            }
             let Some(node) = self.lab_graph.nodes.iter().find(|node| node.id == id) else {
                 break;
             };
@@ -419,10 +423,11 @@ pub fn delete_generative_version_files(folder: &Path, version: &str) -> Result<(
             deleted_any = true;
         }
     }
-    if !deleted_any {
-        println!("No files found for version {} in {:?}", version, folder);
+    if deleted_any {
+        Ok(())
+    } else {
+        Err(format!("No files found for version {version}."))
     }
-    Ok(())
 }
 
 /// Delete files for all provided generation versions in the folder.
@@ -471,7 +476,7 @@ pub fn next_generative_index(
     max_index + 1
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum GenerationJobStatus {
     Queued,
     Running,
@@ -480,13 +485,13 @@ pub enum GenerationJobStatus {
     Canceled,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GenerationSeedAdvance {
     pub field: String,
     pub next_seed: i64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GenerationJob {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,

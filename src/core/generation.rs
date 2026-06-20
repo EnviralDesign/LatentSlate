@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
-    Asset, AssetKind, Clip, GenerativeConfig, InputValue, Project, ProviderEntry,
-    ProviderInputField, ProviderInputType, SourceFrameReference, InputRole,
+    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, Project, ProviderEntry,
+    ProviderInputField, ProviderInputType, SourceFrameReference,
 };
 
 #[derive(Debug, Clone)]
@@ -200,6 +200,10 @@ fn asset_input_value(
     input: &ProviderInputField,
 ) -> Option<InputValue> {
     if let Some(value) = config.inputs.get(&input.name) {
+        return resolve_unpinned_asset_ref(project, context_clip_id, input, value.clone());
+    }
+
+    if let Some(value) = config.reference_slots.get(&input.name) {
         return resolve_unpinned_asset_ref(project, context_clip_id, input, value.clone());
     }
 
@@ -655,9 +659,7 @@ pub fn resolve_seed_field(provider: &ProviderEntry) -> Option<String> {
     provider
         .inputs
         .iter()
-        .find(|input| {
-            input.role == Some(InputRole::Seed) && is_seed_compatible_type(input)
-        })
+        .find(|input| input.role == Some(InputRole::Seed) && is_seed_compatible_type(input))
         .map(|input| input.name.clone())
 }
 

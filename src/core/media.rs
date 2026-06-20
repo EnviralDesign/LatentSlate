@@ -1,6 +1,6 @@
+use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
-use serde_json::Value;
 
 /// Probe media duration in seconds using ffprobe.
 pub fn probe_duration_seconds(path: &Path) -> Option<f64> {

@@ -1890,11 +1890,44 @@ pub fn queue_toggle_button(ui: &mut Ui, count: usize, active: bool, attention: b
     )
 }
 
+pub fn api_toggle_button(ui: &mut Ui, enabled: bool, active: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(TOP_BAR_BUTTON_MIN_W, TOP_BAR_BUTTON_H),
+        Sense::click(),
+    );
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let skin = subtle_button_skin(active, TOP_BAR_BUTTON_TEXT_SIZE, TOP_BAR_BUTTON_RADIUS);
+    paint_button_background(ui, rect, &response, skin);
+
+    let text_color = if enabled {
+        PRIMARY_HOVER
+    } else if active || response.hovered() || response.is_pointer_button_down_on() {
+        TEXT_MUTED
+    } else {
+        TEXT_DIM
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "API",
+        FontId::proportional(10.0),
+        text_color,
+    );
+
+    crate::core::automation::instrument_response(
+        response,
+        "api_button",
+        Some("API".to_string()),
+        true,
+        false,
+    )
+}
+
 pub fn top_bar_menu_button<R>(
     ui: &mut Ui,
     label: &str,
     add_contents: impl FnOnce(&mut Ui) -> R,
-) -> Response {
+) -> (Response, bool) {
     let button_id = ui.make_persistent_id(("top_bar_menu_button", label));
     let popup_id = button_id.with("popup");
     let active = egui::Popup::is_id_open(ui.ctx(), popup_id);
@@ -1907,11 +1940,26 @@ pub fn top_bar_menu_button<R>(
         TOP_BAR_BUTTON_RADIUS,
         button_id,
     );
+    let open_this_frame = active || response.clicked();
     egui::Popup::menu(&response)
         .id(popup_id)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(add_contents);
-    response
+    (
+        response,
+        open_this_frame || egui::Popup::is_id_open(ui.ctx(), popup_id),
+    )
+}
+
+pub fn paint_top_bar_menu_scrim(ctx: &Context) {
+    let rect = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("top_bar_menu_scrim"),
+    ));
+    painter.rect_filled(rect, 0.0, MODAL_SCRIM_FILL);
+    painter.rect_filled(rect, 0.0, MODAL_SCRIM_SOFT_WASH);
+    paint_modal_vignette(&painter, rect);
 }
 
 fn top_bar_text_button_width(label: &str) -> f32 {

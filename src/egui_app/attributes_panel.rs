@@ -29,26 +29,22 @@ impl LatentSlateApp {
 
     pub(super) fn attributes_panel(&mut self, ui: &mut Ui) {
         let header_generate_target = if self.editor.selection.clip_ids.len() == 1 {
-            self.editor
-                .selected_clip_id()
-                .and_then(|clip_id| {
-                    let asset_id = self
-                        .editor
-                        .project
-                        .clips
-                        .iter()
-                        .find(|clip| clip.id == clip_id)
-                        .map(|clip| clip.asset_id)?;
-                    generative_output_for_asset(&self.editor.project, asset_id)
-                        .map(|_| (asset_id, Some(clip_id)))
-                })
+            self.editor.selected_clip_id().and_then(|clip_id| {
+                let asset_id = self
+                    .editor
+                    .project
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == clip_id)
+                    .map(|clip| clip.asset_id)?;
+                generative_output_for_asset(&self.editor.project, asset_id)
+                    .map(|_| (asset_id, Some(clip_id)))
+            })
         } else if self.editor.selection.asset_ids.len() == 1 {
-            self.editor
-                .selected_asset_id()
-                .and_then(|asset_id| {
-                    generative_output_for_asset(&self.editor.project, asset_id)
-                        .map(|_| (asset_id, None))
-                })
+            self.editor.selected_asset_id().and_then(|asset_id| {
+                generative_output_for_asset(&self.editor.project, asset_id)
+                    .map(|_| (asset_id, None))
+            })
         } else {
             None
         };
@@ -62,7 +58,8 @@ impl LatentSlateApp {
                     self.editor.layout.right_collapsed = true;
                 }
                 if header_generate_target.is_some() {
-                    if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H).clicked() {
+                    if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H).clicked()
+                    {
                         header_generate_clicked = true;
                     }
                 }
@@ -801,7 +798,10 @@ impl LatentSlateApp {
             let Some(role) = input.role else {
                 continue;
             };
-            if !matches!(input.input_type, ProviderInputType::Number | ProviderInputType::Integer) {
+            if !matches!(
+                input.input_type,
+                ProviderInputType::Number | ProviderInputType::Integer
+            ) {
                 continue;
             }
             let input_value = match role {
@@ -810,10 +810,9 @@ impl LatentSlateApp {
                 crate::state::InputRole::Seed => None,
             };
             if let Some(value) = input_value {
-                config.inputs.insert(
-                    input.name.clone(),
-                    InputValue::Literal { value },
-                );
+                config
+                    .inputs
+                    .insert(input.name.clone(), InputValue::Literal { value });
             }
         }
     }
@@ -825,9 +824,17 @@ impl LatentSlateApp {
     ) -> Option<std::path::PathBuf> {
         match &asset.kind {
             AssetKind::Image { path } | AssetKind::Video { path } => Some(project_root.join(path)),
-            AssetKind::GenerativeImage { active_version, folder }
-            | AssetKind::GenerativeVideo { active_version, folder, .. } => self
-                .resolve_generative_source_path(project_root, folder, active_version.as_deref()),
+            AssetKind::GenerativeImage {
+                active_version,
+                folder,
+            }
+            | AssetKind::GenerativeVideo {
+                active_version,
+                folder,
+                ..
+            } => {
+                self.resolve_generative_source_path(project_root, folder, active_version.as_deref())
+            }
             _ => None,
         }
     }
@@ -1024,8 +1031,7 @@ impl LatentSlateApp {
         asset_id: Uuid,
         context_clip_id: Option<Uuid>,
     ) {
-        let Some((_, output_type)) =
-            generative_output_for_asset(&self.editor.project, asset_id)
+        let Some((_, output_type)) = generative_output_for_asset(&self.editor.project, asset_id)
         else {
             return;
         };
@@ -1290,9 +1296,7 @@ impl LatentSlateApp {
         }
         let clamped_batch_count =
             next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
-        if clamped_batch_count != batch.count
-            || next_seed_strategy != batch.seed_strategy
-        {
+        if clamped_batch_count != batch.count || next_seed_strategy != batch.seed_strategy {
             self.editor
                 .project
                 .update_generative_config(asset_id, |config| {
@@ -1336,7 +1340,11 @@ impl LatentSlateApp {
         }
     }
 
-    fn start_generative_generation(&mut self, asset_id: Uuid, context_clip_id: Option<Uuid>) {
+    pub(super) fn start_generative_generation(
+        &mut self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+    ) {
         let Some((folder, output_type)) =
             generative_output_for_asset(&self.editor.project, asset_id)
         else {
@@ -1357,15 +1365,18 @@ impl LatentSlateApp {
             .editor
             .provider_entries
             .iter()
-            .find(|provider| {
-                provider.id == provider_id && provider.output_type == output_type
-            })
+            .find(|provider| provider.id == provider_id && provider.output_type == output_type)
             .cloned()
         else {
             self.editor.status = "Selected provider is unavailable.".to_string();
             return;
         };
-        let Some(folder_path) = self.editor.project.project_path.as_ref().map(|root| root.join(&folder))
+        let Some(folder_path) = self
+            .editor
+            .project
+            .project_path
+            .as_ref()
+            .map(|root| root.join(&folder))
         else {
             self.editor.status = "Project folder is unavailable.".to_string();
             return;
@@ -1433,14 +1444,15 @@ impl LatentSlateApp {
                             .unwrap_or_default();
                         let multiline = input.ui.as_ref().map(|ui| ui.multiline).unwrap_or(false);
                         let changed = if multiline {
-                            inspector_multiline_text_field(
+                            provider_input_multiline_text_field(
                                 ui,
                                 &label,
+                                input,
                                 &mut value,
                                 kit::MultilineTextFieldOptions::rows(3),
                             )
                         } else {
-                            inspector_text_field(ui, &label, &mut value)
+                            provider_input_text_field(ui, &label, input, &mut value)
                         };
                         if changed {
                             updates.push((
@@ -1458,7 +1470,7 @@ impl LatentSlateApp {
                             .unwrap_or(0.0);
                         let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(0.1);
                         let width = ui.available_width();
-                        if inspector_drag_f64(ui, &label, &mut value, step, width) {
+                        if provider_input_drag_f64(ui, &label, input, &mut value, step, width) {
                             if let Some(number) = serde_json::Number::from_f64(value) {
                                 updates.push((
                                     input.name.clone(),
@@ -1476,7 +1488,7 @@ impl LatentSlateApp {
                             .unwrap_or(0);
                         let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
                         let width = ui.available_width();
-                        if inspector_drag_i64(ui, &label, &mut value, step, width) {
+                        if provider_input_drag_i64(ui, &label, input, &mut value, step, width) {
                             updates.push((
                                 input.name.clone(),
                                 InputValue::Literal {
@@ -1490,7 +1502,7 @@ impl LatentSlateApp {
                             .as_ref()
                             .and_then(input_value_as_bool)
                             .unwrap_or(false);
-                        if inspector_bool_field(ui, &label, &mut value) {
+                        if provider_input_bool_field(ui, &label, input, &mut value) {
                             updates.push((
                                 input.name.clone(),
                                 InputValue::Literal {
@@ -1506,9 +1518,10 @@ impl LatentSlateApp {
                             .or_else(|| options.first().cloned())
                             .unwrap_or_default();
                         let before = value.clone();
-                        kit::labeled_combo_field(
+                        provider_input_labeled_combo_field(
                             ui,
                             &label,
+                            input,
                             ("provider_input_enum", asset_id, &input.name),
                             empty_dash(&value).to_string(),
                             |ui| {
@@ -1604,61 +1617,68 @@ impl LatentSlateApp {
         let before = current_binding.clone();
         let mut next = current_binding.clone();
 
-        kit::labeled_combo_field(ui, &input.label, combo_id, current_label, |ui| {
-            if let Some(candidate) = auto_candidate.as_ref() {
-                let label = format!("Auto: {}  {}", candidate.label, candidate.detail);
-                if ui
-                    .selectable_label(
-                        matches!(next, Some(InputValue::AssetRef { pinned: false, .. })),
-                        label,
-                    )
-                    .clicked()
-                {
-                    next = Some(InputValue::AssetRef {
-                        asset_id: candidate.asset_id,
-                        source_clip_id: candidate.source_clip_id,
-                        pinned: false,
-                        frame_reference: candidate.frame_reference,
-                    });
-                    ui.close();
-                }
-                ui.separator();
-            } else if context_clip_id.is_some() {
-                ui.label(kit::caption("No timeline match"));
-                ui.separator();
-            }
-
-            let mut drew_context_header = false;
-            let mut drew_other_header = false;
-            for candidate in candidates.iter() {
-                if candidate.contextual && !drew_context_header {
-                    ui.label(kit::caption("Timeline context"));
-                    drew_context_header = true;
-                } else if !candidate.contextual && !drew_other_header {
-                    if drew_context_header {
-                        ui.separator();
+        provider_input_labeled_combo_field(
+            ui,
+            &input.label,
+            input,
+            combo_id,
+            current_label,
+            |ui| {
+                if let Some(candidate) = auto_candidate.as_ref() {
+                    let label = format!("Auto: {}  {}", candidate.label, candidate.detail);
+                    if ui
+                        .selectable_label(
+                            matches!(next, Some(InputValue::AssetRef { pinned: false, .. })),
+                            label,
+                        )
+                        .clicked()
+                    {
+                        next = Some(InputValue::AssetRef {
+                            asset_id: candidate.asset_id,
+                            source_clip_id: candidate.source_clip_id,
+                            pinned: false,
+                            frame_reference: candidate.frame_reference,
+                        });
+                        ui.close();
                     }
-                    ui.label(kit::caption("Other project assets"));
-                    drew_other_header = true;
+                    ui.separator();
+                } else if context_clip_id.is_some() {
+                    ui.label(kit::caption("No timeline match"));
+                    ui.separator();
                 }
-                let selected = binding_matches_candidate(next.as_ref(), candidate, true);
-                if ui
-                    .selectable_label(
-                        selected,
-                        format!("{}  {}", candidate.label, candidate.detail),
-                    )
-                    .clicked()
-                {
-                    next = Some(InputValue::AssetRef {
-                        asset_id: candidate.asset_id,
-                        source_clip_id: candidate.source_clip_id,
-                        pinned: true,
-                        frame_reference: candidate.frame_reference,
-                    });
-                    ui.close();
+
+                let mut drew_context_header = false;
+                let mut drew_other_header = false;
+                for candidate in candidates.iter() {
+                    if candidate.contextual && !drew_context_header {
+                        ui.label(kit::caption("Timeline context"));
+                        drew_context_header = true;
+                    } else if !candidate.contextual && !drew_other_header {
+                        if drew_context_header {
+                            ui.separator();
+                        }
+                        ui.label(kit::caption("Other project assets"));
+                        drew_other_header = true;
+                    }
+                    let selected = binding_matches_candidate(next.as_ref(), candidate, true);
+                    if ui
+                        .selectable_label(
+                            selected,
+                            format!("{}  {}", candidate.label, candidate.detail),
+                        )
+                        .clicked()
+                    {
+                        next = Some(InputValue::AssetRef {
+                            asset_id: candidate.asset_id,
+                            source_clip_id: candidate.source_clip_id,
+                            pinned: true,
+                            frame_reference: candidate.frame_reference,
+                        });
+                        ui.close();
+                    }
                 }
-            }
-        });
+            },
+        );
 
         if let Some(InputValue::AssetRef {
             asset_id,
@@ -2239,5 +2259,14 @@ fn provider_choice_menu_row(ui: &mut Ui, provider: &ProviderEntry) -> egui::Resp
         accent,
     );
 
-    response
+    if let Some(description) = provider
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+    {
+        response.on_hover_text(description)
+    } else {
+        response
+    }
 }

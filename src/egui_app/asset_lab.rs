@@ -67,7 +67,7 @@ impl Default for AssetLabState {
 }
 
 impl AssetLabState {
-    fn clear_draft(&mut self) {
+    pub(super) fn clear_draft(&mut self) {
         self.draft_source_node_id = None;
         self.draft_base_version = None;
         self.draft_provider_id = None;
@@ -522,6 +522,7 @@ fn asset_lab_graph_layout(
     let nodes = &config.lab_graph.nodes;
     let mut layout = AssetLabGraphLayout::default();
     let mut next_lane = 0usize;
+    let mut visited = std::collections::HashSet::new();
 
     fn walk(
         node_id: Uuid,
@@ -531,7 +532,11 @@ fn asset_lab_graph_layout(
         nodes: &[AssetLabNode],
         layout: &mut AssetLabGraphLayout,
         next_lane: &mut usize,
+        visited: &mut std::collections::HashSet<Uuid>,
     ) {
+        if !visited.insert(node_id) {
+            return;
+        }
         layout.nodes.push(AssetLabGraphLayoutEntry {
             node_id,
             lane,
@@ -575,6 +580,7 @@ fn asset_lab_graph_layout(
                     nodes,
                     layout,
                     next_lane,
+                    visited,
                 );
             }
         }
@@ -591,6 +597,7 @@ fn asset_lab_graph_layout(
             nodes,
             &mut layout,
             &mut next_lane,
+            &mut visited,
         );
     }
 
@@ -1281,6 +1288,53 @@ pub(super) fn copy_generative_version_files(
     } else {
         Err(format!("No output files found for {source_version}."))
     }
+}
+
+fn generation_version_dependents(project: &Project, asset_id: Uuid, version: &str) -> Vec<String> {
+    let mut dependents = Vec::new();
+    for (config_asset_id, config) in &project.generative_configs {
+        if *config_asset_id == asset_id {
+            continue;
+        }
+        if !generative_config_references_version(config, asset_id, version) {
+            continue;
+        }
+        let label = project
+            .find_asset(*config_asset_id)
+            .map(|asset| format!("{} ({})", asset_display_name(asset), config_asset_id))
+            .unwrap_or_else(|| config_asset_id.to_string());
+        dependents.push(label);
+    }
+    dependents.sort();
+    dependents
+}
+
+fn generative_config_references_version(
+    config: &GenerativeConfig,
+    asset_id: Uuid,
+    version: &str,
+) -> bool {
+    config
+        .inputs
+        .values()
+        .chain(config.reference_slots.values())
+        .any(|input| input_references_generation_version(input, asset_id, version))
+        || config.lab_graph.nodes.iter().any(|node| {
+            node.inputs
+                .values()
+                .any(|input| input_references_generation_version(input, asset_id, version))
+        })
+}
+
+fn input_references_generation_version(input: &InputValue, asset_id: Uuid, version: &str) -> bool {
+    matches!(
+        input,
+        InputValue::GenerationRef {
+            asset_id: ref_asset_id,
+            version: ref_version,
+            ..
+        } if *ref_asset_id == asset_id && ref_version == version
+    )
 }
 
 pub(super) fn asset_thumbnail_candidates(project_root: &Path, asset: &Asset) -> Vec<PathBuf> {
@@ -2597,14 +2651,15 @@ impl LatentSlateApp {
                     .unwrap_or_default();
                 let multiline = input.ui.as_ref().map(|ui| ui.multiline).unwrap_or(false);
                 let changed = if multiline {
-                    inspector_multiline_text_field(
+                    provider_input_multiline_text_field(
                         ui,
                         &label,
+                        input,
                         &mut value,
                         kit::MultilineTextFieldOptions::rows(3),
                     )
                 } else {
-                    inspector_text_field(ui, &label, &mut value)
+                    provider_input_text_field(ui, &label, input, &mut value)
                 };
                 if changed {
                     *action = Some(AssetLabAction::UpdateNodeInput {
@@ -2623,7 +2678,7 @@ impl LatentSlateApp {
                     .unwrap_or(0.0);
                 let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(0.1);
                 let width = ui.available_width();
-                if inspector_drag_f64(ui, &label, &mut value, step, width) {
+                if provider_input_drag_f64(ui, &label, input, &mut value, step, width) {
                     if let Some(number) = serde_json::Number::from_f64(value) {
                         *action = Some(AssetLabAction::UpdateNodeInput {
                             node_id: node.id,
@@ -2642,7 +2697,7 @@ impl LatentSlateApp {
                     .unwrap_or(0);
                 let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
                 let width = ui.available_width();
-                if inspector_drag_i64(ui, &label, &mut value, step, width) {
+                if provider_input_drag_i64(ui, &label, input, &mut value, step, width) {
                     *action = Some(AssetLabAction::UpdateNodeInput {
                         node_id: node.id,
                         input_name: input.name.clone(),
@@ -2657,7 +2712,7 @@ impl LatentSlateApp {
                     .as_ref()
                     .and_then(input_value_as_bool)
                     .unwrap_or(false);
-                if inspector_bool_field(ui, &label, &mut value) {
+                if provider_input_bool_field(ui, &label, input, &mut value) {
                     *action = Some(AssetLabAction::UpdateNodeInput {
                         node_id: node.id,
                         input_name: input.name.clone(),
@@ -2674,9 +2729,10 @@ impl LatentSlateApp {
                     .or_else(|| options.first().cloned())
                     .unwrap_or_default();
                 let before = value.clone();
-                kit::labeled_combo_field(
+                provider_input_labeled_combo_field(
                     ui,
                     &label,
+                    input,
                     ("asset_lab_node_enum", node.id, &input.name),
                     empty_dash(&value).to_string(),
                     |ui| {
@@ -2716,9 +2772,10 @@ impl LatentSlateApp {
             .and_then(|value| self.asset_lab_node_input_label(value))
             .unwrap_or_else(|| "None selected".to_string());
         let mut next_value = current_value.clone();
-        kit::labeled_combo_field(
+        provider_input_labeled_combo_field(
             ui,
             &asset_lab_input_label(input),
+            input,
             ("asset_lab_node_media_input", node.id, &input.name),
             current_label,
             |ui| {
@@ -3256,13 +3313,13 @@ impl LatentSlateApp {
                 }
             }
             AssetLabAction::SetActive(version) => {
-                self.set_generative_active_version(asset_id, &version);
+                let _ = self.set_generative_active_version(asset_id, &version);
                 self.asset_lab.selected_version = Some(version);
                 self.asset_lab.pending_delete_version = None;
                 self.asset_lab.clear_draft();
             }
             AssetLabAction::DuplicateVersion(version) => {
-                self.duplicate_generative_version(asset_id, &version);
+                let _ = self.duplicate_generative_version(asset_id, &version);
                 self.asset_lab.pending_delete_version = None;
             }
             AssetLabAction::ExtractVersion(version) => {
@@ -3312,7 +3369,7 @@ impl LatentSlateApp {
                 self.create_asset_lab_edit_step_from_version(asset_id, &version);
             }
             AssetLabAction::DeleteNode(node_id) => {
-                self.delete_asset_lab_node(asset_id, node_id);
+                let _ = self.delete_asset_lab_node(asset_id, node_id);
             }
             AssetLabAction::DuplicateAsset => match self.editor.duplicate_asset(asset_id) {
                 Ok(new_asset_id) => self.warm_asset_thumbnails(&[new_asset_id]),
@@ -3334,7 +3391,7 @@ impl LatentSlateApp {
                 self.asset_lab.pending_delete_version = Some(version);
             }
             AssetLabAction::ConfirmDelete(version) => {
-                self.delete_generative_version(asset_id, &version);
+                let _ = self.delete_generative_version(asset_id, &version);
                 self.asset_lab.pending_delete_version = None;
             }
             AssetLabAction::CancelDelete => {
@@ -4043,22 +4100,30 @@ impl LatentSlateApp {
         }
     }
 
-    pub(super) fn delete_asset_lab_node(&mut self, asset_id: Uuid, node_id: Uuid) {
+    pub(super) fn delete_asset_lab_node(
+        &mut self,
+        asset_id: Uuid,
+        node_id: Uuid,
+    ) -> Result<(), String> {
         if self.asset_lab.draft_source_node_id == Some(node_id) {
             self.asset_lab.clear_draft();
         }
-        let parent_node_id = self
-            .editor
-            .project
-            .generative_config(asset_id)
-            .and_then(|config| {
-                config
-                    .lab_graph
-                    .nodes
-                    .iter()
-                    .find(|node| node.id == node_id)
-                    .and_then(|node| node.parent_node_id)
-            });
+        let Some(config_snapshot) = self.editor.project.generative_config(asset_id).cloned() else {
+            let message = "Asset does not support Asset Lab steps.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
+        };
+        let Some(parent_node_id) = config_snapshot
+            .lab_graph
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .map(|node| node.parent_node_id)
+        else {
+            let message = "Asset Lab node not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
+        };
         let updated = self
             .editor
             .project
@@ -4072,6 +4137,13 @@ impl LatentSlateApp {
                 {
                     child.parent_node_id = parent_node_id;
                 }
+                for record in config
+                    .versions
+                    .iter_mut()
+                    .filter(|record| record.lab_node_id == Some(node_id))
+                {
+                    record.lab_node_id = parent_node_id;
+                }
                 if config.lab_graph.selected_node_id == Some(node_id) {
                     config.lab_graph.selected_node_id = config
                         .lab_graph
@@ -4081,18 +4153,35 @@ impl LatentSlateApp {
                         .map(|node| node.id)
                         .or_else(|| config.lab_graph.nodes.first().map(|node| node.id));
                 }
+                config.normalize_lab_graph_lineage();
             });
         if !updated {
-            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
-            return;
+            let message = "Asset does not support Asset Lab steps.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         }
-        self.save_asset_lab_config(asset_id, "Deleted step. Outputs were kept.");
+        self.save_asset_lab_config_result(asset_id, "Deleted step. Outputs were kept.")
     }
 
     pub(super) fn save_asset_lab_config(&mut self, asset_id: Uuid, status: &str) {
+        let _ = self.save_asset_lab_config_result(asset_id, status);
+    }
+
+    pub(super) fn save_asset_lab_config_result(
+        &mut self,
+        asset_id: Uuid,
+        status: &str,
+    ) -> Result<(), String> {
         match self.editor.project.save_generative_config(asset_id) {
-            Ok(_) => self.editor.status = status.to_string(),
-            Err(err) => self.editor.status = format!("Failed to save Asset Lab config: {err}"),
+            Ok(_) => {
+                self.editor.status = status.to_string();
+                Ok(())
+            }
+            Err(err) => {
+                let message = format!("Failed to save Asset Lab config: {err}");
+                self.editor.status = message.clone();
+                Err(message)
+            }
         }
     }
 
@@ -4152,7 +4241,11 @@ impl LatentSlateApp {
         }
     }
 
-    pub(super) fn set_generative_active_version(&mut self, asset_id: Uuid, version: &str) {
+    pub(super) fn set_generative_active_version(
+        &mut self,
+        asset_id: Uuid,
+        version: &str,
+    ) -> Result<(), String> {
         let config_snapshot = self.editor.project.generative_config(asset_id).cloned();
         let Some(record) = config_snapshot
             .as_ref()
@@ -4164,11 +4257,13 @@ impl LatentSlateApp {
             })
             .cloned()
         else {
-            self.editor.status = format!("Version {version} was not found.");
-            return;
+            let message = format!("Version {version} was not found.");
+            self.editor.status = message.clone();
+            return Err(message);
         };
 
-        self.editor
+        let updated = self
+            .editor
             .project
             .update_generative_config(asset_id, |config| {
                 config.active_version = Some(version.to_string());
@@ -4186,30 +4281,45 @@ impl LatentSlateApp {
                     }
                 }
             });
+        if !updated {
+            let message = "Generative asset not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
+        }
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
-            self.editor.status = format!("Failed to save active version: {err}");
-            return;
+            let message = format!("Failed to save active version: {err}");
+            self.editor.status = message.clone();
+            return Err(message);
         }
         self.invalidate_generative_asset_runtime(asset_id);
         self.editor.status = format!("Set {version} active.");
+        Ok(())
     }
 
-    pub(super) fn duplicate_generative_version(&mut self, asset_id: Uuid, version: &str) {
+    pub(super) fn duplicate_generative_version(
+        &mut self,
+        asset_id: Uuid,
+        version: &str,
+    ) -> Result<String, String> {
         let Some(project_root) = self.editor.project.project_path.clone() else {
-            self.editor.status = "Project folder is unavailable.".to_string();
-            return;
+            let message = "Project folder is unavailable.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
-            self.editor.status = "Asset not found.".to_string();
-            return;
+            let message = "Asset not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let Some(folder) = generative_folder_for_asset(&asset).cloned() else {
-            self.editor.status = "Asset has no generation folder.".to_string();
-            return;
+            let message = "Asset has no generation folder.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let Some(config_snapshot) = self.editor.project.generative_config(asset_id).cloned() else {
-            self.editor.status = "Generation config was not found.".to_string();
-            return;
+            let message = "Generation config was not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let Some(source_record) = config_snapshot
             .versions
@@ -4217,14 +4327,15 @@ impl LatentSlateApp {
             .find(|record| record.version == version)
             .cloned()
         else {
-            self.editor.status = format!("Version {version} was not found.");
-            return;
+            let message = format!("Version {version} was not found.");
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let new_version = next_version_label(&config_snapshot);
         let folder_path = project_root.join(&folder);
         if let Err(err) = copy_generative_version_files(&folder_path, version, &new_version) {
-            self.editor.status = err;
-            return;
+            self.editor.status = err.clone();
+            return Err(err);
         }
 
         let new_record = GenerationRecord {
@@ -4254,33 +4365,67 @@ impl LatentSlateApp {
                 config.versions.push(new_record);
             });
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
-            self.editor.status = format!("Duplicated version, but config save failed: {err}");
-            return;
+            let message = format!("Duplicated version, but config save failed: {err}");
+            self.editor.status = message.clone();
+            return Err(message);
         }
         self.asset_lab.selected_version = Some(new_version.clone());
         self.invalidate_generative_asset_runtime(asset_id);
         self.editor.status = format!("Duplicated {version} as {new_version}.");
+        Ok(new_version)
     }
 
-    pub(super) fn delete_generative_version(&mut self, asset_id: Uuid, version: &str) {
+    pub(super) fn delete_generative_version(
+        &mut self,
+        asset_id: Uuid,
+        version: &str,
+    ) -> Result<(), String> {
         let Some(project_root) = self.editor.project.project_path.clone() else {
-            self.editor.status = "Project folder is unavailable.".to_string();
-            return;
+            let message = "Project folder is unavailable.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
-            self.editor.status = "Asset not found.".to_string();
-            return;
+            let message = "Asset not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
         let Some(folder) = generative_folder_for_asset(&asset).cloned() else {
-            self.editor.status = "Asset has no generation folder.".to_string();
-            return;
+            let message = "Asset has no generation folder.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
         };
+        let Some(config_snapshot) = self.editor.project.generative_config(asset_id).cloned() else {
+            let message = "Generation config was not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
+        };
+        if !config_snapshot
+            .versions
+            .iter()
+            .any(|record| record.version == version)
+        {
+            let message = format!("Version {version} was not found.");
+            self.editor.status = message.clone();
+            return Err(message);
+        };
+        let dependents = generation_version_dependents(&self.editor.project, asset_id, version);
+        if !dependents.is_empty() {
+            let message = format!(
+                "Version {version} is referenced by other generative assets: {}.",
+                dependents.join(", ")
+            );
+            self.editor.status = message.clone();
+            return Err(message);
+        }
         if let Err(err) = delete_generative_version_files(&project_root.join(folder), version) {
-            self.editor.status = format!("Failed to delete version files: {err}");
-            return;
+            let message = format!("Failed to delete version files: {err}");
+            self.editor.status = message.clone();
+            return Err(message);
         }
 
-        self.editor
+        let updated = self
+            .editor
             .project
             .update_generative_config(asset_id, |config| {
                 config.versions.retain(|record| record.version != version);
@@ -4334,9 +4479,15 @@ impl LatentSlateApp {
                     }
                 }
             });
+        if !updated {
+            let message = "Generative asset not found.".to_string();
+            self.editor.status = message.clone();
+            return Err(message);
+        }
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
-            self.editor.status = format!("Deleted version, but config save failed: {err}");
-            return;
+            let message = format!("Deleted version, but config save failed: {err}");
+            self.editor.status = message.clone();
+            return Err(message);
         }
         let next_selected = self
             .editor
@@ -4346,6 +4497,7 @@ impl LatentSlateApp {
         self.asset_lab.selected_version = next_selected;
         self.invalidate_generative_asset_runtime(asset_id);
         self.editor.status = format!("Deleted {version}.");
+        Ok(())
     }
 
     pub(super) fn invalidate_generative_asset_runtime(&mut self, asset_id: Uuid) {

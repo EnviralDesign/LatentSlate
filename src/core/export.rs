@@ -13,6 +13,7 @@ use std::time::Duration;
 use ab_glyph::{FontArc, PxScale};
 use image::{imageops::FilterType, ImageFormat, Rgba, RgbaImage};
 use imageproc::drawing::{draw_text_mut, text_size};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::constants::PREVIEW_CACHE_BUDGET_BYTES;
@@ -30,7 +31,8 @@ const EXPORT_ENCODE_PROGRESS: f32 = 0.94;
 const EXPORT_PREVIEW_MAX_W: u32 = 260;
 const EXPORT_PREVIEW_MAX_H: u32 = 150;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VideoExportCodec {
     H264,
     H265,
@@ -52,7 +54,8 @@ impl VideoExportCodec {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VideoExportQuality {
     Compact,
     Balanced,
@@ -84,7 +87,8 @@ impl VideoExportQuality {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VideoExportFrameFormat {
     Png,
     Bmp,
@@ -106,7 +110,8 @@ impl VideoExportFrameFormat {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TimestampOverlayPosition {
     TopCenter,
     BottomCenter,
@@ -170,7 +175,7 @@ pub enum VideoExportEvent {
     Failed(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct VideoExportSummary {
     pub output_path: PathBuf,
     pub codec: VideoExportCodec,

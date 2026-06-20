@@ -26,10 +26,16 @@ pub(super) enum GenerationFailure {
     Canceled,
 }
 
+#[derive(Debug)]
+pub(super) enum CancelGenerationJobResult {
+    Cancelled { label: String, was_running: bool },
+    NotFound,
+    NotCancellable { status: GenerationJobStatus },
+}
+
 impl LatentSlateApp {
-    pub(super) fn cancel_generation_job(&mut self, job_id: Uuid) {
-        let mut cancelled_label = None;
-        if let Some(job) = self
+    pub(super) fn cancel_generation_job(&mut self, job_id: Uuid) -> CancelGenerationJobResult {
+        let cancelled_label = if let Some(job) = self
             .editor
             .generation_queue
             .iter_mut()
@@ -39,15 +45,20 @@ impl LatentSlateApp {
                 job.status,
                 GenerationJobStatus::Queued | GenerationJobStatus::Running
             ) {
-                return;
+                self.editor.status = format!("Generation job is already {:?}.", job.status);
+                return CancelGenerationJobResult::NotCancellable { status: job.status };
             }
             let was_running = job.status == GenerationJobStatus::Running;
+            let label = job.asset_label.clone();
             job.status = GenerationJobStatus::Canceled;
             job.progress_overall = None;
             job.progress_node = None;
             job.error = Some("Cancelled by user.".to_string());
-            cancelled_label = Some((job.asset_label.clone(), was_running));
-        }
+            (label, was_running)
+        } else {
+            self.editor.status = "Generation job not found.".to_string();
+            return CancelGenerationJobResult::NotFound;
+        };
 
         if self.generation_active == Some(job_id) {
             self.generation_active = None;
@@ -56,13 +67,13 @@ impl LatentSlateApp {
             cancel.store(true, Ordering::Relaxed);
         }
 
-        if let Some((label, was_running)) = cancelled_label {
-            self.editor.status = if was_running {
-                format!("Cancelled generation for {label}; external provider may still finish.")
-            } else {
-                format!("Removed queued generation for {label}.")
-            };
-        }
+        let (label, was_running) = cancelled_label;
+        self.editor.status = if was_running {
+            format!("Cancelled generation for {label}; external provider may still finish.")
+        } else {
+            format!("Removed queued generation for {label}.")
+        };
+        CancelGenerationJobResult::Cancelled { label, was_running }
     }
 
     pub(super) fn service_generation_queue(&mut self, ctx: &Context) {
@@ -427,9 +438,9 @@ impl LatentSlateApp {
             &config_snapshot,
         );
         if !resolved.missing_required.is_empty() {
-            return Err(format!(
-                "Missing inputs: {}",
-                resolved.missing_required.join(", ")
+            return Err(missing_provider_inputs_message(
+                &provider,
+                &resolved.missing_required,
             ));
         }
 
@@ -606,4 +617,33 @@ impl LatentSlateApp {
                 Some(base.map_or(reserved_next, |base| base.max(reserved_next)))
             })
     }
+}
+
+fn missing_provider_inputs_message(provider: &ProviderEntry, missing: &[String]) -> String {
+    let details = missing
+        .iter()
+        .map(|name| {
+            if let Some(input) = provider.inputs.iter().find(|input| input.name == *name) {
+                match input.input_type {
+                    ProviderInputType::Image => format!(
+                        "{name} (image; set patch.inputs.{name} to {{\"type\":\"asset_ref\",\"asset_id\":\"uuid\",\"pinned\":true}})"
+                    ),
+                    ProviderInputType::Video => format!(
+                        "{name} (video; set patch.inputs.{name} to {{\"type\":\"asset_ref\",\"asset_id\":\"uuid\",\"pinned\":true}})"
+                    ),
+                    ProviderInputType::Audio => format!(
+                        "{name} (audio; set patch.inputs.{name} to {{\"type\":\"asset_ref\",\"asset_id\":\"uuid\",\"pinned\":true}})"
+                    ),
+                    _ => name.clone(),
+                }
+            } else {
+                name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "Missing inputs: {details}. Provider media inputs are canonical under patch.inputs.<field>; matching reference_slots.<field> or semantic reference slots are accepted as compatibility aliases."
+    )
 }

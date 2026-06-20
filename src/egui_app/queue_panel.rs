@@ -479,7 +479,7 @@ impl LatentSlateApp {
             });
 
         if let Some(job_id) = cancel_job_id {
-            self.cancel_generation_job(job_id);
+            let _ = self.cancel_generation_job(job_id);
         }
         if clear_clicked {
             let before = self.editor.generation_queue.len();

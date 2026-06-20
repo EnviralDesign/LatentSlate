@@ -294,16 +294,18 @@ impl LatentSlateApp {
                     ..
                 }) => {
                     if *allow_track_move {
-                        ui.ctx().pointer_hover_pos().and_then(|pos| {
-                            timeline_track_row_at_pos(pos, rects, &tracks).filter(|track| {
-                                clips.iter().all(|clip| {
-                                    self.editor
-                                        .project
-                                        .asset_compatible_with_track(clip.asset_id, track.id)
+                        ui.ctx()
+                            .pointer_hover_pos()
+                            .and_then(|pos| {
+                                timeline_track_row_at_pos(pos, rects, &tracks).filter(|track| {
+                                    clips.iter().all(|clip| {
+                                        self.editor
+                                            .project
+                                            .asset_compatible_with_track(clip.asset_id, track.id)
+                                    })
                                 })
                             })
-                        })
-                        .map(|track| track.id)
+                            .map(|track| track.id)
                     } else {
                         None
                     }
@@ -984,7 +986,9 @@ impl LatentSlateApp {
 
     pub(super) fn track_reorder_insertion_index(&self) -> Option<usize> {
         match self.timeline_drag.as_ref() {
-            Some(TimelineDrag::TrackReorder { insertion_index, .. }) => Some(*insertion_index),
+            Some(TimelineDrag::TrackReorder {
+                insertion_index, ..
+            }) => Some(*insertion_index),
             _ => None,
         }
     }
@@ -2134,10 +2138,9 @@ impl LatentSlateApp {
                     return;
                 };
                 let duration_frames = frames_from_seconds(anchor_clip.duration, fps).round();
-                let mut new_start_frames = frames_from_seconds(anchor_clip.start_time, fps).round()
-                    + delta_frames;
-                let exclude_clip_ids: Vec<Uuid> =
-                    clips.iter().map(|clip| clip.clip_id).collect();
+                let mut new_start_frames =
+                    frames_from_seconds(anchor_clip.start_time, fps).round() + delta_frames;
+                let exclude_clip_ids: Vec<Uuid> = clips.iter().map(|clip| clip.clip_id).collect();
                 if snap_enabled {
                     let targets = self.timeline_snap_targets(&exclude_clip_ids, None, true);
                     let is_keyframe_reference = self
@@ -2146,9 +2149,7 @@ impl LatentSlateApp {
                         .clips
                         .iter()
                         .find(|clip| clip.id == anchor_clip.clip_id)
-                        .is_some_and(|clip| {
-                            self.editor.project.is_keyframe_reference_clip(clip)
-                        });
+                        .is_some_and(|clip| self.editor.project.is_keyframe_reference_clip(clip));
                     let source_frames = if is_keyframe_reference {
                         vec![new_start_frames]
                     } else {
@@ -2166,7 +2167,8 @@ impl LatentSlateApp {
                 } else {
                     self.timeline_snap_preview = None;
                 }
-                let new_delta = new_start_frames - frames_from_seconds(anchor_clip.start_time, fps).round();
+                let new_delta =
+                    new_start_frames - frames_from_seconds(anchor_clip.start_time, fps).round();
                 let mut changed = false;
                 for clip in &clips {
                     let new_start = seconds_from_frames(
@@ -2176,22 +2178,22 @@ impl LatentSlateApp {
                     changed |= self.editor.project.move_clip(clip.clip_id, new_start);
                 }
                 if allow_track_move {
-                    let track_id = timeline_track_row_at_pos(
-                        pos,
-                        rects,
-                        &self.editor.project.tracks,
-                    )
-                    .map(|track| track.id)
-                    .filter(|track_id| {
-                        clips.iter().all(|clip| {
-                            self.editor
-                                .project
-                                .asset_compatible_with_track(clip.asset_id, *track_id)
-                        })
-                    });
+                    let track_id =
+                        timeline_track_row_at_pos(pos, rects, &self.editor.project.tracks)
+                            .map(|track| track.id)
+                            .filter(|track_id| {
+                                clips.iter().all(|clip| {
+                                    self.editor
+                                        .project
+                                        .asset_compatible_with_track(clip.asset_id, *track_id)
+                                })
+                            });
                     if let Some(track_id) = track_id {
                         for clip in &clips {
-                            changed |= self.editor.project.move_clip_to_track(clip.clip_id, track_id);
+                            changed |= self
+                                .editor
+                                .project
+                                .move_clip_to_track(clip.clip_id, track_id);
                         }
                     }
                 }

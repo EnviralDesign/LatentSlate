@@ -353,6 +353,52 @@ function Invoke-AutomationState {
     return $response
 }
 
+function Invoke-AgentApiSmoke {
+    param([string]$BaseUrl)
+
+    $health = Invoke-RestMethod -Uri "$BaseUrl/agent/v1/health" -Method Get
+    if (!$health.ok) {
+        throw "agent health failed: $($health.message)"
+    }
+
+    foreach ($path in @("capabilities", "help", "schema")) {
+        $response = Invoke-RestMethod -Uri "$BaseUrl/agent/v1/$path" -Method Get
+        if (!$response.ok) {
+            throw "agent $path failed: $($response.message)"
+        }
+    }
+
+    $state = Invoke-RestMethod -Uri "$BaseUrl/agent/v1/state?include=diagnostics" -Method Get
+    if (!$state.ok) {
+        throw "agent state failed: $($state.message)"
+    }
+
+    $commandBody = @{ type = "seek"; time = 0.5 } | ConvertTo-Json -Depth 20
+    $command = Invoke-RestMethod -Uri "$BaseUrl/agent/v1/command" -Method Post -ContentType "application/json" -Body $commandBody
+    if (!$command.ok) {
+        throw "agent command failed: $($command.message)"
+    }
+
+    $captureBody = @{
+        type = "frame"
+        source = @{ type = "timeline" }
+        time = @{ seconds = 0.5 }
+        mode = "enhanced"
+        annotate = $true
+        name = "automation-agent-smoke"
+    } | ConvertTo-Json -Depth 20
+    $capture = Invoke-RestMethod -Uri "$BaseUrl/agent/v1/capture" -Method Post -ContentType "application/json" -Body $captureBody
+    if (!$capture.ok) {
+        throw "agent capture failed: $($capture.message)"
+    }
+    $capturePath = $capture.data.capture.path
+    if (!(Test-Path -LiteralPath $capturePath)) {
+        throw "agent capture path does not exist: $capturePath"
+    }
+
+    Write-Host "Agent API smoke ok Capture=$capturePath"
+}
+
 function Capture-ReferenceImage {
     param(
         [IntPtr]$WindowHandle,
@@ -462,6 +508,7 @@ try {
     [void](Invoke-AutomationCommand -BaseUrl $baseUrl -Step "save_project" -Payload @{
         type = "save_project"
     })
+    Invoke-AgentApiSmoke -BaseUrl $baseUrl
 
     Start-Sleep -Milliseconds 1000
     Capture-AppWindow -WindowHandle $windowHandle -Path $ScreenshotPath

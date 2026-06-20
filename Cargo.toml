@@ -28,6 +28,9 @@ futures-util = "0.3"
 base64 = "0.22"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 # Future dependencies:
 # tokio = { version = "1", features = ["full"] }
 # reqwest = { version = "0.12", features = ["json"] }

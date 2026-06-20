@@ -98,6 +98,8 @@ pub fn default_openai_image_provider_entry() -> ProviderEntry {
             base_url: None,
         },
     );
+    entry.description =
+        Some("Cloud text-to-image provider for generating still assets from prompts.".to_string());
     entry.workflow_kind = ProviderWorkflowKind::TextToImage;
     entry.inputs = vec![
         text_input(
@@ -139,6 +141,8 @@ pub fn default_xai_image_provider_entry() -> ProviderEntry {
             base_url: None,
         },
     );
+    entry.description =
+        Some("Cloud text-to-image provider for generating still assets from prompts.".to_string());
     entry.workflow_kind = ProviderWorkflowKind::TextToImage;
     entry.inputs = vec![
         text_input(
@@ -168,6 +172,9 @@ pub fn default_xai_video_provider_entry() -> ProviderEntry {
             model: "grok-imagine-video".to_string(),
             base_url: None,
         },
+    );
+    entry.description = Some(
+        "Cloud text-to-video provider for generating short video assets from prompts.".to_string(),
     );
     entry.workflow_kind = ProviderWorkflowKind::TextToVideo;
     entry.inputs = vec![
@@ -200,6 +207,7 @@ fn text_input(
     ProviderInputField {
         name: name.to_string(),
         label: label.to_string(),
+        description: placeholder.clone(),
         input_type: ProviderInputType::Text,
         required,
         default: default.map(serde_json::Value::String),
@@ -221,6 +229,7 @@ fn enum_input(
     ProviderInputField {
         name: name.to_string(),
         label: label.to_string(),
+        description: None,
         input_type: ProviderInputType::Enum {
             options: options.iter().map(|value| value.to_string()).collect(),
         },
@@ -241,6 +250,7 @@ fn integer_input(
     ProviderInputField {
         name: name.to_string(),
         label: label.to_string(),
+        description: None,
         input_type: ProviderInputType::Integer,
         required: true,
         default: Some(serde_json::Value::Number(default.into())),

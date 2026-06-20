@@ -79,6 +79,7 @@ pub(super) struct ProviderBuilderState {
     pub(super) source_path: Option<PathBuf>,
     pub(super) provider_id: Uuid,
     pub(super) provider_name: String,
+    pub(super) provider_description: String,
     pub(super) output_type: ProviderOutputType,
     pub(super) workflow_kind: ProviderWorkflowKind,
     pub(super) workflow_kind_selected: bool,
@@ -96,6 +97,8 @@ pub(super) struct ProviderBuilderState {
     pub(super) output_tag: String,
     pub(super) output_node: Option<ProviderOutputNodeDraft>,
     pub(super) inputs: Vec<ProviderBuilderInput>,
+    pub(super) selected_input_index: Option<usize>,
+    pub(super) dragging_input_index: Option<usize>,
     pub(super) tab: ProviderBuilderTab,
     pub(super) error: Option<String>,
 }
@@ -119,6 +122,7 @@ pub(super) struct ProviderNodeSelectorDraft {
 pub(super) struct ProviderBuilderInput {
     pub(super) name: String,
     pub(super) label: String,
+    pub(super) description: String,
     pub(super) input_type_key: String,
     pub(super) required: bool,
     pub(super) role: Option<InputRole>,
@@ -134,9 +138,19 @@ pub(super) struct ProviderBuilderInput {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ProviderInputAction {
+    Select(usize),
+    StartDrag(usize),
+    StopDrag,
+    Move { from: usize, to: usize },
     MoveUp(usize),
     MoveDown(usize),
     Delete(usize),
+}
+
+pub(super) struct ProviderInputSummaryRowResponse {
+    pub(super) select_response: egui::Response,
+    pub(super) drag_response: egui::Response,
+    pub(super) rect: Rect,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,6 +282,7 @@ impl ProviderBuilderState {
             source_path,
             provider_id: entry.id,
             provider_name: entry.name.clone(),
+            provider_description: entry.description.clone().unwrap_or_default(),
             output_type: entry.output_type,
             workflow_kind: entry.workflow_kind,
             workflow_kind_selected: is_existing_entry
@@ -290,6 +305,8 @@ impl ProviderBuilderState {
                 .iter()
                 .map(ProviderBuilderInput::from_provider_input)
                 .collect(),
+            selected_input_index: None,
+            dragging_input_index: None,
             tab: initial_tab,
             error: None,
         };
@@ -312,6 +329,7 @@ impl ProviderBuilderState {
             }
         }
         state.sync_output_type_from_generation();
+        state.ensure_valid_selected_input();
         state
     }
 
@@ -375,6 +393,75 @@ impl ProviderBuilderState {
                 .is_some_and(|id| id == node_id)
                 && input.selector.input_key == input_key
         })
+    }
+
+    pub(super) fn ensure_valid_selected_input(&mut self) {
+        let len = self.inputs.len();
+        if len == 0 {
+            self.selected_input_index = None;
+            self.dragging_input_index = None;
+            return;
+        }
+        if !self.selected_input_index.is_some_and(|index| index < len) {
+            self.selected_input_index = Some(0);
+        }
+        if !self.dragging_input_index.is_some_and(|index| index < len) {
+            self.dragging_input_index = None;
+        }
+    }
+
+    pub(super) fn select_input(&mut self, index: usize) {
+        if index < self.inputs.len() {
+            self.selected_input_index = Some(index);
+        }
+    }
+
+    pub(super) fn start_dragging_input(&mut self, index: usize) {
+        if index < self.inputs.len() {
+            self.selected_input_index = Some(index);
+            self.dragging_input_index = Some(index);
+        }
+    }
+
+    pub(super) fn stop_dragging_input(&mut self) {
+        self.dragging_input_index = None;
+    }
+
+    pub(super) fn move_input(&mut self, from: usize, to: usize) {
+        let len = self.inputs.len();
+        if from >= len || to >= len || from == to {
+            return;
+        }
+        let input = self.inputs.remove(from);
+        self.inputs.insert(to, input);
+        self.selected_input_index = self.selected_input_index.map(|index| {
+            remap_moved_index(index, from, to).min(self.inputs.len().saturating_sub(1))
+        });
+        self.dragging_input_index = self.dragging_input_index.map(|index| {
+            remap_moved_index(index, from, to).min(self.inputs.len().saturating_sub(1))
+        });
+    }
+
+    pub(super) fn delete_input(&mut self, index: usize) {
+        if index >= self.inputs.len() {
+            return;
+        }
+        self.inputs.remove(index);
+        let len = self.inputs.len();
+        self.selected_input_index = match (self.selected_input_index, len) {
+            (_, 0) => None,
+            (Some(selected), _) if selected == index => Some(index.min(len - 1)),
+            (Some(selected), _) if selected > index => Some(selected - 1),
+            (Some(selected), _) if selected < len => Some(selected),
+            _ => Some(len - 1),
+        };
+        self.dragging_input_index = match (self.dragging_input_index, len) {
+            (_, 0) => None,
+            (Some(dragging), _) if dragging == index => None,
+            (Some(dragging), _) if dragging > index => Some(dragging - 1),
+            (Some(dragging), _) if dragging < len => Some(dragging),
+            _ => None,
+        };
     }
 
     pub(super) fn input_schema(
@@ -561,11 +648,25 @@ impl ProviderBuilderState {
         }
     }
 
+    pub(super) fn preferred_edit_tab(&self) -> ProviderBuilderTab {
+        if self.workflow_validation_error().is_some() {
+            ProviderBuilderTab::Workflow
+        } else if self.settings_validation_error().is_some() {
+            ProviderBuilderTab::Settings
+        } else if self.output_validation_error().is_some() {
+            ProviderBuilderTab::Output
+        } else {
+            ProviderBuilderTab::Inputs
+        }
+    }
+
     pub(super) fn reset_workflow_bindings(&mut self) {
         self.output_node = None;
         self.output_key = default_output_key(self.output_type).to_string();
         self.output_tag.clear();
         self.inputs.clear();
+        self.selected_input_index = None;
+        self.dragging_input_index = None;
         self.tab = ProviderBuilderTab::Settings;
     }
 
@@ -573,6 +674,7 @@ impl ProviderBuilderState {
         match manifest {
             ProviderManifest::ComfyUi {
                 name,
+                description,
                 output_type,
                 workflow,
                 inputs,
@@ -581,6 +683,9 @@ impl ProviderBuilderState {
             } => {
                 if let Some(name) = name {
                     self.provider_name = name;
+                }
+                if let Some(description) = description {
+                    self.provider_description = description;
                 }
                 self.output_type = output_type;
                 self.workflow_path = Some(crate::core::paths::resolve_resource_path(Path::new(
@@ -601,9 +706,11 @@ impl ProviderBuilderState {
                     .into_iter()
                     .map(ProviderBuilderInput::from_manifest_input)
                     .collect();
+                self.ensure_valid_selected_input();
             }
             ProviderManifest::CustomHttp {
                 name,
+                description,
                 output_type,
                 inputs,
                 ..
@@ -611,11 +718,15 @@ impl ProviderBuilderState {
                 if let Some(name) = name {
                     self.provider_name = name;
                 }
+                if let Some(description) = description {
+                    self.provider_description = description;
+                }
                 self.output_type = output_type;
                 self.inputs = inputs
                     .into_iter()
                     .map(ProviderBuilderInput::from_custom_http_input)
                     .collect();
+                self.ensure_valid_selected_input();
                 self.error = Some(
                     "Loaded a Custom HTTP manifest. Saving from this builder writes ComfyUI settings."
                         .to_string(),
@@ -764,6 +875,20 @@ impl ProviderBuilderState {
             .map(|input| input.name.as_str())
     }
 
+    pub(super) fn satisfied_input_roles(&self) -> HashSet<InputRole> {
+        self.required_input_roles()
+            .into_iter()
+            .filter(|role| {
+                let matching: Vec<&ProviderBuilderInput> = self
+                    .inputs
+                    .iter()
+                    .filter(|input| input.role == Some(*role))
+                    .collect();
+                matching.len() == 1 && is_numeric_type_value(&matching[0].input_type_key)
+            })
+            .collect()
+    }
+
     pub(super) fn build_save_payload(&self) -> Result<ProviderBuilderSave, String> {
         if let Some(error) = self.save_validation_error() {
             return Err(error);
@@ -776,6 +901,7 @@ impl ProviderBuilderState {
         if provider_name.is_empty() {
             return Err("Provider name is required.".to_string());
         }
+        let provider_description = optional_trimmed_string(&self.provider_description);
         let base_url = self.base_url.trim();
         if base_url.is_empty() {
             return Err("Base URL is required.".to_string());
@@ -819,6 +945,7 @@ impl ProviderBuilderState {
             manifest_inputs.push(ManifestInput {
                 name: input.name.clone(),
                 label: input.label.clone(),
+                description: optional_trimmed_string(&input.description),
                 input_type: input_type.clone(),
                 required: input.required,
                 default: default.clone(),
@@ -832,6 +959,7 @@ impl ProviderBuilderState {
             provider_inputs.push(ProviderInputField {
                 name: input.name.clone(),
                 label: input.label.clone(),
+                description: optional_trimmed_string(&input.description),
                 input_type,
                 required: input.required,
                 default,
@@ -870,6 +998,7 @@ impl ProviderBuilderState {
             crate::core::provider_store::provider_path_for_entry(&ProviderEntry {
                 id: self.provider_id,
                 name: provider_name.to_string(),
+                description: provider_description.clone(),
                 output_type: self.output_type,
                 workflow_kind: self.workflow_kind,
                 inputs: Vec::new(),
@@ -886,6 +1015,7 @@ impl ProviderBuilderState {
         let manifest = ProviderManifest::ComfyUi {
             schema_version: 1,
             name: Some(provider_name.to_string()),
+            description: provider_description.clone(),
             output_type: self.output_type,
             workflow: ComfyWorkflowRef {
                 workflow_path: workflow_path_string.clone(),
@@ -900,6 +1030,7 @@ impl ProviderBuilderState {
         let entry = ProviderEntry {
             id: self.provider_id,
             name: provider_name.to_string(),
+            description: provider_description,
             output_type: self.output_type,
             workflow_kind: self.workflow_kind,
             inputs: provider_inputs,
@@ -948,6 +1079,7 @@ impl ProviderBuilderInput {
         Self {
             name,
             label,
+            description: String::new(),
             input_type_key,
             required: schema.map(|schema| schema.required).unwrap_or(false),
             role: None,
@@ -973,6 +1105,7 @@ impl ProviderBuilderInput {
         Self {
             name: input.name.clone(),
             label: input.label.clone(),
+            description: input.description.clone().unwrap_or_default(),
             input_type_key,
             required: input.required,
             default_text: default_value_to_text(input.default.as_ref()),
@@ -1001,6 +1134,7 @@ impl ProviderBuilderInput {
         Self {
             name: input.name,
             label: input.label,
+            description: input.description.unwrap_or_default(),
             input_type_key,
             required: input.required,
             default_text: default_value_to_text(input.default.as_ref()),
@@ -1029,6 +1163,7 @@ impl ProviderBuilderInput {
         Self {
             name: input.name,
             label: input.label,
+            description: input.description.unwrap_or_default(),
             input_type_key,
             required: input.required,
             default_text: default_value_to_text(input.default.as_ref()),
@@ -1133,6 +1268,7 @@ impl ProviderBuilderInput {
 pub(super) struct ProviderFileSummary {
     pub(super) name: String,
     pub(super) subtitle: String,
+    pub(super) description: Option<String>,
     pub(super) output_type: Option<ProviderOutputType>,
 }
 
@@ -1146,9 +1282,19 @@ pub(super) fn provider_row(
         .output_type
         .map(provider_output_color)
         .unwrap_or(kit::AUDIO);
-    kit::draw_accent_row(ui, 52.0, selected, accent, |ui, rect| {
+    let response = kit::draw_accent_row(ui, 52.0, selected, accent, |ui, rect| {
         paint_text_button_row(ui, rect, &summary.name, &summary.subtitle);
-    })
+    });
+    if let Some(description) = summary
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+    {
+        response.on_hover_text(description)
+    } else {
+        response
+    }
 }
 
 pub(super) fn provider_template_dropdown_label(
@@ -1218,6 +1364,7 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
         return ProviderFileSummary {
             name: file_name,
             subtitle: "Unreadable provider file".to_string(),
+            description: None,
             output_type: None,
         };
     };
@@ -1225,12 +1372,14 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
         return ProviderFileSummary {
             name: file_name,
             subtitle: "Invalid provider JSON".to_string(),
+            description: None,
             output_type: None,
         };
     };
     ProviderFileSummary {
         name: entry.name,
         subtitle: provider_output_type_label(entry.output_type).to_string(),
+        description: entry.description,
         output_type: Some(entry.output_type),
     }
 }
@@ -1355,55 +1504,173 @@ pub(super) fn workflow_node_row(
     })
 }
 
-pub(super) fn provider_builder_input_editor(
+pub(super) fn provider_builder_input_summary_row(
     ui: &mut Ui,
     index: usize,
-    len: usize,
-    input: &mut ProviderBuilderInput,
-    action: &mut Option<ProviderInputAction>,
-) {
-    let edge_guard = (2.0 / ui.ctx().pixels_per_point()).max(1.0);
-    let card_w = (ui.available_width().floor() - edge_guard).max(0.0);
-    ui.scope(|ui| {
-        ui.set_width(card_w);
-        ui.set_min_width(card_w);
-        ui.set_max_width(card_w);
-        kit::sunken_frame().show(ui, |ui| {
-            let content_w = (card_w - 16.0).max(0.0);
-            ui.set_width(content_w);
-            ui.set_min_width(content_w);
-            ui.set_max_width(content_w);
-            provider_builder_input_editor_contents(ui, index, len, input, action);
-        });
-    });
+    input: &ProviderBuilderInput,
+    selected: bool,
+    dragging: bool,
+    role_satisfied: bool,
+) -> ProviderInputSummaryRowResponse {
+    let selection_accent = kit::BORDER_FOCUS;
+    let row_h = 46.0;
+    let (rect, base_response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::hover());
+    let id = ui.make_persistent_id(("provider_builder_input_summary_row", index));
+    let handle_w = 34.0;
+    let handle_rect = Rect::from_min_max(
+        rect.left_top(),
+        Pos2::new((rect.left() + handle_w).min(rect.right()), rect.bottom()),
+    );
+    let select_rect = Rect::from_min_max(
+        Pos2::new(handle_rect.right(), rect.top()),
+        rect.right_bottom(),
+    );
+    let raw_drag_response =
+        ui.interact(handle_rect, id.with("drag"), egui::Sense::click_and_drag());
+    let select_response = ui
+        .interact(select_rect, id.with("select"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let drag_response = if dragging {
+        raw_drag_response.on_hover_and_drag_cursor(egui::CursorIcon::Grabbing)
+    } else {
+        raw_drag_response.on_hover_and_drag_cursor(egui::CursorIcon::Grab)
+    };
+    let select_response =
+        crate::core::automation::instrument_response(select_response, "row", None, true, false);
+    let drag_response = crate::core::automation::instrument_response(
+        drag_response,
+        "drag_handle",
+        None,
+        true,
+        false,
+    );
+    let hovered =
+        base_response.hovered() || select_response.hovered() || drag_response.hovered() || dragging;
+    let fill = kit::row_fill(selected, hovered);
+    let stroke_color = if selected {
+        selection_accent
+    } else {
+        kit::BORDER_SOFT
+    };
+
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(5), fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(5),
+        egui::Stroke::new(1.0, stroke_color),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().rect_filled(
+        Rect::from_min_size(rect.left_top(), Vec2::new(4.0, rect.height())),
+        egui::CornerRadius::same(2),
+        selection_accent,
+    );
+
+    let role_label = provider_input_compact_role_label(input.role);
+    let role_color = input
+        .role
+        .filter(|_| role_satisfied)
+        .map(provider_input_role_color);
+    let role_w = 70.0;
+    let role_rect = Rect::from_center_size(
+        Pos2::new(rect.right() - role_w * 0.5 - 10.0, rect.center().y),
+        Vec2::new(role_w, 24.0),
+    );
+    let role_fill = role_color
+        .map(|color| color.gamma_multiply(0.18))
+        .unwrap_or(kit::FIELD_BG_ACTIVE);
+    let role_stroke = role_color
+        .map(|color| color.gamma_multiply(0.72))
+        .unwrap_or(kit::BORDER);
+    let role_text = role_color.unwrap_or(if selected { kit::TEXT } else { kit::TEXT_MUTED });
+    ui.painter()
+        .rect_filled(role_rect, egui::CornerRadius::same(5), role_fill);
+    ui.painter().rect_stroke(
+        role_rect,
+        egui::CornerRadius::same(5),
+        egui::Stroke::new(1.0, role_stroke),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        role_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        role_label,
+        egui::FontId::proportional(11.0),
+        role_text,
+    );
+
+    ui.painter().text(
+        Pos2::new(rect.left() + 17.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        "::",
+        egui::FontId::proportional(13.0),
+        kit::TEXT_DIM,
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + 52.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        format!("{:02}", index + 1),
+        egui::FontId::proportional(11.0),
+        kit::TEXT_DIM,
+    );
+
+    let title = if input.label.trim().is_empty() {
+        input.name.as_str()
+    } else {
+        input.label.as_str()
+    };
+    let subtitle = provider_input_compact_subtitle(input);
+    let text_left = rect.left() + 72.0;
+    let text_width = (role_rect.left() - text_left - 8.0).max(24.0);
+    paint_truncated_row_text_top(
+        ui,
+        Pos2::new(text_left, rect.top() + 8.0),
+        kit::value(title),
+        12.0,
+        text_width,
+        kit::TEXT,
+    );
+    paint_truncated_row_text_bottom(
+        ui,
+        Pos2::new(text_left, rect.bottom() - 7.0),
+        kit::caption(subtitle),
+        11.0,
+        text_width,
+        kit::TEXT_MUTED,
+    );
+
+    ProviderInputSummaryRowResponse {
+        select_response,
+        drag_response,
+        rect,
+    }
 }
 
-pub(super) fn provider_builder_input_editor_contents(
+pub(super) fn provider_builder_input_inspector_editor(
     ui: &mut Ui,
     index: usize,
     len: usize,
     input: &mut ProviderBuilderInput,
     action: &mut Option<ProviderInputAction>,
 ) {
-    kit::field_grid_row(ui, &[1.0, 1.0], |ui, column| match column {
-        0 => {
-            kit::labeled_text_field(ui, "Name", &mut input.name);
-        }
-        1 => {
-            kit::labeled_text_field(ui, "Label", &mut input.label);
-        }
-        _ => {}
-    });
+    kit::labeled_text_field(ui, "Name", &mut input.name);
     ui.add_space(kit::FORM_ROW_GAP);
-    kit::field_grid_row(ui, &[0.44, 1.0], |ui, column| match column {
-        0 => {
-            provider_input_type_field(ui, "Type", &mut input.input_type_key);
-        }
-        1 => {
-            provider_builder_default_field(ui, input);
-        }
-        _ => {}
-    });
+    kit::labeled_text_field(ui, "Label", &mut input.label);
+    ui.add_space(kit::FORM_ROW_GAP);
+    kit::field_label(ui, "Description");
+    ui.add_space(kit::FIELD_LABEL_GAP);
+    kit::multiline_text_field(
+        ui,
+        &mut input.description,
+        ui.available_width(),
+        kit::MultilineTextFieldOptions::rows(3),
+    );
+    ui.add_space(kit::FORM_ROW_GAP);
+    provider_input_type_field(ui, "Type", &mut input.input_type_key);
+    ui.add_space(kit::FORM_ROW_GAP);
+    provider_builder_default_field(ui, input);
     ui.add_space(kit::FORM_ROW_GAP);
     provider_input_role_field(ui, "Role", &input.name, &mut input.role);
     ui.add_space(kit::FORM_ROW_GAP);
@@ -1424,24 +1691,37 @@ pub(super) fn provider_builder_input_editor_contents(
     } else {
         input.multiline = false;
     }
+    provider_builder_input_action_row(ui, index, len, input, action);
+}
+
+pub(super) fn provider_builder_input_action_row(
+    ui: &mut Ui,
+    index: usize,
+    len: usize,
+    input: &ProviderBuilderInput,
+    action: &mut Option<ProviderInputAction>,
+) {
     ui.horizontal(|ui| {
         let gap = ui.spacing().item_spacing.x;
         let buttons_w = 42.0 + 52.0 + 66.0 + gap * 3.0;
-        let required_label = if input.required {
-            "Required"
-        } else {
-            "Optional"
-        };
-        ui.add_sized(
-            [(ui.available_width() - buttons_w).max(0.0), 18.0],
-            egui::Label::new(kit::caption(format!(
-                "{} -> node {} / {}.{}",
-                required_label,
+        let binding_label = if input.required {
+            format!(
+                "node {} / {}.{}",
                 input.selector.node_id.as_deref().unwrap_or("-"),
                 empty_dash(&input.selector.class_type),
                 empty_dash(&input.selector.input_key)
-            )))
-            .truncate(),
+            )
+        } else {
+            format!(
+                "Optional -> node {} / {}.{}",
+                input.selector.node_id.as_deref().unwrap_or("-"),
+                empty_dash(&input.selector.class_type),
+                empty_dash(&input.selector.input_key)
+            )
+        };
+        ui.add_sized(
+            [(ui.available_width() - buttons_w).max(0.0), 18.0],
+            egui::Label::new(kit::caption(binding_label)).truncate(),
         );
         if kit::field_button(ui, "Up", 42.0).clicked() && index > 0 {
             *action = Some(ProviderInputAction::MoveUp(index));
@@ -1461,6 +1741,72 @@ pub(super) fn provider_input_role_label(value: Option<InputRole>) -> &'static st
         Some(InputRole::Height) => "Height",
         Some(InputRole::Seed) => "Seed",
         None => "None",
+    }
+}
+
+pub(super) fn provider_input_role_color(role: InputRole) -> Color32 {
+    match role {
+        InputRole::Width => kit::IMAGE,
+        InputRole::Height => kit::VIDEO,
+        InputRole::Seed => kit::MARKER,
+    }
+}
+
+pub(super) fn provider_input_compact_role_label(value: Option<InputRole>) -> &'static str {
+    match value {
+        Some(role) => provider_input_role_label(Some(role)),
+        None => "Generic",
+    }
+}
+
+fn provider_input_compact_subtitle(input: &ProviderBuilderInput) -> String {
+    let default = provider_input_compact_default(input);
+    let binding = format!(
+        "node {} / {}.{}",
+        input.selector.node_id.as_deref().unwrap_or("-"),
+        empty_dash(&input.selector.class_type),
+        empty_dash(&input.selector.input_key)
+    );
+    if input.required {
+        format!(
+            "{}  {}  {}",
+            provider_input_type_label(&input.input_type_key),
+            default,
+            binding
+        )
+    } else {
+        format!(
+            "{}  {}  Optional -> {}",
+            provider_input_type_label(&input.input_type_key),
+            default,
+            binding
+        )
+    }
+}
+
+fn provider_input_compact_default(input: &ProviderBuilderInput) -> String {
+    match input.input_type_key.as_str() {
+        "image" | "video" | "audio" => "Runtime asset".to_string(),
+        _ => {
+            let trimmed = input.default_text.trim();
+            if trimmed.is_empty() {
+                "No default".to_string()
+            } else {
+                format!("Default {}", trimmed)
+            }
+        }
+    }
+}
+
+fn remap_moved_index(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < to && index > from && index <= to {
+        index - 1
+    } else if to < from && index >= to && index < from {
+        index + 1
+    } else {
+        index
     }
 }
 
@@ -1753,6 +2099,15 @@ pub(super) fn split_provider_builder_enum_options(text: &str) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+pub(super) fn optional_trimmed_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 pub(super) fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<InputUi> {
