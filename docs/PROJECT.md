@@ -32,7 +32,11 @@ This file is the living project status page. Keep it current, concise, and factu
 - Provider workflow and manifest paths are saved repo-relative when they live under the local `workflows/` folder.
 - Experimental OpenAI image, xAI image, and xAI Grok video adapters using app-managed credential IDs.
 - MP4 export through FFmpeg with H.264/H.265 options, quality presets, optional audio mixdown, timestamp overlay option, and progress UI.
-- Rust-native automation harness for smoke scenarios and screenshots.
+- Rust-native Agent API / automation harness for smoke scenarios and local AI operation.
+- Top-bar Agent API popover with localhost enable/disable, port display, and copyable agent primer.
+- Self-documenting Agent API routes for help, schema, capabilities, state, jobs, command execution, export status, generation waits, and rendered captures.
+- Agent visual feedback through normal and enhanced timeline/clip/asset frame captures and cut sheets saved under ignored `.tmp/agent-captures`, cleared on app startup.
+- Agent-accessible provider metadata, provider/input descriptions, credentials status/write operations, generative config edits, queue operations, project settings, timeline edits, batch clip moves, and export control.
 
 ## Current Limitations
 
@@ -44,6 +48,7 @@ This file is the living project status page. Keep it current, concise, and factu
 - Export exists but needs broader real-world validation and better diagnostics.
 - Test coverage is small.
 - `cargo clippy --all-targets -- -D warnings` is not clean yet and is not a CI gate.
+- The Agent API is localhost-only development/control infrastructure, not a network-exposed remote-control service or MCP server yet.
 - macOS and Linux are future work, not supported release targets.
 
 ## Roadmap
@@ -86,7 +91,7 @@ Not a primary goal:
 | ComfyUI binding | Provider manifests bind exposed fields to ComfyUI node IDs plus input keys. |
 | Credentials | Cloud provider configs store credential IDs; Windows credentials use app-managed DPAPI protection. |
 | Export | FFmpeg-backed MP4 export for now; bundling FFmpeg is future work. |
-| Automation | Loopback-only automation API drives real editor/UI paths for smoke checks. |
+| Agent API | Loopback-only Agent API drives real editor/UI paths for smoke checks, local AI operation, generation waits, and rendered visual capture. |
 
 ## Important Paths
 
@@ -117,4 +122,4 @@ Avoid docs for docs' sake. Keep docs short, current, and operational.
 - Delete old plans once the code has absorbed them.
 - Use git history for long session logs instead of keeping them in public docs.
 
-*Last updated: 2026-06-01*
+*Last updated: 2026-06-20*

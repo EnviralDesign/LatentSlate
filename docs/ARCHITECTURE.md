@@ -117,8 +117,24 @@ Export:
 - Invokes `ffmpeg.exe` for MP4 muxing/encoding.
 - Supports H.264/H.265, quality presets, optional timestamp overlay, and cancel/progress UI.
 
-## Automation
+## Agent API And Automation
 
-The desktop automation API is loopback-only and opt-in through `--automation` or `LATENTSLATE_AUTOMATION=1`. It exposes semantic commands, current UI registry data, screenshots, and preview diagnostics for smoke testing.
+The desktop Agent API is loopback-only and opt-in through the top-bar API
+popover, `--automation`, or `LATENTSLATE_AUTOMATION=1`. It exposes semantic
+commands, current UI registry data, screenshots, preview diagnostics, generation
+queue control, long-running generation waits, export control, self-documenting
+help/schema routes, and rendered timeline/clip/asset captures.
+
+State-changing Agent API commands should route through the highest practical
+editor/app operation so the visible UI, preview caches, selection, dirty state,
+queue panels, and timeline playhead update like human-driven actions. Read-only
+captures do not move the visible timeline unless the request opts into `seek_ui`.
+
+Rendered captures are saved under ignored `.tmp/agent-captures` relative to the
+app process current working directory. The app clears this folder on startup so
+each launched session begins with an empty capture scratch area. `normal` mode
+matches the compositor output as closely as practical; `enhanced` mode adds
+agent-readable inspection overlays such as timing labels and clip/source
+boundaries.
 
 See [DESKTOP_TEST_HARNESS.md](./DESKTOP_TEST_HARNESS.md).

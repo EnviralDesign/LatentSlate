@@ -704,9 +704,12 @@ capture endpoint when possible.
 Capture outputs should default to:
 
 ```text
-.tmp/agent-captures/<project-or-session>/<timestamp>-<slug>/
+.tmp/agent-captures/<timestamp>-<slug>/
 ```
 
+The `.tmp/agent-captures` root is relative to the app process current working
+directory. Each app startup creates this folder if needed and removes any
+previous capture artifacts inside it, so captures are session scratch output.
 Each capture returns absolute paths and a manifest. The folder is ignored by
 git. Persistent captures can later use a project-local `exports/captures/`
 folder when requested.

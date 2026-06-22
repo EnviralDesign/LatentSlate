@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -1221,9 +1221,7 @@ pub fn screenshot_path(name: Option<&str>) -> Result<PathBuf, String> {
 
 /// Build a deterministic capture directory under `.tmp/agent-captures`.
 pub fn agent_capture_dir(name: Option<&str>) -> Result<PathBuf, String> {
-    let root = std::env::current_dir()
-        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
-    let parent = root.join(".tmp").join("agent-captures");
+    let parent = agent_capture_root()?;
     fs::create_dir_all(&parent).map_err(|err| {
         format!(
             "Failed to create agent capture directory {}: {err}",
@@ -1236,6 +1234,81 @@ pub fn agent_capture_dir(name: Option<&str>) -> Result<PathBuf, String> {
         .unwrap_or_else(|| "capture".to_string());
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
     let dir = parent.join(format!("{timestamp}-{suffix}"));
+    fs::create_dir_all(&dir).map_err(|err| {
+        format!(
+            "Failed to create agent capture directory {}: {err}",
+            dir.display()
+        )
+    })?;
+    Ok(dir)
+}
+
+/// Empty the agent capture scratch folder for a fresh app session.
+pub fn reset_agent_capture_dir() -> Result<PathBuf, String> {
+    let root = std::env::current_dir()
+        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
+    reset_agent_capture_dir_at(&root)
+}
+
+fn agent_capture_root() -> Result<PathBuf, String> {
+    let root = std::env::current_dir()
+        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
+    Ok(agent_capture_root_at(&root))
+}
+
+fn agent_capture_root_at(root: &Path) -> PathBuf {
+    root.join(".tmp").join("agent-captures")
+}
+
+fn reset_agent_capture_dir_at(root: &Path) -> Result<PathBuf, String> {
+    let dir = agent_capture_root_at(root);
+    if dir.exists() {
+        if !dir.is_dir() {
+            fs::remove_file(&dir).map_err(|err| {
+                format!(
+                    "Failed to remove non-directory agent capture path {}: {err}",
+                    dir.display()
+                )
+            })?;
+        } else {
+            let entries = fs::read_dir(&dir).map_err(|err| {
+                format!(
+                    "Failed to read agent capture directory {}: {err}",
+                    dir.display()
+                )
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|err| {
+                    format!(
+                        "Failed to inspect agent capture directory {}: {err}",
+                        dir.display()
+                    )
+                })?;
+                let path = entry.path();
+                let file_type = entry.file_type().map_err(|err| {
+                    format!(
+                        "Failed to inspect agent capture path {}: {err}",
+                        path.display()
+                    )
+                })?;
+                if file_type.is_dir() {
+                    fs::remove_dir_all(&path).map_err(|err| {
+                        format!(
+                            "Failed to remove agent capture directory {}: {err}",
+                            path.display()
+                        )
+                    })?;
+                } else {
+                    fs::remove_file(&path).map_err(|err| {
+                        format!(
+                            "Failed to remove agent capture file {}: {err}",
+                            path.display()
+                        )
+                    })?;
+                }
+            }
+        }
+    }
     fs::create_dir_all(&dir).map_err(|err| {
         format!(
             "Failed to create agent capture directory {}: {err}",
@@ -2578,6 +2651,32 @@ mod tests {
         assert!(primer.contains("Name: Primer Project"));
         assert!(primer.contains("providers=2"));
         assert!(primer.contains("jobs=1"));
+    }
+
+    #[test]
+    fn reset_agent_capture_dir_removes_existing_capture_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "latentslate-agent-capture-reset-test-{}",
+            Uuid::new_v4()
+        ));
+        let capture_root = root.join(".tmp").join("agent-captures");
+        let nested = capture_root.join("old-capture");
+        std::fs::create_dir_all(&nested).expect("create nested capture dir");
+        std::fs::write(nested.join("frame-0001.png"), b"fake").expect("write nested file");
+        std::fs::write(capture_root.join("orphan.tmp"), b"fake").expect("write orphan file");
+
+        let reset_root = reset_agent_capture_dir_at(&root).expect("reset capture dir");
+
+        assert_eq!(reset_root, capture_root);
+        assert!(reset_root.is_dir());
+        assert_eq!(
+            std::fs::read_dir(&reset_root)
+                .expect("read reset root")
+                .count(),
+            0
+        );
+
+        std::fs::remove_dir_all(&root).expect("cleanup test root");
     }
 
     #[test]
