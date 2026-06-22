@@ -198,10 +198,6 @@ fn migrate_legacy_runtime_state(app_root: &Path) -> Result<(), String> {
     }
 
     copy_dir_contents_if_empty(&legacy.join("providers"), &app_root.join("providers"))?;
-    copy_file_if_missing(
-        &legacy.join("secrets").join("credentials.json"),
-        &app_root.join("secrets").join("credentials.json"),
-    )?;
     Ok(())
 }
 
@@ -239,27 +235,5 @@ fn copy_dir_contents_if_empty(source: &Path, target: &Path) -> Result<(), String
             )
         })?;
     }
-    Ok(())
-}
-
-fn copy_file_if_missing(source: &Path, target: &Path) -> Result<(), String> {
-    if !source.is_file() || target.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "Failed to create migrated data folder {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::copy(source, target).map_err(|err| {
-        format!(
-            "Failed to migrate {} to {}: {err}",
-            source.display(),
-            target.display()
-        )
-    })?;
     Ok(())
 }

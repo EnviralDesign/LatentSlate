@@ -33,7 +33,7 @@ The builder writes:
 `LatentSlateData/` is created beside the running executable unless
 `LATENTSLATE_HOME` points at an explicit app data folder. Older provider files
 under `.latentslate/providers/` are copied into an empty app data folder for
-development compatibility.
+development compatibility. Credentials are not automatically copied.
 
 ## Provider Entries
 

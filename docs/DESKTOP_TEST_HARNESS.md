@@ -4,7 +4,13 @@ The app is a native egui/eframe desktop program, so smoke testing uses a local e
 
 ## Smoke Scripts
 
-Stage FFmpeg runtime DLLs beside the executable:
+Build a launchable executable and stage runtime DLLs beside it:
+
+```powershell
+.\scripts\build-and-stage.ps1 -Profile release
+```
+
+Stage runtime DLLs beside an already-built executable:
 
 ```powershell
 .\scripts\stage-runtime-dlls.ps1 -Profile release
@@ -178,15 +184,14 @@ Timeline clips may also draw cache bucket strips when preview stats are enabled.
 
 ## DLL Staging
 
-The executable needs FFmpeg runtime DLLs at launch:
+The executable needs FFmpeg runtime DLLs beside it at launch. Rather than
+maintaining a hand-written filename list, `scripts/stage-runtime-dlls.ps1`
+inspects the built executable's PE import table, walks matching transitive DLL
+imports from the selected vcpkg `bin` directory, and copies that app-local
+dependency closure into `target\<profile>`.
 
-- `avcodec-61.dll`
-- `avformat-61.dll`
-- `avutil-59.dll`
-- `swresample-5.dll`
-- `swscale-8.dll`
-
-`scripts/stage-runtime-dlls.ps1` copies these from `VCPKG_ROOT`, `C:\vcpkg2`, `C:\vcpkg`, or an explicit `-SourceBin`.
+Sources are checked in this order: explicit `-SourceBin`, `VCPKG_ROOT`,
+`C:\vcpkg2`, then `C:\vcpkg`.
 
 ## Test Strategy
 

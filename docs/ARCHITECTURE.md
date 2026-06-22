@@ -46,7 +46,7 @@ Important rules:
 - Provider Builder writes new ComfyUI manifests to `LatentSlateData/provider-manifests/`; existing providers can still reference older explicit manifest paths.
 - API credentials are written to `LatentSlateData/secrets/credentials.json` and are encrypted on Windows.
 - App scratch files are written under `LatentSlateData/tmp/`; project-derived caches are written under each project folder's `.cache/`.
-- Legacy `.latentslate/providers` and `.latentslate/secrets/credentials.json` are copied into an empty app data folder for dev compatibility.
+- Legacy `.latentslate/providers` are copied into an empty app data folder for dev compatibility. Credentials are not automatically copied.
 
 ## Timeline Model
 

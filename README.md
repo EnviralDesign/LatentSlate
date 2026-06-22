@@ -76,13 +76,11 @@ git clone <repository-url>
 cd <repository-folder>
 
 cargo check
-cargo build --release
-
-.\scripts\stage-runtime-dlls.ps1 -Profile release
+.\scripts\build-and-stage.ps1 -Profile release
 .\target\release\latentslate.exe
 ```
 
-You will need Rust stable, FFmpeg development/runtime libraries for `ffmpeg-next`, `ffmpeg.exe` on `PATH` for export, and optionally a local ComfyUI instance at `http://127.0.0.1:8188`.
+You will need Rust stable, FFmpeg development/runtime libraries for `ffmpeg-next`, `ffmpeg.exe` on `PATH` for export, and optionally a local ComfyUI instance at `http://127.0.0.1:8188`. The runtime staging script reads the built executable's DLL imports and copies the matching app-local dependency closure from `VCPKG_ROOT`, `C:\vcpkg2`, `C:\vcpkg`, or an explicit `-SourceBin`.
 
 Local runtime state lives under `.latentslate/` in this repository folder. The directory skeleton is tracked, but provider JSONs, encrypted credentials, and caches are ignored so the app stays inspectable without committing private state.
 

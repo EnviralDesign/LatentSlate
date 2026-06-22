@@ -19,15 +19,16 @@ Common commands:
 cargo fmt --check
 cargo check
 cargo test
-cargo build --release
-.\scripts\stage-runtime-dlls.ps1 -Profile release
+.\scripts\build-and-stage.ps1 -Profile release
 ```
 
-Run the app from the built executable after staging FFmpeg DLLs:
+Run the app from the built executable after staging runtime DLLs:
 
 ```powershell
 .\target\release\latentslate.exe
 ```
+
+`scripts/stage-runtime-dlls.ps1` inspects the built executable's DLL imports, walks matching transitive DLL imports from the selected vcpkg `bin` directory, and copies that app-local closure beside the executable.
 
 Useful docs:
 
