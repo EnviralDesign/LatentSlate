@@ -40,11 +40,13 @@ Important rules:
 - Imported media is copied into the project folder.
 - Assets store project-relative paths where possible.
 - Generated assets have their own UUID-keyed folder with `config.json` plus versioned output files.
-- Repo-local runtime state lives under `.latentslate/`.
-- Provider entries are written to `.latentslate/providers/`.
-- API credentials are written to `.latentslate/secrets/credentials.json` and are encrypted on Windows.
-- Caches and scratch files are written under `.latentslate/cache/`.
-- `.latentslate/` contents are ignored except for `.gitkeep` files that preserve the folder layout.
+- Writable app-managed state lives under `LatentSlateData/` next to the running executable unless `LATENTSLATE_HOME` is set.
+- Default projects are written to `LatentSlateData/projects/`.
+- Provider entries are written to `LatentSlateData/providers/`.
+- Provider Builder writes new ComfyUI manifests to `LatentSlateData/provider-manifests/`; existing providers can still reference older explicit manifest paths.
+- API credentials are written to `LatentSlateData/secrets/credentials.json` and are encrypted on Windows.
+- App scratch files are written under `LatentSlateData/tmp/`; project-derived caches are written under each project folder's `.cache/`.
+- Legacy `.latentslate/providers` and `.latentslate/secrets/credentials.json` are copied into an empty app data folder for dev compatibility.
 
 ## Timeline Model
 
@@ -130,8 +132,8 @@ editor/app operation so the visible UI, preview caches, selection, dirty state,
 queue panels, and timeline playhead update like human-driven actions. Read-only
 captures do not move the visible timeline unless the request opts into `seek_ui`.
 
-Rendered captures are saved under ignored `.tmp/agent-captures` relative to the
-app process current working directory. The app clears this folder on startup so
+Rendered captures are saved under
+`LatentSlateData/tmp/agent-captures`. The app clears this folder on startup so
 each launched session begins with an empty capture scratch area. `normal` mode
 matches the compositor output as closely as practical; `enhanced` mode adds
 agent-readable inspection overlays such as timing labels and clip/source

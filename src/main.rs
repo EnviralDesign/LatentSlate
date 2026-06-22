@@ -11,6 +11,10 @@ mod state;
 mod ui_kit;
 
 fn main() {
+    if let Err(err) = crate::core::paths::ensure_app_runtime_dirs() {
+        eprintln!("[APP DATA WARN] {err}");
+    }
+
     if let Err(err) = crate::core::automation::reset_agent_capture_dir() {
         eprintln!("[AGENT API WARN] {err}");
     }

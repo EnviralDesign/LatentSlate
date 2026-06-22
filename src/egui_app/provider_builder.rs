@@ -993,7 +993,7 @@ impl ProviderBuilderState {
         let manifest_path = self
             .manifest_path
             .clone()
-            .unwrap_or_else(|| derive_manifest_path(&workflow_path));
+            .unwrap_or_else(|| default_provider_manifest_path(self.provider_id));
         let provider_path = self.source_path.clone().unwrap_or_else(|| {
             crate::core::provider_store::provider_path_for_entry(&ProviderEntry {
                 id: self.provider_id,
@@ -2288,6 +2288,7 @@ pub(super) fn default_value_to_text(value: Option<&serde_json::Value>) -> String
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 pub(super) fn derive_manifest_path(workflow_path: &Path) -> PathBuf {
     let mut path = workflow_path.to_path_buf();
     let stem = path
@@ -2296,6 +2297,10 @@ pub(super) fn derive_manifest_path(workflow_path: &Path) -> PathBuf {
         .unwrap_or("workflow");
     path.set_file_name(format!("{stem}_manifest.json"));
     path
+}
+
+pub(super) fn default_provider_manifest_path(provider_id: Uuid) -> PathBuf {
+    crate::core::paths::app_provider_manifests_root().join(format!("{provider_id}_manifest.json"))
 }
 
 pub(super) fn provider_name_from_workflow_path(path: &Path) -> Option<String> {

@@ -55,6 +55,10 @@ logs/
 /.latentslate/cache/*
 !/.latentslate/cache/.gitkeep
 
+# Portable app data root used next to the executable. Ignore it here too in
+# case LATENTSLATE_HOME points at the repo during development.
+/LatentSlateData/
+
 # Local/personal ComfyUI workflows.
 # Keep this deny-by-default and opt in only blessed default workflows.
 /workflows/*

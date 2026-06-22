@@ -2736,9 +2736,7 @@ mod tests {
 }
 
 pub fn default_projects_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("projects")
+    crate::core::paths::app_projects_root()
 }
 
 fn list_project_folders(root: Option<&Path>) -> Result<serde_json::Value, String> {

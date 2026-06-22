@@ -704,15 +704,15 @@ capture endpoint when possible.
 Capture outputs should default to:
 
 ```text
-.tmp/agent-captures/<timestamp>-<slug>/
+LatentSlateData/tmp/agent-captures/<timestamp>-<slug>/
 ```
 
-The `.tmp/agent-captures` root is relative to the app process current working
-directory. Each app startup creates this folder if needed and removes any
-previous capture artifacts inside it, so captures are session scratch output.
-Each capture returns absolute paths and a manifest. The folder is ignored by
-git. Persistent captures can later use a project-local `exports/captures/`
-folder when requested.
+The `LatentSlateData` root is created beside the running executable unless
+`LATENTSLATE_HOME` points at an explicit app data folder. Each app startup
+creates `tmp/agent-captures` if needed and removes any previous capture
+artifacts inside it, so captures are session scratch output. Each capture
+returns absolute paths and a manifest. Persistent captures can later use a
+project-local `exports/captures/` folder when requested.
 
 Capture mode:
 
@@ -751,8 +751,8 @@ Response:
   "capture": {
     "id": "uuid",
     "kind": "frame",
-    "path": "C:/repos/.../.tmp/agent-captures/demo/frame-0001.png",
-    "manifest_path": "C:/repos/.../.tmp/agent-captures/demo/manifest.json",
+    "path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/frame-0001.png",
+    "manifest_path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/manifest.json",
     "time": { "seconds": 4.25, "frame": 102, "fps": 24.0, "scope": "timeline" },
     "stats": {}
   }
@@ -824,12 +824,12 @@ Response:
   "capture": {
     "id": "uuid",
     "kind": "cutsheet",
-    "path": "C:/repos/.../.tmp/agent-captures/demo/cutsheet.png",
-    "manifest_path": "C:/repos/.../.tmp/agent-captures/demo/manifest.json",
+    "path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/cutsheet.png",
+    "manifest_path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/manifest.json",
     "frames": [
       {
         "label": "start",
-        "path": "C:/repos/.../.tmp/agent-captures/demo/frame-0001.png",
+        "path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/frame-0001.png",
         "time": { "seconds": 0.0, "frame": 0, "fps": 24.0, "scope": "timeline" }
       }
     ]
@@ -921,7 +921,7 @@ The intended coverage surface is:
   where the expected result is visual
 - read-only capture/inspection calls verified not to disturb visible timeline
   state unless `seek_ui` is requested
-- final reusable validation project saved under `.tmp/agent-validation/`, with a
+- final reusable validation project saved under `LatentSlateData/projects/agent-validation/`, with a
   silly but diagnostic 30-second timeline exercising images, video, audio or
   waveforms where available, labels, transforms, markers, generated versions,
   and capture outputs

@@ -1,7 +1,7 @@
 //! App-managed credential storage.
 //!
 //! On Windows, secrets are protected with DPAPI before being written to the
-//! repo-local ignored runtime folder. Provider JSON stores stable credential
+//! portable app data folder. Provider JSON stores stable credential
 //! IDs, not the API key material itself.
 
 use std::collections::HashMap;

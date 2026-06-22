@@ -27,8 +27,13 @@ LatentSlate is built around user-owned providers. ComfyUI is the primary open-so
 
 The builder writes:
 
-- a repo-local provider JSON file under `.latentslate/providers/`
-- a manifest JSON file beside the workflow JSON
+- a provider JSON file under `LatentSlateData/providers/`
+- a manifest JSON file under `LatentSlateData/provider-manifests/`
+
+`LatentSlateData/` is created beside the running executable unless
+`LATENTSLATE_HOME` points at an explicit app data folder. Older provider files
+under `.latentslate/providers/` are copied into an empty app data folder for
+development compatibility.
 
 ## Provider Entries
 

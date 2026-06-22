@@ -83,7 +83,7 @@ pub enum AutomationCommand {
         #[serde(default = "default_text_replace")]
         replace: bool,
     },
-    /// Capture the current application viewport to `.tmp/automation-screenshots`.
+    /// Capture the current application viewport to the app data screenshot folder.
     Screenshot {
         #[serde(default)]
         name: Option<String>,
@@ -1200,11 +1200,9 @@ pub fn clear_pending_ui_action(id: &str) {
     }
 }
 
-/// Build a deterministic screenshot path under `.tmp/automation-screenshots`.
+/// Build a deterministic screenshot path under the app data screenshot folder.
 pub fn screenshot_path(name: Option<&str>) -> Result<PathBuf, String> {
-    let root = std::env::current_dir()
-        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
-    let dir = root.join(".tmp").join("automation-screenshots");
+    let dir = crate::core::paths::app_tmp_root().join("automation-screenshots");
     fs::create_dir_all(&dir).map_err(|err| {
         format!(
             "Failed to create automation screenshot directory {}: {err}",
@@ -1219,7 +1217,7 @@ pub fn screenshot_path(name: Option<&str>) -> Result<PathBuf, String> {
     Ok(dir.join(format!("automation-{timestamp}-{suffix}.png")))
 }
 
-/// Build a deterministic capture directory under `.tmp/agent-captures`.
+/// Build a deterministic capture directory under the app data capture folder.
 pub fn agent_capture_dir(name: Option<&str>) -> Result<PathBuf, String> {
     let parent = agent_capture_root()?;
     fs::create_dir_all(&parent).map_err(|err| {
@@ -1245,19 +1243,17 @@ pub fn agent_capture_dir(name: Option<&str>) -> Result<PathBuf, String> {
 
 /// Empty the agent capture scratch folder for a fresh app session.
 pub fn reset_agent_capture_dir() -> Result<PathBuf, String> {
-    let root = std::env::current_dir()
-        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
-    reset_agent_capture_dir_at(&root)
+    reset_agent_capture_dir_at(&crate::core::paths::app_runtime_root())
 }
 
 fn agent_capture_root() -> Result<PathBuf, String> {
-    let root = std::env::current_dir()
-        .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
-    Ok(agent_capture_root_at(&root))
+    Ok(agent_capture_root_at(
+        &crate::core::paths::app_runtime_root(),
+    ))
 }
 
 fn agent_capture_root_at(root: &Path) -> PathBuf {
-    root.join(".tmp").join("agent-captures")
+    root.join("tmp").join("agent-captures")
 }
 
 fn reset_agent_capture_dir_at(root: &Path) -> Result<PathBuf, String> {
@@ -2143,7 +2139,7 @@ pub fn build_agent_bootstrap(
     }
     lines.push("- Provider secrets are write-only/redacted in API responses.".to_string());
     lines.push(
-        "- Rendered captures are saved under .tmp/agent-captures and return absolute paths."
+        "- Rendered captures are saved under LatentSlateData/tmp/agent-captures and return absolute paths."
             .to_string(),
     );
     lines.push(
@@ -2659,7 +2655,7 @@ mod tests {
             "latentslate-agent-capture-reset-test-{}",
             Uuid::new_v4()
         ));
-        let capture_root = root.join(".tmp").join("agent-captures");
+        let capture_root = root.join("tmp").join("agent-captures");
         let nested = capture_root.join("old-capture");
         std::fs::create_dir_all(&nested).expect("create nested capture dir");
         std::fs::write(nested.join("frame-0001.png"), b"fake").expect("write nested file");
