@@ -35,9 +35,9 @@ fn default_preview_max_height() -> u32 {
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
-            width: 1920,
-            height: 1080,
-            fps: 60.0,
+            width: 1280,
+            height: 720,
+            fps: 30.0,
             duration_seconds: default_project_duration_seconds(),
             preview_max_width: default_preview_max_width(),
             preview_max_height: default_preview_max_height(),

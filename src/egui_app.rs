@@ -190,7 +190,7 @@ const ASSET_LAB_VERSION_ROW_H: f32 = 54.0;
 const ASSET_LAB_PREVIEW_H: f32 = 200.0;
 const ASSET_LAB_PREVIEW_SCRUB_GAP: f32 = 6.0;
 
-const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
+const APP_WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/app-window-icon.png");
 
 fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
     let available = ctx.content_rect().size();
@@ -203,7 +203,7 @@ fn modal_size(ctx: &Context, desired: [f32; 2], min: [f32; 2]) -> Vec2 {
 }
 
 fn app_icon() -> egui::IconData {
-    let icon = image::load_from_memory(APP_ICON_PNG)
+    let icon = image::load_from_memory(APP_WINDOW_ICON_PNG)
         .expect("embedded LatentSlate app icon should decode")
         .into_rgba8();
     let (width, height) = icon.dimensions();
