@@ -425,8 +425,8 @@ const RESOLUTION_PRESETS: &[ResolutionPreset] = &[
     },
     ResolutionPreset {
         label: "1:1",
-        width: 512,
-        height: 512,
+        width: 1024,
+        height: 1024,
         preview_width: 512,
         preview_height: 512,
     },
