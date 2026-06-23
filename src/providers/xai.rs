@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::core::credentials;
 use crate::providers::{cloud, ProviderOutput, ProviderProgress};
 
 const DEFAULT_BASE_URL: &str = "https://api.x.ai/v1";
@@ -12,13 +11,13 @@ const VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const VIDEO_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub async fn generate_image(
-    credential_id: &str,
+    api_key: Option<&str>,
     model: &str,
     base_url: Option<&str>,
     inputs: &HashMap<String, Value>,
     progress_tx: Option<mpsc::UnboundedSender<ProviderProgress>>,
 ) -> Result<ProviderOutput, String> {
-    let api_key = credentials::load_secret(credential_id)?;
+    let api_key = cloud::required_api_key(api_key, "xAI")?;
     let prompt = cloud::text_input(inputs, &["prompt", "positive_prompt"])
         .ok_or_else(|| "xAI image providers require a prompt input.".to_string())?;
     let aspect_ratio = cloud::string_input(inputs, "aspect_ratio", "1:1");
@@ -52,13 +51,13 @@ pub async fn generate_image(
 }
 
 pub async fn generate_video(
-    credential_id: &str,
+    api_key: Option<&str>,
     model: &str,
     base_url: Option<&str>,
     inputs: &HashMap<String, Value>,
     progress_tx: Option<mpsc::UnboundedSender<ProviderProgress>>,
 ) -> Result<ProviderOutput, String> {
-    let api_key = credentials::load_secret(credential_id)?;
+    let api_key = cloud::required_api_key(api_key, "xAI")?;
     let prompt = cloud::text_input(inputs, &["prompt", "positive_prompt"])
         .ok_or_else(|| "xAI video providers require a prompt input.".to_string())?;
     let duration = cloud::integer_input(inputs, "duration", 6).clamp(1, 15);

@@ -1,19 +1,13 @@
-#![allow(dead_code)]
 //! Provider storage helpers for provider configs.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::core::credentials::{OPENAI_CREDENTIAL_ID, XAI_CREDENTIAL_ID};
 use crate::state::{
     InputUi, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
     ProviderOutputType, ProviderWorkflowKind,
 };
-
-pub fn load_provider_entries(project_root: &Path) -> io::Result<Vec<ProviderEntry>> {
-    load_provider_entries_from(&providers_root(project_root))
-}
 
 pub fn load_local_provider_entries() -> io::Result<Vec<ProviderEntry>> {
     load_provider_entries_from(&local_providers_root())
@@ -27,10 +21,6 @@ pub fn load_local_provider_entries_or_empty() -> Vec<ProviderEntry> {
             Vec::new()
         }
     }
-}
-
-pub fn save_provider_entry(project_root: &Path, entry: &ProviderEntry) -> io::Result<PathBuf> {
-    save_provider_entry_to(&providers_root(project_root), entry)
 }
 
 pub fn save_local_provider_entry(entry: &ProviderEntry) -> io::Result<PathBuf> {
@@ -81,7 +71,7 @@ pub fn default_provider_entry() -> ProviderEntry {
         ProviderConnection::ComfyUi {
             base_url: "http://127.0.0.1:8188".to_string(),
             workflow_path: None,
-            manifest_path: None,
+            manifest: None,
         },
     );
     entry.inputs = Vec::new();
@@ -93,7 +83,7 @@ pub fn default_openai_image_provider_entry() -> ProviderEntry {
         "OpenAI Image",
         ProviderOutputType::Image,
         ProviderConnection::OpenAiImage {
-            credential_id: OPENAI_CREDENTIAL_ID.to_string(),
+            api_key: None,
             model: "gpt-image-2".to_string(),
             base_url: None,
         },
@@ -136,7 +126,7 @@ pub fn default_xai_image_provider_entry() -> ProviderEntry {
         "xAI Imagine Image",
         ProviderOutputType::Image,
         ProviderConnection::XaiImage {
-            credential_id: XAI_CREDENTIAL_ID.to_string(),
+            api_key: None,
             model: "grok-imagine-image-quality".to_string(),
             base_url: None,
         },
@@ -168,7 +158,7 @@ pub fn default_xai_video_provider_entry() -> ProviderEntry {
         "xAI Grok Video",
         ProviderOutputType::Video,
         ProviderConnection::XaiVideo {
-            credential_id: XAI_CREDENTIAL_ID.to_string(),
+            api_key: None,
             model: "grok-imagine-video".to_string(),
             base_url: None,
         },
@@ -262,10 +252,6 @@ fn integer_input(
             ..InputUi::default()
         }),
     }
-}
-
-fn providers_root(project_root: &Path) -> PathBuf {
-    project_root.join(".providers")
 }
 
 fn load_provider_entries_from(root: &Path) -> io::Result<Vec<ProviderEntry>> {

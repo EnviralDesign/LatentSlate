@@ -3,19 +3,18 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::core::credentials;
 use crate::providers::{cloud, ProviderOutput, ProviderProgress};
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 pub async fn generate_image(
-    credential_id: &str,
+    api_key: Option<&str>,
     model: &str,
     base_url: Option<&str>,
     inputs: &HashMap<String, Value>,
     progress_tx: Option<mpsc::UnboundedSender<ProviderProgress>>,
 ) -> Result<ProviderOutput, String> {
-    let api_key = credentials::load_secret(credential_id)?;
+    let api_key = cloud::required_api_key(api_key, "OpenAI")?;
     let prompt = cloud::text_input(inputs, &["prompt", "positive_prompt"])
         .ok_or_else(|| "OpenAI image providers require a prompt input.".to_string())?;
     let size = cloud::string_input(inputs, "size", "1024x1024");

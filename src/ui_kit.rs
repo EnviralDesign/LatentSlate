@@ -741,15 +741,6 @@ pub fn labeled_text_field(ui: &mut Ui, label: &str, value: &mut String) -> Respo
     .inner
 }
 
-pub fn labeled_password_field(ui: &mut Ui, label: &str, value: &mut String) -> Response {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
-        field_label(ui, label);
-        password_text_field(ui, value, ui.available_width(), Some(label.to_string()))
-    })
-    .inner
-}
-
 pub fn combo_field<R>(
     ui: &mut Ui,
     id_salt: impl Hash,
@@ -1145,57 +1136,6 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
 
 pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Response {
     singleline_text_field_labeled(ui, value, width, None)
-}
-
-fn password_text_field(
-    ui: &mut Ui,
-    value: &mut String,
-    width: f32,
-    automation_label: Option<String>,
-) -> Response {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TEXT_FIELD_H), Sense::hover());
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Center)),
-    );
-    child.set_min_size(rect.size());
-    child.shrink_clip_rect(rect);
-    configure_field_widget_style(&mut child, rect.width());
-
-    let field_id = child.next_auto_id();
-    child.skip_ahead_auto_ids(1);
-    let text_align = editable_field_text_align(&child, field_id);
-
-    ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
-    let mut output = egui::TextEdit::singleline(value)
-        .id(field_id)
-        .password(true)
-        .desired_width(rect.width())
-        .min_size(rect.size())
-        .horizontal_align(text_align)
-        .vertical_align(Align::Center)
-        .text_color(TEXT)
-        .font(FontId::proportional(FIELD_TEXT_SIZE))
-        .frame(field_text_frame())
-        .show(&mut child);
-    let selected_text = value.clone();
-    select_all_on_focus(&mut output, &selected_text);
-    let mut response = output.response.response.clone();
-    crate::core::automation::apply_pending_text(&mut response, value);
-    ui.painter().rect_stroke(
-        rect,
-        field_radius(),
-        field_stroke(&output),
-        StrokeKind::Inside,
-    );
-    crate::core::automation::instrument_response(
-        response,
-        "password_field",
-        automation_label,
-        true,
-        true,
-    )
 }
 
 fn singleline_text_field_labeled(

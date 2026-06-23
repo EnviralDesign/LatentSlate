@@ -263,9 +263,6 @@ impl LatentSlateApp {
         if self.editor.overlays.providers {
             self.providers_modal(ctx);
         }
-        if self.editor.overlays.api_keys {
-            self.api_keys_modal(ctx);
-        }
         if self.editor.overlays.asset_lab {
             self.asset_lab_modal(ctx);
         }

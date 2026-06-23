@@ -329,16 +329,6 @@ pub enum AutomationCommand {
         #[serde(default = "default_true")]
         live: bool,
     },
-    /// Return whether credential IDs are present without exposing secret values.
-    GetCredentialStatus { credential_ids: Vec<String> },
-    /// Save or replace a provider credential secret.
-    SetCredential {
-        credential_id: String,
-        label: String,
-        value: String,
-    },
-    /// Delete a provider credential secret.
-    DeleteCredential { credential_id: String },
     /// Get a generative asset config.
     GetGenerativeConfig { asset_id: Uuid },
     /// Patch a generative asset config.
@@ -2023,7 +2013,7 @@ pub fn build_agent_bootstrap(
             .to_string(),
         "- Assets: import_asset, rename_asset, duplicate_asset, delete_assets, extract_still_to_asset"
             .to_string(),
-        "- Providers/credentials: list_providers, create_provider, update_provider, test_provider, set_credential"
+        "- Providers: list_providers, create_provider, update_provider, test_provider; cloud API keys live in provider JSON connection.api_key"
             .to_string(),
         "- Generation: create_generative_asset, set_generative_config, start_generation, wait_for_generation endpoint, cancel_job"
             .to_string(),
@@ -2137,7 +2127,9 @@ pub fn build_agent_bootstrap(
                 .to_string(),
         );
     }
-    lines.push("- Provider secrets are write-only/redacted in API responses.".to_string());
+    lines.push(
+        "- Provider API keys live in provider JSON and are redacted in API responses.".to_string(),
+    );
     lines.push(
         "- Rendered captures are saved under LatentSlateData/tmp/agent-captures and return absolute paths."
             .to_string(),
@@ -2264,7 +2256,7 @@ pub fn agent_schema_json() -> Value {
         },
         "notes": [
             "UUID fields can be discovered from /agent/v1/state.",
-            "Secrets are write-only: set_credential never returns the secret value.",
+            "Provider API keys live in provider JSON connection.api_key and are redacted in API responses.",
             "Provider and provider-input descriptions are returned with provider metadata and should guide tool selection and parameter values.",
             "start_generation is non-blocking; use /agent/v1/wait/generation to wait for a returned job_id or for the queue to drain.",
             "Read-only captures do not move the UI unless seek_ui is true.",
@@ -2326,9 +2318,6 @@ fn agent_command_names() -> Vec<&'static str> {
         "update_provider",
         "delete_provider",
         "test_provider",
-        "get_credential_status",
-        "set_credential",
-        "delete_credential",
         "get_generative_config",
         "set_generative_config",
         "replace_generative_config",
@@ -2416,10 +2405,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "create_provider", "fields": { "provider": "ProviderEntry" } },
             { "type": "update_provider", "fields": { "provider_id": "uuid", "provider": "ProviderEntry" } },
             { "type": "delete_provider", "fields": { "provider_id": "uuid" } },
-            { "type": "test_provider", "fields": { "provider_id": "uuid", "live?": "bool" } },
-            { "type": "get_credential_status", "fields": { "credential_ids": ["openai_api_key", "xai_api_key"] } },
-            { "type": "set_credential", "fields": { "credential_id": "string", "label": "string", "value": "secret string" } },
-            { "type": "delete_credential", "fields": { "credential_id": "string" } }
+            { "type": "test_provider", "fields": { "provider_id": "uuid", "live?": "bool" } }
         ],
         "generation": [
             { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "frame_count?": "u32" } },

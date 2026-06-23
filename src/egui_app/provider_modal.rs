@@ -1,166 +1,6 @@
 use super::*;
-#[derive(Clone, Debug, Default)]
-pub(super) struct ApiKeyModalState {
-    pub(super) credential_id: String,
-    pub(super) label: String,
-    pub(super) value: String,
-    pub(super) saved: bool,
-    pub(super) masked_existing: bool,
-    pub(super) error: Option<String>,
-}
 
 impl LatentSlateApp {
-    pub(super) fn open_api_key_modal(&mut self, credential_id: &str, label: &str) {
-        let saved = crate::core::credentials::has_secret(credential_id);
-        let mut error = None;
-        let value = if saved {
-            match crate::core::credentials::secret_char_count(credential_id) {
-                Ok(count) => "*".repeat(count.max(1)),
-                Err(err) => {
-                    error = Some(err);
-                    String::new()
-                }
-            }
-        } else {
-            String::new()
-        };
-        self.api_key_modal = ApiKeyModalState {
-            credential_id: credential_id.to_string(),
-            label: label.to_string(),
-            value,
-            saved,
-            masked_existing: saved && error.is_none(),
-            error,
-        };
-        self.editor.overlays.api_keys = true;
-    }
-
-    pub(super) fn api_keys_modal(&mut self, ctx: &Context) {
-        let mut open = true;
-        let mut close_clicked = false;
-        let mut save_clicked = false;
-        let mut remove_clicked = false;
-        let size = modal_size(ctx, API_KEYS_MODAL_SIZE, [420.0, 300.0]);
-        let title = format!("{} API Key", self.api_key_modal.label);
-        let subtitle = if self.api_key_modal.saved {
-            "Stored. Enter a new key to replace it."
-        } else {
-            "Not stored yet."
-        };
-
-        let outside_clicked = kit::dismissible_modal_scrim(ctx, "api_keys", true);
-        egui::Window::new("API Key")
-            .title_bar(false)
-            .order(egui::Order::Foreground)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(size)
-            .frame(kit::modal_frame())
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                close_clicked = kit::modal_header_with_close(ui, &title, Some(subtitle), true);
-                kit::modal_body(ui, |ui| {
-                    if let Some(error) = &self.api_key_modal.error {
-                        ui.label(RichText::new(error).color(kit::DANGER).size(12.0));
-                        ui.add_space(kit::FORM_ROW_GAP);
-                    }
-
-                    kit::body_with_footer(
-                        ui,
-                        132.0,
-                        kit::SECONDARY_BUTTON_H,
-                        |ui| {
-                            kit::card_panel(ui, ui.available_height(), |ui| {
-                                ui.label(kit::caption(
-                                    "Keys are stored locally with Windows user-level encryption.",
-                                ));
-                                if self.api_key_modal.masked_existing {
-                                    ui.add_space(kit::FORM_ROW_GAP);
-                                    ui.label(kit::caption(
-                                        "The saved key is shown as a length-matched placeholder.",
-                                    ));
-                                }
-                                ui.add_space(kit::ACTION_GAP);
-                                let response = kit::labeled_password_field(
-                                    ui,
-                                    "API Key",
-                                    &mut self.api_key_modal.value,
-                                );
-                                if self.api_key_modal.masked_existing
-                                    && (response.changed()
-                                        || response.has_focus()
-                                            && self.api_key_modal.value.chars().any(|ch| ch != '*'))
-                                {
-                                    self.api_key_modal.masked_existing = false;
-                                }
-                            });
-                        },
-                        |ui| {
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if kit::primary_button(ui, "Save Key", 120.0).clicked() {
-                                    save_clicked = true;
-                                }
-                                if kit::secondary_button(ui, "Close", 110.0).clicked() {
-                                    close_clicked = true;
-                                }
-                                if self.api_key_modal.saved
-                                    && kit::danger_button(ui, "Remove", 100.0).clicked()
-                                {
-                                    remove_clicked = true;
-                                }
-                            });
-                        },
-                    );
-                });
-            });
-
-        if remove_clicked {
-            match crate::core::credentials::delete_secret(&self.api_key_modal.credential_id) {
-                Ok(()) => {
-                    self.editor.status = format!("Removed {} API key.", self.api_key_modal.label);
-                    self.editor.overlays.api_keys = false;
-                }
-                Err(err) => self.api_key_modal.error = Some(err),
-            }
-        }
-        if save_clicked {
-            self.save_api_key_modal();
-        }
-        if close_clicked || outside_clicked || !open {
-            self.api_key_modal.value.clear();
-            self.api_key_modal.error = None;
-            self.editor.overlays.api_keys = false;
-        }
-    }
-
-    pub(super) fn save_api_key_modal(&mut self) {
-        if self.api_key_modal.masked_existing {
-            self.editor.status = format!("Kept existing {} API key.", self.api_key_modal.label);
-            self.editor.overlays.api_keys = false;
-            return;
-        }
-        if self.api_key_modal.value.trim().is_empty() {
-            self.api_key_modal.error = Some("Enter an API key before saving.".to_string());
-            return;
-        }
-        let storage_label = format!("{} API Key", self.api_key_modal.label);
-        if let Err(err) = crate::core::credentials::save_secret(
-            &self.api_key_modal.credential_id,
-            &storage_label,
-            &self.api_key_modal.value,
-        ) {
-            self.api_key_modal.error = Some(err);
-            return;
-        }
-
-        self.editor.status = format!("Saved {} API key.", self.api_key_modal.label);
-        self.api_key_modal.value.clear();
-        self.api_key_modal.error = None;
-        self.api_key_modal.saved = true;
-        self.editor.overlays.api_keys = false;
-    }
-
     pub(super) fn providers_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
@@ -340,10 +180,8 @@ impl LatentSlateApp {
 
             let summary = provider_file_summary(&path);
             let supports_builder = provider_file_supports_comfy_builder(&path);
-            let credential = provider_file_credential(&path);
             let mut open_builder = false;
             let mut open_json = false;
-            let mut open_key = false;
             let mut delete_clicked = false;
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
@@ -357,7 +195,7 @@ impl LatentSlateApp {
                     ui.label(kit::caption(if supports_builder {
                         "Select an editor:"
                     } else {
-                        "Cloud providers use direct settings and app API keys."
+                        "Cloud providers store settings and API keys in provider JSON."
                     }));
                     ui.add_space(24.0);
                     if supports_builder {
@@ -368,12 +206,6 @@ impl LatentSlateApp {
                     }
                     if kit::secondary_button(ui, "Edit as JSON", 250.0).clicked() {
                         open_json = true;
-                    }
-                    if credential.is_some() {
-                        ui.add_space(8.0);
-                        if kit::secondary_button(ui, "API Key", 250.0).clicked() {
-                            open_key = true;
-                        }
                     }
                     ui.add_space(8.0);
                     if kit::danger_button(ui, "Delete Provider", 250.0).clicked() {
@@ -388,11 +220,6 @@ impl LatentSlateApp {
             if open_json {
                 self.open_provider_json_editor(path.clone());
             }
-            if open_key {
-                if let Some((credential_id, label)) = credential {
-                    self.open_api_key_modal(credential_id, label);
-                }
-            }
             if delete_clicked {
                 self.delete_provider_file(path);
             }
@@ -400,32 +227,9 @@ impl LatentSlateApp {
     }
 
     pub(super) fn delete_provider_file(&mut self, path: PathBuf) {
-        let manifest_path = provider_manifest_path_for_delete(&path);
         match std::fs::remove_file(&path) {
             Ok(()) => {
-                let mut status = format!("Deleted provider {}", path_label(&path));
-                if let Some(manifest_path) = manifest_path {
-                    match std::fs::remove_file(&manifest_path) {
-                        Ok(()) => {
-                            status =
-                                format!("{} and manifest {}", status, path_label(&manifest_path));
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                            status = format!(
-                                "{}; manifest was already missing at {}",
-                                status,
-                                path_label(&manifest_path)
-                            );
-                        }
-                        Err(err) => {
-                            status = format!(
-                                "{} but failed to delete manifest {}: {err}",
-                                status,
-                                path_label(&manifest_path)
-                            );
-                        }
-                    }
-                }
+                let status = format!("Deleted provider {}", path_label(&path));
                 self.editor.status = status;
                 self.selected_provider_file = None;
                 self.refresh_provider_files();
@@ -1399,25 +1203,6 @@ impl LatentSlateApp {
             }
         };
 
-        let manifest_json = match serde_json::to_string_pretty(&save.manifest) {
-            Ok(json) => json,
-            Err(err) => {
-                self.provider_builder.error = Some(format!("Failed to serialize manifest: {err}"));
-                return;
-            }
-        };
-        if let Some(parent) = save.manifest_path.parent() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                self.provider_builder.error =
-                    Some(format!("Failed to create manifest folder: {err}"));
-                return;
-            }
-        }
-        if let Err(err) = std::fs::write(&save.manifest_path, manifest_json) {
-            self.provider_builder.error = Some(format!("Failed to write manifest: {err}"));
-            return;
-        }
-
         let provider_json = match serde_json::to_string_pretty(&save.entry) {
             Ok(json) => json,
             Err(err) => {
@@ -1433,30 +1218,10 @@ impl LatentSlateApp {
         }
 
         self.provider_builder.source_path = Some(save.provider_path.clone());
-        self.provider_builder.manifest_path = Some(save.manifest_path);
         self.provider_builder.error = None;
         self.selected_provider_file = Some(save.provider_path.clone());
         self.refresh_provider_files();
         self.provider_builder_open = false;
         self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
-    }
-}
-
-fn provider_manifest_path_for_delete(provider_path: &Path) -> Option<PathBuf> {
-    let text = crate::core::provider_store::read_provider_file(provider_path)?;
-    let entry = serde_json::from_str::<ProviderEntry>(&text).ok()?;
-    let ProviderConnection::ComfyUi {
-        manifest_path: Some(manifest_path),
-        ..
-    } = entry.connection
-    else {
-        return None;
-    };
-
-    let path = crate::core::paths::resolve_resource_path(Path::new(&manifest_path));
-    if path == provider_path {
-        None
-    } else {
-        Some(path)
     }
 }

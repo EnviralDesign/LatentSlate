@@ -43,10 +43,9 @@ Important rules:
 - Writable app-managed state lives under `LatentSlateData/` next to the running executable unless `LATENTSLATE_HOME` is set.
 - Default projects are written to `LatentSlateData/projects/`.
 - Provider entries are written to `LatentSlateData/providers/`.
-- Provider Builder writes new ComfyUI manifests to `LatentSlateData/provider-manifests/`; existing providers can still reference older explicit manifest paths.
-- API credentials are written to `LatentSlateData/secrets/credentials.json` and are encrypted on Windows.
+- Provider entries contain inline ComfyUI manifest bindings and inline cloud provider API keys.
+- `LatentSlateData/workflows/` is created as an optional local home for ComfyUI API workflow JSON files.
 - App scratch files are written under `LatentSlateData/tmp/`; project-derived caches are written under each project folder's `.cache/`.
-- Legacy `.latentslate/providers` are copied into an empty app data folder for dev compatibility. Credentials are not automatically copied.
 
 ## Timeline Model
 

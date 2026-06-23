@@ -474,8 +474,8 @@ one explicit target track. `track_delta` and `track_id` are mutually exclusive.
 ## Provider Commands
 
 Provider entries should use the same shape as provider JSON files.
-Responses redact inline provider secrets; `CustomHttp.api_key` is replaced with
-`api_key_present`.
+Responses redact provider API keys; cloud and custom provider
+`connection.api_key` values are replaced with `api_key_present`.
 
 Provider and provider-input descriptions are first-class metadata for agents.
 `ProviderEntry.description` is an optional multi-line string describing when to
@@ -527,19 +527,46 @@ minimum file-based ComfyUI setup:
       "type": "comfy_ui",
       "base_url": "http://127.0.0.1:8188",
       "workflow_path": "workflows/wan_i2v_API.json",
-      "manifest_path": "workflows/wan_i2v.manifest.json"
+      "manifest": {
+        "adapter_type": "comfy_ui",
+        "schema_version": 1,
+        "output_type": "video",
+        "workflow": { "workflow_path": "workflows/wan_i2v_API.json" },
+        "inputs": [],
+        "output": {
+          "selector": {
+            "node_id": "42",
+            "class_type": "SaveVideo",
+            "input_key": "videos"
+          }
+        }
+      }
     }
   }
 }
 ```
 
-Provider credentials are write-only through the agent API. Secrets are never
-returned in state or command responses.
+Cloud provider API keys live directly in provider JSON as
+`connection.api_key`. API responses redact provider API keys, but agents can set
+or replace them by creating/updating the provider entry.
 
 ```json
-{ "type": "get_credential_status", "credential_ids": ["openai_api_key", "xai_api_key"] }
-{ "type": "set_credential", "credential_id": "openai_api_key", "label": "OpenAI API Key", "value": "sk-..." }
-{ "type": "delete_credential", "credential_id": "openai_api_key" }
+{
+  "type": "update_provider",
+  "provider_id": "uuid",
+  "provider": {
+    "id": "uuid",
+    "name": "OpenAI Image",
+    "output_type": "image",
+    "workflow_kind": "text_to_image",
+    "inputs": [],
+    "connection": {
+      "type": "open_ai_image",
+      "api_key": "sk-...",
+      "model": "gpt-image-2"
+    }
+  }
+}
 ```
 
 ## Generative Commands
@@ -914,7 +941,7 @@ The intended coverage surface is:
 - track, clip, marker, selection, layout, timeline navigation, and preview
   state mutations
 - generation queue start/cancel/status, with a few controlled OpenAI/xAI/Grok or
-  ComfyUI spot checks where credentials/providers are configured
+  ComfyUI spot checks where provider JSON API keys/providers are configured
 - timeline, clip, asset, screenshot, and cutsheet capture in normal and
   enhanced modes
 - state-changing calls verified through app state plus harness/screenshots

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 pub const APP_HOME_ENV: &str = "LATENTSLATE_HOME";
 const LOCAL_RUNTIME_DIR: &str = "LatentSlateData";
-const LEGACY_RUNTIME_DIR: &str = ".latentslate";
 
 fn resource_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
@@ -133,7 +132,7 @@ fn is_app_data_relative_path(path: &Path) -> bool {
         let text = component.as_os_str().to_string_lossy();
         matches!(
             text.as_ref(),
-            "projects" | "providers" | "provider-manifests" | "secrets" | "cache" | "tmp" | "logs"
+            "projects" | "providers" | "workflows" | "cache" | "tmp" | "logs"
         )
     })
 }
@@ -150,18 +149,13 @@ pub fn app_tmp_root() -> PathBuf {
     app_runtime_root().join("tmp")
 }
 
-pub fn app_provider_manifests_root() -> PathBuf {
-    app_runtime_root().join("provider-manifests")
-}
-
 pub fn ensure_app_runtime_dirs() -> Result<PathBuf, String> {
     let root = app_runtime_root();
     let dirs = [
         root.clone(),
         root.join("projects"),
         root.join("providers"),
-        root.join("provider-manifests"),
-        root.join("secrets"),
+        root.join("workflows"),
         root.join("cache"),
         root.join("tmp"),
         root.join("logs"),
@@ -170,7 +164,6 @@ pub fn ensure_app_runtime_dirs() -> Result<PathBuf, String> {
         std::fs::create_dir_all(&dir)
             .map_err(|err| format!("Failed to create app data folder {}: {err}", dir.display()))?;
     }
-    migrate_legacy_runtime_state(&root)?;
     Ok(root)
 }
 
@@ -189,51 +182,4 @@ fn configured_app_home() -> Option<PathBuf> {
             .ok()
             .or(Some(path))
     }
-}
-
-fn migrate_legacy_runtime_state(app_root: &Path) -> Result<(), String> {
-    let legacy = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(LEGACY_RUNTIME_DIR);
-    if !legacy.exists() || legacy == app_root {
-        return Ok(());
-    }
-
-    copy_dir_contents_if_empty(&legacy.join("providers"), &app_root.join("providers"))?;
-    Ok(())
-}
-
-fn copy_dir_contents_if_empty(source: &Path, target: &Path) -> Result<(), String> {
-    if !source.is_dir() {
-        return Ok(());
-    }
-    let target_has_entries = target
-        .read_dir()
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false);
-    if target_has_entries {
-        return Ok(());
-    }
-    std::fs::create_dir_all(target).map_err(|err| {
-        format!(
-            "Failed to create migrated data folder {}: {err}",
-            target.display()
-        )
-    })?;
-    for entry in std::fs::read_dir(source)
-        .map_err(|err| format!("Failed to read legacy folder {}: {err}", source.display()))?
-    {
-        let entry = entry.map_err(|err| format!("Failed to inspect legacy folder entry: {err}"))?;
-        let source_path = entry.path();
-        if !source_path.is_file() {
-            continue;
-        }
-        let target_path = target.join(entry.file_name());
-        std::fs::copy(&source_path, &target_path).map_err(|err| {
-            format!(
-                "Failed to migrate {} to {}: {err}",
-                source_path.display(),
-                target_path.display()
-            )
-        })?;
-    }
-    Ok(())
 }

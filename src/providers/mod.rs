@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::core::credentials;
 use crate::state::{ProviderConnection, ProviderEntry, ProviderOutputType};
 
 mod cloud;
@@ -53,10 +52,9 @@ pub async fn test_provider_connection(
         ProviderConnection::ComfyUi {
             base_url,
             workflow_path,
-            manifest_path,
+            manifest,
         } => {
             let workflow_path = comfyui::resolve_workflow_path(workflow_path.as_deref());
-            let manifest_path = comfyui::resolve_manifest_path(manifest_path.as_deref());
             if live {
                 comfyui::check_health(&base_url).await?;
             }
@@ -69,12 +67,11 @@ pub async fn test_provider_connection(
                 "base_url": base_url,
                 "workflow_path": workflow_path,
                 "workflow_exists": workflow_path.is_file(),
-                "manifest_path": manifest_path,
-                "manifest_exists": manifest_path.as_ref().map(|path| path.is_file()),
+                "manifest_embedded": manifest.is_some(),
             }))
         }
         ProviderConnection::OpenAiImage {
-            credential_id,
+            api_key,
             model,
             base_url,
         } => {
@@ -82,7 +79,7 @@ pub async fn test_provider_connection(
                 "openai_image",
                 &provider.name,
                 provider.id,
-                &credential_id,
+                api_key.as_deref(),
                 &model,
                 base_url.as_deref().unwrap_or("https://api.openai.com/v1"),
                 live,
@@ -90,7 +87,7 @@ pub async fn test_provider_connection(
             .await
         }
         ProviderConnection::XaiImage {
-            credential_id,
+            api_key,
             model,
             base_url,
         } => {
@@ -98,7 +95,7 @@ pub async fn test_provider_connection(
                 "xai_image",
                 &provider.name,
                 provider.id,
-                &credential_id,
+                api_key.as_deref(),
                 &model,
                 base_url.as_deref().unwrap_or("https://api.x.ai/v1"),
                 live,
@@ -106,7 +103,7 @@ pub async fn test_provider_connection(
             .await
         }
         ProviderConnection::XaiVideo {
-            credential_id,
+            api_key,
             model,
             base_url,
         } => {
@@ -114,7 +111,7 @@ pub async fn test_provider_connection(
                 "xai_video",
                 &provider.name,
                 provider.id,
-                &credential_id,
+                api_key.as_deref(),
                 &model,
                 base_url.as_deref().unwrap_or("https://api.x.ai/v1"),
                 live,
@@ -137,10 +134,9 @@ pub async fn execute_generation(
         ProviderConnection::ComfyUi {
             base_url,
             workflow_path,
-            manifest_path,
+            manifest,
         } => {
             let workflow_path = comfyui::resolve_workflow_path(workflow_path.as_deref());
-            let manifest_path = comfyui::resolve_manifest_path(manifest_path.as_deref());
             if let Err(err) = comfyui::check_health(&base_url).await {
                 return Err(ProviderExecutionError::Offline(err));
             }
@@ -148,7 +144,7 @@ pub async fn execute_generation(
                 &base_url,
                 &workflow_path,
                 inputs,
-                manifest_path.as_deref(),
+                manifest.as_ref(),
                 output_type,
                 progress_tx,
             )
@@ -168,11 +164,11 @@ pub async fn execute_generation(
             }
         }
         ProviderConnection::OpenAiImage {
-            credential_id,
+            api_key,
             model,
             base_url,
         } => openai::generate_image(
-            &credential_id,
+            api_key.as_deref(),
             &model,
             base_url.as_deref(),
             inputs,
@@ -181,11 +177,11 @@ pub async fn execute_generation(
         .await
         .map_err(ProviderExecutionError::Error),
         ProviderConnection::XaiImage {
-            credential_id,
+            api_key,
             model,
             base_url,
         } => xai::generate_image(
-            &credential_id,
+            api_key.as_deref(),
             &model,
             base_url.as_deref(),
             inputs,
@@ -194,11 +190,11 @@ pub async fn execute_generation(
         .await
         .map_err(ProviderExecutionError::Error),
         ProviderConnection::XaiVideo {
-            credential_id,
+            api_key,
             model,
             base_url,
         } => xai::generate_video(
-            &credential_id,
+            api_key.as_deref(),
             &model,
             base_url.as_deref(),
             inputs,
@@ -216,15 +212,20 @@ async fn test_cloud_provider(
     kind: &str,
     provider_name: &str,
     provider_id: uuid::Uuid,
-    credential_id: &str,
+    api_key: Option<&str>,
     model: &str,
     base_url: &str,
     live: bool,
 ) -> Result<Value, String> {
     let mut model_seen = None;
-    let credential_present = credentials::has_secret(credential_id);
+    let api_key_present = api_key
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
     if live {
-        let api_key = credentials::load_secret(credential_id)?;
+        let api_key = api_key
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{kind} provider JSON is missing connection.api_key."))?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
             .build()
@@ -265,8 +266,7 @@ async fn test_cloud_provider(
         "live": live,
         "ok": true,
         "base_url": base_url,
-        "credential_id": credential_id,
-        "credential_present": credential_present,
+        "api_key_present": api_key_present,
         "model": model,
         "model_seen": model_seen,
     }))

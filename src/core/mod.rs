@@ -1,7 +1,6 @@
 pub mod audio;
 pub mod automation;
 pub mod comfyui_workflow;
-pub mod credentials;
 pub mod export;
 pub mod ffmpeg_runtime;
 pub mod generation;

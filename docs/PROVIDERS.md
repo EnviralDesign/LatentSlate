@@ -6,9 +6,9 @@ LatentSlate is built around user-owned providers. ComfyUI is the primary open-so
 
 | Adapter | Status | Notes |
 |---|---|---|
-| ComfyUI | Implemented | Local API workflow JSON plus manifest bindings. Supports image/video/audio output detection by file extension. |
-| OpenAI image | Experimental | Uses app-managed credential ID. |
-| xAI image | Experimental | Uses app-managed credential ID. |
+| ComfyUI | Implemented | Local API workflow JSON plus embedded manifest bindings. Supports image/video/audio output detection by file extension. |
+| OpenAI image | Experimental | Stores `connection.api_key` in provider JSON. |
+| xAI image | Experimental | Stores `connection.api_key` in provider JSON. |
 | xAI Grok video | Experimental | Submits/polls/downloads video results through xAI API. |
 | Custom HTTP | Not implemented | Data model exists; runtime returns a planned/not-implemented error. |
 | fal.ai / Replicate / Veo | Not implemented | Future adapter work. |
@@ -27,13 +27,12 @@ LatentSlate is built around user-owned providers. ComfyUI is the primary open-so
 
 The builder writes:
 
-- a provider JSON file under `LatentSlateData/providers/`
-- a manifest JSON file under `LatentSlateData/provider-manifests/`
+- one provider JSON file under `LatentSlateData/providers/`
 
 `LatentSlateData/` is created beside the running executable unless
-`LATENTSLATE_HOME` points at an explicit app data folder. Older provider files
-under `.latentslate/providers/` are copied into an empty app data folder for
-development compatibility. Credentials are not automatically copied.
+`LATENTSLATE_HOME` points at an explicit app data folder. The app also creates
+an empty `LatentSlateData/workflows/` folder for users who want workflow JSON
+files kept beside the rest of the app data.
 
 ## Provider Entries
 
@@ -46,6 +45,9 @@ A provider entry stores:
 - `workflow_kind`: optional UX intent such as T2I, I2V, V2V, first/last-frame video
 - `inputs`: editor-visible schema fields; each input can include an optional multi-line `description`
 - `connection`: adapter-specific connection data
+
+Cloud adapters store `connection.api_key` directly in the provider JSON. ComfyUI
+providers store their manifest bindings directly in `connection.manifest`.
 
 Do not change provider IDs casually. Existing generative assets store provider IDs in their `config.json`.
 
@@ -65,7 +67,7 @@ Minimal shape:
 ```json
 {
   "schema_version": 1,
-  "adapter_type": "comfyui",
+  "adapter_type": "comfy_ui",
   "name": "SDXL Simple",
   "description": "Text-to-image workflow for generating still keyframes.",
   "output_type": "image",

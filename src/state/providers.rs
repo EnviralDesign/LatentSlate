@@ -132,22 +132,25 @@ pub enum ProviderConnection {
         #[serde(default)]
         workflow_path: Option<String>,
         #[serde(default)]
-        manifest_path: Option<String>,
+        manifest: Option<ProviderManifest>,
     },
     OpenAiImage {
-        credential_id: String,
+        #[serde(default)]
+        api_key: Option<String>,
         model: String,
         #[serde(default)]
         base_url: Option<String>,
     },
     XaiImage {
-        credential_id: String,
+        #[serde(default)]
+        api_key: Option<String>,
         model: String,
         #[serde(default)]
         base_url: Option<String>,
     },
     XaiVideo {
-        credential_id: String,
+        #[serde(default)]
+        api_key: Option<String>,
         model: String,
         #[serde(default)]
         base_url: Option<String>,
@@ -502,7 +505,7 @@ mod tests {
             ProviderConnection::ComfyUi {
                 base_url: "http://127.0.0.1:8188".to_string(),
                 workflow_path: None,
-                manifest_path: None,
+                manifest: None,
             },
         );
         provider.description = Some("Use this for still keyframes.".to_string());

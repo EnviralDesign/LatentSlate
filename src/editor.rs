@@ -107,7 +107,6 @@ pub struct EditorOverlays {
     pub agent_api: bool,
     pub generative_video: bool,
     pub export_video: bool,
-    pub api_keys: bool,
     pub asset_lab: bool,
 }
 
@@ -1537,44 +1536,6 @@ impl EditorState {
                     Err(err) => AutomationResponse::error(err),
                 }
             }
-            AutomationCommand::GetCredentialStatus { credential_ids } => {
-                let credentials: Vec<_> = credential_ids
-                    .iter()
-                    .map(|credential_id| {
-                        json!({
-                            "credential_id": credential_id,
-                            "present": crate::core::credentials::has_secret(credential_id),
-                        })
-                    })
-                    .collect();
-                AutomationResponse::ok(json!({ "credentials": credentials }))
-            }
-            AutomationCommand::SetCredential {
-                credential_id,
-                label,
-                value,
-            } => match crate::core::credentials::save_secret(credential_id, label, value) {
-                Ok(()) => {
-                    self.status = format!("Saved credential {}.", credential_id);
-                    AutomationResponse::ok(json!({
-                        "credential_id": credential_id,
-                        "present": true,
-                    }))
-                }
-                Err(err) => AutomationResponse::error(err),
-            },
-            AutomationCommand::DeleteCredential { credential_id } => {
-                match crate::core::credentials::delete_secret(credential_id) {
-                    Ok(()) => {
-                        self.status = format!("Deleted credential {}.", credential_id);
-                        AutomationResponse::ok(json!({
-                            "credential_id": credential_id,
-                            "present": false,
-                        }))
-                    }
-                    Err(err) => AutomationResponse::error(err),
-                }
-            }
             AutomationCommand::GetGenerativeConfig { asset_id } => {
                 match self.project.generative_config(*asset_id) {
                     Some(config) => AutomationResponse::ok(json!({ "config": config })),
@@ -2269,14 +2230,21 @@ fn redacted_provider_entries_json(providers: &[ProviderEntry]) -> Vec<Value> {
 
 fn redacted_provider_entry_json(provider: &ProviderEntry) -> Value {
     let mut value = serde_json::to_value(provider).unwrap_or_else(|_| json!({}));
-    if let ProviderConnection::CustomHttp { api_key, .. } = &provider.connection {
+    let api_key_present = match &provider.connection {
+        ProviderConnection::OpenAiImage { api_key, .. }
+        | ProviderConnection::XaiImage { api_key, .. }
+        | ProviderConnection::XaiVideo { api_key, .. }
+        | ProviderConnection::CustomHttp { api_key, .. } => Some(api_key.is_some()),
+        ProviderConnection::ComfyUi { .. } => None,
+    };
+    if let Some(api_key_present) = api_key_present {
         if let Some(connection) = value
             .as_object_mut()
             .and_then(|object| object.get_mut("connection"))
             .and_then(|connection| connection.as_object_mut())
         {
             connection.remove("api_key");
-            connection.insert("api_key_present".to_string(), json!(api_key.is_some()));
+            connection.insert("api_key_present".to_string(), json!(api_key_present));
         }
     }
     value
@@ -2716,7 +2684,7 @@ mod tests {
             ProviderConnection::ComfyUi {
                 base_url: "http://127.0.0.1:8188".to_string(),
                 workflow_path: None,
-                manifest_path: None,
+                manifest: None,
             },
         );
         let provider_id = provider.id;

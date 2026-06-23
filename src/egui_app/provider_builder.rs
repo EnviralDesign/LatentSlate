@@ -85,7 +85,6 @@ pub(super) struct ProviderBuilderState {
     pub(super) workflow_kind_selected: bool,
     pub(super) base_url: String,
     pub(super) workflow_path: Option<PathBuf>,
-    pub(super) manifest_path: Option<PathBuf>,
     pub(super) workflow_nodes: Vec<crate::core::comfyui_workflow::ComfyWorkflowNode>,
     pub(super) workflow_error: Option<String>,
     pub(super) workflow_search: String,
@@ -211,9 +210,7 @@ impl ProviderGenerationChoice {
 
 pub(super) struct ProviderBuilderSave {
     pub(super) entry: ProviderEntry,
-    pub(super) manifest: ProviderManifest,
     pub(super) provider_path: PathBuf,
-    pub(super) manifest_path: PathBuf,
 }
 
 impl Default for ProviderBuilderState {
@@ -243,19 +240,17 @@ impl ProviderBuilderState {
 
     pub(super) fn from_entry(source_path: Option<PathBuf>, entry: ProviderEntry) -> Self {
         let is_existing_entry = source_path.is_some();
-        let (base_url, workflow_path, manifest_path) = match &entry.connection {
+        let (base_url, workflow_path, manifest) = match &entry.connection {
             ProviderConnection::ComfyUi {
                 base_url,
                 workflow_path,
-                manifest_path,
+                manifest,
             } => (
                 base_url.clone(),
                 workflow_path
                     .as_deref()
                     .map(|path| crate::core::paths::resolve_resource_path(Path::new(path))),
-                manifest_path
-                    .as_deref()
-                    .map(|path| crate::core::paths::resolve_resource_path(Path::new(path))),
+                manifest.clone(),
             ),
             ProviderConnection::OpenAiImage { base_url, .. }
             | ProviderConnection::XaiImage { base_url, .. }
@@ -289,7 +284,6 @@ impl ProviderBuilderState {
                 && entry.workflow_kind != ProviderWorkflowKind::Auto,
             base_url,
             workflow_path,
-            manifest_path: manifest_path.clone(),
             workflow_nodes,
             workflow_error,
             workflow_search: String::new(),
@@ -311,11 +305,8 @@ impl ProviderBuilderState {
             error: None,
         };
 
-        if let Some(path) = manifest_path {
-            match load_provider_manifest_resolved(&path) {
-                Ok(manifest) => state.apply_manifest(manifest),
-                Err(err) => state.error = Some(err),
-            }
+        if let Some(manifest) = manifest {
+            state.apply_manifest(manifest);
         }
         if state.workflow_nodes.is_empty() {
             if let Some(path) = state.workflow_path.as_ref() {
@@ -990,28 +981,7 @@ impl ProviderBuilderState {
             );
         }
 
-        let manifest_path = self
-            .manifest_path
-            .clone()
-            .unwrap_or_else(|| default_provider_manifest_path(self.provider_id));
-        let provider_path = self.source_path.clone().unwrap_or_else(|| {
-            crate::core::provider_store::provider_path_for_entry(&ProviderEntry {
-                id: self.provider_id,
-                name: provider_name.to_string(),
-                description: provider_description.clone(),
-                output_type: self.output_type,
-                workflow_kind: self.workflow_kind,
-                inputs: Vec::new(),
-                connection: ProviderConnection::ComfyUi {
-                    base_url: base_url.to_string(),
-                    workflow_path: Some(crate::core::paths::storage_resource_path(&workflow_path)),
-                    manifest_path: Some(crate::core::paths::storage_resource_path(&manifest_path)),
-                },
-            })
-        });
-
         let workflow_path_string = crate::core::paths::storage_resource_path(&workflow_path);
-        let manifest_path_string = crate::core::paths::storage_resource_path(&manifest_path);
         let manifest = ProviderManifest::ComfyUi {
             schema_version: 1,
             name: Some(provider_name.to_string()),
@@ -1037,15 +1007,17 @@ impl ProviderBuilderState {
             connection: ProviderConnection::ComfyUi {
                 base_url: base_url.to_string(),
                 workflow_path: Some(workflow_path_string),
-                manifest_path: Some(manifest_path_string),
+                manifest: Some(manifest),
             },
         };
+        let provider_path = self
+            .source_path
+            .clone()
+            .unwrap_or_else(|| crate::core::provider_store::provider_path_for_entry(&entry));
 
         Ok(ProviderBuilderSave {
             entry,
-            manifest,
             provider_path,
-            manifest_path,
         })
     }
 }
@@ -1314,23 +1286,6 @@ pub(super) fn provider_template_label(kind: ProviderTemplateKind) -> &'static st
         ProviderTemplateKind::OpenAiImage => "OpenAI Image",
         ProviderTemplateKind::XaiImage => "xAI Image",
         ProviderTemplateKind::XaiVideo => "xAI Grok Video",
-    }
-}
-
-pub(super) fn provider_file_credential(path: &Path) -> Option<(&'static str, &'static str)> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let entry = serde_json::from_str::<ProviderEntry>(&text).ok()?;
-    match entry.connection {
-        ProviderConnection::OpenAiImage { .. } => {
-            Some((crate::core::credentials::OPENAI_CREDENTIAL_ID, "OpenAI"))
-        }
-        ProviderConnection::XaiImage { .. } => {
-            Some((crate::core::credentials::XAI_CREDENTIAL_ID, "xAI"))
-        }
-        ProviderConnection::XaiVideo { .. } => {
-            Some((crate::core::credentials::XAI_CREDENTIAL_ID, "xAI"))
-        }
-        ProviderConnection::ComfyUi { .. } | ProviderConnection::CustomHttp { .. } => None,
     }
 }
 
@@ -2288,21 +2243,6 @@ pub(super) fn default_value_to_text(value: Option<&serde_json::Value>) -> String
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
-pub(super) fn derive_manifest_path(workflow_path: &Path) -> PathBuf {
-    let mut path = workflow_path.to_path_buf();
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("workflow");
-    path.set_file_name(format!("{stem}_manifest.json"));
-    path
-}
-
-pub(super) fn default_provider_manifest_path(provider_id: Uuid) -> PathBuf {
-    crate::core::paths::app_provider_manifests_root().join(format!("{provider_id}_manifest.json"))
-}
-
 pub(super) fn provider_name_from_workflow_path(path: &Path) -> Option<String> {
     path.file_stem()
         .and_then(|value| value.to_str())
@@ -2316,14 +2256,6 @@ pub(super) fn load_workflow_nodes_resolved(
 ) -> Result<Vec<crate::core::comfyui_workflow::ComfyWorkflowNode>, String> {
     let resolved = crate::core::paths::resolve_resource_path(path);
     crate::core::comfyui_workflow::load_workflow_nodes(&resolved)
-}
-
-pub(super) fn load_provider_manifest_resolved(path: &Path) -> Result<ProviderManifest, String> {
-    let resolved = crate::core::paths::resolve_resource_path(path);
-    let text = std::fs::read_to_string(&resolved)
-        .map_err(|err| format!("Failed to read manifest {}: {err}", path.display()))?;
-    serde_json::from_str::<ProviderManifest>(&text)
-        .map_err(|err| format!("Failed to parse manifest {}: {err}", path.display()))
 }
 
 pub(super) fn friendly_provider_label(name: &str) -> String {

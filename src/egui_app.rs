@@ -82,7 +82,6 @@ use export_modal::*;
 use generation_runtime::*;
 use preview_transform::*;
 use provider_builder::*;
-use provider_modal::*;
 use timeline_geometry::*;
 use timeline_paint::*;
 
@@ -166,7 +165,6 @@ const MP4_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExtens
     extensions: MP4_EXTENSIONS,
 }];
 const PROVIDERS_MODAL_SIZE: [f32; 2] = [912.0, 672.0];
-const API_KEYS_MODAL_SIZE: [f32; 2] = [480.0, 280.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1296.0, 864.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
@@ -292,7 +290,6 @@ pub struct LatentSlateApp {
     provider_json_error: Option<String>,
     provider_builder_open: bool,
     provider_builder: ProviderBuilderState,
-    api_key_modal: ApiKeyModalState,
     asset_lab: AssetLabState,
     asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
     asset_lab_node_preview_textures: HashMap<AssetLabNodePreviewKey, AssetLabPreviewTexture>,
@@ -567,7 +564,6 @@ impl LatentSlateApp {
             provider_json_error: None,
             provider_builder_open: false,
             provider_builder: ProviderBuilderState::default(),
-            api_key_modal: ApiKeyModalState::default(),
             asset_lab: AssetLabState::default(),
             asset_lab_preview_texture: None,
             asset_lab_node_preview_textures: HashMap::new(),
@@ -659,7 +655,6 @@ impl LatentSlateApp {
             || self.editor.overlays.generative_video
             || self.editor.overlays.export_video
             || self.editor.overlays.providers
-            || self.editor.overlays.api_keys
             || self.editor.overlays.asset_lab
             || self.editor.overlays.queue
             || self.editor.overlays.agent_api

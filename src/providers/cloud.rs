@@ -45,6 +45,16 @@ pub fn send_progress(tx: &Option<mpsc::UnboundedSender<ProviderProgress>>, value
     }
 }
 
+pub fn required_api_key<'a>(
+    api_key: Option<&'a str>,
+    provider_name: &str,
+) -> Result<&'a str, String> {
+    api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{provider_name} provider JSON is missing connection.api_key."))
+}
+
 pub async fn parse_image_response(
     client: &reqwest::Client,
     provider_name: &str,

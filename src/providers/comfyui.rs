@@ -118,12 +118,6 @@ pub fn resolve_workflow_path(path: Option<&str>) -> PathBuf {
     paths::resolve_resource_path(Path::new(resolved))
 }
 
-/// Resolves an optional manifest path relative to the app root/exe as needed.
-pub fn resolve_manifest_path(path: Option<&str>) -> Option<PathBuf> {
-    let path = path?;
-    Some(paths::resolve_resource_path(Path::new(path)))
-}
-
 /// Lightweight health check for a ComfyUI instance.
 pub async fn check_health(base_url: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
@@ -172,14 +166,13 @@ pub async fn generate_output(
     base_url: &str,
     workflow_path: &Path,
     inputs: &HashMap<String, Value>,
-    manifest_path: Option<&Path>,
+    manifest: Option<&ProviderManifest>,
     output_type: ProviderOutputType,
     progress_tx: Option<tokio::sync::mpsc::UnboundedSender<ProviderProgress>>,
 ) -> Result<ComfyUiOutput, String> {
     let mut workflow = load_workflow(workflow_path)?;
     let total_nodes = workflow.as_object().map(|map| map.len()).unwrap_or(0);
-    let (output_node_id, output_key, output_index) = if let Some(path) = manifest_path {
-        let manifest = load_manifest(path)?;
+    let (output_node_id, output_key, output_index) = if let Some(manifest) = manifest {
         let (manifest_inputs, output_selector) = match manifest {
             ProviderManifest::ComfyUi { inputs, output, .. } => (inputs, output),
             _ => {
@@ -189,7 +182,7 @@ pub async fn generate_output(
                 )
             }
         };
-        apply_manifest_inputs(&mut workflow, inputs, &manifest_inputs)?;
+        apply_manifest_inputs(&mut workflow, inputs, manifest_inputs)?;
         let node_id = resolve_output_node_id(&workflow, &output_selector.selector)?;
         (
             Some(node_id),
@@ -252,12 +245,6 @@ fn load_workflow(path: &Path) -> Result<Value, String> {
     let json =
         std::fs::read_to_string(path).map_err(|err| format!("Failed to read workflow: {}", err))?;
     serde_json::from_str(&json).map_err(|err| format!("Invalid workflow JSON: {}", err))
-}
-
-fn load_manifest(path: &Path) -> Result<ProviderManifest, String> {
-    let json =
-        std::fs::read_to_string(path).map_err(|err| format!("Failed to read manifest: {}", err))?;
-    serde_json::from_str(&json).map_err(|err| format!("Invalid manifest JSON: {}", err))
 }
 
 fn apply_inputs(workflow: &mut Value, inputs: &HashMap<String, Value>) -> Result<(), String> {
