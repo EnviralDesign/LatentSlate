@@ -427,6 +427,9 @@ impl LatentSlateApp {
         folder_path: PathBuf,
         asset_label: String,
     ) -> Result<String, String> {
+        if !self.editor.provider_in_project_scope(provider.id) {
+            return Err("Provider is outside this project's provider scope.".to_string());
+        }
         if provider.output_type == ProviderOutputType::Audio {
             return Err("Audio generation is not supported in the queue yet.".to_string());
         }

@@ -1591,7 +1591,10 @@ impl LatentSlateApp {
             .editor
             .provider_entries
             .iter()
-            .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
+            .filter(|provider| {
+                asset_lab_provider_is_compatible(asset, provider)
+                    && self.editor.provider_in_project_scope(provider.id)
+            })
             .cloned()
             .collect();
 
@@ -2507,10 +2510,16 @@ impl LatentSlateApp {
             }
 
             let selected_provider = display_node.provider_id.and_then(|provider_id| {
-                compatible_providers
+                self.editor
+                    .provider_entries
                     .iter()
                     .find(|provider| provider.id == provider_id)
+                    .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
+                    .cloned()
             });
+            let selected_provider_out_of_scope = selected_provider
+                .as_ref()
+                .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id));
 
             let scroll_height = ui.available_height().max(160.0);
             egui::ScrollArea::vertical()
@@ -2533,6 +2542,7 @@ impl LatentSlateApp {
                     ui.add_space(kit::FORM_ROW_GAP);
 
                     let provider_label = selected_provider
+                        .as_ref()
                         .map(|provider| provider.name.clone())
                         .unwrap_or_else(|| "Select provider".to_string());
                     let mut provider_choice = display_node.provider_id;
@@ -2559,9 +2569,19 @@ impl LatentSlateApp {
                             provider_id: provider_choice,
                         });
                     }
+                    if selected_provider_out_of_scope {
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        ui.label(
+                            RichText::new(
+                                "Selected provider is outside this project's provider scope.",
+                            )
+                            .color(kit::MARKER)
+                            .size(11.0),
+                        );
+                    }
 
                     ui.add_space(kit::ACTION_GAP);
-                    if let Some(provider) = selected_provider {
+                    if let Some(provider) = selected_provider.as_ref() {
                         kit::field_label(ui, "Media Wiring");
                         ui.add_space(kit::FORM_ROW_GAP);
                         let mut any_media = false;
@@ -3559,6 +3579,11 @@ impl LatentSlateApp {
                         "Provider output type does not match this asset.".to_string();
                     return;
                 }
+                if !self.editor.provider_in_project_scope(provider.id) {
+                    self.editor.status =
+                        "Provider is outside this project's provider scope.".to_string();
+                    return;
+                }
                 Some(provider_id)
             }
             None => None,
@@ -3609,6 +3634,7 @@ impl LatentSlateApp {
             .provider_entries
             .iter()
             .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+            .filter(|provider| self.editor.provider_in_project_scope(provider.id))
             .find(|provider| {
                 provider.id == source_record.provider_id
                     && provider.inputs.iter().any(|input| {
@@ -3620,6 +3646,7 @@ impl LatentSlateApp {
                     .provider_entries
                     .iter()
                     .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+                    .filter(|provider| self.editor.provider_in_project_scope(provider.id))
                     .find(|provider| {
                         provider.inputs.iter().any(|input| {
                             asset_lab_generation_ref_for_input(&asset, input, version).is_some()
@@ -3633,11 +3660,13 @@ impl LatentSlateApp {
                     .find(|provider| provider.id == source_record.provider_id)
             })
             .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+            .filter(|provider| self.editor.provider_in_project_scope(provider.id))
             .or_else(|| {
                 self.editor
                     .provider_entries
                     .iter()
-                    .find(|provider| asset_lab_provider_is_compatible(&asset, provider))
+                    .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+                    .find(|provider| self.editor.provider_in_project_scope(provider.id))
             })
             .cloned();
 
@@ -3817,6 +3846,11 @@ impl LatentSlateApp {
                         "Provider output type does not match this asset.".to_string();
                     return;
                 }
+                if !self.editor.provider_in_project_scope(provider.id) {
+                    self.editor.status =
+                        "Provider is outside this project's provider scope.".to_string();
+                    return;
+                }
                 Some(provider.clone())
             }
             None => None,
@@ -3951,6 +3985,11 @@ impl LatentSlateApp {
             self.editor.status = "Selected provider is unavailable.".to_string();
             return None;
         };
+        if !self.editor.provider_in_project_scope(provider.id) {
+            self.editor.status =
+                "Selected provider is outside this project's provider scope.".to_string();
+            return None;
+        }
 
         let mut node = AssetLabNode::new_with_parent(Some(provider.id), Some(source_node_id));
         node.inputs = self.asset_lab.draft_inputs.clone();
@@ -4044,6 +4083,11 @@ impl LatentSlateApp {
             self.editor.status = "Selected provider is unavailable.".to_string();
             return;
         };
+        if !self.editor.provider_in_project_scope(provider.id) {
+            self.editor.status =
+                "Selected provider is outside this project's provider scope.".to_string();
+            return;
+        }
         if provider.output_type != output_type {
             self.editor.status = "Provider output type does not match this asset.".to_string();
             return;

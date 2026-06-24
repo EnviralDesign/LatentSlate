@@ -317,6 +317,7 @@ envelope. If an agent needs a fresh global snapshot after a mutation, call
 { "type": "open_project", "folder": "C:/projects/Demo" }
 { "type": "save_project" }
 { "type": "set_project_settings", "patch": { "fps": 24.0, "width": 1920, "height": 1080 } }
+{ "type": "set_project_settings", "patch": { "provider_scope": { "mode": "selected", "provider_ids": ["uuid"] } } }
 ```
 
 `set_project_settings` should update preview renderer limits when settings
@@ -324,7 +325,10 @@ that affect preview dimensions change.
 
 Project settings are a first-class API surface, not an incidental modal-only
 operation. Agents need to set canvas size, FPS, duration, preview limits, and
-other serialized settings before building or validating a project.
+project provider scope before building or validating a project. Provider scope
+defaults to `{ "mode": "all" }`. `{ "mode": "selected", "provider_ids": [] }`
+acts as an allowlist for provider pickers, generation, Asset Lab provider
+selection, and default Agent API provider discovery.
 
 ## Selection And Timeline Navigation
 
@@ -486,12 +490,17 @@ names when choosing providers or setting input values.
 
 ```json
 { "type": "list_providers" }
+{ "type": "list_providers", "include_all": true }
 { "type": "refresh_providers" }
 { "type": "create_provider", "provider": {} }
 { "type": "update_provider", "provider_id": "uuid", "provider": {} }
 { "type": "delete_provider", "provider_id": "uuid" }
 { "type": "test_provider", "provider_id": "uuid", "live": true }
 ```
+
+`list_providers` and `refresh_providers` return only providers in the current
+project scope by default. Pass `include_all: true` for repair workflows or to
+inspect providers that are installed but hidden from the project.
 
 Template creation:
 

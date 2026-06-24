@@ -98,7 +98,9 @@ impl Default for Project {
             name: "Untitled Project".to_string(),
             settings: ProjectSettings::default(),
             tracks: vec![
-                Track::default_video(),
+                Track::video(3),
+                Track::video(2),
+                Track::video(1),
                 Track::default_audio(),
                 Track::markers(),
             ],
@@ -786,10 +788,17 @@ mod tests {
     #[test]
     fn test_default_project() {
         let project = Project::default();
-        assert_eq!(project.tracks.len(), 3);
+        assert_eq!(project.tracks.len(), 5);
         assert_eq!(project.tracks[0].track_type, TrackType::Video);
-        assert_eq!(project.tracks[1].track_type, TrackType::Audio);
-        assert_eq!(project.tracks[2].track_type, TrackType::Marker);
+        assert_eq!(project.tracks[0].name, "Video 3");
+        assert_eq!(project.tracks[1].track_type, TrackType::Video);
+        assert_eq!(project.tracks[1].name, "Video 2");
+        assert_eq!(project.tracks[2].track_type, TrackType::Video);
+        assert_eq!(project.tracks[2].name, "Video 1");
+        assert_eq!(project.tracks[3].track_type, TrackType::Audio);
+        assert_eq!(project.tracks[3].name, "Audio 1");
+        assert_eq!(project.tracks[4].track_type, TrackType::Marker);
+        assert_eq!(project.tracks[4].name, "Markers");
     }
 
     #[test]
@@ -818,7 +827,7 @@ mod tests {
 
         project.add_video_track();
         assert_eq!(project.tracks.len(), initial_count + 1);
-        assert_eq!(project.tracks.last().unwrap().name, "Video 2");
+        assert_eq!(project.tracks.last().unwrap().name, "Video 4");
 
         project.add_audio_track();
         assert_eq!(project.tracks.len(), initial_count + 2);

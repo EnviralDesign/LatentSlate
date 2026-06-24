@@ -44,6 +44,7 @@ Important rules:
 - Default projects are written to `LatentSlateData/projects/`.
 - Provider entries are written to `LatentSlateData/providers/`.
 - Provider entries contain inline ComfyUI manifest bindings and inline cloud provider API keys.
+- Project settings can optionally scope providers with a project-level allowlist; provider pickers, generation, Asset Lab provider selection, and default Agent API provider metadata honor that scope.
 - `LatentSlateData/workflows/` is created as an optional local home for ComfyUI API workflow JSON files.
 - App scratch files are written under `LatentSlateData/tmp/`; project-derived caches are written under each project folder's `.cache/`.
 
@@ -52,6 +53,7 @@ Important rules:
 - `Video` tracks hold video clips, image stills, and visual generative clips.
 - `Audio` tracks hold audio clips and audio generative clips.
 - `Marker` tracks hold point-in-time markers.
+- New projects start with three video tracks above one audio track and one marker track: `Video 3`, `Video 2`, `Video 1`, `Audio 1`, `Markers` from top to bottom.
 - Clips are range-based with start time and duration.
 - Markers are point-based annotations.
 - Image clips can display as normal stills or keyframe-reference pins, but they remain clips on video tracks.

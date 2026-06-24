@@ -123,7 +123,7 @@ impl LatentSlateApp {
                     &self.editor.project,
                     &self.editor.selection,
                     self.editor.current_time,
-                    self.editor.provider_entries.len(),
+                    self.editor.project_scoped_provider_entries().len(),
                     self.editor.generation_queue.len(),
                 );
                 ui.ctx().copy_text(payload);

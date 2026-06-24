@@ -41,9 +41,9 @@ impl Track {
         }
     }
 
-    /// Create the default video track
-    pub fn default_video() -> Self {
-        Self::new("Video 1", TrackType::Video)
+    /// Create a numbered video track.
+    pub fn video(number: usize) -> Self {
+        Self::new(format!("Video {number}"), TrackType::Video)
     }
 
     /// Create the default audio track

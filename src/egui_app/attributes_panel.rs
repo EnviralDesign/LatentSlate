@@ -263,7 +263,10 @@ impl LatentSlateApp {
         self.editor
             .provider_entries
             .iter()
-            .filter(|provider| provider.resolved_workflow_kind() == kind)
+            .filter(|provider| {
+                provider.resolved_workflow_kind() == kind
+                    && self.editor.provider_in_project_scope(provider.id)
+            })
             .cloned()
             .collect()
     }
@@ -293,6 +296,26 @@ impl LatentSlateApp {
             }
         }
         None
+    }
+
+    fn validate_provider_override_in_project_scope(&mut self, provider_id: Option<Uuid>) -> bool {
+        let Some(provider_id) = provider_id else {
+            return true;
+        };
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| provider.id == provider_id)
+        else {
+            self.editor.status = "Provider is unavailable.".to_string();
+            return false;
+        };
+        if !self.editor.provider_in_project_scope(provider.id) {
+            self.editor.status = "Provider is outside this project's provider scope.".to_string();
+            return false;
+        }
+        true
     }
 
     pub(super) fn request_bridge_video_from_selected_clips(
@@ -422,6 +445,9 @@ impl LatentSlateApp {
         reference: SingleI2VReference,
         provider_id: Option<Uuid>,
     ) {
+        if !self.validate_provider_override_in_project_scope(provider_id) {
+            return;
+        }
         let Some(source_clip) = self
             .editor
             .project
@@ -515,6 +541,9 @@ impl LatentSlateApp {
     }
 
     pub(super) fn create_i2i_from_single_clip(&mut self, clip_id: Uuid, provider_id: Option<Uuid>) {
+        if !self.validate_provider_override_in_project_scope(provider_id) {
+            return;
+        }
         let Some(source_clip) = self
             .editor
             .project
@@ -590,6 +619,9 @@ impl LatentSlateApp {
         start_time: f64,
         provider_id: Option<Uuid>,
     ) {
+        if !self.validate_provider_override_in_project_scope(provider_id) {
+            return;
+        }
         let Some(track) = self
             .editor
             .project
@@ -642,6 +674,9 @@ impl LatentSlateApp {
         clips: &[Clip],
         provider_id: Option<Uuid>,
     ) {
+        if !self.validate_provider_override_in_project_scope(provider_id) {
+            return;
+        }
         let reference_clips = self.bridge_reference_clips(clips);
         let (Some(first), Some(last)) = (reference_clips.first(), reference_clips.last()) else {
             self.editor.status =
@@ -1045,17 +1080,23 @@ impl LatentSlateApp {
             .editor
             .provider_entries
             .iter()
-            .filter(|entry| entry.output_type == output_type)
+            .filter(|entry| {
+                entry.output_type == output_type && self.editor.provider_in_project_scope(entry.id)
+            })
             .cloned()
             .collect();
         let selected_provider_id = config_snapshot.provider_id;
         let selected_provider = selected_provider_id.and_then(|id| {
-            compatible_providers
+            self.editor
+                .provider_entries
                 .iter()
-                .find(|entry| entry.id == id)
+                .find(|entry| entry.id == id && entry.output_type == output_type)
                 .cloned()
         });
         let show_missing_provider = selected_provider_id.is_some() && selected_provider.is_none();
+        let selected_provider_out_of_scope = selected_provider
+            .as_ref()
+            .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id));
 
         let mut version_options: Vec<String> = config_snapshot
             .versions
@@ -1184,6 +1225,13 @@ impl LatentSlateApp {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(
                     RichText::new("Selected provider is missing from local providers.")
+                        .color(kit::MARKER)
+                        .size(11.0),
+                );
+            } else if selected_provider_out_of_scope {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(
+                    RichText::new("Selected provider is outside this project's provider scope.")
                         .color(kit::MARKER)
                         .size(11.0),
                 );
@@ -1371,6 +1419,11 @@ impl LatentSlateApp {
             self.editor.status = "Selected provider is unavailable.".to_string();
             return;
         };
+        if !self.editor.provider_in_project_scope(provider.id) {
+            self.editor.status =
+                "Selected provider is outside this project's provider scope.".to_string();
+            return;
+        }
         let Some(folder_path) = self
             .editor
             .project

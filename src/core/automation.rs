@@ -26,8 +26,8 @@ use crate::core::export::{
 };
 use crate::state::{
     Asset, AssetKind, AssetLabNode, BatchSettings, ClipImageMode, ClipTransform, GenerativeConfig,
-    InputValue, Project, ProjectSettings, ProviderEntry, ProviderOutputType, SelectionState,
-    TrackType,
+    InputValue, Project, ProjectProviderScope, ProjectSettings, ProviderEntry, ProviderOutputType,
+    SelectionState, TrackType,
 };
 
 const DEFAULT_AUTOMATION_PORT: u16 = 47_890;
@@ -309,9 +309,15 @@ pub enum AutomationCommand {
     /// Delete timeline clips.
     DeleteClips { clip_ids: Vec<Uuid> },
     /// List loaded providers.
-    ListProviders,
+    ListProviders {
+        #[serde(default)]
+        include_all: bool,
+    },
     /// Reload providers from disk.
-    RefreshProviders,
+    RefreshProviders {
+        #[serde(default)]
+        include_all: bool,
+    },
     /// Create a provider from a built-in template.
     CreateProviderFromTemplate { template: ProviderTemplate },
     /// Create a provider entry.
@@ -653,6 +659,8 @@ pub struct ProjectSettingsPatch {
     pub preview_max_width: Option<u32>,
     #[serde(default)]
     pub preview_max_height: Option<u32>,
+    #[serde(default)]
+    pub provider_scope: Option<ProjectProviderScope>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2245,6 +2253,10 @@ pub fn agent_schema_json() -> Value {
         "enums": {
             "track_type": ["Video", "Audio", "Marker"],
             "provider_output_type": ["image", "video", "audio"],
+            "project_provider_scope": [
+                { "mode": "all" },
+                { "mode": "selected", "provider_ids": ["uuid"] }
+            ],
             "provider_template": ["comfy_ui", "openai_image", "xai_image", "xai_video"],
             "capture_mode": ["normal", "enhanced"],
             "time_key": ["first", "last", "current"],
@@ -2258,6 +2270,7 @@ pub fn agent_schema_json() -> Value {
             "UUID fields can be discovered from /agent/v1/state.",
             "Provider API keys live in provider JSON connection.api_key and are redacted in API responses.",
             "Provider and provider-input descriptions are returned with provider metadata and should guide tool selection and parameter values.",
+            "Project provider scope filters /agent/v1/state providers and list_providers by default; pass include_all=true to list_providers or include=all_providers to state for repair workflows.",
             "start_generation is non-blocking; use /agent/v1/wait/generation to wait for a returned job_id or for the queue to drain.",
             "Read-only captures do not move the UI unless seek_ui is true.",
             "Use enhanced capture mode when visual boundaries, labels, and timecode help inspection."
@@ -2363,7 +2376,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "create_project", "fields": { "parent_dir": "folder path", "name": "string", "settings?": "ProjectSettings" } },
             { "type": "open_project", "fields": { "folder": "project folder path" } },
             { "type": "save_project", "fields": {} },
-            { "type": "set_project_settings", "fields": { "patch": { "width?": "u32", "height?": "u32", "fps?": "f64", "duration_seconds?": "f64", "preview_max_width?": "u32", "preview_max_height?": "u32" } } }
+            { "type": "set_project_settings", "fields": { "patch": { "width?": "u32", "height?": "u32", "fps?": "f64", "duration_seconds?": "f64", "preview_max_width?": "u32", "preview_max_height?": "u32", "provider_scope?": "{ \"mode\": \"all\" } or { \"mode\": \"selected\", \"provider_ids\": [\"uuid\"] }" } } }
         ],
         "assets": [
             { "type": "import_asset", "fields": { "path": "media file path" } },
@@ -2399,8 +2412,8 @@ fn agent_command_schema_json() -> Value {
             { "type": "delete_marker", "fields": { "marker_id": "uuid" } }
         ],
         "providers": [
-            { "type": "list_providers", "fields": {} },
-            { "type": "refresh_providers", "fields": {} },
+            { "type": "list_providers", "fields": { "include_all?": "bool; default false returns only providers in the current project scope" } },
+            { "type": "refresh_providers", "fields": { "include_all?": "bool; default false returns only providers in the current project scope" } },
             { "type": "create_provider_from_template", "fields": { "template": "comfy_ui|openai_image|xai_image|xai_video" } },
             { "type": "create_provider", "fields": { "provider": "ProviderEntry" } },
             { "type": "update_provider", "fields": { "provider_id": "uuid", "provider": "ProviderEntry" } },

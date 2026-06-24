@@ -919,6 +919,11 @@ impl LatentSlateApp {
                     "Provider output type does not match this asset.",
                 ));
             }
+            if !self.editor.provider_in_project_scope(provider.id) {
+                return Err(crate::core::automation::AutomationResponse::conflict(
+                    "Provider is outside this project's provider scope.",
+                ));
+            }
         }
         Ok(())
     }

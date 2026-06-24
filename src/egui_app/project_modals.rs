@@ -1,13 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align, Context, Layout, Ui, Vec2};
+use eframe::egui::{self, Align, Context, Layout, RichText, Ui, Vec2};
+use uuid::Uuid;
 
-use crate::state::ProjectSettings;
+use crate::state::{ProjectProviderScope, ProjectSettings, ProviderEntry, ProviderOutputType};
 use crate::ui_kit as kit;
 
 use super::{
-    inspector_drag_f64, inspector_drag_i64, inspector_two_drag_f64, inspector_two_drag_u32,
-    ExportModalState, LatentSlateApp,
+    automation_checkbox, inspector_drag_f64, inspector_drag_i64, inspector_two_drag_f64,
+    inspector_two_drag_u32, ExportModalState, LatentSlateApp,
 };
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
@@ -231,25 +232,54 @@ impl LatentSlateApp {
         let mut open = true;
         let mut close_clicked = false;
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "project_settings", true);
+        let providers = self.editor.provider_entries.clone();
         egui::Window::new("Project Settings")
             .title_bar(false)
             .order(egui::Order::Foreground)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .fixed_size([560.0, 520.0])
+            .fixed_size([700.0, 650.0])
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 close_clicked = kit::modal_header_with_close(
                     ui,
                     "Project Settings",
-                    Some("Update resolution, timing, and preview scale."),
+                    Some("Update resolution, timing, preview scale, and project provider scope."),
                     true,
                 );
                 kit::modal_body(ui, |ui| {
-                    kit::card_frame()
-                        .show(ui, |ui| settings_fields(ui, &mut self.project_settings));
+                    let body_height =
+                        (ui.available_height() - kit::ACTION_GAP - kit::PRIMARY_BUTTON_H)
+                            .max(320.0);
+                    let column_gap = kit::ACTION_GAP;
+                    let column_width = ((ui.available_width() - column_gap) * 0.5).max(260.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = column_gap;
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(column_width, body_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                kit::card_panel(ui, body_height, |ui| {
+                                    settings_fields(ui, &mut self.project_settings)
+                                });
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(column_width, body_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                kit::card_panel(ui, body_height, |ui| {
+                                    provider_scope_fields(
+                                        ui,
+                                        &mut self.project_settings,
+                                        &providers,
+                                    )
+                                });
+                            },
+                        );
+                    });
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         if kit::secondary_button(ui, "Cancel", 120.0).clicked() {
@@ -391,6 +421,146 @@ pub(super) fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
     ) {
         settings.duration_seconds = (minutes * 60.0).max(1.0);
     }
+}
+
+fn provider_scope_fields(ui: &mut Ui, settings: &mut ProjectSettings, providers: &[ProviderEntry]) {
+    kit::field_label(ui, "Provider Scope");
+    ui.add_space(kit::FORM_ROW_GAP);
+
+    let all_selected = settings.provider_scope.is_all();
+    ui.horizontal_wrapped(|ui| {
+        let all_color = if all_selected {
+            kit::PRIMARY_HOVER
+        } else {
+            kit::TEXT_MUTED
+        };
+        if kit::media_pill(ui, "All Providers", all_color).clicked() {
+            settings.provider_scope = ProjectProviderScope::All;
+        }
+
+        let selected_color = if all_selected {
+            kit::TEXT_MUTED
+        } else {
+            kit::PRIMARY_HOVER
+        };
+        if kit::media_pill(ui, "Selected Providers", selected_color).clicked() && all_selected {
+            settings.provider_scope = ProjectProviderScope::Selected {
+                provider_ids: providers.iter().map(|provider| provider.id).collect(),
+            };
+        }
+    });
+
+    ui.add_space(kit::FORM_ROW_GAP);
+    let selected_count = match &settings.provider_scope {
+        ProjectProviderScope::All => providers.len(),
+        ProjectProviderScope::Selected { provider_ids } => providers
+            .iter()
+            .filter(|provider| provider_ids.contains(&provider.id))
+            .count(),
+    };
+    ui.label(kit::caption(format!(
+        "{} of {} installed providers visible to this project and the Agent API.",
+        selected_count,
+        providers.len()
+    )));
+
+    let ProjectProviderScope::Selected { provider_ids } = &settings.provider_scope else {
+        return;
+    };
+
+    ui.add_space(kit::ACTION_GAP);
+    let mut next_ids = dedup_provider_ids(provider_ids.iter().copied());
+    ui.horizontal(|ui| {
+        if kit::secondary_button(ui, "Select All", 96.0).clicked() {
+            next_ids = providers.iter().map(|provider| provider.id).collect();
+        }
+        if kit::secondary_button(ui, "Clear", 72.0).clicked() {
+            next_ids.clear();
+        }
+    });
+    ui.add_space(kit::FORM_ROW_GAP);
+
+    if providers.is_empty() {
+        ui.label(kit::caption("No providers installed yet."));
+    } else {
+        let list_height = ui.available_height().max(96.0);
+        egui::ScrollArea::vertical()
+            .id_salt("project_provider_scope_list")
+            .max_height(list_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for provider in providers {
+                    let mut enabled = next_ids.contains(&provider.id);
+                    provider_scope_row(ui, provider, &mut enabled);
+                    if enabled {
+                        if !next_ids.contains(&provider.id) {
+                            next_ids.push(provider.id);
+                        }
+                    } else {
+                        next_ids.retain(|id| *id != provider.id);
+                    }
+                    ui.add_space(6.0);
+                }
+            });
+    }
+
+    let stale_count = next_ids
+        .iter()
+        .filter(|id| !providers.iter().any(|provider| provider.id == **id))
+        .count();
+    if stale_count > 0 {
+        ui.add_space(kit::FORM_ROW_GAP);
+        ui.label(
+            RichText::new(format!(
+                "{stale_count} selected provider ID(s) are not installed right now."
+            ))
+            .color(kit::MARKER)
+            .size(11.0),
+        );
+    }
+
+    settings.provider_scope = ProjectProviderScope::Selected {
+        provider_ids: dedup_provider_ids(next_ids),
+    };
+}
+
+fn provider_scope_row(ui: &mut Ui, provider: &ProviderEntry, enabled: &mut bool) {
+    ui.horizontal(|ui| {
+        let label = format!("Enable {}", provider.name);
+        let _ = automation_checkbox(ui, enabled, "");
+        let badge_w = 58.0;
+        let gap = kit::FIELD_COMPOUND_GAP * 2.0;
+        let name_w = (ui.available_width() - badge_w - gap).max(90.0);
+        ui.add_sized(
+            [name_w, kit::FIELD_H],
+            egui::Label::new(kit::body(provider.name.clone())).truncate(),
+        )
+        .on_hover_text(label);
+        kit::media_pill_sized(
+            ui,
+            provider_output_label(provider),
+            kit::TEXT_MUTED,
+            badge_w,
+        );
+    });
+}
+
+fn provider_output_label(provider: &ProviderEntry) -> &'static str {
+    match provider.output_type {
+        ProviderOutputType::Image => "Image",
+        ProviderOutputType::Video => "Video",
+        ProviderOutputType::Audio => "Audio",
+    }
+}
+
+fn dedup_provider_ids(ids: impl IntoIterator<Item = Uuid>) -> Vec<Uuid> {
+    let mut deduped = Vec::new();
+    for id in ids {
+        if !deduped.contains(&id) {
+            deduped.push(id);
+        }
+    }
+    deduped
 }
 
 struct ResolutionPreset {

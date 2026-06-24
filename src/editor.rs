@@ -20,9 +20,9 @@ use crate::core::provider_store::{
 use crate::core::thumbnailer::Thumbnailer;
 use crate::state::{
     next_generative_index, Asset, AssetKind, GenerationJob, GenerativeConfig, InputValue, Project,
-    ProjectSettings, ProjectWorkspaceLayout, ProviderConnection, ProviderEntry, ProviderInputType,
-    ProviderOutputType, SelectionState, DEFAULT_GENERATIVE_VIDEO_FPS,
-    DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
+    ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout, ProviderConnection,
+    ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
+    DEFAULT_GENERATIVE_VIDEO_FPS, DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
 #[derive(Clone, Debug)]
@@ -167,6 +167,26 @@ impl EditorState {
     pub fn refresh_providers(&mut self) {
         self.provider_entries = load_local_provider_entries_or_empty();
         self.provider_files = list_local_provider_files();
+    }
+
+    pub fn provider_in_project_scope(&self, provider_id: Uuid) -> bool {
+        self.project.settings.provider_in_scope(provider_id)
+    }
+
+    pub fn project_scoped_provider_entries(&self) -> Vec<ProviderEntry> {
+        self.provider_entries
+            .iter()
+            .filter(|provider| self.provider_in_project_scope(provider.id))
+            .cloned()
+            .collect()
+    }
+
+    fn redacted_provider_entries_for_scope(&self, include_all: bool) -> Vec<Value> {
+        self.provider_entries
+            .iter()
+            .filter(|provider| include_all || self.provider_in_project_scope(provider.id))
+            .map(redacted_provider_entry_json)
+            .collect()
     }
 
     pub fn project_root(&self) -> Option<&Path> {
@@ -596,6 +616,9 @@ impl EditorState {
         }
         if let Some(height) = patch.preview_max_height {
             self.project.settings.preview_max_height = height.max(1);
+        }
+        if let Some(provider_scope) = patch.provider_scope.clone() {
+            self.project.settings.provider_scope = normalize_project_provider_scope(provider_scope);
         }
 
         let project_root = self
@@ -1471,14 +1494,18 @@ impl EditorState {
                 }
                 AutomationResponse::ok(json!({ "removed_clips": removed }))
             }
-            AutomationCommand::ListProviders => AutomationResponse::ok(
-                json!({ "providers": redacted_provider_entries_json(&self.provider_entries) }),
-            ),
-            AutomationCommand::RefreshProviders => {
+            AutomationCommand::ListProviders { include_all } => AutomationResponse::ok(json!({
+                "providers": self.redacted_provider_entries_for_scope(*include_all),
+                "scope": self.project.settings.provider_scope.clone(),
+                "include_all": include_all,
+            })),
+            AutomationCommand::RefreshProviders { include_all } => {
                 self.refresh_providers();
-                AutomationResponse::ok(
-                    json!({ "providers": redacted_provider_entries_json(&self.provider_entries) }),
-                )
+                AutomationResponse::ok(json!({
+                    "providers": self.redacted_provider_entries_for_scope(*include_all),
+                    "scope": self.project.settings.provider_scope.clone(),
+                    "include_all": include_all,
+                }))
             }
             AutomationCommand::CreateProviderFromTemplate { template } => {
                 let provider = match template {
@@ -1557,7 +1584,14 @@ impl EditorState {
                         .iter()
                         .find(|provider| provider.id == provider_id)
                     {
-                        Some(provider) if provider_matches_asset_output(&asset, provider) => {}
+                        Some(provider)
+                            if provider_matches_asset_output(&asset, provider)
+                                && self.provider_in_project_scope(provider.id) => {}
+                        Some(provider) if provider_matches_asset_output(&asset, provider) => {
+                            return AutomationResponse::conflict(
+                                "Provider is outside this project's provider scope.",
+                            );
+                        }
                         Some(_) => {
                             return AutomationResponse::conflict(
                                 "Provider output type does not match this asset.",
@@ -1635,7 +1669,14 @@ impl EditorState {
                         .iter()
                         .find(|provider| provider.id == provider_id)
                     {
-                        Some(provider) if provider_matches_asset_output(&asset, provider) => {}
+                        Some(provider)
+                            if provider_matches_asset_output(&asset, provider)
+                                && self.provider_in_project_scope(provider.id) => {}
+                        Some(provider) if provider_matches_asset_output(&asset, provider) => {
+                            return AutomationResponse::conflict(
+                                "Provider is outside this project's provider scope.",
+                            );
+                        }
                         Some(_) => {
                             return AutomationResponse::conflict(
                                 "Provider output type does not match this asset.",
@@ -2093,7 +2134,7 @@ impl EditorState {
                 "generative_configs": self.project.generative_configs.clone(),
                 "workspace_layout": self.layout.workspace_layout(),
             },
-            "providers": redacted_provider_entries_json(&self.provider_entries),
+            "providers": self.redacted_provider_entries_for_scope(false),
             "queue": redacted_generation_jobs_json(&self.generation_queue),
             "current_time": self.current_time,
             "timeline": {
@@ -2164,6 +2205,11 @@ impl EditorState {
                         "project_loaded": self.project.project_path.is_some(),
                         "counts": {
                             "providers": self.provider_entries.len(),
+                            "scoped_providers": self
+                                .provider_entries
+                                .iter()
+                                .filter(|provider| self.provider_in_project_scope(provider.id))
+                                .count(),
                             "provider_files": self.provider_files.len(),
                             "assets": self.project.assets.len(),
                             "tracks": self.project.tracks.len(),
@@ -2187,7 +2233,33 @@ impl EditorState {
             }
         }
 
+        if include_requested(include, "all_providers") {
+            if let Some(object) = state.as_object_mut() {
+                object.insert(
+                    "all_providers".to_string(),
+                    json!(redacted_provider_entries_json(&self.provider_entries)),
+                );
+            }
+        }
+
         state
+    }
+}
+
+fn normalize_project_provider_scope(scope: ProjectProviderScope) -> ProjectProviderScope {
+    match scope {
+        ProjectProviderScope::All => ProjectProviderScope::All,
+        ProjectProviderScope::Selected { provider_ids } => {
+            let mut deduped = Vec::new();
+            for provider_id in provider_ids {
+                if !deduped.contains(&provider_id) {
+                    deduped.push(provider_id);
+                }
+            }
+            ProjectProviderScope::Selected {
+                provider_ids: deduped,
+            }
+        }
     }
 }
 
