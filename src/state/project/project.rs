@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use super::{
-    Clip, ClipImageMode, ClipTimeMode, ClipTransform, Marker, ProjectSettings, Track, TrackType,
+    Clip, ClipBridgeLink, ClipImageMode, ClipTimeMode, ClipTransform, Marker, ProjectSettings,
+    Track, TrackType,
 };
 use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 
@@ -774,6 +775,15 @@ impl Project {
     pub fn set_clip_transform(&mut self, id: Uuid, transform: ClipTransform) -> bool {
         if let Some(clip) = self.clips.iter_mut().find(|c| c.id == id) {
             clip.transform = transform;
+            return true;
+        }
+        false
+    }
+
+    /// Update purpose-built bridge linkage for a clip instance.
+    pub fn set_clip_bridge(&mut self, id: Uuid, bridge: Option<ClipBridgeLink>) -> bool {
+        if let Some(clip) = self.clips.iter_mut().find(|c| c.id == id) {
+            clip.bridge = bridge;
             return true;
         }
         false

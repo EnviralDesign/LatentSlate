@@ -18,6 +18,7 @@ use crate::core::provider_store::{
     load_local_provider_entries_or_empty, provider_path_for_entry, save_local_provider_entry,
 };
 use crate::core::thumbnailer::Thumbnailer;
+use crate::core::timeline_bridge::{provider_is_timeline_bridge, resolve_timeline_bridge_clip};
 use crate::state::{
     next_generative_index, Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole,
     InputValue, Project, ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout,
@@ -179,6 +180,73 @@ impl EditorState {
             .filter(|provider| self.provider_in_project_scope(provider.id))
             .cloned()
             .collect()
+    }
+
+    pub fn sync_timeline_bridge_clips(&mut self) -> bool {
+        let bridge_clip_ids: Vec<Uuid> = self
+            .project
+            .clips
+            .iter()
+            .filter(|clip| clip.bridge.is_some())
+            .map(|clip| clip.id)
+            .collect();
+        let mut changed = false;
+        for clip_id in bridge_clip_ids {
+            changed |= self.sync_timeline_bridge_clip(clip_id);
+        }
+        if changed {
+            self.preview_dirty = true;
+        }
+        changed
+    }
+
+    pub fn sync_timeline_bridge_clip(&mut self, clip_id: Uuid) -> bool {
+        let Some(clip_snapshot) = self
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+        else {
+            return false;
+        };
+        if clip_snapshot.bridge.is_none() {
+            return false;
+        }
+        let Some(config) = self
+            .project
+            .generative_config(clip_snapshot.asset_id)
+            .cloned()
+        else {
+            return false;
+        };
+        let provider = config.provider_id.and_then(|provider_id| {
+            self.provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+        });
+        if !provider.is_some_and(provider_is_timeline_bridge) {
+            return false;
+        }
+
+        let resolution =
+            resolve_timeline_bridge_clip(&self.project, provider, Some(&config), &clip_snapshot);
+        if (resolution.start_time - clip_snapshot.start_time).abs() <= f64::EPSILON
+            && (resolution.duration - clip_snapshot.duration).abs() <= f64::EPSILON
+        {
+            return false;
+        }
+        if let Some(clip) = self
+            .project
+            .clips
+            .iter_mut()
+            .find(|clip| clip.id == clip_id)
+        {
+            clip.start_time = resolution.start_time.max(0.0);
+            clip.duration = resolution.duration.max(0.1);
+            return true;
+        }
+        false
     }
 
     fn redacted_provider_entries_for_scope(&self, include_all: bool) -> Vec<Value> {
@@ -1476,6 +1544,10 @@ impl EditorState {
                 if let Some(transform) = patch.transform {
                     let _ = self.project.set_clip_transform(*clip_id, transform);
                 }
+                if let Some(bridge) = patch.bridge.clone() {
+                    let _ = self.project.set_clip_bridge(*clip_id, bridge);
+                }
+                self.sync_timeline_bridge_clips();
                 self.selection.select_clip(*clip_id);
                 self.preview_dirty = true;
                 AutomationResponse::ok(json!({ "clip_id": clip_id }))
@@ -1519,6 +1591,7 @@ impl EditorState {
                 if !self.project.move_clip(*clip_id, *start_time) {
                     return AutomationResponse::not_found("Clip not found.");
                 }
+                self.sync_timeline_bridge_clips();
                 self.selection.select_clip(*clip_id);
                 self.preview_dirty = true;
                 AutomationResponse::ok(json!({ "clip_id": clip_id }))
@@ -1530,20 +1603,25 @@ impl EditorState {
                 delta_seconds,
                 track_delta,
                 track_id,
-            } => self.apply_move_clips_command(
-                *mode,
-                moves,
-                clip_ids,
-                *delta_seconds,
-                *track_delta,
-                *track_id,
-            ),
+            } => {
+                let response = self.apply_move_clips_command(
+                    *mode,
+                    moves,
+                    clip_ids,
+                    *delta_seconds,
+                    *track_delta,
+                    *track_id,
+                );
+                self.sync_timeline_bridge_clips();
+                response
+            }
             AutomationCommand::ResizeClip {
                 clip_id,
                 start_time,
                 duration,
             } => {
                 if self.project.resize_clip(*clip_id, *start_time, *duration) {
+                    self.sync_timeline_bridge_clips();
                     self.selection.select_clip(*clip_id);
                     self.preview_dirty = true;
                     AutomationResponse::ok(json!({ "clip_id": clip_id }))
@@ -1577,6 +1655,7 @@ impl EditorState {
                     self.selection
                         .clip_ids
                         .retain(|id| !clip_ids.iter().any(|clip_id| clip_id == id));
+                    self.sync_timeline_bridge_clips();
                     self.preview_dirty = true;
                 }
                 AutomationResponse::ok(json!({ "removed_clips": removed }))
@@ -2493,7 +2572,14 @@ fn provider_timing_role_value(
         InputRole::DurationSeconds => duration,
         InputRole::Fps => fps,
         InputRole::FrameCount => frame_count as f64,
-        InputRole::Width | InputRole::Height | InputRole::Seed => return None,
+        InputRole::Width
+        | InputRole::Height
+        | InputRole::Seed
+        | InputRole::LeftVideo
+        | InputRole::RightVideo
+        | InputRole::LeftReplaceFrames
+        | InputRole::RightReplaceFrames
+        | InputRole::EdgeBlendFrames => return None,
     };
     let raw = clamp_provider_input_number(raw, input);
     match input.input_type {

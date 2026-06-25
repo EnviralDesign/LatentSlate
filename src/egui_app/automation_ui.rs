@@ -121,8 +121,49 @@ impl LatentSlateApp {
                     clip_ids,
                     provider_id,
                 } => {
+                    let timeline_bridge_provider_id = provider_id
+                        .and_then(|id| {
+                            self.editor
+                                .provider_entries
+                                .iter()
+                                .find(|provider| provider.id == id)
+                                .filter(|provider| {
+                                    provider.purpose == ProviderPurpose::TimelineBridge
+                                        && provider.output_type == ProviderOutputType::Video
+                                })
+                                .map(|provider| provider.id)
+                        })
+                        .or_else(|| {
+                            if provider_id.is_some() {
+                                return None;
+                            }
+                            let candidates: Vec<Uuid> = self
+                                .editor
+                                .provider_entries
+                                .iter()
+                                .filter(|provider| {
+                                    provider.purpose == ProviderPurpose::TimelineBridge
+                                        && provider.output_type == ProviderOutputType::Video
+                                        && self.editor.provider_in_project_scope(provider.id)
+                                })
+                                .map(|provider| provider.id)
+                                .collect();
+                            (candidates.len() == 1).then(|| candidates[0])
+                        });
                     let response = self.agent_continuation_response(|this| {
-                        this.create_bridge_video_from_clip_ids(&clip_ids, provider_id);
+                        if let Some(provider_id) = timeline_bridge_provider_id {
+                            let clips: Vec<Clip> = this
+                                .editor
+                                .project
+                                .clips
+                                .iter()
+                                .filter(|clip| clip_ids.contains(&clip.id))
+                                .cloned()
+                                .collect();
+                            this.create_timeline_bridge_from_selected_clips(&clips, provider_id);
+                        } else {
+                            this.create_bridge_video_from_clip_ids(&clip_ids, provider_id);
+                        }
                     });
                     envelope.respond(response);
                 }

@@ -856,6 +856,29 @@ impl LatentSlateApp {
                         ui.close();
                     }
                 });
+                let video_count = selected_clips
+                    .iter()
+                    .filter(|clip| {
+                        self.editor
+                            .project
+                            .find_asset(clip.asset_id)
+                            .is_some_and(|asset| asset.is_video())
+                    })
+                    .count();
+                if video_count >= 2 {
+                    ui.menu_button("Create Seam Bridge", |ui| {
+                        if let Some(provider_id) = self.timeline_bridge_provider_menu(ui) {
+                            let mut sorted = selected_clips.clone();
+                            sorted.sort_by(|a, b| {
+                                a.start_time
+                                    .partial_cmp(&b.start_time)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                            self.create_timeline_bridge_from_selected_clips(&sorted, provider_id);
+                            ui.close();
+                        }
+                    });
+                }
             }
             if !selected_clips.is_empty() {
                 ui.separator();
@@ -1397,12 +1420,30 @@ impl LatentSlateApp {
         if let Some(buckets) = cache_buckets {
             paint_clip_cache_buckets(painter, rect, buckets);
         }
+        let bridge_resolution = self.timeline_bridge_resolution_for_clip(clip);
+        let bridge_invalid = bridge_resolution
+            .as_ref()
+            .is_some_and(|resolution| !resolution.valid());
+        let bridge_active = bridge_resolution.is_some();
         painter.rect_stroke(
             rect,
             4.0,
             Stroke::new(if selected { 2.0 } else { 1.0 }, selection_stroke),
             egui::StrokeKind::Inside,
         );
+        if bridge_active {
+            let bridge_color = if bridge_invalid {
+                Color32::from_rgb(232, 76, 88)
+            } else {
+                Color32::from_rgb(229, 187, 47)
+            };
+            painter.rect_stroke(
+                rect.shrink(1.5),
+                4.0,
+                Stroke::new(1.5, bridge_color),
+                egui::StrokeKind::Inside,
+            );
+        }
         painter.rect_filled(
             Rect::from_min_size(rect.left_top(), Vec2::new(4.0, rect.height())),
             2.0,
@@ -1917,6 +1958,12 @@ impl LatentSlateApp {
                             } else if !self.editor.selection.clip_ids.contains(&id) {
                                 self.editor.selection.select_clip(id);
                             }
+                            if self.timeline_bridge_resolution_for_clip(clip).is_some() {
+                                self.editor.status =
+                                    "Bridge clips are anchored. Drag edges to adjust bridge frames."
+                                        .to_string();
+                                return;
+                            }
                             let move_clips = if self.editor.selection.clip_ids.contains(&id) {
                                 self.editor
                                     .selection
@@ -2198,6 +2245,7 @@ impl LatentSlateApp {
                     }
                 }
                 if changed {
+                    self.editor.sync_timeline_bridge_clips();
                     self.editor.preview_dirty = true;
                 }
             }
@@ -2206,6 +2254,22 @@ impl LatentSlateApp {
                 start_time,
                 duration: clip_duration,
             } => {
+                if self
+                    .editor
+                    .project
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == clip_id)
+                    .is_some_and(|clip| self.timeline_bridge_resolution_for_clip(clip).is_some())
+                {
+                    let new_start = (start_time
+                        + delta_x as f64 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64)
+                        .max(0.0);
+                    if self.set_timeline_bridge_edge_time(clip_id, true, new_start) {
+                        self.timeline_snap_preview = None;
+                    }
+                    return;
+                }
                 let end_frames = frames_from_seconds(start_time + clip_duration, fps).round();
                 let mut new_start_frames =
                     frames_from_seconds(start_time, fps).round() + delta_frames;
@@ -2232,6 +2296,7 @@ impl LatentSlateApp {
                     .project
                     .resize_clip(clip_id, new_start, new_duration)
                 {
+                    self.editor.sync_timeline_bridge_clips();
                     self.editor.preview_dirty = true;
                 }
             }
@@ -2240,6 +2305,23 @@ impl LatentSlateApp {
                 start_time,
                 duration: clip_duration,
             } => {
+                if self
+                    .editor
+                    .project
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == clip_id)
+                    .is_some_and(|clip| self.timeline_bridge_resolution_for_clip(clip).is_some())
+                {
+                    let new_end = (start_time
+                        + clip_duration
+                        + delta_x as f64 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64)
+                        .max(0.0);
+                    if self.set_timeline_bridge_edge_time(clip_id, false, new_end) {
+                        self.timeline_snap_preview = None;
+                    }
+                    return;
+                }
                 let start_frames = frames_from_seconds(start_time, fps).round();
                 let mut new_end_frames =
                     start_frames + frames_from_seconds(clip_duration, fps).round() + delta_frames;
@@ -2264,6 +2346,7 @@ impl LatentSlateApp {
                     .project
                     .resize_clip(clip_id, start_time, new_duration)
                 {
+                    self.editor.sync_timeline_bridge_clips();
                     self.editor.preview_dirty = true;
                 }
             }

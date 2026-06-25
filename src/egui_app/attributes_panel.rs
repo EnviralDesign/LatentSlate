@@ -133,6 +133,7 @@ impl LatentSlateApp {
         ui.add_space(kit::FORM_ROW_GAP);
         let mut apply_spacing = false;
         let mut bridge_provider_id: Option<Option<Uuid>> = None;
+        let mut seam_bridge_provider_id: Option<Uuid> = None;
         inspector_card(ui, "Spacing", |ui| {
             let fps = self.editor.project.settings.fps.max(1.0);
             let mut seconds = self.clip_spacing_seconds.max(0.0);
@@ -190,12 +191,40 @@ impl LatentSlateApp {
                 });
             });
         }
+        let selected_video_clips: Vec<Clip> = clips
+            .iter()
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .is_some_and(|asset| asset.is_video())
+            })
+            .cloned()
+            .collect();
+        if selected_video_clips.len() >= 2 {
+            ui.add_space(kit::FORM_ROW_GAP);
+            inspector_card(ui, "Seam Bridge", |ui| {
+                ui.label(kit::caption(
+                    "Create an anchored bridge overlay from the tail of the left video and head of the right video.",
+                ));
+                ui.add_space(kit::ACTION_GAP);
+                ui.menu_button("Create Seam Bridge", |ui| {
+                    if let Some(provider_id) = self.timeline_bridge_provider_menu(ui) {
+                        seam_bridge_provider_id = Some(provider_id);
+                        ui.close();
+                    }
+                });
+            });
+        }
 
         if apply_spacing && clips.len() >= 2 {
             self.space_selected_clips(&clips);
         }
         if let Some(provider_id) = bridge_provider_id {
             self.request_bridge_video_from_selected_clips(&clips, provider_id);
+        }
+        if let Some(provider_id) = seam_bridge_provider_id {
+            self.create_timeline_bridge_from_selected_clips(&selected_video_clips, provider_id);
         }
     }
 
@@ -293,6 +322,30 @@ impl LatentSlateApp {
         for provider in providers {
             if provider_choice_menu_row(ui, &provider).clicked() {
                 return Some(Some(provider.id));
+            }
+        }
+        None
+    }
+
+    pub(super) fn timeline_bridge_provider_menu(&self, ui: &mut Ui) -> Option<Uuid> {
+        let providers: Vec<ProviderEntry> = self
+            .editor
+            .provider_entries
+            .iter()
+            .filter(|provider| {
+                provider.output_type == ProviderOutputType::Video
+                    && provider.purpose == ProviderPurpose::TimelineBridge
+                    && self.editor.provider_in_project_scope(provider.id)
+            })
+            .cloned()
+            .collect();
+        if providers.is_empty() {
+            ui.label(kit::caption("No timeline bridge providers configured."));
+            return None;
+        }
+        for provider in providers {
+            if provider_choice_menu_row(ui, &provider).clicked() {
+                return Some(provider.id);
             }
         }
         None
@@ -437,6 +490,134 @@ impl LatentSlateApp {
             .cloned()
             .collect();
         self.create_bridge_video_from_selected_clips(&clips, provider_id);
+    }
+
+    pub(super) fn create_timeline_bridge_from_selected_clips(
+        &mut self,
+        clips: &[Clip],
+        provider_id: Uuid,
+    ) {
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .cloned()
+        else {
+            self.editor.status = "Bridge provider is unavailable.".to_string();
+            return;
+        };
+        if provider.purpose != ProviderPurpose::TimelineBridge
+            || provider.output_type != ProviderOutputType::Video
+        {
+            self.editor.status = "Provider is not a timeline bridge video provider.".to_string();
+            return;
+        }
+        if !self.editor.provider_in_project_scope(provider.id) {
+            self.editor.status = "Provider is outside this project's provider scope.".to_string();
+            return;
+        }
+        let mut video_clips: Vec<Clip> = clips
+            .iter()
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .is_some_and(|asset| asset.is_video())
+            })
+            .cloned()
+            .collect();
+        video_clips.sort_by(|a, b| {
+            a.start_time
+                .partial_cmp(&b.start_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let (Some(left_clip), Some(right_clip)) = (video_clips.first(), video_clips.last()) else {
+            self.editor.status = "Select left and right video clips first.".to_string();
+            return;
+        };
+        if left_clip.id == right_clip.id {
+            self.editor.status = "Select two different video clips.".to_string();
+            return;
+        }
+
+        let asset_id = match self.editor.create_generative_video(
+            default_generative_video_fps(),
+            default_generative_video_frames(),
+        ) {
+            Ok(asset_id) => asset_id,
+            Err(err) => {
+                self.editor.status = err;
+                return;
+            }
+        };
+
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                *config = GenerativeConfig {
+                    provider_id: Some(provider.id),
+                    ..Default::default()
+                };
+            });
+        self.seed_timeline_bridge_defaults(asset_id, &provider);
+        let link = ClipBridgeLink::new(Some(left_clip.id), Some(right_clip.id));
+        self.apply_timeline_bridge_media_inputs(asset_id, &provider, &link);
+
+        let params = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| {
+                crate::core::timeline_bridge::timeline_bridge_parameters(&provider, config).ok()
+            });
+        let (fps, frame_count, start_time, duration) = if let Some(params) = params.as_ref() {
+            (
+                params.processing_fps,
+                params.visible_frames().max(1),
+                (left_clip.end_time() - params.left_seconds()).max(0.0),
+                (right_clip.start_time + params.right_seconds()
+                    - (left_clip.end_time() - params.left_seconds()).max(0.0))
+                .max(0.1),
+            )
+        } else {
+            (
+                default_generative_video_fps(),
+                default_generative_video_frames(),
+                left_clip.end_time(),
+                default_generative_video_frames() as f64 / default_generative_video_fps(),
+            )
+        };
+        self.editor
+            .project
+            .set_generative_video_timing(asset_id, fps, frame_count);
+        let target_track_id = self.bridge_target_track_id(left_clip.track_id);
+        let mut clip = Clip::new(asset_id, target_track_id, start_time, duration);
+        clip.label = Some("Seam bridge".to_string());
+        clip.bridge = Some(link);
+        let clip_id = self.editor.project.add_clip(clip);
+        self.editor.sync_timeline_bridge_clip(clip_id);
+        let config_save_error = self.editor.project.save_generative_config(asset_id).err();
+        self.editor.selection.select_clip(clip_id);
+        self.editor.preview_dirty = true;
+        let resolution = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .and_then(|clip| self.timeline_bridge_resolution_for_clip(clip));
+        self.editor.status = if let Some(err) = config_save_error {
+            format!("Bridge created, but config save failed: {err}")
+        } else if let Some(resolution) = resolution.filter(|resolution| !resolution.valid()) {
+            resolution
+                .tooltip()
+                .map(|error| format!("Created timeline seam bridge; needs attention: {error}"))
+                .unwrap_or_else(|| "Created timeline seam bridge; needs attention.".to_string())
+        } else {
+            "Created timeline seam bridge.".to_string()
+        };
     }
 
     pub(super) fn create_i2v_from_single_clip(
@@ -845,7 +1026,12 @@ impl LatentSlateApp {
                 crate::state::InputRole::Seed
                 | crate::state::InputRole::DurationSeconds
                 | crate::state::InputRole::Fps
-                | crate::state::InputRole::FrameCount => None,
+                | crate::state::InputRole::FrameCount
+                | crate::state::InputRole::LeftVideo
+                | crate::state::InputRole::RightVideo
+                | crate::state::InputRole::LeftReplaceFrames
+                | crate::state::InputRole::RightReplaceFrames
+                | crate::state::InputRole::EdgeBlendFrames => None,
             };
             if let Some(value) = input_value {
                 config
@@ -958,6 +1144,190 @@ impl LatentSlateApp {
             }
         }
         track_id
+    }
+
+    pub(super) fn timeline_bridge_resolution_for_clip(
+        &self,
+        clip: &Clip,
+    ) -> Option<crate::core::timeline_bridge::TimelineBridgeResolution> {
+        let config = self.editor.project.generative_config(clip.asset_id)?;
+        let provider = config.provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+        })?;
+        if !crate::core::timeline_bridge::provider_is_timeline_bridge(provider) {
+            return None;
+        }
+        Some(crate::core::timeline_bridge::resolve_timeline_bridge_clip(
+            &self.editor.project,
+            Some(provider),
+            Some(config),
+            clip,
+        ))
+    }
+
+    fn apply_timeline_bridge_provider_change(
+        &mut self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        next_provider: Option<&ProviderEntry>,
+    ) {
+        let Some(clip_id) = context_clip_id else {
+            return;
+        };
+        let Some(clip_snapshot) = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        let Some(provider) = next_provider
+            .filter(|provider| crate::core::timeline_bridge::provider_is_timeline_bridge(provider))
+        else {
+            if clip_snapshot.bridge.is_some() {
+                self.editor.project.set_clip_bridge(clip_id, None);
+                self.editor.status = "Unlinked bridge clip behavior.".to_string();
+            }
+            return;
+        };
+
+        self.seed_timeline_bridge_defaults(asset_id, provider);
+        let existing_link = clip_snapshot.bridge.clone();
+        let link = existing_link.unwrap_or_else(|| {
+            crate::core::timeline_bridge::infer_timeline_bridge_link(
+                &self.editor.project,
+                &clip_snapshot,
+            )
+        });
+        self.editor
+            .project
+            .set_clip_bridge(clip_id, Some(link.clone()));
+        self.apply_timeline_bridge_media_inputs(asset_id, provider, &link);
+        self.sync_timeline_bridge_asset_timing(asset_id, Some(clip_id));
+
+        if let Some(left_clip_id) = link.left_clip_id {
+            if let Some(left_track_id) = self
+                .editor
+                .project
+                .clips
+                .iter()
+                .find(|clip| clip.id == left_clip_id)
+                .map(|clip| clip.track_id)
+            {
+                let target_track_id = self.bridge_target_track_id(left_track_id);
+                self.editor
+                    .project
+                    .move_clip_to_track(clip_id, target_track_id);
+            }
+        }
+        self.editor.sync_timeline_bridge_clip(clip_id);
+        let status = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .and_then(|clip| self.timeline_bridge_resolution_for_clip(clip));
+        self.editor.status = match status {
+            Some(resolution) if resolution.valid() => "Linked timeline bridge clip.".to_string(),
+            Some(resolution) => resolution
+                .tooltip()
+                .map(|error| format!("Bridge needs attention: {error}"))
+                .unwrap_or_else(|| "Bridge needs attention.".to_string()),
+            None => "Bridge provider selected; link source clips before generating.".to_string(),
+        };
+    }
+
+    fn seed_timeline_bridge_defaults(&mut self, asset_id: Uuid, provider: &ProviderEntry) {
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                for input in provider.inputs.iter() {
+                    if !matches!(
+                        input.role,
+                        Some(
+                            InputRole::Fps
+                                | InputRole::LeftReplaceFrames
+                                | InputRole::RightReplaceFrames
+                                | InputRole::EdgeBlendFrames
+                        )
+                    ) {
+                        continue;
+                    }
+                    if config.inputs.contains_key(&input.name) {
+                        continue;
+                    }
+                    if let Some(value) = input.default.clone() {
+                        config
+                            .inputs
+                            .insert(input.name.clone(), InputValue::Literal { value });
+                    }
+                }
+            });
+    }
+
+    fn apply_timeline_bridge_media_inputs(
+        &mut self,
+        asset_id: Uuid,
+        provider: &ProviderEntry,
+        link: &ClipBridgeLink,
+    ) {
+        let Ok(fields) = crate::core::timeline_bridge::timeline_bridge_fields(provider) else {
+            return;
+        };
+        let left_value = link.left_clip_id.and_then(|clip_id| {
+            self.editor
+                .project
+                .clips
+                .iter()
+                .find(|clip| clip.id == clip_id)
+                .map(|clip| InputValue::AssetRef {
+                    asset_id: clip.asset_id,
+                    source_clip_id: Some(clip.id),
+                    pinned: true,
+                    frame_reference: None,
+                })
+        });
+        let right_value = link.right_clip_id.and_then(|clip_id| {
+            self.editor
+                .project
+                .clips
+                .iter()
+                .find(|clip| clip.id == clip_id)
+                .map(|clip| InputValue::AssetRef {
+                    asset_id: clip.asset_id,
+                    source_clip_id: Some(clip.id),
+                    pinned: true,
+                    frame_reference: None,
+                })
+        });
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                if let Some(value) = left_value.clone() {
+                    config
+                        .inputs
+                        .insert(fields.left_video.clone(), value.clone());
+                    config
+                        .reference_slots
+                        .insert("left_video".to_string(), value);
+                }
+                if let Some(value) = right_value.clone() {
+                    config
+                        .inputs
+                        .insert(fields.right_video.clone(), value.clone());
+                    config
+                        .reference_slots
+                        .insert("right_video".to_string(), value);
+                }
+            });
     }
 
     pub(super) fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid) {
@@ -1083,6 +1453,14 @@ impl LatentSlateApp {
                 }
             }
         });
+        if clip_snapshot.bridge.is_some()
+            || self
+                .timeline_bridge_resolution_for_clip(&clip_snapshot)
+                .is_some()
+        {
+            ui.add_space(kit::FORM_ROW_GAP);
+            self.timeline_bridge_clip_card(ui, clip_id, &clip_snapshot);
+        }
 
         let mut preview_dirty = false;
         if label_changed {
@@ -1141,6 +1519,9 @@ impl LatentSlateApp {
             }
             preview_dirty = true;
         }
+        if preview_dirty {
+            self.editor.sync_timeline_bridge_clips();
+        }
         if let Some(asset_id) = clip_asset_id {
             if generative_output_for_asset(&self.editor.project, asset_id).is_some() {
                 ui.add_space(kit::FORM_ROW_GAP);
@@ -1150,6 +1531,265 @@ impl LatentSlateApp {
         if preview_dirty {
             self.editor.preview_dirty = true;
         }
+    }
+
+    fn timeline_bridge_clip_card(&mut self, ui: &mut Ui, clip_id: Uuid, clip: &Clip) {
+        let mut relink_from_selection = false;
+        let mut unlink = false;
+        inspector_card(ui, "Timeline Bridge", |ui| {
+            let resolution = self.timeline_bridge_resolution_for_clip(clip);
+            if let Some(resolution) = resolution.as_ref() {
+                if resolution.valid() {
+                    ui.label(kit::caption(
+                        "Linked and ready. Regenerate after timing or source changes.",
+                    ));
+                } else {
+                    ui.label(
+                        RichText::new("Needs attention")
+                            .color(kit::MARKER)
+                            .size(12.0),
+                    );
+                    for error in resolution.errors.iter() {
+                        ui.label(RichText::new(error).color(kit::TEXT_DIM).size(11.0));
+                    }
+                }
+                if let Some(params) = resolution.parameters.as_ref() {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    inspector_meta_row(ui, "FPS", format!("{:.3}", params.processing_fps));
+                    inspector_meta_row(
+                        ui,
+                        "Frames",
+                        format!(
+                            "{} left + {} right",
+                            params.left_replace_frames, params.right_replace_frames
+                        ),
+                    );
+                    inspector_meta_row(
+                        ui,
+                        "Edge Blend",
+                        format!("{} frames", params.edge_blend_frames),
+                    );
+                }
+            } else {
+                ui.label(
+                    RichText::new("Not linked to a bridge provider.")
+                        .color(kit::TEXT_DIM)
+                        .size(11.0),
+                );
+            }
+            ui.add_space(kit::ACTION_GAP);
+            kit::equal_width_action_row(
+                ui,
+                2,
+                kit::SECONDARY_BUTTON_H,
+                kit::FIELD_COMPOUND_GAP,
+                |ui, index, width| match index {
+                    0 => {
+                        if kit::secondary_button(ui, "Relink Selection", width).clicked() {
+                            relink_from_selection = true;
+                        }
+                    }
+                    _ => {
+                        if kit::secondary_button(ui, "Unlink", width).clicked() {
+                            unlink = true;
+                        }
+                    }
+                },
+            );
+        });
+        if relink_from_selection {
+            let selected_sources: Vec<Clip> = self
+                .editor
+                .selection
+                .clip_ids
+                .iter()
+                .filter(|id| **id != clip_id)
+                .filter_map(|id| {
+                    self.editor
+                        .project
+                        .clips
+                        .iter()
+                        .find(|clip| clip.id == *id)
+                        .cloned()
+                })
+                .collect();
+            if selected_sources.len() >= 2 {
+                let link = self.bridge_reference_video_link(&selected_sources);
+                self.editor
+                    .project
+                    .set_clip_bridge(clip_id, Some(link.clone()));
+                if let Some(provider) = self
+                    .editor
+                    .project
+                    .generative_config(clip.asset_id)
+                    .and_then(|config| config.provider_id)
+                    .and_then(|provider_id| {
+                        self.editor
+                            .provider_entries
+                            .iter()
+                            .find(|provider| provider.id == provider_id)
+                            .cloned()
+                    })
+                {
+                    self.apply_timeline_bridge_media_inputs(clip.asset_id, &provider, &link);
+                }
+                self.editor.sync_timeline_bridge_clip(clip_id);
+                self.editor.preview_dirty = true;
+            } else {
+                self.editor.status =
+                    "Select the bridge clip plus left and right source video clips.".to_string();
+            }
+        }
+        if unlink {
+            self.editor.project.set_clip_bridge(clip_id, None);
+            self.editor.preview_dirty = true;
+            self.editor.status = "Unlinked bridge clip behavior.".to_string();
+        }
+    }
+
+    fn bridge_reference_video_link(&self, clips: &[Clip]) -> ClipBridgeLink {
+        let mut video_clips: Vec<Clip> = clips
+            .iter()
+            .filter(|clip| {
+                self.editor
+                    .project
+                    .find_asset(clip.asset_id)
+                    .is_some_and(|asset| asset.is_video())
+            })
+            .cloned()
+            .collect();
+        video_clips.sort_by(|a, b| {
+            a.start_time
+                .partial_cmp(&b.start_time)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        ClipBridgeLink::new(
+            video_clips.first().map(|clip| clip.id),
+            video_clips.last().map(|clip| clip.id),
+        )
+    }
+
+    pub(super) fn set_timeline_bridge_edge_time(
+        &mut self,
+        clip_id: Uuid,
+        left_edge: bool,
+        edge_time: f64,
+    ) -> bool {
+        let Some(clip_snapshot) = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(config_snapshot) = self
+            .editor
+            .project
+            .generative_config(clip_snapshot.asset_id)
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(provider) = config_snapshot.provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+        }) else {
+            return false;
+        };
+        if provider.purpose != ProviderPurpose::TimelineBridge {
+            return false;
+        }
+        let Ok(fields) = crate::core::timeline_bridge::timeline_bridge_fields(&provider) else {
+            return false;
+        };
+        let Ok(params) =
+            crate::core::timeline_bridge::timeline_bridge_parameters(&provider, &config_snapshot)
+        else {
+            return false;
+        };
+        let Some(link) = clip_snapshot.bridge.as_ref() else {
+            return false;
+        };
+        let (input_name, source_time) = if left_edge {
+            let Some(left_clip) = link
+                .left_clip_id
+                .and_then(|id| self.editor.project.clips.iter().find(|clip| clip.id == id))
+            else {
+                return false;
+            };
+            (
+                &fields.left_replace_frames,
+                left_clip.end_time() - edge_time,
+            )
+        } else {
+            let Some(right_clip) = link
+                .right_clip_id
+                .and_then(|id| self.editor.project.clips.iter().find(|clip| clip.id == id))
+            else {
+                return false;
+            };
+            (
+                &fields.right_replace_frames,
+                edge_time - right_clip.start_time,
+            )
+        };
+        let Some(input) = provider
+            .inputs
+            .iter()
+            .find(|input| input.name == input_name.as_str())
+        else {
+            return false;
+        };
+        let mut frames = (source_time.max(0.0) * params.processing_fps)
+            .round()
+            .max(0.0);
+        if let Some(step) = input
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.step)
+            .filter(|step| *step > 0.0)
+        {
+            frames = (frames / step).round() * step;
+        }
+        if let Some(min) = input.ui.as_ref().and_then(|ui| ui.min) {
+            frames = frames.max(min);
+        }
+        if let Some(max) = input.ui.as_ref().and_then(|ui| ui.max) {
+            frames = frames.min(max);
+        }
+        let value = if matches!(input.input_type, ProviderInputType::Integer) {
+            serde_json::Value::Number((frames.round() as i64).into())
+        } else {
+            let Some(number) = serde_json::Number::from_f64(frames) else {
+                return false;
+            };
+            serde_json::Value::Number(number)
+        };
+        self.editor
+            .project
+            .update_generative_config(clip_snapshot.asset_id, |config| {
+                config
+                    .inputs
+                    .insert(input_name.clone(), InputValue::Literal { value });
+            });
+        if let Err(err) = self
+            .editor
+            .project
+            .save_generative_config(clip_snapshot.asset_id)
+        {
+            self.editor.status = format!("Failed to save bridge timing: {err}");
+        }
+        self.sync_timeline_bridge_asset_timing(clip_snapshot.asset_id, Some(clip_id));
+        self.editor.sync_timeline_bridge_clip(clip_id);
+        self.editor.preview_dirty = true;
+        true
     }
 
     pub(super) fn generative_asset_attributes(
@@ -1346,7 +1986,11 @@ impl LatentSlateApp {
             }
         });
 
-        if output_type == ProviderOutputType::Video {
+        if output_type == ProviderOutputType::Video
+            && selected_provider
+                .as_ref()
+                .is_none_or(|provider| provider.purpose != ProviderPurpose::TimelineBridge)
+        {
             ui.add_space(kit::FORM_ROW_GAP);
             self.generative_video_timing_card(
                 ui,
@@ -1439,9 +2083,15 @@ impl LatentSlateApp {
             preview_dirty = true;
         }
         if next_provider_id != selected_provider_id {
+            let next_provider = next_provider_id.and_then(|provider_id| {
+                compatible_providers
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+            });
             self.editor
                 .project
                 .set_generative_provider_id(asset_id, next_provider_id);
+            self.apply_timeline_bridge_provider_change(asset_id, context_clip_id, next_provider);
             config_dirty = true;
         }
         let clamped_batch_count =
@@ -1463,6 +2113,12 @@ impl LatentSlateApp {
                         config.inputs.insert(name, value);
                     }
                 });
+            if selected_provider
+                .as_ref()
+                .is_some_and(|provider| provider.purpose == ProviderPurpose::TimelineBridge)
+            {
+                self.sync_timeline_bridge_asset_timing(asset_id, context_clip_id);
+            }
             config_dirty = true;
         }
         if config_dirty {
@@ -1731,6 +2387,49 @@ impl LatentSlateApp {
         changed
     }
 
+    fn sync_timeline_bridge_asset_timing(
+        &mut self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+    ) -> bool {
+        let Some(config) = self.editor.project.generative_config(asset_id).cloned() else {
+            return false;
+        };
+        let Some(provider) = config.provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+        }) else {
+            return false;
+        };
+        if provider.purpose != ProviderPurpose::TimelineBridge {
+            return false;
+        }
+        let Ok(params) =
+            crate::core::timeline_bridge::timeline_bridge_parameters(&provider, &config)
+        else {
+            return false;
+        };
+        let mut changed = self.editor.project.set_generative_video_timing(
+            asset_id,
+            params.processing_fps,
+            params.visible_frames().max(1),
+        );
+        if let Some(clip_id) = context_clip_id.or_else(|| {
+            self.editor
+                .project
+                .clips
+                .iter()
+                .find(|clip| clip.asset_id == asset_id)
+                .map(|clip| clip.id)
+        }) {
+            changed |= self.editor.sync_timeline_bridge_clip(clip_id);
+        }
+        changed
+    }
+
     pub(super) fn start_generative_generation(
         &mut self,
         asset_id: Uuid,
@@ -1826,7 +2525,10 @@ impl LatentSlateApp {
 
             let mut visible_index = 0usize;
             for input in provider.inputs.iter() {
-                if is_timing_role(input.role) {
+                if is_timing_role(input.role)
+                    && !(provider.purpose == ProviderPurpose::TimelineBridge
+                        && input.role == Some(InputRole::Fps))
+                {
                     continue;
                 }
                 if visible_index > 0 {
@@ -2693,7 +3395,14 @@ fn provider_timing_role_value(
         InputRole::DurationSeconds => duration,
         InputRole::Fps => fps,
         InputRole::FrameCount => frame_count as f64,
-        InputRole::Width | InputRole::Height | InputRole::Seed => return None,
+        InputRole::Width
+        | InputRole::Height
+        | InputRole::Seed
+        | InputRole::LeftVideo
+        | InputRole::RightVideo
+        | InputRole::LeftReplaceFrames
+        | InputRole::RightReplaceFrames
+        | InputRole::EdgeBlendFrames => return None,
     };
     let raw = clamp_provider_input_number(raw, input);
     match input.input_type {

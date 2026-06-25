@@ -7,7 +7,8 @@ use uuid::Uuid;
 use crate::state::{
     ClipImageMode, ComfyOutputSelector, ComfyWorkflowRef, InputBinding, InputRole, InputUi,
     ManifestInput, NodeSelector, ProviderConnection, ProviderEntry, ProviderInputField,
-    ProviderInputType, ProviderManifest, ProviderOutputType, ProviderWorkflowKind,
+    ProviderInputType, ProviderManifest, ProviderOutputType, ProviderPurpose, ProviderWorkflowKind,
+    TimelineBridgeSettings, DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
 };
 use crate::ui_kit as kit;
 
@@ -83,6 +84,8 @@ pub(super) struct ProviderBuilderState {
     pub(super) output_type: ProviderOutputType,
     pub(super) workflow_kind: ProviderWorkflowKind,
     pub(super) workflow_kind_selected: bool,
+    pub(super) purpose: ProviderPurpose,
+    pub(super) bridge_max_visible_frames: Option<u32>,
     pub(super) base_url: String,
     pub(super) workflow_path: Option<PathBuf>,
     pub(super) workflow_nodes: Vec<crate::core::comfyui_workflow::ComfyWorkflowNode>,
@@ -282,6 +285,11 @@ impl ProviderBuilderState {
             workflow_kind: entry.workflow_kind,
             workflow_kind_selected: is_existing_entry
                 && entry.workflow_kind != ProviderWorkflowKind::Auto,
+            purpose: entry.purpose,
+            bridge_max_visible_frames: entry
+                .timeline_bridge
+                .as_ref()
+                .and_then(|settings| settings.max_visible_frames),
             base_url,
             workflow_path,
             workflow_nodes,
@@ -679,6 +687,8 @@ impl ProviderBuilderState {
                 name,
                 description,
                 output_type,
+                purpose,
+                timeline_bridge,
                 workflow,
                 inputs,
                 output,
@@ -691,6 +701,9 @@ impl ProviderBuilderState {
                     self.provider_description = description;
                 }
                 self.output_type = output_type;
+                self.purpose = purpose;
+                self.bridge_max_visible_frames =
+                    timeline_bridge.and_then(|settings| settings.max_visible_frames);
                 self.workflow_path = Some(crate::core::paths::resolve_resource_path(Path::new(
                     &workflow.workflow_path,
                 )));
@@ -715,6 +728,8 @@ impl ProviderBuilderState {
                 name,
                 description,
                 output_type,
+                purpose,
+                timeline_bridge,
                 inputs,
                 ..
             } => {
@@ -725,6 +740,9 @@ impl ProviderBuilderState {
                     self.provider_description = description;
                 }
                 self.output_type = output_type;
+                self.purpose = purpose;
+                self.bridge_max_visible_frames =
+                    timeline_bridge.and_then(|settings| settings.max_visible_frames);
                 self.inputs = inputs
                     .into_iter()
                     .map(ProviderBuilderInput::from_custom_http_input)
@@ -819,7 +837,7 @@ impl ProviderBuilderState {
                 .entry(role)
                 .or_default()
                 .push(input.name.clone());
-            if !is_numeric_type_value(&input.input_type_key) {
+            if !builder_role_compatible_with_type(role, &input.input_type_key) {
                 invalid_type_inputs.push(format!(
                     "{} ({}) set to {}",
                     input.name,
@@ -851,7 +869,7 @@ impl ProviderBuilderState {
         }
         if !invalid_type_inputs.is_empty() {
             return Some(format!(
-                "Invalid role assignment: {}. Roles must be set on a number/integer input.",
+                "Invalid role assignment: {}. Media roles require matching media inputs; timing roles require number/integer inputs.",
                 invalid_type_inputs.join(", ")
             ));
         }
@@ -866,6 +884,16 @@ impl ProviderBuilderState {
     }
 
     pub(super) fn required_input_roles(&self) -> Vec<InputRole> {
+        if self.purpose == ProviderPurpose::TimelineBridge {
+            return vec![
+                InputRole::LeftVideo,
+                InputRole::RightVideo,
+                InputRole::Fps,
+                InputRole::LeftReplaceFrames,
+                InputRole::RightReplaceFrames,
+                InputRole::EdgeBlendFrames,
+            ];
+        }
         if self.output_type == ProviderOutputType::Audio {
             vec![InputRole::Seed]
         } else {
@@ -889,7 +917,8 @@ impl ProviderBuilderState {
                     .iter()
                     .filter(|input| input.role == Some(*role))
                     .collect();
-                matching.len() == 1 && is_numeric_type_value(&matching[0].input_type_key)
+                matching.len() == 1
+                    && builder_role_compatible_with_type(*role, &matching[0].input_type_key)
             })
             .collect()
     }
@@ -907,6 +936,12 @@ impl ProviderBuilderState {
             return Err("Provider name is required.".to_string());
         }
         let provider_description = optional_trimmed_string(&self.provider_description);
+        let timeline_bridge =
+            (self.purpose == ProviderPurpose::TimelineBridge).then(|| TimelineBridgeSettings {
+                max_visible_frames: self
+                    .bridge_max_visible_frames
+                    .or(Some(DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES)),
+            });
         let base_url = self.base_url.trim();
         if base_url.is_empty() {
             return Err("Base URL is required.".to_string());
@@ -1001,6 +1036,8 @@ impl ProviderBuilderState {
             name: Some(provider_name.to_string()),
             description: provider_description.clone(),
             output_type: self.output_type,
+            purpose: self.purpose,
+            timeline_bridge: timeline_bridge.clone(),
             workflow: ComfyWorkflowRef {
                 workflow_path: workflow_path_string.clone(),
                 workflow_hash: None,
@@ -1017,6 +1054,8 @@ impl ProviderBuilderState {
             description: provider_description,
             output_type: self.output_type,
             workflow_kind: self.workflow_kind,
+            purpose: self.purpose,
+            timeline_bridge,
             inputs: provider_inputs,
             connection: ProviderConnection::ComfyUi {
                 base_url: base_url.to_string(),
@@ -1257,6 +1296,7 @@ pub(super) struct ProviderFileSummary {
     pub(super) description: Option<String>,
     pub(super) source: ProviderSourceKind,
     pub(super) workflow_kind: Option<ProviderWorkflowKind>,
+    pub(super) purpose: ProviderPurpose,
     pub(super) output_type: Option<ProviderOutputType>,
 }
 
@@ -1313,10 +1353,14 @@ pub(super) fn provider_row(
 }
 
 fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSummary) {
-    let workflow_label = summary
-        .workflow_kind
-        .map(|workflow_kind| workflow_kind.short_label())
-        .unwrap_or("--");
+    let workflow_label = if summary.purpose == ProviderPurpose::TimelineBridge {
+        "Bridge"
+    } else {
+        summary
+            .workflow_kind
+            .map(|workflow_kind| workflow_kind.short_label())
+            .unwrap_or("--")
+    };
     let output_label = summary
         .output_type
         .map(provider_output_type_label)
@@ -1402,7 +1446,11 @@ fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
     let mut text = format!(
         "{} | {} | {}",
         summary.source.label(),
-        workflow_label,
+        if summary.purpose == ProviderPurpose::TimelineBridge {
+            summary.purpose.label()
+        } else {
+            workflow_label
+        },
         output_label
     );
     if let Some(description) = summary
@@ -1470,6 +1518,7 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             description: None,
             source: ProviderSourceKind::Other,
             workflow_kind: None,
+            purpose: ProviderPurpose::Generic,
             output_type: None,
         };
     };
@@ -1480,6 +1529,7 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             description: None,
             source: ProviderSourceKind::Other,
             workflow_kind: None,
+            purpose: ProviderPurpose::Generic,
             output_type: None,
         };
     };
@@ -1495,6 +1545,7 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
         description: entry.description,
         source,
         workflow_kind: Some(workflow_kind),
+        purpose: entry.purpose,
         output_type: Some(entry.output_type),
     }
 }
@@ -1910,6 +1961,11 @@ pub(super) fn provider_input_role_label(value: Option<InputRole>) -> &'static st
         Some(InputRole::DurationSeconds) => "Duration",
         Some(InputRole::Fps) => "FPS",
         Some(InputRole::FrameCount) => "Frames",
+        Some(InputRole::LeftVideo) => "Left Video",
+        Some(InputRole::RightVideo) => "Right Video",
+        Some(InputRole::LeftReplaceFrames) => "Left Frames",
+        Some(InputRole::RightReplaceFrames) => "Right Frames",
+        Some(InputRole::EdgeBlendFrames) => "Edge Blend",
         None => "None",
     }
 }
@@ -1922,6 +1978,11 @@ pub(super) fn provider_input_role_color(role: InputRole) -> Color32 {
         InputRole::DurationSeconds => kit::AUDIO,
         InputRole::Fps => kit::PRIMARY,
         InputRole::FrameCount => Color32::from_rgb(182, 118, 238),
+        InputRole::LeftVideo => kit::VIDEO,
+        InputRole::RightVideo => kit::VIDEO.gamma_multiply(1.12),
+        InputRole::LeftReplaceFrames => Color32::from_rgb(182, 118, 238),
+        InputRole::RightReplaceFrames => Color32::from_rgb(125, 151, 238),
+        InputRole::EdgeBlendFrames => kit::MARKER,
     }
 }
 
@@ -2007,6 +2068,11 @@ pub(super) fn provider_input_role_field(
                 InputRole::DurationSeconds,
                 InputRole::Fps,
                 InputRole::FrameCount,
+                InputRole::LeftVideo,
+                InputRole::RightVideo,
+                InputRole::LeftReplaceFrames,
+                InputRole::RightReplaceFrames,
+                InputRole::EdgeBlendFrames,
             ] {
                 if kit::timeline_tool_text_button(
                     ui,
@@ -2021,6 +2087,13 @@ pub(super) fn provider_input_role_field(
             }
         });
     });
+}
+
+fn builder_role_compatible_with_type(role: InputRole, input_type_key: &str) -> bool {
+    match role {
+        InputRole::LeftVideo | InputRole::RightVideo => input_type_key == "video",
+        _ => is_numeric_type_value(input_type_key),
+    }
 }
 
 pub(super) fn provider_builder_default_field(ui: &mut Ui, input: &mut ProviderBuilderInput) {

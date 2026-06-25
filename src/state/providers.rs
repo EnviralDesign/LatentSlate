@@ -83,6 +83,50 @@ impl ProviderWorkflowKind {
     }
 }
 
+/// Optional app-level behavior layered on top of a provider's workflow shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderPurpose {
+    Generic,
+    TimelineBridge,
+}
+
+impl Default for ProviderPurpose {
+    fn default() -> Self {
+        Self::Generic
+    }
+}
+
+impl ProviderPurpose {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Generic => "Normal",
+            Self::TimelineBridge => "Timeline Bridge",
+        }
+    }
+
+    pub fn is_generic(value: &Self) -> bool {
+        *value == Self::Generic
+    }
+}
+
+/// Timing constraints for purpose-built timeline bridge providers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TimelineBridgeSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_visible_frames: Option<u32>,
+}
+
+impl Default for TimelineBridgeSettings {
+    fn default() -> Self {
+        Self {
+            max_visible_frames: Some(DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES),
+        }
+    }
+}
+
+pub const DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES: u32 = 80;
+
 /// Input types supported by provider schemas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -106,6 +150,11 @@ pub enum InputRole {
     DurationSeconds,
     Fps,
     FrameCount,
+    LeftVideo,
+    RightVideo,
+    LeftReplaceFrames,
+    RightReplaceFrames,
+    EdgeBlendFrames,
 }
 
 /// Schema field describing a single provider input.
@@ -174,6 +223,10 @@ pub struct ProviderEntry {
     pub output_type: ProviderOutputType,
     #[serde(default)]
     pub workflow_kind: ProviderWorkflowKind,
+    #[serde(default, skip_serializing_if = "ProviderPurpose::is_generic")]
+    pub purpose: ProviderPurpose,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_bridge: Option<TimelineBridgeSettings>,
     #[serde(default)]
     pub inputs: Vec<ProviderInputField>,
     pub connection: ProviderConnection,
@@ -191,6 +244,8 @@ impl ProviderEntry {
             description: None,
             output_type,
             workflow_kind: ProviderWorkflowKind::Auto,
+            purpose: ProviderPurpose::Generic,
+            timeline_bridge: None,
             inputs: Vec::new(),
             connection,
         }
@@ -312,6 +367,10 @@ pub enum ProviderManifest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         output_type: ProviderOutputType,
+        #[serde(default, skip_serializing_if = "ProviderPurpose::is_generic")]
+        purpose: ProviderPurpose,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeline_bridge: Option<TimelineBridgeSettings>,
         workflow: ComfyWorkflowRef,
         #[serde(default)]
         inputs: Vec<ManifestInput>,
@@ -324,6 +383,10 @@ pub enum ProviderManifest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         output_type: ProviderOutputType,
+        #[serde(default, skip_serializing_if = "ProviderPurpose::is_generic")]
+        purpose: ProviderPurpose,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeline_bridge: Option<TimelineBridgeSettings>,
         workflow: CustomHttpWorkflow,
         #[serde(default)]
         inputs: Vec<CustomHttpInput>,
@@ -539,6 +602,8 @@ mod tests {
             name: Some("Manifest Provider".to_string()),
             description: Some("Manifest-level guidance.".to_string()),
             output_type: ProviderOutputType::Image,
+            purpose: ProviderPurpose::Generic,
+            timeline_bridge: None,
             workflow: ComfyWorkflowRef {
                 workflow_path: "workflow.json".to_string(),
                 workflow_hash: None,

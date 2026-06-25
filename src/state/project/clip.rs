@@ -63,6 +63,24 @@ impl Default for ClipTimeMode {
     }
 }
 
+/// Timeline linkage for a generated clip that bridges two source video clips.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipBridgeLink {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_clip_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_clip_id: Option<Uuid>,
+}
+
+impl ClipBridgeLink {
+    pub fn new(left_clip_id: Option<Uuid>, right_clip_id: Option<Uuid>) -> Self {
+        Self {
+            left_clip_id,
+            right_clip_id,
+        }
+    }
+}
+
 /// A clip placed on a track
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
@@ -94,6 +112,9 @@ pub struct Clip {
     /// Transform applied when compositing this clip.
     #[serde(default)]
     pub transform: ClipTransform,
+    /// Optional source linkage for purpose-built timeline bridge clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<ClipBridgeLink>,
 }
 
 impl Clip {
@@ -112,6 +133,7 @@ impl Clip {
             image_mode: ClipImageMode::Still,
             time_mode: ClipTimeMode::Crop,
             transform: ClipTransform::default(),
+            bridge: None,
         }
     }
 

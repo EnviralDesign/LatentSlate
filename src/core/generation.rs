@@ -10,6 +10,9 @@ use std::process::Command;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::timeline_bridge::{
+    provider_is_timeline_bridge, timeline_bridge_parameters, TimelineBridgeParameters,
+};
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
     Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, Project, ProviderEntry,
@@ -38,7 +41,7 @@ pub fn resolve_provider_inputs(
             ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
                 let binding = asset_input_value(project, context_clip_id, provider, config, input);
                 if let Some(binding) = binding {
-                    if let Some(path) = asset_ref_path(project, &binding, &input.input_type) {
+                    if let Some(path) = asset_ref_path(project, &binding, input, provider, config) {
                         values.insert(
                             input.name.clone(),
                             Value::String(path.to_string_lossy().to_string()),
@@ -150,6 +153,11 @@ fn reference_frame_time(project: &Project, reference: &InputValue, fps: f64) -> 
 }
 
 pub fn semantic_reference_slot(input: &ProviderInputField) -> Option<&'static str> {
+    match input.role {
+        Some(InputRole::LeftVideo) => return Some("left_video"),
+        Some(InputRole::RightVideo) => return Some("right_video"),
+        _ => {}
+    }
     match input.input_type {
         ProviderInputType::Image => {
             let key = format!("{} {}", input.name, input.label).to_ascii_lowercase();
@@ -372,8 +380,11 @@ fn timeline_asset_candidate(
 fn asset_ref_path(
     project: &Project,
     value: &InputValue,
-    input_type: &ProviderInputType,
+    input: &ProviderInputField,
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
 ) -> Option<std::path::PathBuf> {
+    let input_type = &input.input_type;
     match value {
         InputValue::AssetRef {
             asset_id,
@@ -405,6 +416,27 @@ fn asset_ref_path(
             if !compatible_asset_for_provider_input(asset, input_type) {
                 return None;
             }
+            if provider_is_timeline_bridge(provider)
+                && matches!(
+                    input.role,
+                    Some(InputRole::LeftVideo | InputRole::RightVideo)
+                )
+            {
+                if let (Some(source_clip_id), Ok(params)) = (
+                    *source_clip_id,
+                    timeline_bridge_parameters(provider, config),
+                ) {
+                    if let Some(path) = prepare_timeline_bridge_source_segment(
+                        project,
+                        asset,
+                        source_clip_id,
+                        input.role.unwrap(),
+                        &params,
+                    ) {
+                        return Some(path);
+                    }
+                }
+            }
             active_asset_source_path(root, asset)
         }
         InputValue::GenerationRef {
@@ -435,6 +467,128 @@ fn asset_ref_path(
             generative_asset_source_path(root, asset, Some(version))
         }
         InputValue::Literal { .. } => None,
+    }
+}
+
+fn prepare_timeline_bridge_source_segment(
+    project: &Project,
+    asset: &Asset,
+    source_clip_id: Uuid,
+    role: InputRole,
+    params: &TimelineBridgeParameters,
+) -> Option<PathBuf> {
+    let root = project.project_path.as_ref()?;
+    let source_clip = project
+        .clips
+        .iter()
+        .find(|clip| clip.id == source_clip_id)?;
+    let source_path = video_asset_source_path(root, asset)?;
+    let target_duration = match role {
+        InputRole::LeftVideo => params.left_seconds(),
+        InputRole::RightVideo => params.right_seconds(),
+        _ => return None,
+    };
+    if target_duration <= 0.0 {
+        return None;
+    }
+
+    let local_start = match role {
+        InputRole::LeftVideo => (source_clip.duration - target_duration).max(0.0),
+        InputRole::RightVideo => 0.0,
+        _ => 0.0,
+    };
+    let mut source_start = source_clip.source_time_for_local(local_start, asset.duration_seconds);
+    let mut source_end =
+        source_clip.source_time_for_local(local_start + target_duration, asset.duration_seconds);
+    if let Some(media_duration) = asset.duration_seconds.filter(|duration| *duration > 0.0) {
+        source_start = source_start.clamp(0.0, media_duration);
+        source_end = source_end.clamp(0.0, media_duration);
+    }
+    let source_duration = (source_end - source_start)
+        .abs()
+        .max(1.0 / params.processing_fps);
+    let speed_factor = (target_duration / source_duration).max(0.001);
+
+    let cache_dir = root.join(".cache").join("bridge_segments");
+    std::fs::create_dir_all(&cache_dir).ok()?;
+    let side = match role {
+        InputRole::LeftVideo => "left",
+        InputRole::RightVideo => "right",
+        _ => "segment",
+    };
+    let source_metadata = std::fs::metadata(&source_path).ok();
+    let source_len = source_metadata
+        .as_ref()
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let source_stamp = source_metadata
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| {
+            modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_millis())
+        })
+        .unwrap_or(0);
+    let source_name = source_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(sanitize_cache_key)
+        .unwrap_or_else(|| "source".to_string());
+    let output_path = cache_dir.join(format!(
+        "{}_{}_{}_{}_len{}_stamp{}_fps{}_start{}_dur{}_src{}.mp4",
+        asset.id,
+        source_clip_id,
+        side,
+        source_name,
+        source_len,
+        source_stamp,
+        sanitize_cache_key(&format!("{:.3}", params.processing_fps)),
+        (source_start.max(0.0) * 1000.0).round() as u64,
+        (target_duration.max(0.0) * 1000.0).round() as u64,
+        (source_duration.max(0.0) * 1000.0).round() as u64,
+    ));
+    if output_path.exists() {
+        return Some(output_path);
+    }
+
+    let filter = if (speed_factor - 1.0).abs() > 0.001 {
+        format!(
+            "fps={:.6},setpts=PTS*{:.9},scale=trunc(iw/16)*16:trunc(ih/16)*16",
+            params.processing_fps, speed_factor
+        )
+    } else {
+        format!(
+            "fps={:.6},scale=trunc(iw/16)*16:trunc(ih/16)*16",
+            params.processing_fps
+        )
+    };
+    let status = Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-ss")
+        .arg(format!("{:.6}", source_start.max(0.0)))
+        .arg("-t")
+        .arg(format!("{:.6}", source_duration))
+        .arg("-i")
+        .arg(&source_path)
+        .arg("-an")
+        .arg("-vf")
+        .arg(filter)
+        .arg("-r")
+        .arg(format!("{:.6}", params.processing_fps))
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg(&output_path)
+        .status()
+        .ok()?;
+
+    if status.success() && output_path.exists() {
+        Some(output_path)
+    } else {
+        None
     }
 }
 

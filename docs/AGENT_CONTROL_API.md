@@ -435,6 +435,10 @@ Patch clip fields:
     "label": "I2V bridge",
     "image_mode": "still",
     "time_mode": "crop",
+    "bridge": {
+      "left_clip_id": "uuid",
+      "right_clip_id": "uuid"
+    },
     "transform": {
       "position_x": 0.0,
       "position_y": 0.0,
@@ -450,6 +454,11 @@ Patch clip fields:
 `time_mode` is `crop` by default. `stretch` maps the remaining source media
 across the clip duration, allowing a 5s source to play over a longer or shorter
 timeline span.
+
+`bridge` is only meaningful for generative video clips whose provider has
+`purpose: "timeline_bridge"`. Set it to `{ "left_clip_id": "...",
+"right_clip_id": "..." }` to anchor a seam bridge to two source video clips, or
+`null` to unlink the clip and make it behave like a normal clip again.
 
 Convenience actions:
 
@@ -507,6 +516,14 @@ can optionally mark inputs as `duration_seconds`, `fps`, or `frame_count`; the
 editor syncs those inputs from the generative video's target timing before
 generation.
 
+Purpose-built seam providers should set `purpose: "timeline_bridge"` and expose
+roles for `left_video`, `right_video`, `fps`, `left_replace_frames`,
+`right_replace_frames`, and `edge_blend_frames`. LatentSlate uses those roles to
+anchor the bridge clip to two timeline clips, bake the left/right source
+segments at the provider FPS, and keep the clip span in sync when the source
+clips or bridge frame counts change. `timeline_bridge.max_visible_frames`
+defaults to 80 and is used as a validity rail for the visible bridge span.
+
 ```json
 { "type": "list_providers" }
 { "type": "list_providers", "include_all": true }
@@ -541,6 +558,7 @@ minimum file-based ComfyUI setup:
     "description": "Image-to-video provider that turns a still frame into a short motion clip.",
     "output_type": "video",
     "workflow_kind": "image_to_video",
+    "purpose": "generic",
     "inputs": [
       {
         "name": "prompt",
@@ -559,6 +577,7 @@ minimum file-based ComfyUI setup:
         "adapter_type": "comfy_ui",
         "schema_version": 1,
         "output_type": "video",
+        "purpose": "generic",
         "workflow": { "workflow_path": "workflows/wan_i2v_API.json" },
         "inputs": [],
         "output": {
@@ -700,6 +719,12 @@ manually create every config reference.
 
 These return created `asset_ids`, `clip_ids`, the resulting selection, and
 status text.
+
+When `provider_id` names a `timeline_bridge` provider, `create_bridge_from_clips`
+creates an anchored seam bridge clip on a video track above the left source
+clip. If `provider_id` is omitted and exactly one timeline bridge provider is
+available in the current project scope, that provider is used. Otherwise the
+command keeps the older generic first/last-frame bridge behavior.
 
 ## Export Commands
 

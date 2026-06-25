@@ -726,6 +726,45 @@ impl LatentSlateApp {
                     _ => {}
                 });
                 ui.add_space(kit::FORM_ROW_GAP);
+                kit::labeled_combo_field(
+                    ui,
+                    "Purpose",
+                    "provider_purpose",
+                    self.provider_builder.purpose.label(),
+                    |ui| {
+                        automation_selectable_value(
+                            ui,
+                            &mut self.provider_builder.purpose,
+                            ProviderPurpose::Generic,
+                            ProviderPurpose::Generic.label(),
+                        );
+                        automation_selectable_value(
+                            ui,
+                            &mut self.provider_builder.purpose,
+                            ProviderPurpose::TimelineBridge,
+                            ProviderPurpose::TimelineBridge.label(),
+                        );
+                    },
+                );
+                if self.provider_builder.purpose == ProviderPurpose::TimelineBridge {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    let mut max_frames = self
+                        .provider_builder
+                        .bridge_max_visible_frames
+                        .unwrap_or(DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES)
+                        as i64;
+                    if inspector_drag_i64(
+                        ui,
+                        "Max Bridge Frames",
+                        &mut max_frames,
+                        1.0,
+                        ui.available_width(),
+                    ) {
+                        self.provider_builder.bridge_max_visible_frames =
+                            Some(max_frames.clamp(1, 1_000_000) as u32);
+                    }
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
                 kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.horizontal(|ui| {
