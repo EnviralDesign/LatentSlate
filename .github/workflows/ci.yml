@@ -8,6 +8,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   VCPKG_ROOT: C:\vcpkg
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-binary-cache
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\.vcpkg-binary-cache,readwrite"
 
 jobs:
   rust-windows:
@@ -23,12 +25,33 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Install FFmpeg development libraries
-        shell: pwsh
-        run: vcpkg install ffmpeg:x64-windows
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Format check
         run: cargo fmt --all -- --check
+
+      - name: Cache vcpkg binary artifacts
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ runner.os }}-vcpkg-ffmpeg-x64-windows-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-ffmpeg-x64-windows-
+
+      - name: Install FFmpeg development libraries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          vcpkg install ffmpeg:x64-windows
 
       - name: Cargo check
         run: cargo check --locked
