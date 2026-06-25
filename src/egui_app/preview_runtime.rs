@@ -726,7 +726,7 @@ impl LatentSlateApp {
 
         for index in 0..tile_count {
             let time_in_clip = (index as f64 * tile_time).min(clip.duration.max(0.0));
-            let source_time = clip.trim_in_seconds.max(0.0) + time_in_clip;
+            let source_time = clip.source_time_for_local(time_in_clip, asset.duration_seconds);
             let tile = self
                 .timeline_thumbnail(ctx, asset, source_time)
                 .or(fallback);

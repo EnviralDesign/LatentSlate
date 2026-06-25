@@ -842,7 +842,10 @@ impl LatentSlateApp {
             let input_value = match role {
                 crate::state::InputRole::Width => Some(to_number(width)),
                 crate::state::InputRole::Height => Some(to_number(height)),
-                crate::state::InputRole::Seed => None,
+                crate::state::InputRole::Seed
+                | crate::state::InputRole::DurationSeconds
+                | crate::state::InputRole::Fps
+                | crate::state::InputRole::FrameCount => None,
             };
             if let Some(value) = input_value {
                 config
@@ -958,96 +961,185 @@ impl LatentSlateApp {
     }
 
     pub(super) fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid) {
-        let clip_asset_id = self
+        let Some(clip_snapshot) = self
             .editor
             .project
             .clips
             .iter()
             .find(|clip| clip.id == clip_id)
-            .map(|clip| clip.asset_id);
-        let asset_name = self
+            .cloned()
+        else {
+            return;
+        };
+        let clip_asset_id = Some(clip_snapshot.asset_id);
+        let clip_asset = self
             .editor
             .project
-            .clips
-            .iter()
-            .find(|clip| clip.id == clip_id)
-            .and_then(|clip| self.editor.project.find_asset(clip.asset_id))
+            .find_asset(clip_snapshot.asset_id)
+            .cloned();
+        let asset_name = clip_asset
+            .as_ref()
             .map(|asset| asset.name.clone())
             .unwrap_or_else(|| "Unknown asset".to_string());
-        let clip_asset_is_image = clip_asset_id
-            .and_then(|asset_id| self.editor.project.find_asset(asset_id))
-            .is_some_and(|asset| asset.is_image());
-        let mut preview_dirty = false;
-        if let Some(clip) = self
-            .editor
-            .project
-            .clips
-            .iter_mut()
-            .find(|clip| clip.id == clip_id)
-        {
-            inspector_card(ui, "Clip", |ui| {
-                kit::field_label(ui, "Source Asset");
-                let source_w = ui.available_width();
-                kit::readonly_value_box(ui, asset_name, Vec2::new(source_w, kit::FIELD_H));
+        let clip_asset_is_image = clip_asset.as_ref().is_some_and(|asset| asset.is_image());
+        let clip_asset_is_video = clip_asset.as_ref().is_some_and(|asset| asset.is_video());
+        let clip_asset_is_time_based = clip_asset
+            .as_ref()
+            .is_some_and(|asset| asset.is_video() || asset.is_audio());
+
+        let mut next_label = clip_snapshot.label.clone().unwrap_or_default();
+        let mut next_image_mode = clip_snapshot.image_mode;
+        let mut next_time_mode = clip_snapshot.time_mode;
+        let mut next_transform = clip_snapshot.transform;
+        let mut next_start = clip_snapshot.start_time;
+        let mut next_duration = clip_snapshot.duration;
+        let mut next_trim = clip_snapshot.trim_in_seconds;
+        let mut label_changed = false;
+        let mut transform_changed = false;
+        let mut timing_changed = false;
+        let mut trim_changed = false;
+
+        inspector_card(ui, "Clip", |ui| {
+            kit::field_label(ui, "Source Asset");
+            let source_w = ui.available_width();
+            kit::readonly_value_box(ui, asset_name, Vec2::new(source_w, kit::FIELD_H));
+            ui.add_space(kit::FORM_ROW_GAP);
+            label_changed = inspector_text_field(ui, "Clip Label", &mut next_label);
+            if clip_asset_is_image {
                 ui.add_space(kit::FORM_ROW_GAP);
-                let mut label = clip.label.clone().unwrap_or_default();
-                if inspector_text_field(ui, "Clip Label", &mut label) {
-                    clip.label = if label.trim().is_empty() {
-                        None
-                    } else {
-                        Some(label)
-                    };
-                }
-                if clip_asset_is_image {
+                kit::labeled_combo_field(
+                    ui,
+                    "Timeline Display",
+                    ("clip_image_mode", clip_id),
+                    clip_image_mode_label(next_image_mode),
+                    |ui| {
+                        automation_selectable_value(
+                            ui,
+                            &mut next_image_mode,
+                            ClipImageMode::Still,
+                            "Still Image",
+                        );
+                        automation_selectable_value(
+                            ui,
+                            &mut next_image_mode,
+                            ClipImageMode::Keyframe,
+                            "Keyframe Reference",
+                        );
+                    },
+                );
+            }
+            if clip_asset_is_video {
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::labeled_combo_field(
+                    ui,
+                    "Time Mapping",
+                    ("clip_time_mode", clip_id),
+                    clip_time_mode_label(next_time_mode),
+                    |ui| {
+                        automation_selectable_value(
+                            ui,
+                            &mut next_time_mode,
+                            ClipTimeMode::Crop,
+                            "Crop",
+                        );
+                        automation_selectable_value(
+                            ui,
+                            &mut next_time_mode,
+                            ClipTimeMode::Stretch,
+                            "Stretch",
+                        );
+                    },
+                );
+            }
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+        inspector_card(ui, "Transform", |ui| {
+            transform_editor(ui, &mut next_transform, &mut transform_changed);
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+        inspector_card(ui, "Timing", |ui| {
+            if clip_asset_is_image && next_image_mode == ClipImageMode::Keyframe {
+                timing_changed |=
+                    inspector_drag_f64(ui, "Time", &mut next_start, 0.05, ui.available_width());
+            } else {
+                let before_start = next_start;
+                let before_duration = next_duration;
+                inspector_two_drag_f64(
+                    ui,
+                    ("Start", &mut next_start, 0.05),
+                    ("Duration", &mut next_duration, 0.05),
+                );
+                timing_changed |= (next_start - before_start).abs() > f64::EPSILON
+                    || (next_duration - before_duration).abs() > f64::EPSILON;
+                if clip_asset_is_time_based {
                     ui.add_space(kit::FORM_ROW_GAP);
-                    let mut next_mode = clip.image_mode;
-                    kit::labeled_combo_field(
+                    trim_changed |= inspector_drag_f64(
                         ui,
-                        "Timeline Display",
-                        ("clip_image_mode", clip.id),
-                        clip_image_mode_label(next_mode),
-                        |ui| {
-                            automation_selectable_value(
-                                ui,
-                                &mut next_mode,
-                                ClipImageMode::Still,
-                                "Still Image",
-                            );
-                            automation_selectable_value(
-                                ui,
-                                &mut next_mode,
-                                ClipImageMode::Keyframe,
-                                "Keyframe Reference",
-                            );
-                        },
-                    );
-                    if next_mode != clip.image_mode {
-                        clip.image_mode = next_mode;
-                    }
-                }
-            });
-            ui.add_space(kit::FORM_ROW_GAP);
-            inspector_card(ui, "Transform", |ui| {
-                transform_editor(ui, &mut clip.transform, &mut preview_dirty);
-            });
-            ui.add_space(kit::FORM_ROW_GAP);
-            inspector_card(ui, "Timing", |ui| {
-                if clip_asset_is_image && clip.image_mode == ClipImageMode::Keyframe {
-                    preview_dirty |= inspector_drag_f64(
-                        ui,
-                        "Time",
-                        &mut clip.start_time,
+                        "Trim In",
+                        &mut next_trim,
                         0.05,
                         ui.available_width(),
                     );
-                } else {
-                    preview_dirty |= inspector_two_drag_f64(
-                        ui,
-                        ("Start", &mut clip.start_time, 0.05),
-                        ("Duration", &mut clip.duration, 0.05),
-                    );
                 }
-            });
+            }
+        });
+
+        let mut preview_dirty = false;
+        if label_changed {
+            let next_label = if next_label.trim().is_empty() {
+                None
+            } else {
+                Some(next_label.trim().to_string())
+            };
+            if next_label != clip_snapshot.label {
+                self.editor.project.set_clip_label(clip_id, next_label);
+            }
+        }
+        if next_image_mode != clip_snapshot.image_mode {
+            self.editor
+                .project
+                .set_clip_image_mode(clip_id, next_image_mode);
+            preview_dirty = true;
+        }
+        if next_time_mode != clip_snapshot.time_mode {
+            self.editor
+                .project
+                .set_clip_time_mode(clip_id, next_time_mode);
+            preview_dirty = true;
+        }
+        if transform_changed && next_transform != clip_snapshot.transform {
+            self.editor
+                .project
+                .set_clip_transform(clip_id, next_transform);
+            preview_dirty = true;
+        }
+        if trim_changed && (next_trim - clip_snapshot.trim_in_seconds).abs() > f64::EPSILON {
+            self.editor
+                .project
+                .set_clip_trim_in_seconds(clip_id, next_trim);
+            preview_dirty = true;
+        }
+        if timing_changed {
+            if clip_asset_is_image && next_image_mode == ClipImageMode::Keyframe {
+                self.editor.project.move_clip(clip_id, next_start);
+            } else {
+                if (next_start - clip_snapshot.start_time).abs() > f64::EPSILON {
+                    self.editor.project.move_clip(clip_id, next_start);
+                }
+                self.editor
+                    .project
+                    .resize_clip(clip_id, next_start, next_duration);
+                if let Some(asset) = clip_asset.as_ref() {
+                    if matches!(asset.kind, AssetKind::GenerativeVideo { .. }) {
+                        self.sync_hollow_generative_video_timing_from_clip(
+                            clip_id,
+                            asset.id,
+                            next_duration,
+                        );
+                    }
+                }
+            }
+            preview_dirty = true;
         }
         if let Some(asset_id) = clip_asset_id {
             if generative_output_for_asset(&self.editor.project, asset_id).is_some() {
@@ -1254,6 +1346,16 @@ impl LatentSlateApp {
             }
         });
 
+        if output_type == ProviderOutputType::Video {
+            ui.add_space(kit::FORM_ROW_GAP);
+            self.generative_video_timing_card(
+                ui,
+                asset_id,
+                context_clip_id,
+                selected_provider.as_ref(),
+            );
+        }
+
         ui.add_space(kit::FORM_ROW_GAP);
         inspector_card(ui, "Batch", |ui| {
             if inspector_drag_i64(
@@ -1388,6 +1490,247 @@ impl LatentSlateApp {
         }
     }
 
+    fn generative_video_timing_card(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        selected_provider: Option<&ProviderEntry>,
+    ) {
+        let Some((duration, fps, frame_count)) =
+            generative_video_timing(&self.editor.project, asset_id)
+        else {
+            return;
+        };
+        let bounds = provider_duration_bounds(selected_provider);
+        let mut next_duration = duration;
+        let mut next_fps = fps;
+        let mut next_frame_count = frame_count as i64;
+        let mut duration_changed = false;
+        let mut fps_changed = false;
+        let mut frames_changed = false;
+
+        inspector_card(ui, "Target Timing", |ui| {
+            duration_changed |= inspector_drag_f64(
+                ui,
+                "Seconds",
+                &mut next_duration,
+                0.05,
+                ui.available_width(),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+            fps_changed |= inspector_drag_f64(ui, "FPS", &mut next_fps, 1.0, ui.available_width());
+            ui.add_space(kit::FORM_ROW_GAP);
+            frames_changed |= inspector_drag_i64(
+                ui,
+                "Frames",
+                &mut next_frame_count,
+                1.0,
+                ui.available_width(),
+            );
+            if bounds.min.is_some() || bounds.max.is_some() {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(kit::caption(provider_duration_bounds_label(bounds)));
+            }
+        });
+
+        if !(duration_changed || fps_changed || frames_changed) {
+            return;
+        }
+
+        next_fps = next_fps.clamp(1.0, 240.0);
+        if fps_changed {
+            next_frame_count = (next_duration.max(1.0 / next_fps) * next_fps)
+                .round()
+                .max(1.0) as i64;
+        }
+        if duration_changed {
+            next_duration = clamp_provider_duration(next_duration, bounds);
+            next_frame_count = (next_duration.max(1.0 / next_fps) * next_fps)
+                .round()
+                .max(1.0) as i64;
+        }
+        if frames_changed {
+            next_frame_count = next_frame_count.clamp(1, 1_000_000);
+            next_duration = next_frame_count as f64 / next_fps;
+            let clamped = clamp_provider_duration(next_duration, bounds);
+            if (clamped - next_duration).abs() > f64::EPSILON {
+                next_duration = clamped;
+                next_frame_count = (next_duration * next_fps).round().max(1.0) as i64;
+            }
+        }
+
+        let next_frame_count = next_frame_count.clamp(1, 1_000_000) as u32;
+        if self
+            .editor
+            .project
+            .set_generative_video_timing(asset_id, next_fps, next_frame_count)
+        {
+            self.sync_generative_video_timing_inputs(asset_id);
+            self.sync_single_hollow_generative_video_clip(asset_id, context_clip_id);
+            self.editor.preview_dirty = true;
+        }
+    }
+
+    fn sync_hollow_generative_video_timing_from_clip(
+        &mut self,
+        clip_id: Uuid,
+        asset_id: Uuid,
+        clip_duration: f64,
+    ) {
+        if !self.hollow_generative_video_single_clip(asset_id, Some(clip_id)) {
+            return;
+        }
+        let Some((_, fps, _)) = generative_video_timing(&self.editor.project, asset_id) else {
+            return;
+        };
+        let provider = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| config.provider_id)
+            .and_then(|provider_id| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+            });
+        let target_duration =
+            clamp_provider_duration(clip_duration, provider_duration_bounds(provider));
+        let frame_count = (target_duration.max(1.0 / fps) * fps).round().max(1.0) as u32;
+        if self
+            .editor
+            .project
+            .set_generative_video_timing(asset_id, fps, frame_count)
+        {
+            if (target_duration - clip_duration).abs() > f64::EPSILON {
+                if let Some(clip) = self
+                    .editor
+                    .project
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == clip_id)
+                {
+                    clip.duration = target_duration.max(0.1);
+                }
+            }
+            self.sync_generative_video_timing_inputs(asset_id);
+        }
+    }
+
+    fn sync_single_hollow_generative_video_clip(
+        &mut self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+    ) {
+        if !self.hollow_generative_video_single_clip(asset_id, context_clip_id) {
+            return;
+        }
+        let Some((duration, _, _)) = generative_video_timing(&self.editor.project, asset_id) else {
+            return;
+        };
+        let Some(clip_id) = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.asset_id == asset_id)
+            .map(|clip| clip.id)
+        else {
+            return;
+        };
+        if let Some(clip) = self
+            .editor
+            .project
+            .clips
+            .iter_mut()
+            .find(|clip| clip.id == clip_id)
+        {
+            clip.duration = duration.max(0.1);
+        }
+    }
+
+    fn hollow_generative_video_single_clip(
+        &self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+    ) -> bool {
+        let Some(asset) = self.editor.project.find_asset(asset_id) else {
+            return false;
+        };
+        if !matches!(asset.kind, AssetKind::GenerativeVideo { .. }) {
+            return false;
+        }
+        if self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .is_some_and(|config| config.active_version.is_some() || !config.versions.is_empty())
+        {
+            return false;
+        }
+        let clip_ids: Vec<Uuid> = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .filter(|clip| clip.asset_id == asset_id)
+            .map(|clip| clip.id)
+            .collect();
+        if clip_ids.len() != 1 {
+            return false;
+        }
+        context_clip_id.is_none_or(|clip_id| clip_ids[0] == clip_id)
+    }
+
+    fn sync_generative_video_timing_inputs(&mut self, asset_id: Uuid) -> bool {
+        let Some((duration, fps, frame_count)) =
+            generative_video_timing(&self.editor.project, asset_id)
+        else {
+            return false;
+        };
+        let Some(provider_id) = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| config.provider_id)
+        else {
+            return false;
+        };
+        let Some(provider) = self
+            .editor
+            .provider_entries
+            .iter()
+            .find(|provider| provider.id == provider_id)
+            .cloned()
+        else {
+            return false;
+        };
+
+        let mut changed = false;
+        self.editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                for input in provider.inputs.iter() {
+                    let Some(value) = provider_timing_role_value(input, duration, fps, frame_count)
+                    else {
+                        continue;
+                    };
+                    let next = InputValue::Literal { value };
+                    if config.inputs.get(&input.name) != Some(&next) {
+                        config.inputs.insert(input.name.clone(), next);
+                        changed = true;
+                    }
+                }
+            });
+        if changed {
+            if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+                self.editor.status = format!("Failed to save generative timing inputs: {err}");
+            }
+        }
+        changed
+    }
+
     pub(super) fn start_generative_generation(
         &mut self,
         asset_id: Uuid,
@@ -1399,6 +1742,9 @@ impl LatentSlateApp {
             self.editor.status = "Selected asset is no longer generative.".to_string();
             return;
         };
+        if output_type == ProviderOutputType::Video {
+            self.sync_generative_video_timing_inputs(asset_id);
+        }
         let config_for_generation = self
             .editor
             .project
@@ -1478,10 +1824,15 @@ impl LatentSlateApp {
                 return;
             }
 
-            for (index, input) in provider.inputs.iter().enumerate() {
-                if index > 0 {
+            let mut visible_index = 0usize;
+            for input in provider.inputs.iter() {
+                if is_timing_role(input.role) {
+                    continue;
+                }
+                if visible_index > 0 {
                     ui.add_space(kit::FORM_ROW_GAP);
                 }
+                visible_index += 1;
                 let label = if input.required {
                     format!("{} *", input.label)
                 } else {
@@ -2257,6 +2608,119 @@ impl LatentSlateApp {
             self.refresh_audio_playback_items();
         }
     }
+}
+
+fn clip_time_mode_label(mode: ClipTimeMode) -> &'static str {
+    match mode {
+        ClipTimeMode::Crop => "Crop",
+        ClipTimeMode::Stretch => "Stretch",
+    }
+}
+
+fn generative_video_timing(project: &Project, asset_id: Uuid) -> Option<(f64, f64, u32)> {
+    let asset = project.find_asset(asset_id)?;
+    let AssetKind::GenerativeVideo {
+        fps, frame_count, ..
+    } = &asset.kind
+    else {
+        return None;
+    };
+    let fps = (*fps).max(1.0);
+    let frame_count = (*frame_count).max(1);
+    let duration = asset
+        .duration_seconds
+        .filter(|duration| *duration > 0.0)
+        .unwrap_or(frame_count as f64 / fps);
+    Some((duration, fps, frame_count))
+}
+
+#[derive(Clone, Copy)]
+struct ProviderDurationBounds {
+    min: Option<f64>,
+    max: Option<f64>,
+}
+
+fn provider_duration_bounds(provider: Option<&ProviderEntry>) -> ProviderDurationBounds {
+    let Some(input) = provider.and_then(|provider| {
+        provider
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::DurationSeconds))
+    }) else {
+        return ProviderDurationBounds {
+            min: None,
+            max: None,
+        };
+    };
+    ProviderDurationBounds {
+        min: input.ui.as_ref().and_then(|ui| ui.min),
+        max: input.ui.as_ref().and_then(|ui| ui.max),
+    }
+}
+
+fn clamp_provider_duration(duration: f64, bounds: ProviderDurationBounds) -> f64 {
+    let mut duration = duration.max(0.001);
+    if let Some(min) = bounds.min {
+        duration = duration.max(min);
+    }
+    if let Some(max) = bounds.max {
+        duration = duration.min(max);
+    }
+    duration
+}
+
+fn provider_duration_bounds_label(bounds: ProviderDurationBounds) -> String {
+    match (bounds.min, bounds.max) {
+        (Some(min), Some(max)) => format!(
+            "Provider duration range {} - {}",
+            format_duration(min),
+            format_duration(max)
+        ),
+        (Some(min), None) => format!("Provider minimum duration {}", format_duration(min)),
+        (None, Some(max)) => format!("Provider maximum duration {}", format_duration(max)),
+        (None, None) => String::new(),
+    }
+}
+
+fn provider_timing_role_value(
+    input: &ProviderInputField,
+    duration: f64,
+    fps: f64,
+    frame_count: u32,
+) -> Option<serde_json::Value> {
+    let role = input.role?;
+    let raw = match role {
+        InputRole::DurationSeconds => duration,
+        InputRole::Fps => fps,
+        InputRole::FrameCount => frame_count as f64,
+        InputRole::Width | InputRole::Height | InputRole::Seed => return None,
+    };
+    let raw = clamp_provider_input_number(raw, input);
+    match input.input_type {
+        ProviderInputType::Integer => Some(serde_json::Value::Number((raw.round() as i64).into())),
+        ProviderInputType::Number => {
+            serde_json::Number::from_f64(raw).map(serde_json::Value::Number)
+        }
+        _ => None,
+    }
+}
+
+fn is_timing_role(role: Option<InputRole>) -> bool {
+    matches!(
+        role,
+        Some(InputRole::DurationSeconds | InputRole::Fps | InputRole::FrameCount)
+    )
+}
+
+fn clamp_provider_input_number(value: f64, input: &ProviderInputField) -> f64 {
+    let mut value = value;
+    if let Some(min) = input.ui.as_ref().and_then(|ui| ui.min) {
+        value = value.max(min);
+    }
+    if let Some(max) = input.ui.as_ref().and_then(|ui| ui.max) {
+        value = value.min(max);
+    }
+    value
 }
 
 fn retain_literal_inputs(inputs: &mut HashMap<String, InputValue>) {

@@ -25,9 +25,9 @@ use crate::core::export::{
     TimestampOverlayPosition, VideoExportCodec, VideoExportFrameFormat, VideoExportQuality,
 };
 use crate::state::{
-    Asset, AssetKind, AssetLabNode, BatchSettings, ClipImageMode, ClipTransform, GenerativeConfig,
-    InputValue, Project, ProjectProviderScope, ProjectSettings, ProviderEntry, ProviderOutputType,
-    SelectionState, TrackType,
+    Asset, AssetKind, AssetLabNode, BatchSettings, ClipImageMode, ClipTimeMode, ClipTransform,
+    GenerativeConfig, InputValue, Project, ProjectProviderScope, ProjectSettings, ProviderEntry,
+    ProviderOutputType, SelectionState, TrackType,
 };
 
 const DEFAULT_AUTOMATION_PORT: u16 = 47_890;
@@ -123,6 +123,16 @@ pub enum AutomationCommand {
         asset_id: Uuid,
         duration_seconds: Option<f64>,
     },
+    /// Update target timing for a generative video asset.
+    SetGenerativeVideoTiming {
+        asset_id: Uuid,
+        #[serde(default)]
+        fps: Option<f64>,
+        #[serde(default)]
+        duration_seconds: Option<f64>,
+        #[serde(default)]
+        frame_count: Option<u32>,
+    },
     /// Extract a generative asset's active output as a normal project asset.
     ExtractActiveGeneration {
         #[serde(default)]
@@ -164,6 +174,8 @@ pub enum AutomationCommand {
         name: Option<String>,
         #[serde(default)]
         fps: Option<f64>,
+        #[serde(default)]
+        duration_seconds: Option<f64>,
         #[serde(default)]
         frame_count: Option<u32>,
     },
@@ -689,6 +701,8 @@ pub struct ClipPatch {
     pub label: Option<String>,
     #[serde(default)]
     pub image_mode: Option<ClipImageMode>,
+    #[serde(default)]
+    pub time_mode: Option<ClipTimeMode>,
     #[serde(default)]
     pub transform: Option<ClipTransform>,
 }
@@ -2246,7 +2260,7 @@ pub fn agent_schema_json() -> Value {
                 "input_type": "ProviderInputType",
                 "required?": "bool",
                 "default?": "json value",
-                "role?": "width|height|seed",
+                "role?": "width|height|seed|duration_seconds|fps|frame_count",
                 "ui?": "InputUi"
             }
         },
@@ -2296,6 +2310,7 @@ fn agent_command_names() -> Vec<&'static str> {
         "duplicate_asset",
         "delete_assets",
         "set_asset_duration",
+        "set_generative_video_timing",
         "create_generative_asset",
         "create_i2i_from_clip",
         "create_i2v_from_clip",
@@ -2384,6 +2399,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "duplicate_asset", "fields": { "asset_id?": "uuid", "asset_name?": "string" } },
             { "type": "delete_assets", "fields": { "asset_ids": ["uuid"] } },
             { "type": "set_asset_duration", "fields": { "asset_id": "uuid", "duration_seconds": "f64|null" } },
+            { "type": "set_generative_video_timing", "fields": { "asset_id": "uuid", "fps?": "f64", "duration_seconds?": "f64", "frame_count?": "u32" } },
             { "type": "extract_active_generation", "fields": { "asset_id?": "uuid", "asset_name?": "string" } },
             { "type": "extract_generation_version", "fields": { "asset_id": "uuid", "version?": "string" } },
             { "type": "extract_still_to_asset", "fields": { "source": "CaptureSource", "time?": "TimeSelector", "name?": "string" } }
@@ -2421,7 +2437,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "test_provider", "fields": { "provider_id": "uuid", "live?": "bool" } }
         ],
         "generation": [
-            { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "frame_count?": "u32" } },
+            { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "duration_seconds?": "f64", "frame_count?": "u32" } },
             { "type": "get_generative_config", "fields": { "asset_id": "uuid" } },
             { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; canonical for literal and media provider parameters", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name or semantic slots like image/start_image/end_image are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string" } } },
             { "type": "replace_generative_config", "fields": { "asset_id": "uuid", "config": "GenerativeConfig" } },

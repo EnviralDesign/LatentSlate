@@ -55,6 +55,7 @@ Important rules:
 - `Marker` tracks hold point-in-time markers.
 - New projects start with three video tracks above one audio track and one marker track: `Video 3`, `Video 2`, `Video 1`, `Audio 1`, `Markers` from top to bottom.
 - Clips are range-based with start time and duration.
+- Time-based clips default to `crop` time mapping. Video clips can use `stretch` to map remaining source media across the visible clip duration.
 - Markers are point-based annotations.
 - Image clips can display as normal stills or keyframe-reference pins, but they remain clips on video tracks.
 
@@ -72,6 +73,11 @@ Generative config tracks:
 - Asset Lab node lineage
 
 The active version is the file shown on the timeline and used when another generation references that asset. A generative asset with no active version is intentionally hollow; the preview and provider-input paths do not scan its folder for arbitrary leftover files.
+
+Generative video assets store target timing as duration, FPS, and frame count.
+For a hollow generative video used by one clip, resizing the clip updates that
+target timing. After a version exists, clip resizing is treated as timeline
+editing; target timing remains an explicit asset setting for future generations.
 
 ## Provider Flow
 

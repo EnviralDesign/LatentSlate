@@ -68,13 +68,52 @@ impl LatentSlateApp {
                         "Create a provider or reload the local provider folder.",
                     );
                 }
-                for path in provider_files.iter() {
-                    let summary = provider_file_summary(path);
-                    let is_selected = selected.as_ref() == Some(path);
-                    let response = provider_row(ui, path, &summary, is_selected);
-                    if response.clicked() {
-                        next_selection = Some(path.clone());
+                let mut summaries = provider_files
+                    .iter()
+                    .map(|path| (path.clone(), provider_file_summary(path)))
+                    .collect::<Vec<_>>();
+                summaries.sort_by(|(left_path, left), (right_path, right)| {
+                    left.source
+                        .sort_key()
+                        .cmp(&right.source.sort_key())
+                        .then_with(|| {
+                            provider_workflow_sort_key(left.workflow_kind)
+                                .cmp(&provider_workflow_sort_key(right.workflow_kind))
+                        })
+                        .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                        .then_with(|| left_path.cmp(right_path))
+                });
+
+                let mut index = 0;
+                while index < summaries.len() {
+                    let source = summaries[index].1.source;
+                    let group_start = index;
+                    while index < summaries.len() && summaries[index].1.source == source {
+                        index += 1;
                     }
+                    let group = &summaries[group_start..index];
+                    let header = format!("{} ({})", source.label(), group.len());
+                    egui::CollapsingHeader::new(header)
+                        .id_salt(("provider_source_group", source.sort_key()))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                            let mut current_workflow_kind = None;
+                            for (path, summary) in group {
+                                if current_workflow_kind != Some(summary.workflow_kind) {
+                                    current_workflow_kind = Some(summary.workflow_kind);
+                                    ui.add_space(2.0);
+                                    ui.label(kit::caption(provider_workflow_group_label(
+                                        summary.workflow_kind,
+                                    )));
+                                }
+                                let is_selected = selected.as_ref() == Some(path);
+                                let response = provider_row(ui, path, summary, is_selected);
+                                if response.clicked() {
+                                    next_selection = Some(path.clone());
+                                }
+                            }
+                        });
                 }
             });
 
@@ -476,7 +515,7 @@ impl LatentSlateApp {
 
         if back_clicked {
             if let Some(previous) = self.provider_builder.previous_tab() {
-                self.provider_builder.tab = previous;
+                self.provider_builder.set_tab(previous);
             }
         }
         if next_clicked {
@@ -523,7 +562,7 @@ impl LatentSlateApp {
                     }
                 }
                 if clicked {
-                    self.provider_builder.tab = step;
+                    self.provider_builder.set_tab(step);
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -542,7 +581,7 @@ impl LatentSlateApp {
                 "Select the workflow node that produces the final media, usually a saver node.",
             ),
             ProviderBuilderTab::Inputs => Some(
-                "Expose the workflow parameters LatentSlate should control, then assign Width, Height, and Seed roles where needed.",
+                "Expose the workflow parameters LatentSlate should control, then assign Width, Height, Seed, and optional timing roles where needed.",
             ),
         };
         if let Some(hint) = hint {
@@ -669,7 +708,7 @@ impl LatentSlateApp {
                     0 => {
                         if let Some(choice) = provider_workflow_kind_field(
                             ui,
-                            "Generation",
+                            "Type",
                             self.provider_builder.generation_choice(),
                         ) {
                             self.provider_builder.apply_generation_choice(choice);
@@ -678,7 +717,7 @@ impl LatentSlateApp {
                     1 => {
                         provider_output_type_readout(
                             ui,
-                            "Type",
+                            "Output",
                             self.provider_builder
                                 .generation_choice()
                                 .map(|choice| choice.output_type),
@@ -993,13 +1032,15 @@ impl LatentSlateApp {
                 );
                 return;
             };
-            provider_builder_input_inspector_editor(
-                ui,
-                index,
-                len,
-                &mut self.provider_builder.inputs[index],
-                &mut editor_action,
-            );
+            kit::clipped_scroll_body(ui, ("provider_builder_input_inspector", index), |ui| {
+                provider_builder_input_inspector_editor(
+                    ui,
+                    index,
+                    len,
+                    &mut self.provider_builder.inputs[index],
+                    &mut editor_action,
+                );
+            });
         });
 
         if let Some(action) = editor_action {
@@ -1075,7 +1116,7 @@ impl LatentSlateApp {
             }
         }
         if let Some(next) = self.provider_builder.next_tab() {
-            self.provider_builder.tab = next;
+            self.provider_builder.set_tab(next);
             self.provider_builder.error = None;
         }
     }

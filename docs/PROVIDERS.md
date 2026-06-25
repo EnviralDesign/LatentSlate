@@ -120,6 +120,13 @@ Supported schema input types:
 - `video`
 - `audio`
 
+Numeric inputs can optionally declare a semantic `role`. Width, height, and seed
+roles support existing image/video setup and batching behavior. Video providers
+can additionally mark timing inputs as `duration_seconds`, `fps`, or
+`frame_count`; LatentSlate syncs those fields from the generative video's target
+timing before generation. Use the input UI `min`/`max` metadata on a
+`duration_seconds` role to express provider duration rails.
+
 Media inputs can use project asset references and timeline-context suggestions,
 but compatibility still depends on the provider workflow and manifest binding.
 For the Agent API, `inputs.<provider_field>` is canonical for media parameters:

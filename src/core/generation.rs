@@ -126,7 +126,9 @@ fn reference_frame_time(project: &Project, reference: &InputValue, fps: f64) -> 
                         .clips
                         .iter()
                         .find(|clip| clip.id == clip_id)
-                        .map(|clip| source_frame_time(clip, frame_ref, media_fps))
+                        .map(|clip| {
+                            source_frame_time(clip, frame_ref, media_fps, asset.duration_seconds)
+                        })
                 })
                 .or_else(|| Some(asset_level_frame_time(asset, frame_ref, media_fps)))
         }
@@ -388,7 +390,7 @@ fn asset_ref_path(
                     .and_then(|clip_id| project.clips.iter().find(|clip| clip.id == clip_id));
                 let media_fps = source_media_fps(asset, project.settings.fps);
                 let time_seconds = source_clip
-                    .map(|clip| source_frame_time(clip, frame, media_fps))
+                    .map(|clip| source_frame_time(clip, frame, media_fps, asset.duration_seconds))
                     .unwrap_or_else(|| asset_level_frame_time(asset, frame, media_fps));
                 return extract_video_reference_frame(
                     root,
@@ -504,13 +506,18 @@ fn resolve_generative_source(
     None
 }
 
-fn source_frame_time(clip: &Clip, frame: SourceFrameReference, fps: f64) -> f64 {
+fn source_frame_time(
+    clip: &Clip,
+    frame: SourceFrameReference,
+    fps: f64,
+    source_duration: Option<f64>,
+) -> f64 {
     let frame_epsilon = 1.0 / fps.max(1.0);
     match frame {
-        SourceFrameReference::First => clip.trim_in_seconds.max(0.0),
-        SourceFrameReference::Last => (clip.trim_in_seconds + clip.duration - frame_epsilon)
-            .max(clip.trim_in_seconds)
-            .max(0.0),
+        SourceFrameReference::First => clip.source_time_for_local(0.0, source_duration),
+        SourceFrameReference::Last => {
+            clip.source_time_for_local((clip.duration - frame_epsilon).max(0.0), source_duration)
+        }
     }
 }
 

@@ -9,7 +9,7 @@ use image::{Rgba, RgbaImage};
 
 use crate::core::media::probe_duration_seconds;
 use crate::core::video_decode::{DecodeMode, VideoDecodeWorker};
-use crate::state::{Asset, AssetKind, Clip, ClipImageMode, Project, TrackType};
+use crate::state::{Asset, AssetKind, Clip, ClipImageMode, ClipTimeMode, Project, TrackType};
 
 use super::{
     cache::FrameCache,
@@ -52,6 +52,27 @@ fn clip_active_for_preview(clip: &Clip, asset: &Asset, time_seconds: f64, fps: f
     }
 
     time_seconds >= clip.start_time && time_seconds < clip.end_time()
+}
+
+fn cached_source_time_to_clip_time(
+    clip: &Clip,
+    source_time: f64,
+    source_duration: Option<f64>,
+) -> f64 {
+    let trim = clip.trim_in_seconds.max(0.0);
+    match clip.time_mode {
+        ClipTimeMode::Crop => source_time - trim,
+        ClipTimeMode::Stretch => {
+            let Some(source_duration) = source_duration.filter(|duration| *duration > 0.0) else {
+                return source_time - trim;
+            };
+            let available = (source_duration - trim).max(0.0);
+            if available <= f64::EPSILON {
+                return 0.0;
+            }
+            ((source_time - trim).max(0.0) / available) * clip.duration.max(0.0)
+        }
+    }
 }
 
 /// Generates composited preview frames for the current timeline time.
@@ -358,7 +379,6 @@ impl PreviewRenderer {
                 continue;
             }
 
-            let source_time = (time_seconds - clip.start_time + clip.trim_in_seconds).max(0.0);
             let Some((path, is_video, duration)) = resolve_asset_source(
                 project_root,
                 asset,
@@ -367,6 +387,7 @@ impl PreviewRenderer {
             ) else {
                 continue;
             };
+            let source_time = clip.source_time_at(time_seconds, duration);
 
             let (frame_index, frame_time) = if is_video {
                 let (mapped_time, clamp_duration) =
@@ -548,7 +569,7 @@ impl PreviewRenderer {
                     continue;
                 }
 
-                let source_time = (frame_time - clip.start_time + clip.trim_in_seconds).max(0.0);
+                let source_time = clip.source_time_at(frame_time, asset.duration_seconds);
                 let _ = self.load_clip_frame(
                     project_root,
                     asset,
@@ -627,14 +648,12 @@ impl PreviewRenderer {
                 continue;
             }
 
-            let clip_start = clip.trim_in_seconds.max(0.0);
-            let clip_end = clip_start + clip_duration;
             for frame_index in asset_frames.iter() {
                 let frame_time = frame_index_to_time(*frame_index, fps);
-                if frame_time < clip_start || frame_time > clip_end {
+                let time_in_clip = cached_source_time_to_clip_time(clip, frame_time, _duration);
+                if !(0.0..=clip_duration).contains(&time_in_clip) {
                     continue;
                 }
-                let time_in_clip = (frame_time - clip_start).max(0.0);
                 let bucket_index = (time_in_clip / bucket_seconds).floor() as usize;
                 if let Some(bucket) = buckets.get_mut(bucket_index) {
                     *bucket = true;

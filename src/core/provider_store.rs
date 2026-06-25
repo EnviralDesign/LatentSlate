@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::state::{
-    InputUi, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
+    InputRole, InputUi, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
     ProviderOutputType, ProviderWorkflowKind,
 };
 
@@ -167,6 +167,8 @@ pub fn default_xai_video_provider_entry() -> ProviderEntry {
         "Cloud text-to-video provider for generating short video assets from prompts.".to_string(),
     );
     entry.workflow_kind = ProviderWorkflowKind::TextToVideo;
+    let mut duration = integer_input("duration", "Duration Seconds", 6, Some(1.0), Some(15.0));
+    duration.role = Some(InputRole::DurationSeconds);
     entry.inputs = vec![
         text_input(
             "prompt",
@@ -175,7 +177,7 @@ pub fn default_xai_video_provider_entry() -> ProviderEntry {
             None,
             true,
         ),
-        integer_input("duration", "Duration Seconds", 6, Some(1.0), Some(15.0)),
+        duration,
         enum_input(
             "aspect_ratio",
             "Aspect Ratio",

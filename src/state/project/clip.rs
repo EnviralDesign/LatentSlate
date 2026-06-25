@@ -47,6 +47,22 @@ impl Default for ClipImageMode {
     }
 }
 
+/// How a time-based source maps into a timeline clip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipTimeMode {
+    /// Timeline length is a crop/trim window into the source media.
+    Crop,
+    /// Timeline length stretches the remaining source media to fit the clip.
+    Stretch,
+}
+
+impl Default for ClipTimeMode {
+    fn default() -> Self {
+        Self::Crop
+    }
+}
+
 /// A clip placed on a track
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
@@ -72,6 +88,9 @@ pub struct Clip {
     /// Image-specific timeline display mode.
     #[serde(default)]
     pub image_mode: ClipImageMode,
+    /// Time mapping used for video/audio source playback.
+    #[serde(default)]
+    pub time_mode: ClipTimeMode,
     /// Transform applied when compositing this clip.
     #[serde(default)]
     pub transform: ClipTransform,
@@ -91,6 +110,7 @@ impl Clip {
             volume: 1.0,
             label: None,
             image_mode: ClipImageMode::Still,
+            time_mode: ClipTimeMode::Crop,
             transform: ClipTransform::default(),
         }
     }
@@ -98,6 +118,33 @@ impl Clip {
     /// Get the end time of this clip
     pub fn end_time(&self) -> f64 {
         self.start_time + self.duration
+    }
+
+    /// Map a project timeline time to a source-media time for this clip.
+    pub fn source_time_at(&self, timeline_time: f64, source_duration: Option<f64>) -> f64 {
+        let local_time = (timeline_time - self.start_time).max(0.0);
+        self.source_time_for_local(local_time, source_duration)
+    }
+
+    /// Map a local clip time to a source-media time for this clip.
+    pub fn source_time_for_local(&self, local_time: f64, source_duration: Option<f64>) -> f64 {
+        let trim = self.trim_in_seconds.max(0.0);
+        let local_time = local_time.max(0.0);
+        match self.time_mode {
+            ClipTimeMode::Crop => trim + local_time,
+            ClipTimeMode::Stretch => {
+                let Some(source_duration) = source_duration.filter(|duration| *duration > 0.0)
+                else {
+                    return trim + local_time;
+                };
+                let available = (source_duration - trim).max(0.0);
+                if self.duration <= f64::EPSILON || available <= f64::EPSILON {
+                    return trim;
+                }
+                let fraction = (local_time / self.duration).clamp(0.0, 1.0);
+                trim + available * fraction
+            }
+        }
     }
 
     /// Check if this clip overlaps with a time range

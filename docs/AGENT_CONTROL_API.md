@@ -355,6 +355,7 @@ stay coherent.
 { "type": "duplicate_asset", "asset_id": "uuid" }
 { "type": "delete_assets", "asset_ids": ["uuid"] }
 { "type": "set_asset_duration", "asset_id": "uuid", "duration_seconds": 8.0 }
+{ "type": "set_generative_video_timing", "asset_id": "uuid", "duration_seconds": 12.0, "fps": 24.0 }
 ```
 
 Generative asset creation:
@@ -362,8 +363,15 @@ Generative asset creation:
 ```json
 { "type": "create_generative_asset", "output_type": "image", "name": "Concept still" }
 { "type": "create_generative_asset", "output_type": "video", "fps": 16.0, "frame_count": 81 }
+{ "type": "create_generative_asset", "output_type": "video", "fps": 24.0, "duration_seconds": 10.0 }
 { "type": "create_generative_asset", "output_type": "audio" }
 ```
+
+Generative video timing is stored as target `duration_seconds`, `fps`, and
+derived `frame_count`. For hollow generative videos with a single timeline clip,
+target-duration changes also update that clip. Once a video has an active
+generated version, timeline clip resizing edits the clip while asset timing
+remains an explicit generation target.
 
 Extraction:
 
@@ -426,6 +434,7 @@ Patch clip fields:
     "volume": 1.0,
     "label": "I2V bridge",
     "image_mode": "still",
+    "time_mode": "crop",
     "transform": {
       "position_x": 0.0,
       "position_y": 0.0,
@@ -437,6 +446,10 @@ Patch clip fields:
   }
 }
 ```
+
+`time_mode` is `crop` by default. `stretch` maps the remaining source media
+across the clip duration, allowing a 5s source to play over a longer or shorter
+timeline span.
 
 Convenience actions:
 
@@ -487,6 +500,12 @@ use the provider. Each `ProviderInputField.description` is an optional
 multi-line string explaining the parameter. Blank descriptions are omitted from
 JSON. Agents should prefer these descriptions over guessing from ComfyUI node
 names when choosing providers or setting input values.
+
+Numeric provider inputs can opt into semantic roles. Required roles remain
+`width`, `height`, and `seed` where the builder requires them. Video providers
+can optionally mark inputs as `duration_seconds`, `fps`, or `frame_count`; the
+editor syncs those inputs from the generative video's target timing before
+generation.
 
 ```json
 { "type": "list_providers" }

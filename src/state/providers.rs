@@ -103,6 +103,9 @@ pub enum InputRole {
     Width,
     Height,
     Seed,
+    DurationSeconds,
+    Fps,
+    FrameCount,
 }
 
 /// Schema field describing a single provider input.

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, Pos2, Rect, Ui, Vec2};
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 use uuid::Uuid;
 
 use crate::state::{
@@ -621,9 +621,21 @@ impl ProviderBuilderState {
         }
     }
 
+    pub(super) fn set_tab(&mut self, tab: ProviderBuilderTab) {
+        let previous = self.tab;
+        self.tab = tab;
+        if matches!(
+            (previous, tab),
+            (ProviderBuilderTab::Output, ProviderBuilderTab::Inputs)
+                | (ProviderBuilderTab::Inputs, ProviderBuilderTab::Output)
+        ) {
+            self.workflow_search.clear();
+        }
+    }
+
     pub(super) fn ensure_valid_tab(&mut self) {
         if self.workflow_validation_error().is_some() {
-            self.tab = ProviderBuilderTab::Workflow;
+            self.set_tab(ProviderBuilderTab::Workflow);
             return;
         }
         if matches!(
@@ -631,11 +643,11 @@ impl ProviderBuilderState {
             ProviderBuilderTab::Output | ProviderBuilderTab::Inputs
         ) && self.settings_validation_error().is_some()
         {
-            self.tab = ProviderBuilderTab::Settings;
+            self.set_tab(ProviderBuilderTab::Settings);
             return;
         }
         if self.tab == ProviderBuilderTab::Inputs && self.output_validation_error().is_some() {
-            self.tab = ProviderBuilderTab::Output;
+            self.set_tab(ProviderBuilderTab::Output);
         }
     }
 
@@ -817,6 +829,17 @@ impl ProviderBuilderState {
             }
         }
 
+        for (role, names) in role_inputs.iter() {
+            if names.len() > 1 {
+                return Some(format!(
+                    "Role {} is assigned to multiple inputs ({}). Only one input can be marked as {}.",
+                    provider_input_role_label(Some(*role)),
+                    names.join(", "),
+                    provider_input_role_label(Some(*role)).to_ascii_lowercase()
+                ));
+            }
+        }
+
         let mut missing_roles = Vec::new();
         for role in self.required_input_roles() {
             let names = role_inputs
@@ -824,15 +847,6 @@ impl ProviderBuilderState {
                 .map_or(&[][..], |inputs| inputs.as_slice());
             if names.is_empty() {
                 missing_roles.push(provider_input_role_label(Some(role)).to_string());
-                continue;
-            }
-            if names.len() > 1 {
-                return Some(format!(
-                    "Role {} is assigned to multiple inputs ({}). Only one input can be marked as {}.",
-                    provider_input_role_label(Some(role)),
-                    names.join(", "),
-                    provider_input_role_label(Some(role)).to_ascii_lowercase()
-                ));
             }
         }
         if !invalid_type_inputs.is_empty() {
@@ -1241,7 +1255,40 @@ pub(super) struct ProviderFileSummary {
     pub(super) name: String,
     pub(super) subtitle: String,
     pub(super) description: Option<String>,
+    pub(super) source: ProviderSourceKind,
+    pub(super) workflow_kind: Option<ProviderWorkflowKind>,
     pub(super) output_type: Option<ProviderOutputType>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProviderSourceKind {
+    ComfyUi,
+    OpenAi,
+    Xai,
+    CustomHttp,
+    Other,
+}
+
+impl ProviderSourceKind {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::ComfyUi => "ComfyUI",
+            Self::OpenAi => "OpenAI",
+            Self::Xai => "xAI",
+            Self::CustomHttp => "Custom HTTP",
+            Self::Other => "Other",
+        }
+    }
+
+    pub(super) fn sort_key(self) -> u8 {
+        match self {
+            Self::ComfyUi => 0,
+            Self::OpenAi => 1,
+            Self::Xai => 2,
+            Self::CustomHttp => 3,
+            Self::Other => 4,
+        }
+    }
 }
 
 pub(super) fn provider_row(
@@ -1255,18 +1302,119 @@ pub(super) fn provider_row(
         .map(provider_output_color)
         .unwrap_or(kit::AUDIO);
     let response = kit::draw_accent_row(ui, 52.0, selected, accent, |ui, rect| {
-        paint_text_button_row(ui, rect, &summary.name, &summary.subtitle);
+        paint_provider_row_contents(ui, rect, summary);
     });
+    let details = provider_summary_hover_text(summary);
+    if details.trim().is_empty() {
+        response
+    } else {
+        response.on_hover_text(details)
+    }
+}
+
+fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSummary) {
+    let workflow_label = summary
+        .workflow_kind
+        .map(|workflow_kind| workflow_kind.short_label())
+        .unwrap_or("--");
+    let output_label = summary
+        .output_type
+        .map(provider_output_type_label)
+        .unwrap_or("Unknown");
+    let output_color = summary
+        .output_type
+        .map(provider_output_color)
+        .unwrap_or(kit::TEXT_MUTED);
+
+    let badge_gap = 5.0;
+    let badge_h = 20.0;
+    let output_w = provider_badge_width(output_label);
+    let workflow_w = provider_badge_width(workflow_label);
+    let badge_y = rect.center().y - badge_h * 0.5;
+    let output_rect = Rect::from_min_size(
+        Pos2::new(rect.right() - output_w, badge_y),
+        Vec2::new(output_w, badge_h),
+    );
+    let workflow_rect = Rect::from_min_size(
+        Pos2::new(output_rect.left() - badge_gap - workflow_w, badge_y),
+        Vec2::new(workflow_w, badge_h),
+    );
+    let text_width = (workflow_rect.left() - rect.left() - 8.0).max(24.0);
+
+    paint_truncated_row_text_top(
+        ui,
+        Pos2::new(rect.left(), rect.top() + 2.0),
+        kit::value(&summary.name),
+        12.0,
+        text_width,
+        kit::TEXT,
+    );
+    paint_truncated_row_text_bottom(
+        ui,
+        Pos2::new(rect.left(), rect.bottom() - 2.0),
+        kit::caption(&summary.subtitle),
+        11.0,
+        text_width,
+        kit::TEXT_MUTED,
+    );
+
+    paint_provider_badge(ui, workflow_rect, workflow_label, kit::TEXT_MUTED, false);
+    paint_provider_badge(ui, output_rect, output_label, output_color, true);
+}
+
+fn provider_badge_width(label: &str) -> f32 {
+    (label.chars().count() as f32 * 6.5 + 18.0).clamp(38.0, 70.0)
+}
+
+fn paint_provider_badge(ui: &mut Ui, rect: Rect, label: &str, color: Color32, tinted: bool) {
+    let fill = if tinted {
+        color.gamma_multiply(0.14)
+    } else {
+        kit::FIELD_BG
+    };
+    let stroke_color = color.gamma_multiply(if tinted { 0.58 } else { 0.42 });
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(4), fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(4),
+        Stroke::new(1.0, stroke_color),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(10.5),
+        color,
+    );
+}
+
+fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
+    let workflow_label = summary
+        .workflow_kind
+        .map(|workflow_kind| workflow_kind.label())
+        .unwrap_or("Unknown generation type");
+    let output_label = summary
+        .output_type
+        .map(provider_output_type_label)
+        .unwrap_or("Unknown output");
+    let mut text = format!(
+        "{} | {} | {}",
+        summary.source.label(),
+        workflow_label,
+        output_label
+    );
     if let Some(description) = summary
         .description
         .as_deref()
         .map(str::trim)
         .filter(|description| !description.is_empty())
     {
-        response.on_hover_text(description)
-    } else {
-        response
+        text.push_str("\n\n");
+        text.push_str(description);
     }
+    text
 }
 
 pub(super) fn provider_template_dropdown_label(
@@ -1320,6 +1468,8 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             name: file_name,
             subtitle: "Unreadable provider file".to_string(),
             description: None,
+            source: ProviderSourceKind::Other,
+            workflow_kind: None,
             output_type: None,
         };
     };
@@ -1328,15 +1478,77 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             name: file_name,
             subtitle: "Invalid provider JSON".to_string(),
             description: None,
+            source: ProviderSourceKind::Other,
+            workflow_kind: None,
             output_type: None,
         };
     };
+    let workflow_kind = entry.resolved_workflow_kind();
+    let (source, detail) = provider_connection_summary(&entry.connection);
     ProviderFileSummary {
         name: entry.name,
-        subtitle: provider_output_type_label(entry.output_type).to_string(),
+        subtitle: if detail.trim().is_empty() {
+            source.label().to_string()
+        } else {
+            detail
+        },
         description: entry.description,
+        source,
+        workflow_kind: Some(workflow_kind),
         output_type: Some(entry.output_type),
     }
+}
+
+fn provider_connection_summary(connection: &ProviderConnection) -> (ProviderSourceKind, String) {
+    match connection {
+        ProviderConnection::ComfyUi {
+            base_url,
+            workflow_path,
+            ..
+        } => {
+            let workflow_name = workflow_path
+                .as_deref()
+                .and_then(|path| Path::new(path).file_name())
+                .and_then(|name| name.to_str())
+                .map(str::to_string);
+            (
+                ProviderSourceKind::ComfyUi,
+                workflow_name.unwrap_or_else(|| base_url.clone()),
+            )
+        }
+        ProviderConnection::OpenAiImage { model, .. } => {
+            (ProviderSourceKind::OpenAi, model.clone())
+        }
+        ProviderConnection::XaiImage { model, .. } | ProviderConnection::XaiVideo { model, .. } => {
+            (ProviderSourceKind::Xai, model.clone())
+        }
+        ProviderConnection::CustomHttp { base_url, .. } => {
+            (ProviderSourceKind::CustomHttp, base_url.clone())
+        }
+    }
+}
+
+pub(super) fn provider_workflow_sort_key(workflow_kind: Option<ProviderWorkflowKind>) -> u8 {
+    match workflow_kind.unwrap_or(ProviderWorkflowKind::Auto) {
+        ProviderWorkflowKind::TextToImage => 0,
+        ProviderWorkflowKind::ImageToImage => 1,
+        ProviderWorkflowKind::TextToVideo => 2,
+        ProviderWorkflowKind::ImageToVideo => 3,
+        ProviderWorkflowKind::FirstFrameLastFrameVideo => 4,
+        ProviderWorkflowKind::VideoToVideo => 5,
+        ProviderWorkflowKind::TextToAudio => 6,
+        ProviderWorkflowKind::AudioToAudio => 7,
+        ProviderWorkflowKind::Custom => 8,
+        ProviderWorkflowKind::Auto => 9,
+    }
+}
+
+pub(super) fn provider_workflow_group_label(
+    workflow_kind: Option<ProviderWorkflowKind>,
+) -> &'static str {
+    workflow_kind
+        .map(|workflow_kind| workflow_kind.label())
+        .unwrap_or("Unavailable")
 }
 
 pub(super) fn provider_file_supports_comfy_builder(path: &Path) -> bool {
@@ -1695,6 +1907,9 @@ pub(super) fn provider_input_role_label(value: Option<InputRole>) -> &'static st
         Some(InputRole::Width) => "Width",
         Some(InputRole::Height) => "Height",
         Some(InputRole::Seed) => "Seed",
+        Some(InputRole::DurationSeconds) => "Duration",
+        Some(InputRole::Fps) => "FPS",
+        Some(InputRole::FrameCount) => "Frames",
         None => "None",
     }
 }
@@ -1704,6 +1919,9 @@ pub(super) fn provider_input_role_color(role: InputRole) -> Color32 {
         InputRole::Width => kit::IMAGE,
         InputRole::Height => kit::VIDEO,
         InputRole::Seed => kit::MARKER,
+        InputRole::DurationSeconds => kit::AUDIO,
+        InputRole::Fps => kit::PRIMARY,
+        InputRole::FrameCount => Color32::from_rgb(182, 118, 238),
     }
 }
 
@@ -1776,36 +1994,30 @@ pub(super) fn provider_input_role_field(
         kit::field_label(ui, label);
         let row_w = ui.available_width().max(0.0);
         let gap = kit::MEDIA_PILL_MIN_GAP;
-        let button_w = ((row_w - gap * 3.0) / 4.0).max(42.0);
-        ui.horizontal(|ui| {
+        let button_w = ((row_w - gap * 3.0) / 4.0).max(58.0);
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             if kit::timeline_tool_text_button(ui, "Generic", button_w, role.is_none()).clicked() {
                 *role = None;
             }
-            if kit::timeline_tool_text_button(
-                ui,
-                "Width",
-                button_w,
-                *role == Some(InputRole::Width),
-            )
-            .clicked()
-            {
-                *role = Some(InputRole::Width);
-            }
-            if kit::timeline_tool_text_button(
-                ui,
-                "Height",
-                button_w,
-                *role == Some(InputRole::Height),
-            )
-            .clicked()
-            {
-                *role = Some(InputRole::Height);
-            }
-            if kit::timeline_tool_text_button(ui, "Seed", button_w, *role == Some(InputRole::Seed))
+            for option in [
+                InputRole::Width,
+                InputRole::Height,
+                InputRole::Seed,
+                InputRole::DurationSeconds,
+                InputRole::Fps,
+                InputRole::FrameCount,
+            ] {
+                if kit::timeline_tool_text_button(
+                    ui,
+                    provider_input_role_label(Some(option)),
+                    button_w,
+                    *role == Some(option),
+                )
                 .clicked()
-            {
-                *role = Some(InputRole::Seed);
+                {
+                    *role = Some(option);
+                }
             }
         });
     });

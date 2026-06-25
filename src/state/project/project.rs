@@ -5,7 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use super::{Clip, ClipImageMode, ClipTransform, Marker, ProjectSettings, Track, TrackType};
+use super::{
+    Clip, ClipImageMode, ClipTimeMode, ClipTransform, Marker, ProjectSettings, Track, TrackType,
+};
 use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -188,10 +190,50 @@ impl Project {
     /// Set the cached duration (in seconds) for an asset
     pub fn set_asset_duration(&mut self, id: Uuid, duration_seconds: Option<f64>) -> bool {
         if let Some(asset) = self.assets.iter_mut().find(|a| a.id == id) {
-            asset.set_duration_seconds(duration_seconds);
+            if let (
+                Some(duration_seconds),
+                AssetKind::GenerativeVideo {
+                    fps, frame_count, ..
+                },
+            ) = (duration_seconds, &mut asset.kind)
+            {
+                let fps_value = (*fps).max(1.0);
+                *frame_count = (duration_seconds.max(1.0 / fps_value) * fps_value)
+                    .round()
+                    .max(1.0) as u32;
+                asset.duration_seconds = generative_video_duration_seconds(fps_value, *frame_count);
+            } else {
+                asset.set_duration_seconds(duration_seconds);
+            }
             return true;
         }
         false
+    }
+
+    /// Update generative video timing while keeping cached duration coherent.
+    pub fn set_generative_video_timing(&mut self, id: Uuid, fps: f64, frame_count: u32) -> bool {
+        let Some(asset) = self.assets.iter_mut().find(|a| a.id == id) else {
+            return false;
+        };
+        let AssetKind::GenerativeVideo {
+            fps: stored_fps,
+            frame_count: stored_frame_count,
+            ..
+        } = &mut asset.kind
+        else {
+            return false;
+        };
+
+        let fps = if fps.is_finite() && fps > 0.0 {
+            fps
+        } else {
+            *stored_fps
+        };
+        let frame_count = frame_count.max(1);
+        *stored_fps = fps;
+        *stored_frame_count = frame_count;
+        asset.duration_seconds = generative_video_duration_seconds(fps, frame_count);
+        true
     }
 
     /// Get the cached duration (in seconds) for an asset
@@ -535,6 +577,44 @@ impl Project {
         false
     }
 
+    /// Update time mapping for a clip instance.
+    pub fn set_clip_time_mode(&mut self, id: Uuid, mode: ClipTimeMode) -> bool {
+        let Some(index) = self.clips.iter().position(|clip| clip.id == id) else {
+            return false;
+        };
+        self.clips[index].time_mode = mode;
+        let start = self.clips[index].start_time;
+        let duration = self.clips[index].duration;
+        self.resize_clip(id, start, duration)
+    }
+
+    /// Update the trim-in time for a clip instance.
+    pub fn set_clip_trim_in_seconds(&mut self, id: Uuid, trim_in_seconds: f64) -> bool {
+        let Some(index) = self.clips.iter().position(|clip| clip.id == id) else {
+            return false;
+        };
+
+        let asset = self
+            .assets
+            .iter()
+            .find(|asset| asset.id == self.clips[index].asset_id);
+        let source_duration = asset
+            .and_then(|asset| asset.duration_seconds)
+            .filter(|duration| *duration > 0.0);
+        let mut trim = trim_in_seconds.max(0.0);
+        if let Some(source_duration) = source_duration {
+            trim = trim.min((source_duration - 0.1).max(0.0));
+        }
+        self.clips[index].trim_in_seconds = trim;
+
+        if self.clips[index].time_mode == ClipTimeMode::Crop {
+            let start = self.clips[index].start_time;
+            let duration = self.clips[index].duration;
+            self.resize_clip(id, start, duration);
+        }
+        true
+    }
+
     /// Add a marker to the project
     pub fn add_marker(&mut self, mut marker: Marker) -> Uuid {
         let id = marker.id;
@@ -620,39 +700,74 @@ impl Project {
 
     /// Resize a clip (change start and/or duration)
     pub fn resize_clip(&mut self, id: Uuid, new_start: f64, new_duration: f64) -> bool {
-        if let Some(clip) = self.clips.iter_mut().find(|c| c.id == id) {
+        let Some(index) = self.clips.iter().position(|clip| clip.id == id) else {
+            return false;
+        };
+        let mut sync_hollow_timing: Option<(Uuid, f64)> = None;
+        {
+            let clip = &mut self.clips[index];
             let old_start = clip.start_time;
             let start_time = new_start.max(0.0);
             let mut duration = new_duration.max(0.1); // Minimum 0.1 second
 
             let asset = self.assets.iter().find(|a| a.id == clip.asset_id);
-            let max_duration = asset.and_then(|a| a.duration_seconds).filter(|d| *d > 0.0);
+            let source_duration = asset.and_then(|a| a.duration_seconds).filter(|d| *d > 0.0);
+            let time_based = asset.is_some_and(|a| a.is_video() || a.is_audio());
+            let can_stretch = asset.is_some_and(|a| a.is_video());
+            let hollow_generative_video = asset.is_some_and(|asset| {
+                matches!(asset.kind, AssetKind::GenerativeVideo { .. })
+                    && self
+                        .generative_configs
+                        .get(&clip.asset_id)
+                        .is_none_or(|config| {
+                            config.active_version.is_none() && config.versions.is_empty()
+                        })
+            });
 
-            if let Some(max_duration) = max_duration {
-                duration = duration.min(max_duration);
+            if time_based
+                && !hollow_generative_video
+                && (start_time - old_start).abs() > f64::EPSILON
+            {
+                let delta = start_time - old_start;
+                clip.trim_in_seconds = (clip.trim_in_seconds + delta).max(0.0);
             }
 
-            if let Some(asset) = asset {
-                if (asset.is_video() || asset.is_audio())
-                    && (start_time - old_start).abs() > f64::EPSILON
-                {
-                    let delta = start_time - old_start;
-                    clip.trim_in_seconds = (clip.trim_in_seconds + delta).max(0.0);
+            if time_based && !hollow_generative_video {
+                if let Some(source_duration) = source_duration {
+                    let max_trim_in = (source_duration - 0.1).max(0.0);
+                    clip.trim_in_seconds = clip.trim_in_seconds.min(max_trim_in);
 
-                    if let Some(max_duration) = max_duration {
-                        let max_trim_in = (max_duration - duration).max(0.0);
-                        if clip.trim_in_seconds > max_trim_in {
-                            clip.trim_in_seconds = max_trim_in;
-                        }
+                    if clip.time_mode == ClipTimeMode::Crop || !can_stretch {
+                        let available = (source_duration - clip.trim_in_seconds).max(0.1);
+                        duration = duration.min(available);
                     }
                 }
             }
 
             clip.start_time = start_time;
             clip.duration = duration;
-            return true;
+            if hollow_generative_video {
+                sync_hollow_timing = Some((clip.asset_id, duration));
+            }
         }
-        false
+
+        if let Some((asset_id, duration)) = sync_hollow_timing {
+            let clip_count = self
+                .clips
+                .iter()
+                .filter(|clip| clip.asset_id == asset_id)
+                .count();
+            if clip_count == 1 {
+                if let Some(asset) = self.find_asset(asset_id) {
+                    if let AssetKind::GenerativeVideo { fps, .. } = &asset.kind {
+                        let fps = (*fps).max(1.0);
+                        let frame_count = (duration.max(1.0 / fps) * fps).round().max(1.0) as u32;
+                        let _ = self.set_generative_video_timing(asset_id, fps, frame_count);
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Update the transform for a clip.

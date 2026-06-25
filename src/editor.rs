@@ -19,9 +19,9 @@ use crate::core::provider_store::{
 };
 use crate::core::thumbnailer::Thumbnailer;
 use crate::state::{
-    next_generative_index, Asset, AssetKind, GenerationJob, GenerativeConfig, InputValue, Project,
-    ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout, ProviderConnection,
-    ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
+    next_generative_index, Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole,
+    InputValue, Project, ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout,
+    ProviderConnection, ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
     DEFAULT_GENERATIVE_VIDEO_FPS, DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
@@ -955,10 +955,94 @@ impl EditorState {
                     .project
                     .set_asset_duration(*asset_id, *duration_seconds)
                 {
+                    let _ = sync_generative_video_timing_inputs(
+                        &mut self.project,
+                        &self.provider_entries,
+                        *asset_id,
+                    )
+                    .map_err(|err| {
+                        self.status =
+                            format!("Updated duration, but timing input sync failed: {err}");
+                    });
                     self.preview_dirty = true;
                     AutomationResponse::ok(json!({ "asset_id": asset_id }))
                 } else {
                     AutomationResponse::not_found("Asset not found.")
+                }
+            }
+            AutomationCommand::SetGenerativeVideoTiming {
+                asset_id,
+                fps,
+                duration_seconds,
+                frame_count,
+            } => {
+                let Some(asset) = self.project.find_asset(*asset_id) else {
+                    return AutomationResponse::not_found("Asset not found.");
+                };
+                let AssetKind::GenerativeVideo {
+                    fps: current_fps,
+                    frame_count: current_frame_count,
+                    ..
+                } = &asset.kind
+                else {
+                    return AutomationResponse::conflict("Asset is not a generative video.");
+                };
+                let next_fps = fps.unwrap_or(*current_fps).max(1.0);
+                let next_frame_count = frame_count
+                    .or_else(|| {
+                        duration_seconds.map(|duration| {
+                            (duration.max(1.0 / next_fps) * next_fps).round() as u32
+                        })
+                    })
+                    .unwrap_or(*current_frame_count)
+                    .max(1);
+                if self
+                    .project
+                    .set_generative_video_timing(*asset_id, next_fps, next_frame_count)
+                {
+                    let next_duration = next_frame_count as f64 / next_fps;
+                    let hollow = self
+                        .project
+                        .generative_config(*asset_id)
+                        .is_none_or(|config| {
+                            config.active_version.is_none() && config.versions.is_empty()
+                        });
+                    let clip_ids: Vec<_> = self
+                        .project
+                        .clips
+                        .iter()
+                        .filter(|clip| clip.asset_id == *asset_id)
+                        .map(|clip| clip.id)
+                        .collect();
+                    if hollow && clip_ids.len() == 1 {
+                        if let Some(clip_id) = clip_ids.first().copied() {
+                            if let Some(clip) = self
+                                .project
+                                .clips
+                                .iter_mut()
+                                .find(|clip| clip.id == clip_id)
+                            {
+                                clip.duration = next_duration.max(0.1);
+                            }
+                        }
+                    }
+                    if let Err(err) = sync_generative_video_timing_inputs(
+                        &mut self.project,
+                        &self.provider_entries,
+                        *asset_id,
+                    ) {
+                        self.status =
+                            format!("Updated timing, but timing input sync failed: {err}");
+                    }
+                    self.preview_dirty = true;
+                    AutomationResponse::ok(json!({
+                        "asset_id": asset_id,
+                        "fps": next_fps,
+                        "frame_count": next_frame_count,
+                        "duration_seconds": next_duration,
+                    }))
+                } else {
+                    AutomationResponse::not_found("Generative video not found.")
                 }
             }
             AutomationCommand::ExtractActiveGeneration {
@@ -1027,13 +1111,20 @@ impl EditorState {
                 output_type,
                 name,
                 fps,
+                duration_seconds,
                 frame_count,
             } => {
                 let result = match output_type {
                     ProviderOutputType::Image => self.create_generative_image(),
                     ProviderOutputType::Video => self.create_generative_video(
                         fps.unwrap_or(DEFAULT_GENERATIVE_VIDEO_FPS),
-                        frame_count.unwrap_or(DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT),
+                        frame_count.unwrap_or_else(|| {
+                            let fps = fps.unwrap_or(DEFAULT_GENERATIVE_VIDEO_FPS).max(1.0);
+                            duration_seconds
+                                .map(|duration| (duration.max(1.0 / fps) * fps).round() as u32)
+                                .unwrap_or(DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT)
+                                .max(1)
+                        }),
                     ),
                     ProviderOutputType::Audio => self.create_generative_audio(),
                 };
@@ -1355,20 +1446,16 @@ impl EditorState {
                         );
                     }
                 }
+                if let Some(mode) = patch.time_mode {
+                    let _ = self.project.set_clip_time_mode(*clip_id, mode);
+                }
                 if patch.start_time.is_some() || patch.duration.is_some() {
                     let start = patch.start_time.unwrap_or(clip_snapshot.start_time);
                     let duration = patch.duration.unwrap_or(clip_snapshot.duration);
                     let _ = self.project.resize_clip(*clip_id, start, duration);
                 }
                 if let Some(trim) = patch.trim_in_seconds {
-                    if let Some(clip) = self
-                        .project
-                        .clips
-                        .iter_mut()
-                        .find(|clip| clip.id == *clip_id)
-                    {
-                        clip.trim_in_seconds = trim.max(0.0);
-                    }
+                    let _ = self.project.set_clip_trim_in_seconds(*clip_id, trim);
                 }
                 if let Some(volume) = patch.volume {
                     if let Some(clip) = self
@@ -2338,6 +2425,93 @@ fn asset_provider_output_type(asset: &Asset) -> Option<ProviderOutputType> {
             Some(ProviderOutputType::Audio)
         }
     }
+}
+
+fn sync_generative_video_timing_inputs(
+    project: &mut Project,
+    providers: &[ProviderEntry],
+    asset_id: Uuid,
+) -> Result<bool, String> {
+    let Some(asset) = project.find_asset(asset_id) else {
+        return Ok(false);
+    };
+    let AssetKind::GenerativeVideo {
+        fps, frame_count, ..
+    } = &asset.kind
+    else {
+        return Ok(false);
+    };
+    let fps = (*fps).max(1.0);
+    let frame_count = (*frame_count).max(1);
+    let duration = asset
+        .duration_seconds
+        .filter(|duration| *duration > 0.0)
+        .unwrap_or(frame_count as f64 / fps);
+    let Some(provider_id) = project
+        .generative_config(asset_id)
+        .and_then(|config| config.provider_id)
+    else {
+        return Ok(false);
+    };
+    let Some(provider) = providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .cloned()
+    else {
+        return Ok(false);
+    };
+
+    let mut changed = false;
+    project.update_generative_config(asset_id, |config| {
+        for input in provider.inputs.iter() {
+            let Some(value) = provider_timing_role_value(input, duration, fps, frame_count) else {
+                continue;
+            };
+            let next = InputValue::Literal { value };
+            if config.inputs.get(&input.name) != Some(&next) {
+                config.inputs.insert(input.name.clone(), next);
+                changed = true;
+            }
+        }
+    });
+    if changed {
+        project
+            .save_generative_config(asset_id)
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(changed)
+}
+
+fn provider_timing_role_value(
+    input: &crate::state::ProviderInputField,
+    duration: f64,
+    fps: f64,
+    frame_count: u32,
+) -> Option<Value> {
+    let role = input.role?;
+    let raw = match role {
+        InputRole::DurationSeconds => duration,
+        InputRole::Fps => fps,
+        InputRole::FrameCount => frame_count as f64,
+        InputRole::Width | InputRole::Height | InputRole::Seed => return None,
+    };
+    let raw = clamp_provider_input_number(raw, input);
+    match input.input_type {
+        ProviderInputType::Integer => Some(Value::Number((raw.round() as i64).into())),
+        ProviderInputType::Number => serde_json::Number::from_f64(raw).map(Value::Number),
+        _ => None,
+    }
+}
+
+fn clamp_provider_input_number(value: f64, input: &crate::state::ProviderInputField) -> f64 {
+    let mut value = value;
+    if let Some(min) = input.ui.as_ref().and_then(|ui| ui.min) {
+        value = value.max(min);
+    }
+    if let Some(max) = input.ui.as_ref().and_then(|ui| ui.max) {
+        value = value.min(max);
+    }
+    value
 }
 
 fn normalize_media_reference_slots_to_inputs(
