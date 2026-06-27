@@ -128,8 +128,9 @@ impl LatentSlateApp {
                                 .iter()
                                 .find(|provider| provider.id == id)
                                 .filter(|provider| {
-                                    provider.purpose == ProviderPurpose::TimelineBridge
-                                        && provider.output_type == ProviderOutputType::Video
+                                    crate::core::timeline_bridge::provider_is_timeline_bridge(
+                                        provider,
+                                    ) && provider.output_type == ProviderOutputType::Video
                                 })
                                 .map(|provider| provider.id)
                         })
@@ -142,8 +143,9 @@ impl LatentSlateApp {
                                 .provider_entries
                                 .iter()
                                 .filter(|provider| {
-                                    provider.purpose == ProviderPurpose::TimelineBridge
-                                        && provider.output_type == ProviderOutputType::Video
+                                    crate::core::timeline_bridge::provider_is_timeline_bridge(
+                                        provider,
+                                    ) && provider.output_type == ProviderOutputType::Video
                                         && self.editor.provider_in_project_scope(provider.id)
                                 })
                                 .map(|provider| provider.id)

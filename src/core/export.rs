@@ -16,7 +16,6 @@ use imageproc::drawing::{draw_text_mut, text_size};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::constants::PREVIEW_CACHE_BUDGET_BYTES;
 use crate::core::audio::decode::{decode_audio_to_f32, AudioDecodeConfig};
 use crate::core::audio::waveform::resolve_audio_or_video_source;
 use crate::core::preview::{PreviewDecodeMode, PreviewRenderer, PreviewRgbaFrame};
@@ -30,6 +29,7 @@ const EXPORT_AUDIO_PROGRESS_MAX: f32 = 0.9;
 const EXPORT_ENCODE_PROGRESS: f32 = 0.94;
 const EXPORT_PREVIEW_MAX_W: u32 = 260;
 const EXPORT_PREVIEW_MAX_H: u32 = 150;
+const EXPORT_PREVIEW_CACHE_BUDGET_BYTES: usize = 128usize * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -347,9 +347,9 @@ fn render_video_frames(
     export_project.settings.preview_max_height = job.settings.height;
     export_project.project_path = Some(project_root.to_path_buf());
 
-    let renderer = PreviewRenderer::new_with_limits(
+    let renderer = PreviewRenderer::new_export_with_limits(
         project_root.to_path_buf(),
-        PREVIEW_CACHE_BUDGET_BYTES,
+        EXPORT_PREVIEW_CACHE_BUDGET_BYTES,
         job.settings.width,
         job.settings.height,
     );
@@ -359,7 +359,7 @@ fn render_video_frames(
         check_cancel(cancel)?;
         let time = job.settings.start_seconds + frame_index as f64 / job.settings.fps;
         let output =
-            renderer.render_frame_rgba(&export_project, time, PreviewDecodeMode::Seek, false);
+            renderer.render_frame_rgba(&export_project, time, PreviewDecodeMode::Sequential, false);
         let mut frame = output
             .frame
             .unwrap_or_else(|| black_frame(job.settings.width, job.settings.height));

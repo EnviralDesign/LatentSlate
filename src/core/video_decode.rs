@@ -6,7 +6,7 @@ use std::sync::{
     mpsc, Arc,
 };
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next as ffmpeg;
 use image::RgbaImage;
@@ -59,6 +59,11 @@ struct DecodeRequest {
     respond_to: mpsc::Sender<DecodeResponse>,
 }
 
+enum DecodeWorkerCommand {
+    Request(DecodeRequest),
+    ClearDecoders { ack: Option<mpsc::Sender<()>> },
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum DecodeMode {
     Seek,
@@ -76,7 +81,7 @@ pub struct DecodeResponse {
 /// A dedicated worker pool for in-process video decoding with FFmpeg.
 #[derive(Clone)]
 pub struct VideoDecodeWorker {
-    senders: Vec<mpsc::Sender<DecodeRequest>>,
+    senders: Vec<mpsc::Sender<DecodeWorkerCommand>>,
     epoch: Arc<AtomicU64>,
 }
 
@@ -90,7 +95,7 @@ impl VideoDecodeWorker {
         let mut senders = Vec::with_capacity(worker_count);
         let epoch = Arc::new(AtomicU64::new(0));
         for _ in 0..worker_count {
-            let (sender, receiver) = mpsc::channel::<DecodeRequest>();
+            let (sender, receiver) = mpsc::channel::<DecodeWorkerCommand>();
             senders.push(sender);
             let worker_epoch = Arc::clone(&epoch);
 
@@ -99,7 +104,18 @@ impl VideoDecodeWorker {
                 let mut decoders: HashMap<DecoderKey, DecoderEntry> = HashMap::new();
                 let mut access_counter: u64 = 0;
 
-                for request in receiver {
+                for command in receiver {
+                    let request = match command {
+                        DecodeWorkerCommand::Request(request) => request,
+                        DecodeWorkerCommand::ClearDecoders { ack } => {
+                            decoders.clear();
+                            if let Some(ack) = ack {
+                                let _ = ack.send(());
+                            }
+                            continue;
+                        }
+                    };
+
                     let DecodeRequest {
                         path,
                         time_seconds,
@@ -180,6 +196,32 @@ impl VideoDecodeWorker {
 
     pub fn invalidate_pending(&self) {
         self.epoch.fetch_add(1, Ordering::Relaxed);
+        for sender in &self.senders {
+            let _ = sender.send(DecodeWorkerCommand::ClearDecoders { ack: None });
+        }
+    }
+
+    pub fn release_media_handles(&self) {
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+        let mut acks = Vec::with_capacity(self.senders.len());
+        for sender in &self.senders {
+            let (ack_tx, ack_rx) = mpsc::channel();
+            if sender
+                .send(DecodeWorkerCommand::ClearDecoders { ack: Some(ack_tx) })
+                .is_ok()
+            {
+                acks.push(ack_rx);
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        for ack in acks {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let _ = ack.recv_timeout(remaining);
+        }
     }
 
     /// Decode a single frame at the requested timestamp (seconds).
@@ -256,7 +298,7 @@ impl VideoDecodeWorker {
             respond_to,
         };
 
-        sender.send(request).ok()?;
+        sender.send(DecodeWorkerCommand::Request(request)).ok()?;
         Some(response)
     }
 
@@ -274,7 +316,11 @@ impl VideoDecodeWorker {
         response.recv().ok()
     }
 
-    fn select_sender(&self, lane_id: u64, epoch: u64) -> Option<&mpsc::Sender<DecodeRequest>> {
+    fn select_sender(
+        &self,
+        lane_id: u64,
+        epoch: u64,
+    ) -> Option<&mpsc::Sender<DecodeWorkerCommand>> {
         if self.senders.is_empty() {
             return None;
         }

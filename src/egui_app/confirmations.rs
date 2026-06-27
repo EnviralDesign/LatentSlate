@@ -86,14 +86,31 @@ impl LatentSlateApp {
 
     pub(super) fn perform_delete_assets(&mut self, asset_ids: &[Uuid]) -> (usize, usize) {
         let unique_asset_ids = unique_uuid_list(asset_ids);
+        if !unique_asset_ids.is_empty() {
+            self.release_media_handles_for_deleted_assets();
+        }
         let result = self.editor.delete_assets(&unique_asset_ids);
         if result.0 > 0 {
             for asset_id in unique_asset_ids {
                 self.invalidate_asset_visual_cache(asset_id);
+                self.editor.thumbnailer.clear_cache_for_asset(asset_id);
             }
+            self.release_media_handles_for_deleted_assets();
             self.editor.preview_dirty = true;
         }
         result
+    }
+
+    fn release_media_handles_for_deleted_assets(&mut self) {
+        self.invalidate_preview_render_jobs();
+        self.preview_layers = None;
+        self.editor.previewer.release_media_handles();
+        self.asset_lab_video_decoder.release_media_handles();
+        if let Some(engine) = &self.audio_engine {
+            engine.pause();
+            engine.set_items(Vec::new());
+        }
+        self.editor.is_playing = false;
     }
 
     pub(super) fn request_delete_selected_tracks(&mut self) {

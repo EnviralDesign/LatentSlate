@@ -54,6 +54,28 @@ pub fn probe_media_dimensions(path: &Path) -> Option<(u32, u32)> {
     parse_ffprobe_dimensions(&output.stdout)
 }
 
+/// Probe the primary video stream frame rate, if available.
+pub fn probe_video_fps(path: &Path) -> Option<f64> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=avg_frame_rate,r_frame_rate")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_ffprobe_fps(&output.stdout)
+}
+
 fn parse_ffprobe_dimensions(raw: &[u8]) -> Option<(u32, u32)> {
     let parsed: Value = serde_json::from_slice(raw).ok()?;
     let streams = parsed.get("streams")?.as_array()?;
@@ -61,6 +83,29 @@ fn parse_ffprobe_dimensions(raw: &[u8]) -> Option<(u32, u32)> {
     let width = stream.get("width").and_then(|value| value.as_u64())?;
     let height = stream.get("height").and_then(|value| value.as_u64())?;
     Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?))
+}
+
+fn parse_ffprobe_fps(raw: &[u8]) -> Option<f64> {
+    let parsed: Value = serde_json::from_slice(raw).ok()?;
+    let streams = parsed.get("streams")?.as_array()?;
+    let stream = streams.first()?;
+    ["avg_frame_rate", "r_frame_rate"]
+        .into_iter()
+        .filter_map(|key| stream.get(key).and_then(|value| value.as_str()))
+        .filter_map(parse_ffprobe_rate)
+        .find(|fps| fps.is_finite() && *fps > 0.0)
+}
+
+fn parse_ffprobe_rate(value: &str) -> Option<f64> {
+    if let Some((numerator, denominator)) = value.split_once('/') {
+        let numerator = numerator.trim().parse::<f64>().ok()?;
+        let denominator = denominator.trim().parse::<f64>().ok()?;
+        if denominator > 0.0 {
+            return Some(numerator / denominator);
+        }
+        return None;
+    }
+    value.trim().parse::<f64>().ok()
 }
 
 pub fn probe_asset_duration(
@@ -153,4 +198,29 @@ pub fn resolve_asset_duration_seconds(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ffprobe_rate_handles_fractional_fps() {
+        let fps = parse_ffprobe_rate("30000/1001").unwrap();
+        assert!((fps - 29.970_029_970_029_97).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn parse_ffprobe_fps_prefers_average_rate() {
+        let raw = br#"{
+            "streams": [
+                {
+                    "avg_frame_rate": "24000/1001",
+                    "r_frame_rate": "30/1"
+                }
+            ]
+        }"#;
+        let fps = parse_ffprobe_fps(raw).unwrap();
+        assert!((fps - 23.976_023_976_023_978).abs() < 0.000_001);
+    }
 }

@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::state::{
     input_value_as_f64, Clip, ClipBridgeLink, GenerativeConfig, InputRole, InputValue, Project,
-    ProviderEntry, ProviderInputType, ProviderPurpose, DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
+    ProviderEntry, ProviderInputType, ProviderWorkflowKind,
+    DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
 };
 
 #[derive(Debug, Clone)]
@@ -64,7 +65,7 @@ impl TimelineBridgeResolution {
 }
 
 pub fn provider_is_timeline_bridge(provider: &ProviderEntry) -> bool {
-    provider.purpose == ProviderPurpose::TimelineBridge
+    provider.resolved_workflow_kind() == ProviderWorkflowKind::VideoToBridge
 }
 
 pub fn timeline_bridge_fields(

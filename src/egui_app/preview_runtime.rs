@@ -1,4 +1,52 @@
+use std::path::{Path, PathBuf};
+
 use super::*;
+
+fn asset_dimension_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
+    match &asset.kind {
+        AssetKind::Image { path } | AssetKind::Video { path } => Some(project_root.join(path)),
+        AssetKind::GenerativeImage {
+            folder,
+            active_version,
+        } => resolve_generative_file(
+            project_root,
+            folder,
+            active_version.as_deref(),
+            IMAGE_EXTENSIONS,
+        ),
+        AssetKind::GenerativeVideo {
+            folder,
+            active_version,
+            ..
+        } => resolve_generative_file(
+            project_root,
+            folder,
+            active_version.as_deref(),
+            VIDEO_EXTENSIONS,
+        ),
+        AssetKind::Audio { .. } | AssetKind::GenerativeAudio { .. } => None,
+    }
+}
+
+fn asset_video_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
+    match &asset.kind {
+        AssetKind::Video { path } => Some(project_root.join(path)),
+        AssetKind::GenerativeVideo {
+            folder,
+            active_version,
+            ..
+        } => resolve_generative_file(
+            project_root,
+            folder,
+            active_version.as_deref(),
+            VIDEO_EXTENSIONS,
+        ),
+        AssetKind::Image { .. }
+        | AssetKind::Audio { .. }
+        | AssetKind::GenerativeImage { .. }
+        | AssetKind::GenerativeAudio { .. } => None,
+    }
+}
 
 impl LatentSlateApp {
     pub(super) fn record_preview_perf_sample(
@@ -40,6 +88,8 @@ impl LatentSlateApp {
         self.asset_thumbnail_misses.clear();
         self.asset_source_dimensions.clear();
         self.asset_source_dimension_misses.clear();
+        self.asset_source_fps.clear();
+        self.asset_source_fps_misses.clear();
         self.timeline_thumbnails.clear();
         self.timeline_thumbnail_misses.clear();
         self.audio_peak_caches.clear();
@@ -647,8 +697,8 @@ impl LatentSlateApp {
         }
 
         let project_root = self.editor.project.project_path.as_deref()?;
-        for path in asset_thumbnail_candidates(project_root, asset) {
-            if let Ok((width, height)) = image::image_dimensions(&path) {
+        if let Some(path) = asset_dimension_source_path(project_root, asset) {
+            if let Some((width, height)) = crate::core::media::probe_media_dimensions(&path) {
                 let size = Vec2::new(width.max(1) as f32, height.max(1) as f32);
                 self.asset_source_dimensions.insert(asset.id, size);
                 return Some(size);
@@ -656,6 +706,26 @@ impl LatentSlateApp {
         }
 
         self.asset_source_dimension_misses.insert(asset.id);
+        None
+    }
+
+    pub(super) fn asset_source_fps(&mut self, asset: &Asset) -> Option<f64> {
+        if let Some(fps) = self.asset_source_fps.get(&asset.id) {
+            return Some(*fps);
+        }
+        if self.asset_source_fps_misses.contains(&asset.id) {
+            return None;
+        }
+
+        let project_root = self.editor.project.project_path.as_deref()?;
+        if let Some(path) = asset_video_source_path(project_root, asset) {
+            if let Some(fps) = crate::core::media::probe_video_fps(&path) {
+                self.asset_source_fps.insert(asset.id, fps);
+                return Some(fps);
+            }
+        }
+
+        self.asset_source_fps_misses.insert(asset.id);
         None
     }
 

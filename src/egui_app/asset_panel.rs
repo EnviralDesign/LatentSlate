@@ -17,9 +17,11 @@ pub(super) fn asset_row(
     asset: &Asset,
     selected: bool,
     thumbnail: Option<(egui::TextureId, Vec2)>,
+    source_dimensions: Option<Vec2>,
+    source_fps: Option<f64>,
 ) -> egui::Response {
     let accent = asset_accent(asset);
-    kit::draw_accent_row(ui, ASSET_ROW_H, selected, accent, |ui, content_rect| {
+    let response = kit::draw_accent_row(ui, ASSET_ROW_H, selected, accent, |ui, content_rect| {
         let thumb_rect = Rect::from_min_size(
             Pos2::new(
                 content_rect.left(),
@@ -42,12 +44,13 @@ pub(super) fn asset_row(
         paint_truncated_row_text_bottom(
             ui,
             Pos2::new(text_left, thumb_rect.bottom()),
-            kit::caption(asset_row_subtitle(asset)),
+            kit::caption(asset_row_subtitle(asset, source_dimensions, source_fps)),
             11.0,
             text_width,
             kit::TEXT_MUTED,
         );
-    })
+    });
+    response.on_hover_ui(|ui| asset_row_details_tooltip(ui, asset, source_dimensions, source_fps))
 }
 
 pub(super) fn paint_truncated_row_text_top(
@@ -140,12 +143,85 @@ pub(super) fn paint_asset_thumbnail(
     );
 }
 
-fn asset_row_subtitle(asset: &Asset) -> String {
-    let mut parts = vec![asset_kind_label(&asset.kind).to_string()];
+fn asset_row_subtitle(
+    asset: &Asset,
+    source_dimensions: Option<Vec2>,
+    source_fps: Option<f64>,
+) -> String {
+    let mut parts = Vec::new();
     if let Some(duration) = asset.duration_seconds {
         parts.push(format_duration(duration));
     }
-    parts.join("  ")
+    if let Some(fps) = asset_row_fps(asset, source_fps) {
+        parts.push(format!("{} fps", format_compact_float(fps)));
+    }
+    if let Some(dimensions) = source_dimensions {
+        parts.push(format_dimensions(dimensions));
+    }
+    parts.push(asset_kind_label(&asset.kind).to_string());
+    parts.join(" | ")
+}
+
+fn asset_row_details_tooltip(
+    ui: &mut Ui,
+    asset: &Asset,
+    source_dimensions: Option<Vec2>,
+    source_fps: Option<f64>,
+) {
+    ui.set_min_width(220.0);
+    ui.label(kit::value(asset_display_name(asset)));
+    ui.add_space(4.0);
+
+    egui::Grid::new(ui.id().with(("asset-row-details", asset.id)))
+        .num_columns(2)
+        .spacing(Vec2::new(12.0, 4.0))
+        .show(ui, |ui| {
+            asset_detail_row(ui, "Type", asset_kind_label(&asset.kind));
+            asset_detail_row(
+                ui,
+                "Duration",
+                asset
+                    .duration_seconds
+                    .map(format_duration)
+                    .unwrap_or_else(|| "Unknown".to_string()),
+            );
+            if let Some(fps) = asset_row_fps(asset, source_fps) {
+                asset_detail_row(ui, "FPS", format!("{} fps", format_compact_float(fps)));
+            }
+            if let Some(dimensions) = source_dimensions {
+                asset_detail_row(ui, "Resolution", format_dimensions(dimensions));
+            }
+        });
+}
+
+fn asset_detail_row(ui: &mut Ui, label: &str, value: impl Into<String>) {
+    ui.label(kit::caption(label).color(kit::TEXT_MUTED));
+    ui.label(kit::value(value.into()));
+    ui.end_row();
+}
+
+fn asset_row_fps(asset: &Asset, source_fps: Option<f64>) -> Option<f64> {
+    source_fps.or(match asset.kind {
+        AssetKind::GenerativeVideo { fps, .. } if fps.is_finite() && fps > 0.0 => Some(fps),
+        _ => None,
+    })
+}
+
+fn format_dimensions(dimensions: Vec2) -> String {
+    let width = dimensions.x.round().max(1.0) as u32;
+    let height = dimensions.y.round().max(1.0) as u32;
+    format!("{width} x {height}")
+}
+
+fn format_compact_float(value: f64) -> String {
+    let mut text = format!("{value:.3}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
 }
 
 pub(super) fn asset_natural_cmp(a: &Asset, b: &Asset) -> CmpOrdering {
@@ -339,7 +415,16 @@ impl LatentSlateApp {
             for (_, asset) in assets {
                 let selected = self.editor.selection.asset_ids.contains(&asset.id);
                 let thumbnail = self.asset_thumbnail(ui.ctx(), &asset);
-                let response = asset_row(ui, &asset, selected, thumbnail);
+                let source_dimensions = self.asset_source_dimensions(&asset);
+                let source_fps = self.asset_source_fps(&asset);
+                let response = asset_row(
+                    ui,
+                    &asset,
+                    selected,
+                    thumbnail,
+                    source_dimensions,
+                    source_fps,
+                );
                 response.dnd_set_drag_payload(AssetTimelineDragPayload { asset_id: asset.id });
                 if response.clicked() {
                     if multi_select_modifier(ui) {

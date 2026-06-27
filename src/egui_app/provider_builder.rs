@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::state::{
     ClipImageMode, ComfyOutputSelector, ComfyWorkflowRef, InputBinding, InputRole, InputUi,
     ManifestInput, NodeSelector, ProviderConnection, ProviderEntry, ProviderInputField,
-    ProviderInputType, ProviderManifest, ProviderOutputType, ProviderPurpose, ProviderWorkflowKind,
+    ProviderInputType, ProviderManifest, ProviderOutputType, ProviderWorkflowKind,
     TimelineBridgeSettings, DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
 };
 use crate::ui_kit as kit;
@@ -84,7 +84,6 @@ pub(super) struct ProviderBuilderState {
     pub(super) output_type: ProviderOutputType,
     pub(super) workflow_kind: ProviderWorkflowKind,
     pub(super) workflow_kind_selected: bool,
-    pub(super) purpose: ProviderPurpose,
     pub(super) bridge_max_visible_frames: Option<u32>,
     pub(super) base_url: String,
     pub(super) workflow_path: Option<PathBuf>,
@@ -162,7 +161,7 @@ pub(super) struct ProviderGenerationChoice {
 }
 
 impl ProviderGenerationChoice {
-    pub(super) const ALL: [ProviderGenerationChoice; 11] = [
+    pub(super) const ALL: [ProviderGenerationChoice; 12] = [
         ProviderGenerationChoice::new(ProviderWorkflowKind::TextToImage, ProviderOutputType::Image),
         ProviderGenerationChoice::new(
             ProviderWorkflowKind::ImageToImage,
@@ -179,6 +178,10 @@ impl ProviderGenerationChoice {
         ),
         ProviderGenerationChoice::new(
             ProviderWorkflowKind::VideoToVideo,
+            ProviderOutputType::Video,
+        ),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::VideoToBridge,
             ProviderOutputType::Video,
         ),
         ProviderGenerationChoice::new(ProviderWorkflowKind::TextToAudio, ProviderOutputType::Audio),
@@ -285,7 +288,6 @@ impl ProviderBuilderState {
             workflow_kind: entry.workflow_kind,
             workflow_kind_selected: is_existing_entry
                 && entry.workflow_kind != ProviderWorkflowKind::Auto,
-            purpose: entry.purpose,
             bridge_max_visible_frames: entry
                 .timeline_bridge
                 .as_ref()
@@ -687,7 +689,7 @@ impl ProviderBuilderState {
                 name,
                 description,
                 output_type,
-                purpose,
+                workflow_kind,
                 timeline_bridge,
                 workflow,
                 inputs,
@@ -701,7 +703,10 @@ impl ProviderBuilderState {
                     self.provider_description = description;
                 }
                 self.output_type = output_type;
-                self.purpose = purpose;
+                if workflow_kind != ProviderWorkflowKind::Auto {
+                    self.workflow_kind = workflow_kind;
+                    self.workflow_kind_selected = true;
+                }
                 self.bridge_max_visible_frames =
                     timeline_bridge.and_then(|settings| settings.max_visible_frames);
                 self.workflow_path = Some(crate::core::paths::resolve_resource_path(Path::new(
@@ -728,7 +733,7 @@ impl ProviderBuilderState {
                 name,
                 description,
                 output_type,
-                purpose,
+                workflow_kind,
                 timeline_bridge,
                 inputs,
                 ..
@@ -740,7 +745,10 @@ impl ProviderBuilderState {
                     self.provider_description = description;
                 }
                 self.output_type = output_type;
-                self.purpose = purpose;
+                if workflow_kind != ProviderWorkflowKind::Auto {
+                    self.workflow_kind = workflow_kind;
+                    self.workflow_kind_selected = true;
+                }
                 self.bridge_max_visible_frames =
                     timeline_bridge.and_then(|settings| settings.max_visible_frames);
                 self.inputs = inputs
@@ -884,10 +892,13 @@ impl ProviderBuilderState {
     }
 
     pub(super) fn required_input_roles(&self) -> Vec<InputRole> {
-        if self.purpose == ProviderPurpose::TimelineBridge {
+        if self.workflow_kind == ProviderWorkflowKind::VideoToBridge {
             return vec![
                 InputRole::LeftVideo,
                 InputRole::RightVideo,
+                InputRole::Width,
+                InputRole::Height,
+                InputRole::Seed,
                 InputRole::Fps,
                 InputRole::LeftReplaceFrames,
                 InputRole::RightReplaceFrames,
@@ -937,10 +948,12 @@ impl ProviderBuilderState {
         }
         let provider_description = optional_trimmed_string(&self.provider_description);
         let timeline_bridge =
-            (self.purpose == ProviderPurpose::TimelineBridge).then(|| TimelineBridgeSettings {
-                max_visible_frames: self
-                    .bridge_max_visible_frames
-                    .or(Some(DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES)),
+            (self.workflow_kind == ProviderWorkflowKind::VideoToBridge).then(|| {
+                TimelineBridgeSettings {
+                    max_visible_frames: self
+                        .bridge_max_visible_frames
+                        .or(Some(DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES)),
+                }
             });
         let base_url = self.base_url.trim();
         if base_url.is_empty() {
@@ -1036,7 +1049,7 @@ impl ProviderBuilderState {
             name: Some(provider_name.to_string()),
             description: provider_description.clone(),
             output_type: self.output_type,
-            purpose: self.purpose,
+            workflow_kind: self.workflow_kind,
             timeline_bridge: timeline_bridge.clone(),
             workflow: ComfyWorkflowRef {
                 workflow_path: workflow_path_string.clone(),
@@ -1054,7 +1067,6 @@ impl ProviderBuilderState {
             description: provider_description,
             output_type: self.output_type,
             workflow_kind: self.workflow_kind,
-            purpose: self.purpose,
             timeline_bridge,
             inputs: provider_inputs,
             connection: ProviderConnection::ComfyUi {
@@ -1296,7 +1308,6 @@ pub(super) struct ProviderFileSummary {
     pub(super) description: Option<String>,
     pub(super) source: ProviderSourceKind,
     pub(super) workflow_kind: Option<ProviderWorkflowKind>,
-    pub(super) purpose: ProviderPurpose,
     pub(super) output_type: Option<ProviderOutputType>,
 }
 
@@ -1353,14 +1364,10 @@ pub(super) fn provider_row(
 }
 
 fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSummary) {
-    let workflow_label = if summary.purpose == ProviderPurpose::TimelineBridge {
-        "Bridge"
-    } else {
-        summary
-            .workflow_kind
-            .map(|workflow_kind| workflow_kind.short_label())
-            .unwrap_or("--")
-    };
+    let workflow_label = summary
+        .workflow_kind
+        .map(|workflow_kind| workflow_kind.short_label())
+        .unwrap_or("--");
     let output_label = summary
         .output_type
         .map(provider_output_type_label)
@@ -1446,11 +1453,7 @@ fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
     let mut text = format!(
         "{} | {} | {}",
         summary.source.label(),
-        if summary.purpose == ProviderPurpose::TimelineBridge {
-            summary.purpose.label()
-        } else {
-            workflow_label
-        },
+        workflow_label,
         output_label
     );
     if let Some(description) = summary
@@ -1518,7 +1521,6 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             description: None,
             source: ProviderSourceKind::Other,
             workflow_kind: None,
-            purpose: ProviderPurpose::Generic,
             output_type: None,
         };
     };
@@ -1529,7 +1531,6 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             description: None,
             source: ProviderSourceKind::Other,
             workflow_kind: None,
-            purpose: ProviderPurpose::Generic,
             output_type: None,
         };
     };
@@ -1545,7 +1546,6 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
         description: entry.description,
         source,
         workflow_kind: Some(workflow_kind),
-        purpose: entry.purpose,
         output_type: Some(entry.output_type),
     }
 }
@@ -1587,10 +1587,11 @@ pub(super) fn provider_workflow_sort_key(workflow_kind: Option<ProviderWorkflowK
         ProviderWorkflowKind::ImageToVideo => 3,
         ProviderWorkflowKind::FirstFrameLastFrameVideo => 4,
         ProviderWorkflowKind::VideoToVideo => 5,
-        ProviderWorkflowKind::TextToAudio => 6,
-        ProviderWorkflowKind::AudioToAudio => 7,
-        ProviderWorkflowKind::Custom => 8,
-        ProviderWorkflowKind::Auto => 9,
+        ProviderWorkflowKind::VideoToBridge => 6,
+        ProviderWorkflowKind::TextToAudio => 7,
+        ProviderWorkflowKind::AudioToAudio => 8,
+        ProviderWorkflowKind::Custom => 9,
+        ProviderWorkflowKind::Auto => 10,
     }
 }
 
@@ -1638,7 +1639,8 @@ pub(super) fn derived_output_type_for_workflow_kind(
         ProviderWorkflowKind::TextToVideo
         | ProviderWorkflowKind::ImageToVideo
         | ProviderWorkflowKind::FirstFrameLastFrameVideo
-        | ProviderWorkflowKind::VideoToVideo => Some(ProviderOutputType::Video),
+        | ProviderWorkflowKind::VideoToVideo
+        | ProviderWorkflowKind::VideoToBridge => Some(ProviderOutputType::Video),
         ProviderWorkflowKind::TextToAudio | ProviderWorkflowKind::AudioToAudio => {
             Some(ProviderOutputType::Audio)
         }

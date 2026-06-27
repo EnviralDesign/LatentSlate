@@ -23,10 +23,12 @@ impl LatentSlateApp {
                     true,
                 );
                 kit::modal_body(ui, |ui| {
+                    let column_gap = 12.0;
+                    let column_w = ((ui.available_width() - column_gap) * 0.5).max(260.0);
                     StripBuilder::new(ui)
                         .clip(true)
-                        .size(Size::exact(300.0))
-                        .size(Size::exact(12.0))
+                        .size(Size::exact(column_w))
+                        .size(Size::exact(column_gap))
                         .size(Size::remainder().at_least(260.0))
                         .horizontal(|mut strip| {
                             strip.cell(|ui| self.provider_list_card(ui));
@@ -725,28 +727,7 @@ impl LatentSlateApp {
                     }
                     _ => {}
                 });
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::labeled_combo_field(
-                    ui,
-                    "Purpose",
-                    "provider_purpose",
-                    self.provider_builder.purpose.label(),
-                    |ui| {
-                        automation_selectable_value(
-                            ui,
-                            &mut self.provider_builder.purpose,
-                            ProviderPurpose::Generic,
-                            ProviderPurpose::Generic.label(),
-                        );
-                        automation_selectable_value(
-                            ui,
-                            &mut self.provider_builder.purpose,
-                            ProviderPurpose::TimelineBridge,
-                            ProviderPurpose::TimelineBridge.label(),
-                        );
-                    },
-                );
-                if self.provider_builder.purpose == ProviderPurpose::TimelineBridge {
+                if self.provider_builder.workflow_kind == ProviderWorkflowKind::VideoToBridge {
                     ui.add_space(kit::FORM_ROW_GAP);
                     let mut max_frames = self
                         .provider_builder

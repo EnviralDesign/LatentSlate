@@ -84,6 +84,7 @@ pub struct PreviewRenderer {
     prefetch_video_decoder: VideoDecodeWorker,
     frame_cache: Mutex<FrameCache>,
     duration_cache: Mutex<HashMap<PathBuf, Option<f64>>>,
+    cache_video_frames: bool,
     #[allow(dead_code)]
     // Plate textures belong to the preserved GPU-layer preview path. The
     // current egui compositor draws the plate in UI space.
@@ -108,8 +109,21 @@ impl PreviewRenderer {
             prefetch_video_decoder: VideoDecodeWorker::new(max_width, max_height),
             frame_cache: Mutex::new(FrameCache::new(max_cache_bytes)),
             duration_cache: Mutex::new(HashMap::new()),
+            cache_video_frames: true,
             plate_cache: Mutex::new(None),
         }
+    }
+
+    pub fn new_export_with_limits(
+        project_root: PathBuf,
+        max_cache_bytes: usize,
+        max_width: u32,
+        max_height: u32,
+    ) -> Self {
+        let mut renderer =
+            Self::new_with_limits(project_root, max_cache_bytes, max_width, max_height);
+        renderer.cache_video_frames = false;
+        renderer
     }
 
     #[allow(dead_code)]
@@ -120,6 +134,11 @@ impl PreviewRenderer {
         }
         self.video_decoder.invalidate_pending();
         self.prefetch_video_decoder.invalidate_pending();
+    }
+
+    pub fn release_media_handles(&self) {
+        self.video_decoder.release_media_handles();
+        self.prefetch_video_decoder.release_media_handles();
     }
 
     pub fn cache_stats(&self) -> PreviewCacheStats {
@@ -405,21 +424,24 @@ impl PreviewRenderer {
                 path: path.clone(),
                 frame_index,
             };
+            let use_frame_cache = !is_video || self.cache_video_frames;
 
-            if let Ok(mut cache) = self.frame_cache.lock() {
-                if let Some(cached) = cache.get(&cache_key) {
-                    stats.cache_hits += 1;
-                    layers.push(PreviewLayer {
-                        clip_id: clip.id,
-                        texture_key: preview_texture_key(&cache_key),
-                        track_index,
-                        start_time: clip.start_time,
-                        image: cached.image,
-                        transform: clip.transform,
-                        source_width: cached.source_width,
-                        source_height: cached.source_height,
-                    });
-                    continue;
+            if use_frame_cache {
+                if let Ok(mut cache) = self.frame_cache.lock() {
+                    if let Some(cached) = cache.get(&cache_key) {
+                        stats.cache_hits += 1;
+                        layers.push(PreviewLayer {
+                            clip_id: clip.id,
+                            texture_key: preview_texture_key(&cache_key),
+                            track_index,
+                            start_time: clip.start_time,
+                            image: cached.image,
+                            transform: clip.transform,
+                            source_width: cached.source_width,
+                            source_height: cached.source_height,
+                        });
+                        continue;
+                    }
                 }
             }
 
@@ -433,13 +455,15 @@ impl PreviewRenderer {
                 if let Some(decoded) = decoded {
                     let image = Arc::new(decoded.image);
                     let texture_key = preview_texture_key(&cache_key);
-                    if let Ok(mut cache) = self.frame_cache.lock() {
-                        cache.insert(
-                            cache_key,
-                            Arc::clone(&image),
-                            decoded.source_width,
-                            decoded.source_height,
-                        );
+                    if use_frame_cache {
+                        if let Ok(mut cache) = self.frame_cache.lock() {
+                            cache.insert(
+                                cache_key,
+                                Arc::clone(&image),
+                                decoded.source_width,
+                                decoded.source_height,
+                            );
+                        }
                     }
                     layers.push(PreviewLayer {
                         clip_id: clip.id,
@@ -495,13 +519,15 @@ impl PreviewRenderer {
                     if let Some(image) = response.image {
                         let image = Arc::new(image);
                         let texture_key = preview_texture_key(&item.cache_key);
-                        if let Ok(mut cache) = self.frame_cache.lock() {
-                            cache.insert(
-                                item.cache_key,
-                                Arc::clone(&image),
-                                response.source_width,
-                                response.source_height,
-                            );
+                        if self.cache_video_frames {
+                            if let Ok(mut cache) = self.frame_cache.lock() {
+                                cache.insert(
+                                    item.cache_key,
+                                    Arc::clone(&image),
+                                    response.source_width,
+                                    response.source_height,
+                                );
+                            }
                         }
                         if response.used_hw {
                             stats.hw_decode_frames += 1;

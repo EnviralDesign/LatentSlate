@@ -522,6 +522,10 @@ async fn poll_history(
             .await
             .map_err(|err| format!("Failed to parse history: {}", err))?;
 
+        if let Some(err) = extract_history_error(&payload, prompt_id) {
+            return Err(err);
+        }
+
         if let Some(outputs) = extract_outputs(&payload, prompt_id) {
             return Ok(outputs.clone());
         }
@@ -686,6 +690,79 @@ fn extract_outputs<'a>(payload: &'a Value, prompt_id: &str) -> Option<&'a Value>
         return Some(outputs);
     }
     payload.get(prompt_id)?.get("outputs")
+}
+
+fn extract_history_error(payload: &Value, prompt_id: &str) -> Option<String> {
+    let entry = history_entry(payload, prompt_id)?;
+    let status = entry.get("status")?;
+    if let Some(message) = execution_error_message(status) {
+        return Some(message);
+    }
+
+    let status_str = status.get("status_str").and_then(|value| value.as_str())?;
+    if matches!(status_str, "error" | "failed") {
+        return Some(format!(
+            "ComfyUI execution failed with status '{status_str}'."
+        ));
+    }
+    None
+}
+
+fn history_entry<'a>(payload: &'a Value, prompt_id: &str) -> Option<&'a Value> {
+    payload
+        .get(prompt_id)
+        .or_else(|| payload.get("status").is_some().then_some(payload))
+}
+
+fn execution_error_message(status: &Value) -> Option<String> {
+    let messages = status.get("messages")?.as_array()?;
+    messages
+        .iter()
+        .find_map(execution_error_data)
+        .map(format_execution_error)
+}
+
+fn execution_error_data(message: &Value) -> Option<&Value> {
+    if let Some(items) = message.as_array() {
+        let message_type = items.first()?.as_str()?;
+        if message_type.contains("error") {
+            return items.get(1);
+        }
+    }
+
+    let message_type = message
+        .get("type")
+        .or_else(|| message.get("event"))
+        .and_then(|value| value.as_str())?;
+    if message_type.contains("error") {
+        return message.get("data").or(Some(message));
+    }
+    None
+}
+
+fn format_execution_error(data: &Value) -> String {
+    let node_id = data.get("node_id").and_then(|value| value.as_str());
+    let node_type = data.get("node_type").and_then(|value| value.as_str());
+    let exception_type = data
+        .get("exception_type")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty());
+    let exception_message = data
+        .get("exception_message")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("ComfyUI reported an execution error.");
+
+    let node = match (node_id, node_type) {
+        (Some(id), Some(kind)) => format!(" at node {id} ({kind})"),
+        (Some(id), None) => format!(" at node {id}"),
+        (None, Some(kind)) => format!(" at node type {kind}"),
+        (None, None) => String::new(),
+    };
+    let exception = exception_type
+        .map(|kind| format!("{kind}: "))
+        .unwrap_or_default();
+    format!("ComfyUI execution failed{node}: {exception}{exception_message}")
 }
 
 struct OutputRef {
@@ -880,4 +957,65 @@ async fn download_output(
         .await
         .map(|bytes| bytes.to_vec())
         .map_err(|err| format!("Failed to read output bytes: {}", err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_comfy_execution_error_from_prompt_history() {
+        let payload = serde_json::json!({
+            "abc": {
+                "outputs": {},
+                "status": {
+                    "status_str": "error",
+                    "completed": true,
+                    "messages": [
+                        [
+                            "execution_error",
+                            {
+                                "node_id": "42",
+                                "node_type": "ImagesFromBatch",
+                                "exception_type": "ValueError",
+                                "exception_message": "Start index is out of range"
+                            }
+                        ]
+                    ]
+                }
+            }
+        });
+
+        let err = extract_history_error(&payload, "abc").unwrap();
+        assert_eq!(
+            err,
+            "ComfyUI execution failed at node 42 (ImagesFromBatch): ValueError: Start index is out of range"
+        );
+    }
+
+    #[test]
+    fn successful_history_has_no_execution_error() {
+        let payload = serde_json::json!({
+            "abc": {
+                "outputs": {
+                    "1": {
+                        "images": [
+                            {
+                                "filename": "clip.mp4",
+                                "subfolder": "",
+                                "type": "output"
+                            }
+                        ]
+                    }
+                },
+                "status": {
+                    "status_str": "success",
+                    "completed": true,
+                    "messages": []
+                }
+            }
+        });
+
+        assert!(extract_history_error(&payload, "abc").is_none());
+    }
 }

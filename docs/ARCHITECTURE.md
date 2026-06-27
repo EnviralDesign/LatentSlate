@@ -83,9 +83,9 @@ editing; target timing remains an explicit asset setting for future generations.
 ## Provider Flow
 
 Provider entries describe an output type, input schema, and connection.
-They can also declare a specialized `purpose`; `timeline_bridge` providers are
-video seam tools that require left/right video and timing roles and receive
-pre-baked source segments from the project timeline.
+`workflow_kind: "video_to_bridge"` providers are video seam tools that require
+width, height, seed, left/right video, and timing roles, then receive pre-baked
+source segments from the project timeline.
 
 Current runtime adapters:
 

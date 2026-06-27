@@ -2249,9 +2249,8 @@ pub fn agent_schema_json() -> Value {
                 "name": "string",
                 "description?": "optional multi-line provider guidance for humans and agents",
                 "output_type": "image|video|audio",
-                "workflow_kind?": "provider workflow kind such as text_to_image or image_to_video",
-                "purpose?": "generic|timeline_bridge; timeline_bridge anchors a generated seam clip to two source video clips",
-                "timeline_bridge?": "{ max_visible_frames?: u32 }; used when purpose=timeline_bridge",
+                "workflow_kind?": "provider workflow kind such as text_to_image, video_to_video, or video_to_bridge",
+                "timeline_bridge?": "{ max_visible_frames?: u32 }; used when workflow_kind=video_to_bridge",
                 "inputs": ["ProviderInputField"],
                 "connection": "ProviderConnection"
             }
@@ -2279,7 +2278,7 @@ pub fn agent_schema_json() -> Value {
                 "image_mode?": "still|fit",
                 "time_mode?": "crop|stretch",
                 "transform?": "ClipTransform",
-                "bridge?": "null to unlink, or { left_clip_id?: uuid, right_clip_id?: uuid } to anchor a timeline_bridge clip"
+                "bridge?": "null to unlink, or { left_clip_id?: uuid, right_clip_id?: uuid } to anchor a video_to_bridge clip"
             }
         },
         "enums": {
@@ -2302,8 +2301,8 @@ pub fn agent_schema_json() -> Value {
             "UUID fields can be discovered from /agent/v1/state.",
             "Provider API keys live in provider JSON connection.api_key and are redacted in API responses.",
             "Provider and provider-input descriptions are returned with provider metadata and should guide tool selection and parameter values.",
-            "Timeline bridge providers must be video providers with purpose=timeline_bridge and roles left_video, right_video, fps, left_replace_frames, right_replace_frames, and edge_blend_frames.",
-            "create_bridge_from_clips uses a timeline_bridge provider when provider_id names one, or when exactly one timeline_bridge provider is available in the project scope.",
+            "Timeline bridge providers use workflow_kind=video_to_bridge and roles width, height, seed, left_video, right_video, fps, left_replace_frames, right_replace_frames, and edge_blend_frames.",
+            "create_bridge_from_clips uses a video_to_bridge provider when provider_id names one, or when exactly one video_to_bridge provider is available in the project scope.",
             "Project provider scope filters /agent/v1/state providers and list_providers by default; pass include_all=true to list_providers or include=all_providers to state for repair workflows.",
             "start_generation is non-blocking; use /agent/v1/wait/generation to wait for a returned job_id or for the queue to drain.",
             "Read-only captures do not move the UI unless seek_ui is true.",

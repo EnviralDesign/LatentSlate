@@ -334,7 +334,7 @@ impl LatentSlateApp {
             .iter()
             .filter(|provider| {
                 provider.output_type == ProviderOutputType::Video
-                    && provider.purpose == ProviderPurpose::TimelineBridge
+                    && crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
                     && self.editor.provider_in_project_scope(provider.id)
             })
             .cloned()
@@ -507,7 +507,7 @@ impl LatentSlateApp {
             self.editor.status = "Bridge provider is unavailable.".to_string();
             return;
         };
-        if provider.purpose != ProviderPurpose::TimelineBridge
+        if !crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
             || provider.output_type != ProviderOutputType::Video
         {
             self.editor.status = "Provider is not a timeline bridge video provider.".to_string();
@@ -1703,7 +1703,7 @@ impl LatentSlateApp {
         }) else {
             return false;
         };
-        if provider.purpose != ProviderPurpose::TimelineBridge {
+        if !crate::core::timeline_bridge::provider_is_timeline_bridge(&provider) {
             return false;
         }
         let Ok(fields) = crate::core::timeline_bridge::timeline_bridge_fields(&provider) else {
@@ -1987,9 +1987,9 @@ impl LatentSlateApp {
         });
 
         if output_type == ProviderOutputType::Video
-            && selected_provider
-                .as_ref()
-                .is_none_or(|provider| provider.purpose != ProviderPurpose::TimelineBridge)
+            && selected_provider.as_ref().is_none_or(|provider| {
+                !crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
+            })
         {
             ui.add_space(kit::FORM_ROW_GAP);
             self.generative_video_timing_card(
@@ -2113,10 +2113,9 @@ impl LatentSlateApp {
                         config.inputs.insert(name, value);
                     }
                 });
-            if selected_provider
-                .as_ref()
-                .is_some_and(|provider| provider.purpose == ProviderPurpose::TimelineBridge)
-            {
+            if selected_provider.as_ref().is_some_and(|provider| {
+                crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
+            }) {
                 self.sync_timeline_bridge_asset_timing(asset_id, context_clip_id);
             }
             config_dirty = true;
@@ -2404,7 +2403,7 @@ impl LatentSlateApp {
         }) else {
             return false;
         };
-        if provider.purpose != ProviderPurpose::TimelineBridge {
+        if !crate::core::timeline_bridge::provider_is_timeline_bridge(&provider) {
             return false;
         }
         let Ok(params) =
@@ -2526,7 +2525,7 @@ impl LatentSlateApp {
             let mut visible_index = 0usize;
             for input in provider.inputs.iter() {
                 if is_timing_role(input.role)
-                    && !(provider.purpose == ProviderPurpose::TimelineBridge
+                    && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
                         && input.role == Some(InputRole::Fps))
                 {
                     continue;

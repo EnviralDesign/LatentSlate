@@ -381,6 +381,8 @@ impl LatentSlateApp {
         self.asset_thumbnail_misses.remove(&asset_id);
         self.asset_source_dimensions.remove(&asset_id);
         self.asset_source_dimension_misses.remove(&asset_id);
+        self.asset_source_fps.remove(&asset_id);
+        self.asset_source_fps_misses.remove(&asset_id);
         self.timeline_thumbnails
             .retain(|key, _| key.asset_id != asset_id);
         self.timeline_thumbnail_misses

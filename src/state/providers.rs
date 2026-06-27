@@ -27,6 +27,7 @@ pub enum ProviderWorkflowKind {
     ImageToVideo,
     FirstFrameLastFrameVideo,
     VideoToVideo,
+    VideoToBridge,
     TextToAudio,
     AudioToAudio,
     Custom,
@@ -39,7 +40,7 @@ impl Default for ProviderWorkflowKind {
 }
 
 impl ProviderWorkflowKind {
-    pub const ALL: [ProviderWorkflowKind; 10] = [
+    pub const ALL: [ProviderWorkflowKind; 11] = [
         ProviderWorkflowKind::Auto,
         ProviderWorkflowKind::TextToImage,
         ProviderWorkflowKind::ImageToImage,
@@ -47,6 +48,7 @@ impl ProviderWorkflowKind {
         ProviderWorkflowKind::ImageToVideo,
         ProviderWorkflowKind::FirstFrameLastFrameVideo,
         ProviderWorkflowKind::VideoToVideo,
+        ProviderWorkflowKind::VideoToBridge,
         ProviderWorkflowKind::TextToAudio,
         ProviderWorkflowKind::AudioToAudio,
         ProviderWorkflowKind::Custom,
@@ -61,6 +63,7 @@ impl ProviderWorkflowKind {
             Self::ImageToVideo => "Image to Video",
             Self::FirstFrameLastFrameVideo => "First/Last Frame Video",
             Self::VideoToVideo => "Video to Video",
+            Self::VideoToBridge => "Video to Bridge",
             Self::TextToAudio => "Text to Audio",
             Self::AudioToAudio => "Audio to Audio",
             Self::Custom => "Custom",
@@ -76,37 +79,11 @@ impl ProviderWorkflowKind {
             Self::ImageToVideo => "I2V",
             Self::FirstFrameLastFrameVideo => "FF2LF",
             Self::VideoToVideo => "V2V",
+            Self::VideoToBridge => "Bridge",
             Self::TextToAudio => "T2A",
             Self::AudioToAudio => "A2A",
             Self::Custom => "Custom",
         }
-    }
-}
-
-/// Optional app-level behavior layered on top of a provider's workflow shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderPurpose {
-    Generic,
-    TimelineBridge,
-}
-
-impl Default for ProviderPurpose {
-    fn default() -> Self {
-        Self::Generic
-    }
-}
-
-impl ProviderPurpose {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Generic => "Normal",
-            Self::TimelineBridge => "Timeline Bridge",
-        }
-    }
-
-    pub fn is_generic(value: &Self) -> bool {
-        *value == Self::Generic
     }
 }
 
@@ -223,8 +200,6 @@ pub struct ProviderEntry {
     pub output_type: ProviderOutputType,
     #[serde(default)]
     pub workflow_kind: ProviderWorkflowKind,
-    #[serde(default, skip_serializing_if = "ProviderPurpose::is_generic")]
-    pub purpose: ProviderPurpose,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_bridge: Option<TimelineBridgeSettings>,
     #[serde(default)]
@@ -244,7 +219,6 @@ impl ProviderEntry {
             description: None,
             output_type,
             workflow_kind: ProviderWorkflowKind::Auto,
-            purpose: ProviderPurpose::Generic,
             timeline_bridge: None,
             inputs: Vec::new(),
             connection,
@@ -367,8 +341,8 @@ pub enum ProviderManifest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         output_type: ProviderOutputType,
-        #[serde(default, skip_serializing_if = "ProviderPurpose::is_generic")]
-        purpose: ProviderPurpose,
+        #[serde(default)]
+        workflow_kind: ProviderWorkflowKind,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeline_bridge: Option<TimelineBridgeSettings>,
         workflow: ComfyWorkflowRef,
@@ -383,8 +357,8 @@ pub enum ProviderManifest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         output_type: ProviderOutputType,
-        #[serde(default, skip_serializing_if = "ProviderPurpose::is_generic")]
-        purpose: ProviderPurpose,
+        #[serde(default)]
+        workflow_kind: ProviderWorkflowKind,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeline_bridge: Option<TimelineBridgeSettings>,
         workflow: CustomHttpWorkflow,
@@ -602,7 +576,7 @@ mod tests {
             name: Some("Manifest Provider".to_string()),
             description: Some("Manifest-level guidance.".to_string()),
             output_type: ProviderOutputType::Image,
-            purpose: ProviderPurpose::Generic,
+            workflow_kind: ProviderWorkflowKind::TextToImage,
             timeline_bridge: None,
             workflow: ComfyWorkflowRef {
                 workflow_path: "workflow.json".to_string(),

@@ -878,6 +878,7 @@ impl EditorState {
         }
 
         if removed_assets > 0 {
+            self.previewer.release_media_handles();
             for folder in folders_to_delete {
                 self.previewer.invalidate_folder(&folder);
                 if let Err(err) = fs::remove_dir_all(&folder) {

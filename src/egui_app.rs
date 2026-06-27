@@ -48,9 +48,8 @@ use crate::state::{
     parse_version_index, Asset, AssetKind, Clip, ClipBridgeLink, ClipImageMode, ClipTimeMode,
     ClipTransform, GenerationJob, GenerationJobStatus, GenerationRecord, GenerationSeedAdvance,
     GenerativeConfig, InputRole, InputValue, Project, ProjectSettings, ProviderConnection,
-    ProviderEntry, ProviderInputField, ProviderInputType, ProviderOutputType, ProviderPurpose,
-    ProviderWorkflowKind, SeedStrategy, SourceFrameReference, TrackType,
-    DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
+    ProviderEntry, ProviderInputField, ProviderInputType, ProviderOutputType, ProviderWorkflowKind,
+    SeedStrategy, SourceFrameReference, TrackType, DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
@@ -254,6 +253,8 @@ pub struct LatentSlateApp {
     asset_thumbnail_misses: HashSet<Uuid>,
     asset_source_dimensions: HashMap<Uuid, Vec2>,
     asset_source_dimension_misses: HashSet<Uuid>,
+    asset_source_fps: HashMap<Uuid, f64>,
+    asset_source_fps_misses: HashSet<Uuid>,
     timeline_thumbnails: HashMap<TimelineThumbnailKey, AssetThumbnail>,
     timeline_thumbnail_misses: HashSet<TimelineThumbnailKey>,
     audio_peak_caches: HashMap<Uuid, PeakCache>,
@@ -528,6 +529,8 @@ impl LatentSlateApp {
             asset_thumbnail_misses: HashSet::new(),
             asset_source_dimensions: HashMap::new(),
             asset_source_dimension_misses: HashSet::new(),
+            asset_source_fps: HashMap::new(),
+            asset_source_fps_misses: HashSet::new(),
             timeline_thumbnails: HashMap::new(),
             timeline_thumbnail_misses: HashSet::new(),
             audio_peak_caches: HashMap::new(),

@@ -42,9 +42,8 @@ A provider entry stores:
 - `name`: display name
 - `description`: optional multi-line guidance for humans and agents choosing a provider
 - `output_type`: `image`, `video`, or `audio`
-- `workflow_kind`: optional UX intent such as T2I, I2V, V2V, first/last-frame video
-- `purpose`: optional app behavior; omit for normal providers or set `timeline_bridge` for seam bridge providers
-- `timeline_bridge`: optional settings for `timeline_bridge` providers, currently `max_visible_frames`
+- `workflow_kind`: optional UX intent such as T2I, I2V, V2V, first/last-frame video, or video-to-bridge
+- `timeline_bridge`: optional settings for `video_to_bridge` providers, currently `max_visible_frames`
 - `inputs`: editor-visible schema fields; each input can include an optional multi-line `description`
 - `connection`: adapter-specific connection data
 
@@ -130,11 +129,12 @@ timing before generation. Use the input UI `min`/`max` metadata on a
 `duration_seconds` role to express provider duration rails.
 
 Timeline bridge video providers are purpose-built seam tools. Set
-`purpose: "timeline_bridge"` and expose roles for `left_video`, `right_video`,
-`fps`, `left_replace_frames`, `right_replace_frames`, and `edge_blend_frames`.
-LatentSlate uses those roles to create an anchored bridge clip, feed baked
-left/right video segments into the workflow at the provider FPS, and keep the
-timeline span in sync with the source clips and frame-count inputs.
+`workflow_kind: "video_to_bridge"` and expose roles for `width`, `height`,
+`seed`, `left_video`, `right_video`, `fps`, `left_replace_frames`,
+`right_replace_frames`, and `edge_blend_frames`. LatentSlate uses those roles to
+create an anchored bridge clip, feed baked left/right video segments into the
+workflow at the provider FPS, and keep the timeline span in sync with the source
+clips and frame-count inputs.
 
 Media inputs can use project asset references and timeline-context suggestions,
 but compatibility still depends on the provider workflow and manifest binding.
