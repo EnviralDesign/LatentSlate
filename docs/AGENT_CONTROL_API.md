@@ -229,10 +229,14 @@ Returned time shape:
 ## State Snapshot
 
 `GET /agent/v1/state` returns a compact snapshot of all agent-relevant state.
-The `diagnostics` block is opt-in:
+Providers are sparse by default, and generation queue entries are compact by
+default. The `diagnostics` block is opt-in:
 
 ```text
 GET /agent/v1/state?include=diagnostics
+GET /agent/v1/state?include=providers:full
+GET /agent/v1/state?include=queue:full
+GET /agent/v1/state?include=all_providers
 ```
 
 Shape:
@@ -262,11 +266,15 @@ Shape:
   },
   "layout": {},
   "overlays": {},
-  "providers": [],
-  "queue": [],
+  "providers": [{ "id": "uuid", "name": "Provider", "detail": "sparse" }],
+  "queue": [{ "id": "uuid", "status": "Queued" }],
   "diagnostics": {}
 }
 ```
+
+Use `include=providers:full` or `list_providers` when the agent needs full
+provider input descriptions and connection metadata. Use `include=queue:full`
+only when debugging the full generation job payload.
 
 The resource objects should reuse the existing Rust/serde field names wherever
 they are already stable: `Asset`, `AssetKind`, `Clip`, `ClipTransform`,
@@ -418,7 +426,20 @@ The implemented source shape matches capture sources:
   "time": 2.0,
   "duration_seconds": 4.0
 }
+{
+  "type": "place_sequence",
+  "items": [
+    { "asset_id": "uuid", "duration_seconds": 5.0, "label": "shot 01" },
+    { "asset_name": "Shot 02", "duration_seconds": 5.0 }
+  ],
+  "track_id": "uuid",
+  "start_time": 0.0,
+  "gap_seconds": 0.0
+}
 ```
+
+`place_sequence` validates all assets and target-track compatibility before
+adding clips, then lays them out end-to-end on one track.
 
 Patch clip fields:
 
@@ -686,11 +707,23 @@ Response:
 ```json
 {
   "jobs": [
-    { "id": "uuid", "status": "queued", "asset_id": "uuid" }
+    {
+      "id": "uuid",
+      "job_id": "uuid",
+      "status": "Queued",
+      "asset_id": "uuid",
+      "provider_id": "uuid",
+      "version": null,
+      "output_paths": []
+    }
   ],
   "wait_requested": false
 }
 ```
+
+Job endpoints and generation wait responses return the same compact job shape
+by default. Completed jobs include matching output path candidates when files
+exist for the generated version.
 
 Generation queue commands:
 
@@ -802,14 +835,12 @@ Capture mode:
 ```
 
 `normal` should match the renderer/compositor output as closely as practical.
-`enhanced` should add agent-readable visual aids without mutating the project:
+`enhanced` adds agent-readable visual aids without mutating the project:
 
-- clip outlines and translucent clip bounds
-- selected clip/asset markers
-- clip IDs or short labels
-- timeline timecode and frame number
-- optional safe/title frame guides
-- optional layer order numbers
+- source layer outlines
+- short active clip labels in the caption
+- timeline/local timecode in the caption
+- active clip metadata in the JSON `inspection` block
 
 ### Timeline Frame
 
@@ -832,9 +863,11 @@ Response:
     "id": "uuid",
     "kind": "frame",
     "path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/frame-0001.png",
+    "markdown": "![LatentSlate capture](C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/frame-0001.png)",
     "manifest_path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/manifest.json",
     "time": { "seconds": 4.25, "frame": 102, "fps": 24.0, "scope": "timeline" },
-    "stats": {}
+    "stats": {},
+    "inspection": { "active_clip_count": 1, "active_clips": [] }
   }
 }
 ```
@@ -879,6 +912,9 @@ The API resolves clip-local time to timeline time and returns both.
 
 Asset frame capture should use the same video decode path used by Asset Lab
 previews for video assets and direct image loading for image assets.
+For `time: { "key": "last" }`, generative video captures use stored
+`fps`/`frame_count` metadata to target the final decodable frame rather than
+the first timestamp past the end.
 
 ### Cutsheet
 
@@ -905,12 +941,15 @@ Response:
     "id": "uuid",
     "kind": "cutsheet",
     "path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/cutsheet.png",
+    "markdown": "![LatentSlate cutsheet](C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/cutsheet.png)",
     "manifest_path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/manifest.json",
     "frames": [
       {
         "label": "start",
         "path": "C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/frame-0001.png",
-        "time": { "seconds": 0.0, "frame": 0, "fps": 24.0, "scope": "timeline" }
+        "markdown": "![start](C:/path/to/latentslate/LatentSlateData/tmp/agent-captures/demo/frame-0001.png)",
+        "time": { "seconds": 0.0, "frame": 0, "fps": 24.0, "scope": "timeline" },
+        "inspection": { "active_clip_count": 1, "active_clips": [] }
       }
     ]
   }

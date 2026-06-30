@@ -30,7 +30,7 @@ use crate::core::generation::{
     next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
     semantic_reference_slot, update_seed_inputs,
 };
-use crate::core::media::probe_duration_seconds;
+use crate::core::media::{probe_duration_seconds, probe_video_metadata};
 use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};
 use crate::core::timeline_snap::{
     best_snap_delta_frames, frames_from_seconds, seconds_from_frames, snap_time_to_frame,
@@ -251,6 +251,7 @@ pub struct LatentSlateApp {
     preview_prefetch_in_flight: Arc<AtomicBool>,
     asset_thumbnails: HashMap<Uuid, AssetThumbnail>,
     asset_thumbnail_misses: HashSet<Uuid>,
+    asset_thumbnail_warmups: HashSet<Uuid>,
     asset_source_dimensions: HashMap<Uuid, Vec2>,
     asset_source_dimension_misses: HashSet<Uuid>,
     asset_source_fps: HashMap<Uuid, f64>,
@@ -527,6 +528,7 @@ impl LatentSlateApp {
             preview_prefetch_in_flight: Arc::new(AtomicBool::new(false)),
             asset_thumbnails: HashMap::new(),
             asset_thumbnail_misses: HashSet::new(),
+            asset_thumbnail_warmups: HashSet::new(),
             asset_source_dimensions: HashMap::new(),
             asset_source_dimension_misses: HashSet::new(),
             asset_source_fps: HashMap::new(),

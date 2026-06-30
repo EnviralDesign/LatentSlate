@@ -294,7 +294,7 @@ impl LatentSlateApp {
                         )
                     } else {
                         crate::core::automation::AutomationResponse::ok(serde_json::json!({
-                            "jobs": crate::editor::redacted_generation_jobs_json(&jobs),
+                            "jobs": crate::editor::compact_generation_jobs_json(&jobs),
                             "asset_lab": self.agent_asset_lab_graph_json(asset_id),
                             "status": self.editor.status,
                         }))
@@ -323,7 +323,7 @@ impl LatentSlateApp {
                     let ok = !jobs.is_empty();
                     let response = if ok {
                         crate::core::automation::AutomationResponse::ok(serde_json::json!({
-                            "jobs": crate::editor::redacted_generation_jobs_json(&jobs),
+                            "jobs": crate::editor::compact_generation_jobs_json(&jobs),
                             "status": self.editor.status,
                             "wait_requested": wait,
                         }))
@@ -1225,11 +1225,13 @@ impl LatentSlateApp {
         let manifest = serde_json::json!({
             "kind": "frame",
             "path": frame_path,
+            "markdown": agent_markdown_image(&frame_path, "LatentSlate capture"),
             "source": capture.source_json,
             "time": capture.time_json,
             "local_time": capture.local_time_json,
             "mode": capture_mode_label(mode),
             "stats": capture.stats,
+            "inspection": capture.inspection_json,
         });
         if let Err(err) = write_agent_manifest(&manifest_path, &manifest) {
             return crate::core::automation::AutomationResponse::with_status(err, 500);
@@ -1239,12 +1241,14 @@ impl LatentSlateApp {
             "capture": {
                 "kind": "frame",
                 "path": frame_path,
+                "markdown": agent_markdown_image(&frame_path, "LatentSlate capture"),
                 "manifest_path": manifest_path,
                 "source": capture.source_json,
                 "time": capture.time_json,
                 "local_time": capture.local_time_json,
                 "mode": capture_mode_label(mode),
                 "stats": capture.stats,
+                "inspection": capture.inspection_json,
             }
         }))
     }
@@ -1333,10 +1337,12 @@ impl LatentSlateApp {
                 serde_json::json!({
                     "label": capture.label,
                     "path": path,
+                    "markdown": agent_markdown_image(path, capture.label.as_deref().unwrap_or("LatentSlate capture frame")),
                     "source": capture.source_json,
                     "time": capture.time_json,
                     "local_time": capture.local_time_json,
                     "stats": capture.stats,
+                    "inspection": capture.inspection_json,
                 })
             })
             .collect();
@@ -1344,6 +1350,7 @@ impl LatentSlateApp {
         let manifest = serde_json::json!({
             "kind": "cutsheet",
             "path": sheet_path,
+            "markdown": agent_markdown_image(&sheet_path, "LatentSlate cutsheet"),
             "mode": capture_mode_label(mode),
             "frames": frames_json,
         });
@@ -1355,6 +1362,7 @@ impl LatentSlateApp {
             "capture": {
                 "kind": "cutsheet",
                 "path": sheet_path,
+                "markdown": agent_markdown_image(&sheet_path, "LatentSlate cutsheet"),
                 "manifest_path": manifest_path,
                 "mode": capture_mode_label(mode),
                 "frames": frames_json,
@@ -1390,6 +1398,7 @@ impl LatentSlateApp {
                 decode_mode,
                 self.editor.layout.hardware_decode,
             );
+            let clip_summary = agent_capture_clip_summary(&project, timeline_seconds);
             draw_agent_capture_overlay(
                 &mut image,
                 layers.layers.as_ref(),
@@ -1398,9 +1407,11 @@ impl LatentSlateApp {
                 &request.label,
                 local_scope,
                 mode,
+                clip_summary.as_deref(),
             );
         }
         let fps = project.settings.fps.max(1.0);
+        let inspection_json = agent_capture_inspection_json(&project, timeline_seconds);
         Ok(AgentRenderedCapture {
             label: request.label.clone(),
             image,
@@ -1410,6 +1421,7 @@ impl LatentSlateApp {
             local_time_json: local_seconds
                 .map(|seconds| normalized_time_json(seconds, fps, local_scope)),
             source_json,
+            inspection_json,
         })
     }
 
@@ -1427,6 +1439,7 @@ impl LatentSlateApp {
                     duration,
                     project.settings.fps,
                     Some(self.editor.current_time),
+                    None,
                 );
                 Ok((
                     project,
@@ -1448,6 +1461,9 @@ impl LatentSlateApp {
                     clip.duration,
                     project.settings.fps,
                     Some((self.editor.current_time - clip.start_time).max(0.0)),
+                    project
+                        .find_asset(clip.asset_id)
+                        .and_then(|asset| asset_last_frame_time_seconds(asset, clip.duration)),
                 );
                 let timeline_seconds = (clip.start_time + local).clamp(0.0, project.duration());
                 Ok((
@@ -1502,6 +1518,7 @@ impl LatentSlateApp {
                     duration,
                     project.settings.fps,
                     Some(0.0),
+                    asset_last_frame_time_seconds(&asset, duration),
                 );
                 let track_id = project
                     .tracks
@@ -1728,6 +1745,7 @@ struct AgentRenderedCapture {
     time_json: serde_json::Value,
     local_time_json: Option<serde_json::Value>,
     source_json: serde_json::Value,
+    inspection_json: serde_json::Value,
 }
 
 fn resolve_agent_time_selector(
@@ -1735,6 +1753,7 @@ fn resolve_agent_time_selector(
     duration: f64,
     fps: f64,
     current: Option<f64>,
+    last_frame_seconds: Option<f64>,
 ) -> f64 {
     let duration = duration.max(0.0);
     let Some(selector) = selector else {
@@ -1752,12 +1771,32 @@ fn resolve_agent_time_selector(
     match selector.key {
         Some(crate::core::automation::TimeKey::First) => 0.0,
         Some(crate::core::automation::TimeKey::Last) => {
-            clamp_agent_capture_time(duration, duration, fps)
+            clamp_agent_capture_time(last_frame_seconds.unwrap_or(duration), duration, fps)
         }
         Some(crate::core::automation::TimeKey::Current) | None => {
             clamp_agent_capture_time(current.unwrap_or(0.0), duration, fps)
         }
     }
+}
+
+fn asset_last_frame_time_seconds(asset: &Asset, duration: f64) -> Option<f64> {
+    let AssetKind::GenerativeVideo {
+        fps, frame_count, ..
+    } = &asset.kind
+    else {
+        return None;
+    };
+    if !fps.is_finite() || *fps <= 0.0 || *frame_count == 0 {
+        return None;
+    }
+    Some((frame_count.saturating_sub(1)) as f64 / *fps).map(|seconds| {
+        let duration = duration.max(0.0);
+        if duration <= f64::EPSILON {
+            0.0
+        } else {
+            seconds.clamp(0.0, duration)
+        }
+    })
 }
 
 fn clamp_agent_capture_time(seconds: f64, duration: f64, fps: f64) -> f64 {
@@ -1806,6 +1845,14 @@ fn write_agent_manifest(path: &Path, manifest: &serde_json::Value) -> Result<(),
         .map_err(|err| format!("Failed to encode capture manifest: {err}"))?;
     std::fs::write(path, json)
         .map_err(|err| format!("Failed to write capture manifest {}: {err}", path.display()))
+}
+
+fn agent_markdown_image(path: &Path, alt: &str) -> String {
+    format!(
+        "![{}]({})",
+        alt,
+        path.display().to_string().replace('\\', "/")
+    )
 }
 
 fn save_agent_cutsheet_png(
@@ -1861,6 +1908,7 @@ fn draw_agent_capture_overlay(
     label: &Option<String>,
     local_scope: &str,
     mode: crate::core::automation::CaptureMode,
+    clip_summary: Option<&str>,
 ) {
     if mode == crate::core::automation::CaptureMode::Enhanced {
         if let Some(layers) = layers {
@@ -1898,7 +1946,91 @@ fn draw_agent_capture_overlay(
             timeline_seconds
         )
     };
+    let caption = if let Some(clip_summary) = clip_summary.filter(|value| !value.is_empty()) {
+        format!("{caption} | clips: {clip_summary}")
+    } else {
+        caption
+    };
     draw_agent_caption(image, &caption);
+}
+
+fn agent_capture_clip_summary(project: &Project, timeline_seconds: f64) -> Option<String> {
+    let mut labels = Vec::new();
+    for clip in active_agent_capture_clips(project, timeline_seconds)
+        .into_iter()
+        .take(3)
+    {
+        let asset_name = project
+            .find_asset(clip.asset_id)
+            .map(asset_display_name)
+            .unwrap_or_else(|| "missing asset".to_string());
+        let label = clip
+            .label
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(asset_name.as_str());
+        labels.push(compact_agent_label(label, 28));
+    }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join(", "))
+    }
+}
+
+fn agent_capture_inspection_json(project: &Project, timeline_seconds: f64) -> serde_json::Value {
+    let clips: Vec<_> = active_agent_capture_clips(project, timeline_seconds)
+        .into_iter()
+        .map(|clip| {
+            let asset = project.find_asset(clip.asset_id);
+            let track = project.find_track(clip.track_id);
+            serde_json::json!({
+                "clip_id": clip.id,
+                "asset_id": clip.asset_id,
+                "asset_name": asset.map(asset_display_name),
+                "track_id": clip.track_id,
+                "track_name": track.map(|track| track.name.clone()),
+                "track_type": track.map(|track| track.track_type),
+                "start_time": clip.start_time,
+                "duration": clip.duration,
+                "local_time": (timeline_seconds - clip.start_time).max(0.0),
+                "label": clip.label.clone(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "active_clip_count": clips.len(),
+        "active_clips": clips,
+    })
+}
+
+fn active_agent_capture_clips(project: &Project, timeline_seconds: f64) -> Vec<&Clip> {
+    let frame_epsilon = 1.0 / project.settings.fps.max(1.0);
+    project
+        .clips
+        .iter()
+        .filter(|clip| {
+            if project.is_keyframe_reference_clip(clip) {
+                (clip.start_time - timeline_seconds).abs() <= frame_epsilon * 0.5
+            } else {
+                timeline_seconds >= clip.start_time
+                    && timeline_seconds < clip.start_time + clip.duration
+            }
+        })
+        .collect()
+}
+
+fn compact_agent_label(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    let mut label = normalized
+        .chars()
+        .take(max_chars.saturating_sub(3))
+        .collect::<String>();
+    label.push_str("...");
+    label
 }
 
 fn enhanced_layer_color(index: usize) -> image::Rgba<u8> {
@@ -2002,7 +2134,7 @@ mod tests {
     #[test]
     fn resolve_agent_time_selector_uses_current_when_no_selector() {
         assert_eq!(
-            resolve_agent_time_selector(None, 10.0, 24.0, Some(3.5)),
+            resolve_agent_time_selector(None, 10.0, 24.0, Some(3.5), None),
             3.5
         );
     }
@@ -2014,7 +2146,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_agent_time_selector(Some(&seconds), 10.0, 24.0, None),
+            resolve_agent_time_selector(Some(&seconds), 10.0, 24.0, None, None),
             10.0 - 1.0 / 24.0
         );
 
@@ -2023,7 +2155,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_agent_time_selector(Some(&percent), 20.0, 24.0, None),
+            resolve_agent_time_selector(Some(&percent), 20.0, 24.0, None, None),
             5.0
         );
 
@@ -2032,7 +2164,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_agent_time_selector(Some(&end_percent), 20.0, 25.0, None),
+            resolve_agent_time_selector(Some(&end_percent), 20.0, 25.0, None, None),
             19.96
         );
     }
@@ -2044,7 +2176,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_agent_time_selector(Some(&frame), 10.0, 24.0, None),
+            resolve_agent_time_selector(Some(&frame), 10.0, 24.0, None, None),
             2.0
         );
 
@@ -2053,8 +2185,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_agent_time_selector(Some(&last), 10.0, 25.0, None),
+            resolve_agent_time_selector(Some(&last), 10.0, 25.0, None, None),
             9.96
+        );
+        assert_eq!(
+            resolve_agent_time_selector(Some(&last), 10.0, 25.0, None, Some(4.9333333333)),
+            4.9333333333
         );
     }
 

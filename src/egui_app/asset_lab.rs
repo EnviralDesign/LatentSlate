@@ -25,6 +25,8 @@ use super::{
     VIDEO_EXTENSIONS,
 };
 
+const ASSET_LAB_WHEEL_ZOOM_MULTIPLIER: f32 = 4.0;
+
 #[derive(Clone, Debug)]
 pub(super) struct AssetLabState {
     pub(super) asset_id: Option<Uuid>,
@@ -1184,8 +1186,9 @@ pub(super) fn asset_lab_preview(
         let scroll_delta = preview_scroll_delta(ui, rect);
         if scroll_delta.abs() > f32::EPSILON {
             let old_zoom = state.preview_zoom.max(PREVIEW_ZOOM_MIN);
-            let zoom_factor =
-                (1.0 + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY).clamp(0.5, 2.0);
+            let zoom_factor = (1.0
+                + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY * ASSET_LAB_WHEEL_ZOOM_MULTIPLIER)
+                .clamp(0.5, 2.0);
             let new_zoom = (old_zoom * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
             if let Some(pointer) = ui.ctx().pointer_hover_pos() {
                 let old_center = image_bounds.center() + state.preview_pan;
@@ -1893,7 +1896,8 @@ impl LatentSlateApp {
         let wheel_delta = preview_scroll_delta(ui, canvas_rect);
         if wheel_delta.abs() > f32::EPSILON {
             let old_zoom = self.asset_lab.graph_zoom.clamp(0.45, 2.4);
-            let zoom_factor = (1.0 + wheel_delta * 0.015).clamp(0.82, 1.22);
+            let zoom_factor =
+                (1.0 + wheel_delta * 0.015 * ASSET_LAB_WHEEL_ZOOM_MULTIPLIER).clamp(0.28, 1.88);
             let new_zoom = (old_zoom * zoom_factor).clamp(0.45, 2.4);
             if (new_zoom - old_zoom).abs() > f32::EPSILON {
                 if let Some(pointer) = ui

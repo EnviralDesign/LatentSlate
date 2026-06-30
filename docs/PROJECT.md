@@ -37,7 +37,7 @@ This file is the living project status page. Keep it current, concise, and factu
 - Top-bar Agent API popover with localhost enable/disable, port display, and copyable agent primer.
 - Self-documenting Agent API routes for help, schema, capabilities, state, jobs, command execution, export status, generation waits, and rendered captures.
 - Agent visual feedback through normal and enhanced timeline/clip/asset frame captures and cut sheets saved under ignored `LatentSlateData/tmp/agent-captures`, cleared on app startup.
-- Agent-accessible provider metadata, provider/input descriptions, project provider allowlists, provider JSON edits, generative config edits, queue operations, project settings, timeline edits, batch clip moves, and export control.
+- Agent-accessible provider metadata, provider/input descriptions, project provider allowlists, provider JSON edits, generative config edits, compact queue operations, project settings, timeline edits, batch clip moves, sequence placement, capture markdown/inspection metadata, generated video timing probes, and export control.
 
 ## Current Limitations
 

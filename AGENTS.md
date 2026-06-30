@@ -44,8 +44,10 @@ Other useful paths:
 ## Build & Test Rules
 
 ### Cargo Build
-- After `cargo check` succeeds, attempt `cargo build --release` before yielding when Rust source/UI changes should be immediately testable.
-- If `cargo build --release` fails because the app executable is open/locked, do **not** compile to a different target; report that the release build did not succeed because the executable appears to be running.
+- After `cargo check` succeeds, attempt `.\scripts\build-and-stage.ps1 -Profile release` before yielding when Rust source/UI changes should be immediately testable.
+- Use `.\scripts\build-and-stage.ps1 -Profile release` instead of calling `cargo build --release` directly. The wrapper builds release, stages runtime DLLs, and best-effort copies the exe/DLLs to the configured deploy folder without copying `LatentSlateData` contents.
+- If the release build fails because the app executable is open/locked, do **not** compile to a different target; report that the release build did not succeed because the executable appears to be running.
+- If the wrapper build succeeds but the best-effort deploy copy fails because the deployed executable is open/locked, treat that as non-blocking; report the copy warning and continue.
 - Do not run `cargo run` or `dx serve` unless explicitly requested.
 
 ### Cargo Test
@@ -63,9 +65,9 @@ Other useful paths:
 
 1. **Make changes** to source files
 2. **Run `cargo check`** before yielding back to the user
-3. **Attempt `cargo build --release`** for code/UI changes that should be immediately testable
+3. **Attempt `.\scripts\build-and-stage.ps1 -Profile release`** for code/UI changes that should be immediately testable
 4. **Run `cargo test`** only when explicitly requested
-5. **Notify the user** that changes are ready, including whether the release build succeeded or was blocked by a locked executable
+5. **Notify the user** that changes are ready, including whether the release wrapper succeeded, the release build was blocked by a locked executable, or only the best-effort deploy copy was blocked
 
 ## Code Style
 

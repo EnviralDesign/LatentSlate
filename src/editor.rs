@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::constants::{DEFAULT_CLIP_DURATION_SECONDS, PREVIEW_CACHE_BUDGET_BYTES};
 use crate::core::automation::{
-    AutomationCommand, AutomationResponse, ClipMoveMode, ClipMoveTarget,
+    AutomationCommand, AutomationResponse, ClipMoveMode, ClipMoveTarget, SequencePlacementItem,
 };
 use crate::core::generation::semantic_reference_slot;
 use crate::core::media::{probe_missing_duration, resolve_asset_duration_seconds};
@@ -1176,6 +1176,17 @@ impl EditorState {
                     None => AutomationResponse::error("No matching asset found."),
                 }
             }
+            AutomationCommand::PlaceSequence {
+                items,
+                track_id,
+                start_time,
+                gap_seconds,
+            } => self.apply_place_sequence_command(
+                items,
+                *track_id,
+                *start_time,
+                gap_seconds.unwrap_or(0.0),
+            ),
             AutomationCommand::CreateGenerativeAsset {
                 output_type,
                 name,
@@ -1897,12 +1908,12 @@ impl EditorState {
                 }))
             }
             AutomationCommand::ListJobs => AutomationResponse::ok(
-                json!({ "jobs": redacted_generation_jobs_json(&self.generation_queue) }),
+                json!({ "jobs": compact_generation_jobs_json(&self.generation_queue) }),
             ),
             AutomationCommand::GetJob { job_id } => {
                 match self.generation_queue.iter().find(|job| job.id == *job_id) {
                     Some(job) => {
-                        AutomationResponse::ok(json!({ "job": redacted_generation_job_json(job) }))
+                        AutomationResponse::ok(json!({ "job": compact_generation_job_json(job) }))
                     }
                     None => AutomationResponse::not_found("Job not found."),
                 }
@@ -2013,6 +2024,152 @@ impl EditorState {
                 AutomationResponse::empty_ok()
             }
         }
+    }
+
+    fn apply_place_sequence_command(
+        &mut self,
+        items: &[SequencePlacementItem],
+        track_id: Option<Uuid>,
+        start_time: Option<f64>,
+        gap_seconds: f64,
+    ) -> AutomationResponse {
+        if items.is_empty() {
+            return AutomationResponse::error("place_sequence requires at least one item.");
+        }
+
+        let mut resolved = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(asset_id) =
+                self.resolve_sequence_asset(item.asset_id, item.asset_name.as_deref())
+            else {
+                return AutomationResponse::not_found(
+                    "Sequence item asset not found; provide asset_id or exact asset_name.",
+                );
+            };
+            let Some(asset) = self.project.find_asset(asset_id) else {
+                return AutomationResponse::not_found(format!("Asset not found: {asset_id}"));
+            };
+            if !asset.is_visual() && !asset.is_audio() {
+                return AutomationResponse::conflict(format!(
+                    "Asset cannot be placed on the timeline: {asset_id}"
+                ));
+            }
+            let duration = item
+                .duration_seconds
+                .or_else(|| resolve_asset_duration_seconds(&mut self.project, asset_id))
+                .unwrap_or(DEFAULT_CLIP_DURATION_SECONDS);
+            if !duration.is_finite() || duration <= 0.0 {
+                return AutomationResponse::conflict(format!(
+                    "Sequence item duration must be positive for asset {asset_id}."
+                ));
+            }
+            resolved.push(ResolvedSequenceItem {
+                asset_id,
+                duration_seconds: duration.max(0.1),
+                label: item.label.clone(),
+            });
+        }
+
+        let target_track_id = match track_id {
+            Some(track_id) => {
+                if self.project.find_track(track_id).is_none() {
+                    return AutomationResponse::not_found(format!("Track not found: {track_id}"));
+                }
+                for item in &resolved {
+                    if !self
+                        .project
+                        .asset_compatible_with_track(item.asset_id, track_id)
+                    {
+                        return AutomationResponse::conflict(format!(
+                            "Asset {} is not compatible with target track {track_id}.",
+                            item.asset_id
+                        ));
+                    }
+                }
+                track_id
+            }
+            None => {
+                let Some(track) = self.project.tracks.iter().find(|track| {
+                    resolved.iter().all(|item| {
+                        self.project
+                            .asset_compatible_with_track(item.asset_id, track.id)
+                    })
+                }) else {
+                    return AutomationResponse::conflict(
+                        "No single compatible track exists for all sequence items.",
+                    );
+                };
+                track.id
+            }
+        };
+
+        let gap_seconds = gap_seconds.max(0.0);
+        let mut cursor = start_time.unwrap_or(self.current_time).max(0.0);
+        let mut created = Vec::with_capacity(resolved.len());
+        let mut created_clip_ids = Vec::with_capacity(resolved.len());
+        for item in resolved {
+            let Some(clip_id) = self.project.add_clip_from_asset_to_track(
+                item.asset_id,
+                target_track_id,
+                cursor,
+                item.duration_seconds,
+            ) else {
+                return AutomationResponse::conflict(
+                    "Validated sequence item could not be placed on the target track.",
+                );
+            };
+            if let Some(label) = item.label.as_ref().filter(|label| !label.trim().is_empty()) {
+                let _ = self
+                    .project
+                    .set_clip_label(clip_id, Some(label.trim().to_string()));
+            }
+            created_clip_ids.push(clip_id);
+            created.push(json!({
+                "clip_id": clip_id,
+                "asset_id": item.asset_id,
+                "track_id": target_track_id,
+                "start_time": cursor,
+                "duration": item.duration_seconds,
+                "label": item.label,
+            }));
+            cursor += item.duration_seconds + gap_seconds;
+        }
+
+        self.selection.clip_ids = created_clip_ids;
+        self.selection.asset_ids.clear();
+        self.selection.track_ids.clear();
+        self.selection.marker_ids.clear();
+        self.preview_dirty = true;
+
+        AutomationResponse::ok(json!({
+            "clips": created,
+            "track_id": target_track_id,
+            "start_time": start_time.unwrap_or(self.current_time).max(0.0),
+            "end_time": (cursor - gap_seconds).max(0.0),
+            "gap_seconds": gap_seconds,
+        }))
+    }
+
+    fn resolve_sequence_asset(
+        &self,
+        asset_id: Option<Uuid>,
+        asset_name: Option<&str>,
+    ) -> Option<Uuid> {
+        if let Some(asset_id) = asset_id {
+            return self
+                .project
+                .assets
+                .iter()
+                .any(|asset| asset.id == asset_id)
+                .then_some(asset_id);
+        }
+        asset_name.and_then(|name| {
+            self.project
+                .assets
+                .iter()
+                .find(|asset| asset.name == name)
+                .map(|asset| asset.id)
+        })
     }
 
     fn apply_move_clips_command(
@@ -2301,8 +2458,15 @@ impl EditorState {
                 "generative_configs": self.project.generative_configs.clone(),
                 "workspace_layout": self.layout.workspace_layout(),
             },
-            "providers": self.redacted_provider_entries_for_scope(false),
-            "queue": redacted_generation_jobs_json(&self.generation_queue),
+            "providers": sparse_provider_entries_json(
+                &self
+                    .provider_entries
+                    .iter()
+                    .filter(|provider| self.provider_in_project_scope(provider.id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            ),
+            "queue": compact_generation_jobs_json(&self.generation_queue),
             "current_time": self.current_time,
             "timeline": {
                 "current_time": self.current_time,
@@ -2339,6 +2503,26 @@ impl EditorState {
                 "markers": self.selection.marker_ids.clone(),
             }
         });
+
+        if include_requested(include, "providers:full")
+            || include_requested(include, "providers_full")
+        {
+            if let Some(object) = state.as_object_mut() {
+                object.insert(
+                    "providers".to_string(),
+                    json!(self.redacted_provider_entries_for_scope(false)),
+                );
+            }
+        }
+
+        if include_requested(include, "queue:full") || include_requested(include, "queue_full") {
+            if let Some(object) = state.as_object_mut() {
+                object.insert(
+                    "queue".to_string(),
+                    json!(redacted_generation_jobs_json(&self.generation_queue)),
+                );
+            }
+        }
 
         if include_requested(include, "diagnostics") {
             let queued_jobs = self
@@ -2402,10 +2586,12 @@ impl EditorState {
 
         if include_requested(include, "all_providers") {
             if let Some(object) = state.as_object_mut() {
-                object.insert(
-                    "all_providers".to_string(),
-                    json!(redacted_provider_entries_json(&self.provider_entries)),
-                );
+                let providers = if include_requested(include, "all_providers:full") {
+                    redacted_provider_entries_json(&self.provider_entries)
+                } else {
+                    sparse_provider_entries_json(&self.provider_entries)
+                };
+                object.insert("all_providers".to_string(), json!(providers));
             }
         }
 
@@ -2437,6 +2623,13 @@ struct ResolvedClipMove {
     track_id: Uuid,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedSequenceItem {
+    asset_id: Uuid,
+    duration_seconds: f64,
+    label: Option<String>,
+}
+
 fn first_duplicate_uuid(ids: impl IntoIterator<Item = Uuid>) -> Option<Uuid> {
     let mut seen = Vec::new();
     for id in ids {
@@ -2463,8 +2656,107 @@ pub(crate) fn redacted_generation_job_json(job: &GenerationJob) -> Value {
     value
 }
 
+pub(crate) fn compact_generation_jobs_json(jobs: &[GenerationJob]) -> Vec<Value> {
+    jobs.iter().map(compact_generation_job_json).collect()
+}
+
+pub(crate) fn compact_generation_job_json(job: &GenerationJob) -> Value {
+    json!({
+        "id": job.id,
+        "job_id": job.id,
+        "created_at": job.created_at,
+        "status": job.status,
+        "progress_overall": job.progress_overall,
+        "progress_node": job.progress_node,
+        "provider_id": job.provider.id,
+        "provider_name": job.provider.name,
+        "output_type": job.output_type,
+        "asset_id": job.asset_id,
+        "clip_id": job.clip_id,
+        "asset_label": job.asset_label,
+        "folder_path": job.folder_path,
+        "version": job.version,
+        "output_paths": generation_job_output_paths_json(job),
+        "lab_node_id": job.lab_node_id,
+        "activate_on_success": job.activate_on_success,
+        "error": job.error,
+    })
+}
+
+fn generation_job_output_paths_json(job: &GenerationJob) -> Vec<PathBuf> {
+    let Some(version) = job.version.as_deref() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&job.folder_path) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem == version)
+        })
+        .collect()
+}
+
 fn redacted_provider_entries_json(providers: &[ProviderEntry]) -> Vec<Value> {
     providers.iter().map(redacted_provider_entry_json).collect()
+}
+
+fn sparse_provider_entries_json(providers: &[ProviderEntry]) -> Vec<Value> {
+    providers.iter().map(sparse_provider_entry_json).collect()
+}
+
+fn sparse_provider_entry_json(provider: &ProviderEntry) -> Value {
+    let role_counts = provider.inputs.iter().fold(
+        std::collections::BTreeMap::<String, usize>::new(),
+        |mut counts, input| {
+            *counts
+                .entry(
+                    input
+                        .role
+                        .map(|role| format!("{role:?}").to_ascii_lowercase())
+                        .unwrap_or_else(|| "generic".to_string()),
+                )
+                .or_default() += 1;
+            counts
+        },
+    );
+    let reference_inputs: Vec<_> = provider
+        .inputs
+        .iter()
+        .filter(|input| {
+            matches!(
+                input.input_type,
+                ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio
+            )
+        })
+        .map(|input| {
+            json!({
+                "name": &input.name,
+                "label": &input.label,
+                "input_type": &input.input_type,
+                "role": input.role,
+                "required": input.required,
+            })
+        })
+        .collect();
+    json!({
+        "id": provider.id,
+        "name": &provider.name,
+        "description_preview": compact_text_preview(provider.description.as_deref(), 240),
+        "source": provider_source_label(provider),
+        "output_type": provider.output_type,
+        "workflow_kind": provider.resolved_workflow_kind(),
+        "input_count": provider.inputs.len(),
+        "required_input_count": provider.inputs.iter().filter(|input| input.required).count(),
+        "role_counts": role_counts,
+        "reference_inputs": reference_inputs,
+        "detail": "sparse",
+        "full_details_hint": "Use list_providers or GET /agent/v1/state?include=providers:full for full input descriptions and connection metadata.",
+    })
 }
 
 fn redacted_provider_entry_json(provider: &ProviderEntry) -> Value {
@@ -2487,6 +2779,29 @@ fn redacted_provider_entry_json(provider: &ProviderEntry) -> Value {
         }
     }
     value
+}
+
+fn provider_source_label(provider: &ProviderEntry) -> &'static str {
+    match &provider.connection {
+        ProviderConnection::ComfyUi { .. } => "comfyui",
+        ProviderConnection::OpenAiImage { .. } => "openai",
+        ProviderConnection::XaiImage { .. } | ProviderConnection::XaiVideo { .. } => "xai",
+        ProviderConnection::CustomHttp { .. } => "custom_http",
+    }
+}
+
+fn compact_text_preview(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let value = value?;
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.chars().count() <= max_chars {
+        return Some(normalized);
+    }
+    let mut preview = normalized.chars().take(max_chars).collect::<String>();
+    preview.push_str("...");
+    Some(preview)
 }
 
 fn provider_matches_asset_output(asset: &Asset, provider: &ProviderEntry) -> bool {

@@ -799,7 +799,6 @@ impl ProviderBuilderState {
         }
         if let Some(output_type) = derived_output_type_for_workflow_kind(self.workflow_kind) {
             self.output_type = output_type;
-            self.output_key = default_output_key(self.output_type).to_string();
         }
     }
 
@@ -963,7 +962,8 @@ impl ProviderBuilderState {
             .output_node
             .clone()
             .ok_or_else(|| "Select an output node.".to_string())?;
-        let output_key = inferred_output_key_for_node(&output_node, self.output_type);
+        let output_key = optional_trimmed_string(&self.output_key)
+            .unwrap_or_else(|| inferred_output_key_for_node(&output_node, self.output_type));
 
         let mut manifest_inputs = Vec::new();
         let mut provider_inputs = Vec::new();
@@ -2709,5 +2709,65 @@ pub(super) fn empty_dash(value: &str) -> &str {
         "-"
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_existing_provider_preserves_manifest_output_key() {
+        let output_key = "custom_video_output";
+        let manifest = ProviderManifest::ComfyUi {
+            schema_version: 1,
+            name: Some("Video Provider".to_string()),
+            description: None,
+            output_type: ProviderOutputType::Video,
+            workflow_kind: ProviderWorkflowKind::ImageToVideo,
+            timeline_bridge: None,
+            workflow: ComfyWorkflowRef {
+                workflow_path: "workflow.json".to_string(),
+                workflow_hash: None,
+            },
+            inputs: Vec::new(),
+            output: ComfyOutputSelector {
+                selector: NodeSelector {
+                    node_id: Some("42".to_string()),
+                    tag: None,
+                    class_type: "PreviewVideo".to_string(),
+                    input_key: output_key.to_string(),
+                    title: Some("Preview Video".to_string()),
+                },
+                index: None,
+            },
+        };
+        let entry = ProviderEntry {
+            id: Uuid::new_v4(),
+            name: "Video Provider".to_string(),
+            description: None,
+            output_type: ProviderOutputType::Video,
+            workflow_kind: ProviderWorkflowKind::ImageToVideo,
+            timeline_bridge: None,
+            inputs: Vec::new(),
+            connection: ProviderConnection::ComfyUi {
+                base_url: "http://127.0.0.1:8188".to_string(),
+                workflow_path: Some("workflow.json".to_string()),
+                manifest: Some(manifest),
+            },
+        };
+
+        let builder = ProviderBuilderState::from_entry(Some(PathBuf::from("provider.json")), entry);
+        assert_eq!(builder.output_key, output_key);
+
+        let saved = builder.build_save_payload().expect("save payload");
+        let ProviderConnection::ComfyUi {
+            manifest: Some(ProviderManifest::ComfyUi { output, .. }),
+            ..
+        } = saved.entry.connection
+        else {
+            panic!("expected saved comfy manifest");
+        };
+        assert_eq!(output.selector.input_key, output_key);
     }
 }

@@ -2,6 +2,15 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoMetadata {
+    pub duration_seconds: Option<f64>,
+    pub fps: Option<f64>,
+    pub frame_count: Option<u32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
 /// Probe media duration in seconds using ffprobe.
 pub fn probe_duration_seconds(path: &Path) -> Option<f64> {
     let output = Command::new("ffprobe")
@@ -76,6 +85,28 @@ pub fn probe_video_fps(path: &Path) -> Option<f64> {
     parse_ffprobe_fps(&output.stdout)
 }
 
+/// Probe primary video stream metadata with one ffprobe call.
+pub fn probe_video_metadata(path: &Path) -> Option<VideoMetadata> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration:format=duration")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    parse_ffprobe_video_metadata(&output.stdout)
+}
+
 fn parse_ffprobe_dimensions(raw: &[u8]) -> Option<(u32, u32)> {
     let parsed: Value = serde_json::from_slice(raw).ok()?;
     let streams = parsed.get("streams")?.as_array()?;
@@ -106,6 +137,69 @@ fn parse_ffprobe_rate(value: &str) -> Option<f64> {
         return None;
     }
     value.trim().parse::<f64>().ok()
+}
+
+fn parse_ffprobe_video_metadata(raw: &[u8]) -> Option<VideoMetadata> {
+    let parsed: Value = serde_json::from_slice(raw).ok()?;
+    let stream = parsed
+        .get("streams")
+        .and_then(Value::as_array)
+        .and_then(|streams| streams.first());
+    let format = parsed.get("format");
+
+    let fps = stream.and_then(|stream| {
+        ["avg_frame_rate", "r_frame_rate"]
+            .into_iter()
+            .filter_map(|key| stream.get(key).and_then(Value::as_str))
+            .filter_map(parse_ffprobe_rate)
+            .find(|fps| fps.is_finite() && *fps > 0.0)
+    });
+    let duration_seconds = stream
+        .and_then(|stream| stream.get("duration"))
+        .and_then(Value::as_str)
+        .and_then(parse_positive_f64)
+        .or_else(|| {
+            format
+                .and_then(|format| format.get("duration"))
+                .and_then(Value::as_str)
+                .and_then(parse_positive_f64)
+        });
+    let frame_count = stream
+        .and_then(|stream| stream.get("nb_frames"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<u32>().ok())
+        .or_else(|| {
+            duration_seconds.zip(fps).map(|(duration, fps)| {
+                (duration.max(0.0) * fps)
+                    .round()
+                    .clamp(1.0, u32::MAX as f64) as u32
+            })
+        });
+    let width = stream
+        .and_then(|stream| stream.get("width"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let height = stream
+        .and_then(|stream| stream.get("height"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+
+    Some(VideoMetadata {
+        duration_seconds,
+        fps,
+        frame_count,
+        width,
+        height,
+    })
+}
+
+fn parse_positive_f64(value: &str) -> Option<f64> {
+    let value = value.trim().parse::<f64>().ok()?;
+    if value.is_finite() && value > 0.0 {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 pub fn probe_asset_duration(
@@ -222,5 +316,44 @@ mod tests {
         }"#;
         let fps = parse_ffprobe_fps(raw).unwrap();
         assert!((fps - 23.976_023_976_023_978).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn parse_ffprobe_video_metadata_uses_stream_then_format() {
+        let raw = br#"{
+            "streams": [
+                {
+                    "width": 1024,
+                    "height": 512,
+                    "avg_frame_rate": "15/1",
+                    "r_frame_rate": "30/1",
+                    "nb_frames": "75",
+                    "duration": "5.000000"
+                }
+            ],
+            "format": { "duration": "5.100000" }
+        }"#;
+        let metadata = parse_ffprobe_video_metadata(raw).unwrap();
+        assert_eq!(metadata.width, Some(1024));
+        assert_eq!(metadata.height, Some(512));
+        assert_eq!(metadata.fps, Some(15.0));
+        assert_eq!(metadata.frame_count, Some(75));
+        assert_eq!(metadata.duration_seconds, Some(5.0));
+    }
+
+    #[test]
+    fn parse_ffprobe_video_metadata_derives_frame_count() {
+        let raw = br#"{
+            "streams": [
+                {
+                    "avg_frame_rate": "16/1"
+                }
+            ],
+            "format": { "duration": "5.062500" }
+        }"#;
+        let metadata = parse_ffprobe_video_metadata(raw).unwrap();
+        assert_eq!(metadata.fps, Some(16.0));
+        assert_eq!(metadata.frame_count, Some(81));
+        assert_eq!(metadata.duration_seconds, Some(5.0625));
     }
 }

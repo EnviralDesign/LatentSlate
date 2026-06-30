@@ -86,6 +86,7 @@ impl LatentSlateApp {
         self.preview_perf_sequence = 0;
         self.asset_thumbnails.clear();
         self.asset_thumbnail_misses.clear();
+        self.asset_thumbnail_warmups.clear();
         self.asset_source_dimensions.clear();
         self.asset_source_dimension_misses.clear();
         self.asset_source_fps.clear();
@@ -669,8 +670,8 @@ impl LatentSlateApp {
             return None;
         }
 
-        let project_root = self.editor.project.project_path.as_deref()?;
-        for path in asset_thumbnail_candidates(project_root, asset) {
+        let project_root = self.editor.project.project_path.clone()?;
+        for path in asset_thumbnail_candidates(&project_root, asset) {
             if let Some((image, size)) = load_thumbnail_image(&path) {
                 let texture = ctx.load_texture(
                     format!("asset-thumbnail-{}", asset.id),
@@ -684,8 +685,34 @@ impl LatentSlateApp {
             }
         }
 
+        if self.request_video_asset_thumbnail_warmup(&project_root, asset) {
+            return None;
+        }
+
         self.asset_thumbnail_misses.insert(asset.id);
         None
+    }
+
+    fn request_video_asset_thumbnail_warmup(&mut self, project_root: &Path, asset: &Asset) -> bool {
+        let Some(source_path) = asset_video_source_path(project_root, asset) else {
+            return false;
+        };
+        if !source_path.exists() {
+            return false;
+        }
+        let Some(runtime) = self.generation_runtime.as_ref() else {
+            return false;
+        };
+        if !self.asset_thumbnail_warmups.insert(asset.id) {
+            return true;
+        }
+
+        let thumbnailer = Arc::clone(&self.editor.thumbnailer);
+        let asset = asset.clone();
+        runtime.spawn(async move {
+            let _ = thumbnailer.generate(&asset, false).await;
+        });
+        true
     }
 
     pub(super) fn asset_source_dimensions(&mut self, asset: &Asset) -> Option<Vec2> {

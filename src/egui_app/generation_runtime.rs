@@ -356,6 +356,23 @@ impl LatentSlateApp {
             );
         }
 
+        if job.output_type == ProviderOutputType::Video {
+            if let Some(metadata) = probe_video_metadata(&output.path) {
+                if let (Some(fps), Some(frame_count)) = (metadata.fps, metadata.frame_count) {
+                    let _ = self.editor.project.set_generative_video_timing(
+                        job.asset_id,
+                        fps,
+                        frame_count,
+                    );
+                } else if let Some(duration) = metadata.duration_seconds {
+                    let _ = self
+                        .editor
+                        .project
+                        .set_asset_duration(job.asset_id, Some(duration));
+                }
+            }
+        }
+
         self.editor.previewer.invalidate_folder(&job.folder_path);
         self.invalidate_asset_visual_cache(job.asset_id);
         self.editor.preview_dirty = true;
@@ -370,6 +387,9 @@ impl LatentSlateApp {
             self.editor.project.find_asset(job.asset_id).cloned(),
         ) {
             let thumbnailer = Arc::clone(&self.editor.thumbnailer);
+            if asset.is_video() {
+                self.asset_thumbnail_warmups.insert(job.asset_id);
+            }
             runtime.spawn(async move {
                 let _ = thumbnailer.generate(&asset, true).await;
             });
@@ -379,6 +399,7 @@ impl LatentSlateApp {
     pub(super) fn invalidate_asset_visual_cache(&mut self, asset_id: Uuid) {
         self.asset_thumbnails.remove(&asset_id);
         self.asset_thumbnail_misses.remove(&asset_id);
+        self.asset_thumbnail_warmups.remove(&asset_id);
         self.asset_source_dimensions.remove(&asset_id);
         self.asset_source_dimension_misses.remove(&asset_id);
         self.asset_source_fps.remove(&asset_id);

@@ -167,6 +167,16 @@ pub enum AutomationCommand {
         #[serde(default)]
         duration_seconds: Option<f64>,
     },
+    /// Place multiple assets end-to-end on one compatible timeline track.
+    PlaceSequence {
+        items: Vec<SequencePlacementItem>,
+        #[serde(default)]
+        track_id: Option<Uuid>,
+        #[serde(default)]
+        start_time: Option<f64>,
+        #[serde(default)]
+        gap_seconds: Option<f64>,
+    },
     /// Create a hollow generative asset.
     CreateGenerativeAsset {
         output_type: ProviderOutputType,
@@ -723,6 +733,18 @@ pub struct ClipMoveTarget {
     pub start_time: Option<f64>,
     #[serde(default)]
     pub track_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SequencePlacementItem {
+    #[serde(default)]
+    pub asset_id: Option<Uuid>,
+    #[serde(default)]
+    pub asset_name: Option<String>,
+    #[serde(default)]
+    pub duration_seconds: Option<f64>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1893,7 +1915,7 @@ pub fn agent_help_json() -> Value {
             { "method": "GET", "path": "/agent/v1/capabilities", "purpose": "Compact supported command and capture list." },
             { "method": "GET", "path": "/agent/v1/help", "purpose": "Bootstrap help, workflow hints, and examples." },
             { "method": "GET", "path": "/agent/v1/schema", "purpose": "Command, capture, enum, and response shapes." },
-            { "method": "GET", "path": "/agent/v1/state?include=diagnostics", "purpose": "Read project, selection, providers, queue, layout, and optional diagnostics." },
+            { "method": "GET", "path": "/agent/v1/state?include=diagnostics", "purpose": "Read project, selection, sparse providers, compact queue, layout, and optional diagnostics. Add include=providers:full or include=queue:full for heavy details." },
             { "method": "GET", "path": "/agent/v1/projects", "purpose": "List project folders." },
             { "method": "GET", "path": "/agent/v1/jobs", "purpose": "List generation jobs." },
             { "method": "GET", "path": "/agent/v1/jobs/{job_id}", "purpose": "Read one generation job." },
@@ -1909,7 +1931,8 @@ pub fn agent_help_json() -> Value {
         },
         "recommended_workflow": [
             "Read /agent/v1/health and /agent/v1/schema.",
-            "Read /agent/v1/state to get IDs and current editor state.",
+            "Read /agent/v1/state to get IDs and current editor state; default providers and jobs are compact.",
+            "Use GET /agent/v1/state?include=providers:full or list_providers when full provider input descriptions are needed.",
             "Use semantic commands first; use get_ui/click_ui/text_ui only for UI fallback.",
             "Set provider media parameters with inputs.<field> = { type: \"asset_ref\", asset_id: \"uuid\", pinned: true }. reference_slots are compatibility aliases and timeline hints.",
             "Use start_generation as a non-blocking enqueue step, then POST /agent/v1/wait/generation with a returned job_id when you need to synchronize.",
@@ -1964,6 +1987,16 @@ pub fn agent_help_json() -> Value {
                 "layout": { "columns": 3, "thumb_width": 384 },
                 "mode": "enhanced",
                 "annotate": true
+            },
+            "place_sequence": {
+                "type": "place_sequence",
+                "items": [
+                    { "asset_id": "uuid", "duration_seconds": 5.0, "label": "shot 01" },
+                    { "asset_name": "Shot 02", "duration_seconds": 5.0 }
+                ],
+                "track_id": "uuid",
+                "start_time": 0.0,
+                "gap_seconds": 0.0
             }
         }
     })
@@ -1999,7 +2032,7 @@ pub fn build_agent_bootstrap(
         "1. Call GET /agent/v1/health to confirm the server and API popover toggle.".to_string(),
         "2. Call GET /agent/v1/help and GET /agent/v1/schema to bootstrap command shapes."
             .to_string(),
-        "3. Call GET /agent/v1/state?include=diagnostics to discover project IDs.".to_string(),
+        "3. Call GET /agent/v1/state?include=diagnostics to discover project IDs; add include=providers:full or include=queue:full only when needed.".to_string(),
         "4. Prefer POST /agent/v1/command with semantic commands over UI clicks.".to_string(),
         "5. Use GET /ui plus POST /ui/click or /ui/text only as a fallback for visible widgets."
             .to_string(),
@@ -2031,7 +2064,7 @@ pub fn build_agent_bootstrap(
         "High-Value Commands".to_string(),
         "- Project: list_projects, create_project, open_project, save_project, set_project_settings"
             .to_string(),
-        "- Timeline: seek, set_playback, step_timeline, add_asset_to_timeline, move_clip, move_clips, set_clip"
+        "- Timeline: seek, set_playback, step_timeline, add_asset_to_timeline, place_sequence, move_clip, move_clips, set_clip"
             .to_string(),
         "- Tracks/markers: add_track, set_track, move_track, delete_track, add_marker, set_marker"
             .to_string(),
@@ -2217,8 +2250,8 @@ pub fn agent_schema_json() -> Value {
             "success_data": {
                 "completed": true,
                 "timed_out": false,
-                "job?": "present when job_id was supplied",
-                "jobs?": "present when waiting for the whole queue"
+                "job?": "compact job snapshot present when job_id was supplied",
+                "jobs?": "compact job snapshots present when waiting for the whole queue"
             },
             "timeout": {
                 "http_status": 408,
@@ -2304,9 +2337,11 @@ pub fn agent_schema_json() -> Value {
             "Timeline bridge providers use workflow_kind=video_to_bridge and roles width, height, seed, left_video, right_video, fps, left_replace_frames, right_replace_frames, and edge_blend_frames.",
             "create_bridge_from_clips uses a video_to_bridge provider when provider_id names one, or when exactly one video_to_bridge provider is available in the project scope.",
             "Project provider scope filters /agent/v1/state providers and list_providers by default; pass include_all=true to list_providers or include=all_providers to state for repair workflows.",
+            "State providers and queue are compact by default; use include=providers:full, include=queue:full, or list_providers for heavy details.",
             "start_generation is non-blocking; use /agent/v1/wait/generation to wait for a returned job_id or for the queue to drain.",
             "Read-only captures do not move the UI unless seek_ui is true.",
-            "Use enhanced capture mode when visual boundaries, labels, and timecode help inspection."
+            "Capture responses include markdown image strings plus manifest paths for quick visual inspection.",
+            "Use enhanced capture mode when visual boundaries, labels, active clip metadata, and timecode help inspection."
         ]
     })
 }
@@ -2338,6 +2373,7 @@ fn agent_command_names() -> Vec<&'static str> {
         "extract_generation_version",
         "extract_still_to_asset",
         "add_asset_to_timeline",
+        "place_sequence",
         "seek",
         "set_playback",
         "step_timeline",
@@ -2425,6 +2461,7 @@ fn agent_command_schema_json() -> Value {
         ],
         "timeline": [
             { "type": "add_asset_to_timeline", "fields": { "asset_id?": "uuid", "asset_name?": "string", "track_id?": "uuid", "time?": "seconds", "duration_seconds?": "seconds" } },
+            { "type": "place_sequence", "fields": { "items": [{ "asset_id?": "uuid", "asset_name?": "exact string", "duration_seconds?": "seconds", "label?": "clip label" }], "track_id?": "uuid; when omitted one track must be compatible with all items", "start_time?": "seconds; default current playhead", "gap_seconds?": "seconds between clips, default 0" } },
             { "type": "seek", "fields": { "time": "seconds" } },
             { "type": "set_playback", "fields": { "playing": "bool" } },
             { "type": "step_timeline", "fields": { "frames": "signed frame count" } },
@@ -2499,7 +2536,7 @@ fn capture_schema_json() -> Value {
             "seconds": "absolute seconds",
             "frame": "frame number at project fps",
             "percent": "0.0..1.0 within timeline/clip/asset scope",
-            "key": "first|last|current"
+            "key": "first|last|current; last resolves to the final decodable frame when source fps/frame_count is known"
         },
         "source": {
             "timeline": { "type": "timeline" },
@@ -2533,6 +2570,13 @@ fn capture_schema_json() -> Value {
             "annotate?": "bool",
             "seek_ui?": "bool",
             "name?": "folder slug"
+        },
+        "response": {
+            "capture.path": "absolute PNG path",
+            "capture.markdown": "markdown image string for the main frame or cutsheet",
+            "capture.manifest_path": "absolute manifest JSON path",
+            "capture.frames[]?": "cutsheet frame paths, markdown strings, times, stats, and inspection metadata",
+            "capture.inspection?": "active clip metadata for frame captures"
         }
     })
 }
