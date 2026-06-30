@@ -13,6 +13,9 @@ pub struct ProjectSettings {
     /// Project timeline duration in seconds
     #[serde(default = "default_project_duration_seconds")]
     pub duration_seconds: f64,
+    /// Optional project description and agent-facing instructions.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     /// Preview downsample width in pixels
     #[serde(default = "default_preview_max_width")]
     pub preview_max_width: u32,
@@ -73,6 +76,7 @@ impl Default for ProjectSettings {
             height: 720,
             fps: 30.0,
             duration_seconds: default_project_duration_seconds(),
+            description: String::new(),
             preview_max_width: default_preview_max_width(),
             preview_max_height: default_preview_max_height(),
             provider_scope: ProjectProviderScope::All,

@@ -266,8 +266,14 @@ impl LatentSlateApp {
         if self.editor.overlays.asset_lab {
             self.asset_lab_modal(ctx);
         }
+        if self.project_description_editor.is_some() {
+            self.project_description_modal(ctx);
+        }
         if self.unsaved_close_confirmation_open {
             self.unsaved_close_confirmation_modal(ctx);
+        }
+        if self.project_delete_confirmation.is_some() {
+            self.project_delete_confirmation_modal(ctx);
         }
         if self.asset_delete_confirmation.is_some() {
             self.asset_delete_confirmation_modal(ctx);

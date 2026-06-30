@@ -299,6 +299,33 @@ impl EditorState {
         Ok(project_root)
     }
 
+    pub fn close_project_to_startup(&mut self, status: impl Into<String>) {
+        let scratch = crate::core::paths::app_cache_root().join("scratch");
+        self.project = Project::default();
+        self.selection.clear();
+        self.thumbnailer = Arc::new(Thumbnailer::new(scratch.clone()));
+        self.previewer = Arc::new(crate::core::preview::PreviewRenderer::new_with_limits(
+            scratch,
+            PREVIEW_CACHE_BUDGET_BYTES,
+            ProjectSettings::default().preview_max_width,
+            ProjectSettings::default().preview_max_height,
+        ));
+        self.refresh_providers();
+        self.current_time = 0.0;
+        self.is_playing = false;
+        self.startup_done = false;
+        self.layout = EditorLayout::default();
+        self.overlays = EditorOverlays {
+            startup: true,
+            ..Default::default()
+        };
+        self.generation_queue.clear();
+        self.status = status.into();
+        self.preview_dirty = true;
+        self.project_dirty = false;
+        self.project_saved_fingerprint = None;
+    }
+
     fn set_project(&mut self, project: Project, project_root: PathBuf, preview_limits: (u32, u32)) {
         self.layout
             .apply_workspace_layout(&project.workspace_layout);
@@ -678,6 +705,9 @@ impl EditorState {
             if duration.is_finite() {
                 self.project.settings.duration_seconds = duration.max(0.0);
             }
+        }
+        if let Some(description) = patch.description.as_ref() {
+            self.project.settings.description = description.trim().to_string();
         }
         if let Some(width) = patch.preview_max_width {
             self.project.settings.preview_max_width = width.max(1);

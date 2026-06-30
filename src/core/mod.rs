@@ -8,6 +8,7 @@ pub mod media;
 pub mod paths;
 pub mod preview;
 pub mod provider_store;
+pub mod recycle_bin;
 pub mod thumbnailer;
 pub mod timeline_bridge;
 pub mod timeline_snap;

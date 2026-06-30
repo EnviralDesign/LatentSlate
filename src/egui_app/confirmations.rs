@@ -1,13 +1,23 @@
+use std::path::{Path, PathBuf};
+
 use eframe::egui::{self, Context, RichText};
 use uuid::Uuid;
 
-use crate::state::ClipImageMode;
+use crate::state::{ClipImageMode, GenerationJobStatus};
 use crate::ui_kit as kit;
 
 use super::{
-    modal_size, unique_uuid_list, LatentSlateApp, ASSET_DELETE_MODAL_SIZE,
-    BRIDGE_KEYFRAME_MODAL_SIZE, TRACK_DELETE_MODAL_SIZE,
+    modal_size, unique_uuid_list, ExportModalState, LatentSlateApp, ASSET_DELETE_MODAL_SIZE,
+    BRIDGE_KEYFRAME_MODAL_SIZE, PROJECT_DELETE_MODAL_SIZE, TRACK_DELETE_MODAL_SIZE,
 };
+#[derive(Clone, Debug)]
+pub(super) struct ProjectDeleteConfirmation {
+    pub(super) path: PathBuf,
+    pub(super) name: String,
+    pub(super) is_current: bool,
+    pub(super) has_unsaved_changes: bool,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct AssetDeleteConfirmation {
     pub(super) asset_ids: Vec<Uuid>,
@@ -34,6 +44,36 @@ pub(super) struct BridgeKeyframeConfirmation {
 }
 
 impl LatentSlateApp {
+    pub(super) fn request_delete_current_project(&mut self) {
+        let Some(path) = self.editor.project.project_path.clone() else {
+            self.editor.status = "No project is currently open.".to_string();
+            return;
+        };
+        self.request_delete_project_folder(path);
+    }
+
+    pub(super) fn request_delete_project_folder(&mut self, path: PathBuf) {
+        if !path.join("project.json").exists() {
+            self.editor.status = format!("Not a LatentSlate project folder: {}", path.display());
+            return;
+        }
+
+        self.editor.refresh_project_dirty_state();
+        let name = project_display_name(&path);
+        let is_current = self
+            .editor
+            .project
+            .project_path
+            .as_deref()
+            .is_some_and(|current| paths_equivalent(current, &path));
+        self.project_delete_confirmation = Some(ProjectDeleteConfirmation {
+            path,
+            name,
+            is_current,
+            has_unsaved_changes: is_current && self.editor.project_dirty,
+        });
+    }
+
     pub(super) fn request_delete_selected_assets(&mut self) {
         let asset_ids = self.editor.selection.asset_ids.clone();
         self.request_delete_assets(&asset_ids);
@@ -102,6 +142,10 @@ impl LatentSlateApp {
     }
 
     fn release_media_handles_for_deleted_assets(&mut self) {
+        self.release_project_media_handles();
+    }
+
+    pub(super) fn release_project_media_handles(&mut self) {
         self.invalidate_preview_render_jobs();
         self.preview_layers = None;
         self.editor.previewer.release_media_handles();
@@ -111,6 +155,55 @@ impl LatentSlateApp {
             engine.set_items(Vec::new());
         }
         self.editor.is_playing = false;
+        self.editor.preview_dirty = true;
+    }
+
+    pub(super) fn perform_delete_project(&mut self, confirmation: &ProjectDeleteConfirmation) {
+        if confirmation.is_current {
+            if let Some(message) = self.current_project_delete_blocker() {
+                self.editor.status = message.to_string();
+                return;
+            }
+            self.release_project_media_handles();
+        }
+
+        match crate::core::recycle_bin::move_path_to_recycle_bin(&confirmation.path) {
+            Ok(()) => {
+                let status = format!(
+                    "Moved project \"{}\" to the Recycle Bin.",
+                    confirmation.name
+                );
+                if confirmation.is_current {
+                    self.editor.close_project_to_startup(status);
+                    self.project_settings = self.editor.project.settings.clone();
+                    self.export_modal = ExportModalState::for_project(&self.editor.project);
+                    self.export_preview_texture = None;
+                    self.clear_project_runtime_cache();
+                } else {
+                    self.editor.status = status;
+                }
+            }
+            Err(err) => {
+                self.editor.status = err;
+            }
+        }
+    }
+
+    fn current_project_delete_blocker(&self) -> Option<&'static str> {
+        if self.export_cancel.is_some() {
+            return Some("Cancel or finish the running export before deleting this project.");
+        }
+        if self.generation_active.is_some()
+            || self.editor.generation_queue.iter().any(|job| {
+                matches!(
+                    job.status,
+                    GenerationJobStatus::Queued | GenerationJobStatus::Running
+                )
+            })
+        {
+            return Some("Cancel or finish queued generation jobs before deleting this project.");
+        }
+        None
     }
 
     pub(super) fn request_delete_selected_tracks(&mut self) {
@@ -313,6 +406,125 @@ impl LatentSlateApp {
             self.perform_delete_assets(&asset_ids);
         } else if cancel_clicked || close_clicked || outside_clicked || !open {
             self.asset_delete_confirmation = None;
+        }
+    }
+
+    pub(super) fn project_delete_confirmation_modal(&mut self, ctx: &Context) {
+        let Some(confirmation) = self.project_delete_confirmation.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut cancel_clicked = false;
+        let mut delete_clicked = false;
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "project_delete", true);
+        let size = modal_size(ctx, PROJECT_DELETE_MODAL_SIZE, [420.0, 300.0]);
+        egui::Window::new("Delete Project")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Delete Project?",
+                    Some("Move the entire project folder to the Windows Recycle Bin."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    kit::body_with_footer(
+                        ui,
+                        150.0,
+                        kit::SECONDARY_BUTTON_H,
+                        |ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "You are about to delete \"{}\".",
+                                    confirmation.name
+                                ))
+                                .color(kit::TEXT)
+                                .strong(),
+                            );
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "The full project folder will be moved to the Windows Recycle Bin, including project cache files, thumbnails, generated media, imports copied into the project, and exports stored inside that project.",
+                                    )
+                                    .color(kit::TEXT_MUTED),
+                                )
+                                .wrap(),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(
+                                        "Provider definitions, workflows, and other projects are not affected.",
+                                    )
+                                    .color(kit::TEXT_MUTED),
+                                )
+                                .wrap(),
+                            );
+                            if confirmation.is_current {
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                ui.label(
+                                    RichText::new("The current project will close after deletion.")
+                                        .color(kit::TEXT_MUTED),
+                                );
+                                if confirmation.has_unsaved_changes {
+                                    ui.label(
+                                        RichText::new("Unsaved changes will be discarded with the project folder.")
+                                            .color(kit::DANGER),
+                                    );
+                                }
+                            }
+                            ui.add_space(kit::ACTION_GAP);
+                            kit::field_label(ui, "Folder");
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(confirmation.path.display().to_string())
+                                        .color(kit::TEXT),
+                                )
+                                .wrap(),
+                            );
+                        },
+                        |ui| {
+                            kit::equal_width_action_row(
+                                ui,
+                                2,
+                                kit::SECONDARY_BUTTON_H,
+                                kit::ACTION_GAP,
+                                |ui, index, button_w| match index {
+                                    0 => {
+                                        cancel_clicked =
+                                            kit::secondary_button(ui, "Cancel", button_w)
+                                                .clicked();
+                                    }
+                                    _ => {
+                                        delete_clicked =
+                                            kit::danger_button(
+                                                ui,
+                                                "Move to Recycle Bin",
+                                                button_w,
+                                            )
+                                            .clicked();
+                                    }
+                                },
+                            );
+                        },
+                    );
+                });
+            });
+
+        if delete_clicked {
+            self.project_delete_confirmation = None;
+            self.perform_delete_project(&confirmation);
+        } else if cancel_clicked || close_clicked || outside_clicked || !open {
+            self.project_delete_confirmation = None;
         }
     }
 
@@ -525,5 +737,20 @@ impl LatentSlateApp {
         } else if cancel_clicked || close_clicked || outside_clicked || !open {
             self.bridge_keyframe_confirmation = None;
         }
+    }
+}
+
+fn project_display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Project")
+        .to_string()
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
 }

@@ -496,6 +496,18 @@ impl LatentSlateApp {
         }
 
         let activate_on_success = lab_node_id.is_none();
+        let lab_node_parent_id = if activate_on_success {
+            None
+        } else {
+            lab_node_id.and_then(|node_id| {
+                config_snapshot
+                    .lab_graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == node_id)
+                    .and_then(|node| node.parent_node_id)
+            })
+        };
         let mut next_parent_node_id = if activate_on_success {
             self.ensure_asset_lab_graph_for_versions(asset_id);
             self.editor
@@ -561,8 +573,51 @@ impl LatentSlateApp {
                 next_parent_node_id = Some(node_id);
                 graph_save_needed = true;
                 Some(node_id)
+            } else if let Some(existing_node_id) = lab_node_id {
+                if index == 0 {
+                    let mut found = false;
+                    let updated =
+                        self.editor
+                            .project
+                            .update_generative_config(asset_id, |config| {
+                                if let Some(node) = config
+                                    .lab_graph
+                                    .nodes
+                                    .iter_mut()
+                                    .find(|node| node.id == existing_node_id)
+                                {
+                                    found = true;
+                                    node.provider_id = Some(provider.id);
+                                    node.inputs = inputs_snapshot.clone();
+                                    node.output_version = None;
+                                    config.lab_graph.selected_node_id = Some(existing_node_id);
+                                }
+                            });
+                    if !updated || !found {
+                        return Err("Asset Lab step was not found.".to_string());
+                    }
+                    graph_save_needed = true;
+                    Some(existing_node_id)
+                } else {
+                    let mut node =
+                        AssetLabNode::new_with_parent(Some(provider.id), lab_node_parent_id);
+                    node.inputs = inputs_snapshot.clone();
+                    let node_id = node.id;
+                    let updated =
+                        self.editor
+                            .project
+                            .update_generative_config(asset_id, |config| {
+                                config.lab_graph.selected_node_id = Some(node_id);
+                                config.lab_graph.nodes.push(node);
+                            });
+                    if !updated {
+                        return Err("Asset does not support Asset Lab lineage.".to_string());
+                    }
+                    graph_save_needed = true;
+                    Some(node_id)
+                }
             } else {
-                lab_node_id
+                None
             };
 
             jobs.push(GenerationJob {

@@ -9,8 +9,9 @@ use eframe::egui::{
 use uuid::Uuid;
 
 use crate::state::{
-    parse_version_index, Asset, AssetKind, AssetLabNode, GenerationRecord, GenerativeConfig,
-    InputValue, ProviderEntry, ProviderInputField, ProviderInputType, ProviderOutputType,
+    parse_version_index, Asset, AssetKind, AssetLabNode, BatchSettings, GenerationRecord,
+    GenerativeConfig, InputValue, ProviderEntry, ProviderInputField, ProviderInputType,
+    ProviderOutputType, SeedStrategy,
 };
 use crate::ui_kit as kit;
 
@@ -26,6 +27,8 @@ use super::{
 };
 
 const ASSET_LAB_WHEEL_ZOOM_MULTIPLIER: f32 = 4.0;
+const ASSET_LAB_GRAPH_ZOOM_MIN: f32 = 0.20;
+const ASSET_LAB_GRAPH_ZOOM_MAX: f32 = 4.8;
 
 #[derive(Clone, Debug)]
 pub(super) struct AssetLabState {
@@ -40,10 +43,13 @@ pub(super) struct AssetLabState {
     pub(super) graph_pan: Vec2,
     pub(super) graph_zoom: f32,
     pub(super) graph_pan_drag: Option<(Vec2, Pos2)>,
+    pub(super) pending_graph_focus_node_id: Option<Uuid>,
     pub(super) draft_source_node_id: Option<Uuid>,
     pub(super) draft_base_version: Option<String>,
     pub(super) draft_provider_id: Option<Uuid>,
     pub(super) draft_inputs: HashMap<String, InputValue>,
+    pub(super) run_batch_count: u32,
+    pub(super) run_seed_strategy: SeedStrategy,
 }
 
 impl Default for AssetLabState {
@@ -60,10 +66,13 @@ impl Default for AssetLabState {
             graph_pan: Vec2::ZERO,
             graph_zoom: 1.0,
             graph_pan_drag: None,
+            pending_graph_focus_node_id: None,
             draft_source_node_id: None,
             draft_base_version: None,
             draft_provider_id: None,
             draft_inputs: HashMap::new(),
+            run_batch_count: 1,
+            run_seed_strategy: SeedStrategy::Increment,
         }
     }
 }
@@ -74,6 +83,12 @@ impl AssetLabState {
         self.draft_base_version = None;
         self.draft_provider_id = None;
         self.draft_inputs.clear();
+        self.reset_run_controls();
+    }
+
+    pub(super) fn reset_run_controls(&mut self) {
+        self.run_batch_count = 1;
+        self.run_seed_strategy = SeedStrategy::Increment;
     }
 
     fn draft_matches(&self, source_node_id: Uuid, base_version: Option<&str>) -> bool {
@@ -122,7 +137,10 @@ pub(super) enum AssetLabAction {
         node_id: Uuid,
         input_name: String,
     },
-    GenerateNode(Uuid),
+    GenerateNode {
+        node_id: Uuid,
+        batch: BatchSettings,
+    },
     CreateEditStepFromVersion(String),
     DeleteNode(Uuid),
     DuplicateAsset,
@@ -397,6 +415,28 @@ fn asset_lab_generation_ref_for_input(
     }
 }
 
+fn fill_missing_asset_lab_media_inputs_from_version(
+    asset: &Asset,
+    provider: &ProviderEntry,
+    inputs: &mut HashMap<String, InputValue>,
+    version: &str,
+) -> usize {
+    let mut filled = 0;
+    for input in &provider.inputs {
+        if !input.required {
+            continue;
+        }
+        if inputs.contains_key(&input.name) {
+            continue;
+        }
+        if let Some(value) = asset_lab_generation_ref_for_input(asset, input, version) {
+            inputs.insert(input.name.clone(), value);
+            filled += 1;
+        }
+    }
+    filled
+}
+
 fn retain_node_inputs_for_provider(
     inputs: &mut HashMap<String, InputValue>,
     provider: &ProviderEntry,
@@ -452,24 +492,81 @@ fn asset_lab_record_for_version<'a>(
     })
 }
 
+fn asset_lab_node_id_for_version(
+    config: Option<&GenerativeConfig>,
+    version: Option<&str>,
+) -> Option<Uuid> {
+    asset_lab_record_for_version(config, version).and_then(|record| record.lab_node_id)
+}
+
 fn asset_lab_record_is_node_baseline(record: &GenerationRecord, node: &AssetLabNode) -> bool {
     record.lab_node_id == Some(node.id)
         || node.output_version.as_deref() == Some(record.version.as_str())
 }
 
-fn asset_lab_input_is_media_link(asset: &Asset, input: &ProviderInputField) -> bool {
-    asset_lab_generation_ref_for_input(asset, input, "__probe__").is_some()
+fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &str) -> Option<i64> {
+    node.inputs.get(seed_field).and_then(|input| match input {
+        InputValue::Literal { value } => input_value_as_i64(value),
+        InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
+    })
 }
 
-fn asset_lab_primary_media_input_name<'a>(
-    asset: &Asset,
-    provider: &'a ProviderEntry,
-) -> Option<&'a str> {
-    provider
-        .inputs
-        .iter()
-        .find(|input| asset_lab_input_is_media_link(asset, input))
-        .map(|input| input.name.as_str())
+fn asset_lab_seed_preview(
+    node: &AssetLabNode,
+    seed_field: Option<&str>,
+    batch_count: u32,
+    seed_strategy: SeedStrategy,
+) -> String {
+    let batch_count = batch_count.max(1).min(MAX_GENERATION_BATCH_COUNT);
+    let Some(seed_field) = seed_field else {
+        return if batch_count > 1 {
+            format!("{batch_count} attempts, repeated inputs")
+        } else {
+            "Single attempt".to_string()
+        };
+    };
+    let Some(seed) = asset_lab_node_seed_value(node, seed_field) else {
+        return match seed_strategy {
+            SeedStrategy::Increment => {
+                if batch_count > 1 {
+                    format!("{batch_count} attempts, random base seed")
+                } else {
+                    "Random base seed".to_string()
+                }
+            }
+            SeedStrategy::Random => {
+                if batch_count > 1 {
+                    format!("{batch_count} random seeds")
+                } else {
+                    "Random seed".to_string()
+                }
+            }
+            SeedStrategy::Keep => {
+                if batch_count > 1 {
+                    format!("{batch_count} attempts, no seed set")
+                } else {
+                    "No seed set".to_string()
+                }
+            }
+        };
+    };
+
+    if batch_count == 1 {
+        return format!("Seed {seed}");
+    }
+
+    match seed_strategy {
+        SeedStrategy::Increment => {
+            let last_seed = seed.saturating_add(batch_count as i64 - 1);
+            format!("Seeds {seed}-{last_seed}")
+        }
+        SeedStrategy::Random => format!("{batch_count} random seeds"),
+        SeedStrategy::Keep => format!("Seed {seed} repeated {batch_count}x"),
+    }
+}
+
+fn asset_lab_input_is_media_link(asset: &Asset, input: &ProviderInputField) -> bool {
+    asset_lab_generation_ref_for_input(asset, input, "__probe__").is_some()
 }
 
 #[derive(Clone, Debug)]
@@ -1103,6 +1200,55 @@ fn asset_lab_node_icon_button(
     response
 }
 
+fn asset_lab_node_text_button(
+    ui: &mut Ui,
+    rect: Rect,
+    id: egui::Id,
+    label: &str,
+    enabled: bool,
+    tooltip: &str,
+) -> Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, id, sense).on_hover_text(tooltip);
+    let fill = if response.hovered() && enabled {
+        kit::PRIMARY
+    } else {
+        kit::PRIMARY.gamma_multiply(0.45)
+    };
+    let stroke = if enabled {
+        kit::PRIMARY.gamma_multiply(0.85)
+    } else {
+        kit::BORDER_SOFT
+    };
+    let text_color = if enabled {
+        kit::TEXT_ON_ACCENT
+    } else {
+        kit::TEXT_DIM
+    };
+
+    ui.painter().rect_filled(rect, kit::field_radius(), fill);
+    ui.painter().rect_stroke(
+        rect,
+        kit::field_radius(),
+        Stroke::new(1.0, stroke),
+        egui::StrokeKind::Inside,
+    );
+    let galley = egui::WidgetText::from(RichText::new(label).color(text_color).size(11.0))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            (rect.width() - 10.0).max(0.0),
+            FontId::proportional(11.0),
+        );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, text_color);
+    response
+}
+
 fn asset_lab_input_label(input: &ProviderInputField) -> String {
     let raw = if input.label.trim().is_empty() {
         input.name.trim()
@@ -1465,15 +1611,29 @@ impl LatentSlateApp {
             graph_pan: Vec2::ZERO,
             graph_zoom: 1.0,
             graph_pan_drag: None,
+            pending_graph_focus_node_id: None,
             draft_source_node_id: None,
             draft_base_version: None,
             draft_provider_id: None,
             draft_inputs: HashMap::new(),
+            run_batch_count: 1,
+            run_seed_strategy: SeedStrategy::Increment,
         };
         self.asset_lab_preview_texture = None;
         self.asset_lab_node_preview_textures.clear();
         self.editor.overlays.asset_lab = true;
         self.ensure_asset_lab_graph_for_versions(asset_id);
+        self.asset_lab.pending_graph_focus_node_id = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| {
+                asset_lab_node_id_for_version(
+                    Some(config),
+                    self.asset_lab.selected_version.as_deref(),
+                )
+                .or(config.lab_graph.selected_node_id)
+            });
     }
 
     pub(super) fn close_asset_lab(&mut self) {
@@ -1868,6 +2028,37 @@ impl LatentSlateApp {
         let content_w = graph_margin * 2.0 + (max_lane as f32 + 1.0) * lane_pitch;
         let content_h = graph_margin * 2.0 + (max_depth as f32 + 1.0) * depth_pitch;
         let content_size = Vec2::new(content_w, content_h);
+        let hit_zoom = self
+            .asset_lab
+            .graph_zoom
+            .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
+        let hit_origin =
+            canvas_rect.center() + self.asset_lab.graph_pan - content_size * hit_zoom * 0.5;
+        let hit_scaled_node = node_size * hit_zoom;
+        let hit_scaled_lane_pitch = lane_pitch * hit_zoom;
+        let hit_scaled_depth_pitch = depth_pitch * hit_zoom;
+        let hit_scaled_margin = graph_margin * hit_zoom;
+        let mut graph_item_hit_rects: Vec<Rect> = Vec::new();
+        let mut graph_item_hit_by_id: HashMap<Uuid, Rect> = HashMap::new();
+        for entry in &layout.nodes {
+            let x = hit_origin.x + hit_scaled_margin + entry.lane as f32 * hit_scaled_lane_pitch;
+            let y = hit_origin.y
+                + hit_scaled_margin
+                + (max_depth.saturating_sub(entry.depth)) as f32 * hit_scaled_depth_pitch;
+            let rect = Rect::from_min_size(Pos2::new(x, y), hit_scaled_node);
+            graph_item_hit_rects.push(rect);
+            graph_item_hit_by_id.insert(entry.node_id, rect);
+        }
+        if let Some(ghost) = layout.ghost.as_ref() {
+            if graph_item_hit_by_id.contains_key(&ghost.parent_node_id) {
+                let x =
+                    hit_origin.x + hit_scaled_margin + ghost.lane as f32 * hit_scaled_lane_pitch;
+                let y = hit_origin.y
+                    + hit_scaled_margin
+                    + (max_depth.saturating_sub(ghost.depth)) as f32 * hit_scaled_depth_pitch;
+                graph_item_hit_rects.push(Rect::from_min_size(Pos2::new(x, y), hit_scaled_node));
+            }
+        }
 
         let pointer = ui
             .ctx()
@@ -1876,13 +2067,24 @@ impl LatentSlateApp {
         let pointer_in_canvas = pointer
             .map(|pointer| canvas_rect.contains(pointer))
             .unwrap_or(false);
-        if ui.input(|input| input.pointer.secondary_pressed()) && pointer_in_canvas {
+        let pointer_on_graph_item = pointer
+            .map(|pointer| {
+                graph_item_hit_rects
+                    .iter()
+                    .any(|rect| rect.contains(pointer))
+            })
+            .unwrap_or(false);
+        let pan_pressed =
+            ui.input(|input| input.pointer.primary_pressed() || input.pointer.secondary_pressed());
+        if pan_pressed && pointer_in_canvas && !pointer_on_graph_item {
             if let Some(start_pointer) = pointer {
                 self.asset_lab.graph_pan_drag = Some((self.asset_lab.graph_pan, start_pointer));
             }
         }
         if let Some((start_pan, start_pointer)) = self.asset_lab.graph_pan_drag {
-            if ui.input(|input| input.pointer.secondary_down()) {
+            let pan_down =
+                ui.input(|input| input.pointer.primary_down() || input.pointer.secondary_down());
+            if pan_down {
                 if let Some(pointer) = pointer {
                     self.asset_lab.graph_pan = start_pan + (pointer - start_pointer);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::AllScroll);
@@ -1895,10 +2097,14 @@ impl LatentSlateApp {
 
         let wheel_delta = preview_scroll_delta(ui, canvas_rect);
         if wheel_delta.abs() > f32::EPSILON {
-            let old_zoom = self.asset_lab.graph_zoom.clamp(0.45, 2.4);
+            let old_zoom = self
+                .asset_lab
+                .graph_zoom
+                .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
             let zoom_factor =
                 (1.0 + wheel_delta * 0.015 * ASSET_LAB_WHEEL_ZOOM_MULTIPLIER).clamp(0.28, 1.88);
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.45, 2.4);
+            let new_zoom =
+                (old_zoom * zoom_factor).clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
             if (new_zoom - old_zoom).abs() > f32::EPSILON {
                 if let Some(pointer) = ui
                     .ctx()
@@ -1918,8 +2124,28 @@ impl LatentSlateApp {
             }
         }
 
-        let zoom = self.asset_lab.graph_zoom.clamp(0.45, 2.4);
+        let zoom = self
+            .asset_lab
+            .graph_zoom
+            .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
         self.asset_lab.graph_zoom = zoom;
+
+        if let Some(focus_node_id) = self.asset_lab.pending_graph_focus_node_id.take() {
+            if let Some(entry) = layout
+                .nodes
+                .iter()
+                .find(|entry| entry.node_id == focus_node_id)
+            {
+                let focus_center = Vec2::new(
+                    graph_margin + entry.lane as f32 * lane_pitch + node_size.x * 0.5,
+                    graph_margin
+                        + (max_depth.saturating_sub(entry.depth)) as f32 * depth_pitch
+                        + node_size.y * 0.5,
+                );
+                self.asset_lab.graph_pan = content_size * zoom * 0.5 - focus_center * zoom;
+            }
+        }
+
         let origin = canvas_rect.center() + self.asset_lab.graph_pan - content_size * zoom * 0.5;
         let scaled_node = node_size * zoom;
         let scaled_lane_pitch = lane_pitch * zoom;
@@ -2409,21 +2635,26 @@ impl LatentSlateApp {
                     let can_generate = asset.is_generative()
                         && node.provider_id.is_some()
                         && pending_job_status.is_none();
-                    let mut generate_ui = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(generate_rect)
-                            .layout(Layout::top_down(Align::Min)),
-                    );
-                    generate_ui.set_min_size(generate_rect.size());
-                    generate_ui.shrink_clip_rect(generate_rect);
-                    generate_ui.set_width(generate_rect.width());
-                    generate_ui.set_max_width(generate_rect.width());
-                    generate_ui.add_enabled_ui(can_generate, |ui| {
-                        if kit::primary_button(ui, generate_label, ui.available_width()).clicked() {
-                            node_or_sidecar_clicked = true;
-                            *action = Some(AssetLabAction::GenerateNode(node.id));
-                        }
-                    });
+                    if asset_lab_node_text_button(
+                        ui,
+                        generate_rect,
+                        ui.id().with(("asset_lab_node_generate", node.id)),
+                        generate_label,
+                        can_generate,
+                        if can_generate {
+                            "Generate staged step"
+                        } else {
+                            generate_label
+                        },
+                    )
+                    .clicked()
+                    {
+                        node_or_sidecar_clicked = true;
+                        *action = Some(AssetLabAction::GenerateNode {
+                            node_id: node.id,
+                            batch: BatchSettings::default(),
+                        });
+                    }
                 }
                 if asset_lab_node_icon_button(
                     ui,
@@ -2457,7 +2688,10 @@ impl LatentSlateApp {
             sidecar_ui.add_enabled_ui(can_generate, |ui| {
                 if kit::primary_button(ui, "Generate Variant", width).clicked() {
                     node_or_sidecar_clicked = true;
-                    *action = Some(AssetLabAction::GenerateNode(source_node_id));
+                    *action = Some(AssetLabAction::GenerateNode {
+                        node_id: source_node_id,
+                        batch: BatchSettings::default(),
+                    });
                 }
             });
         }
@@ -2524,6 +2758,32 @@ impl LatentSlateApp {
             let selected_provider_out_of_scope = selected_provider
                 .as_ref()
                 .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id));
+
+            let staged_or_ungenerated = draft_active || display_node.output_version.is_none();
+            if staged_or_ungenerated {
+                let pending_job_status = self
+                    .editor
+                    .generation_queue
+                    .iter()
+                    .rev()
+                    .find(|job| {
+                        job.lab_node_id == Some(display_node.id)
+                            && matches!(
+                                job.status,
+                                GenerationJobStatus::Queued | GenerationJobStatus::Running
+                            )
+                    })
+                    .map(|job| job.status);
+                self.asset_lab_run_header(
+                    ui,
+                    asset,
+                    &display_node,
+                    selected_provider.as_ref(),
+                    pending_job_status,
+                    action,
+                );
+                ui.add_space(kit::ACTION_GAP);
+            }
 
             let scroll_height = ui.available_height().max(160.0);
             egui::ScrollArea::vertical()
@@ -2641,6 +2901,152 @@ impl LatentSlateApp {
                     }
                 });
         });
+    }
+
+    fn asset_lab_run_batch(&self, provider: Option<&ProviderEntry>) -> BatchSettings {
+        let has_seed = provider.and_then(resolve_seed_field).is_some();
+        BatchSettings {
+            count: self
+                .asset_lab
+                .run_batch_count
+                .max(1)
+                .min(MAX_GENERATION_BATCH_COUNT),
+            seed_strategy: if has_seed {
+                self.asset_lab.run_seed_strategy
+            } else {
+                SeedStrategy::Keep
+            },
+            seed_field: None,
+        }
+    }
+
+    fn asset_lab_run_header(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        node: &AssetLabNode,
+        provider: Option<&ProviderEntry>,
+        pending_job_status: Option<GenerationJobStatus>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let seed_field = provider.and_then(resolve_seed_field);
+        let seed_preview = asset_lab_seed_preview(
+            node,
+            seed_field.as_deref(),
+            self.asset_lab.run_batch_count,
+            self.asset_lab_run_batch(provider).seed_strategy,
+        );
+        let can_generate = asset.is_generative()
+            && provider.is_some()
+            && !provider
+                .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
+            && pending_job_status.is_none();
+        let generate_label = pending_job_status
+            .map(|status| match status {
+                GenerationJobStatus::Queued => "Queued",
+                GenerationJobStatus::Running => "Running",
+                _ => "Generate",
+            })
+            .unwrap_or("Generate");
+
+        egui::Frame::new()
+            .fill(kit::PANEL_SUNKEN)
+            .stroke(Stroke::new(1.0, kit::BORDER_SOFT))
+            .corner_radius(kit::field_radius())
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                StripBuilder::new(ui)
+                    .size(Size::remainder().at_least(96.0))
+                    .size(Size::exact(104.0))
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| {
+                            kit::field_label(ui, "Run");
+                            ui.add_sized(
+                                [ui.available_width(), 18.0],
+                                egui::Label::new(kit::caption(seed_preview)).truncate(),
+                            );
+                        });
+                        strip.cell(|ui| {
+                            ui.add_space(2.0);
+                            ui.add_enabled_ui(can_generate, |ui| {
+                                if kit::primary_button(ui, generate_label, ui.available_width())
+                                    .clicked()
+                                {
+                                    *action = Some(AssetLabAction::GenerateNode {
+                                        node_id: node.id,
+                                        batch: self.asset_lab_run_batch(provider),
+                                    });
+                                }
+                            });
+                        });
+                    });
+
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.columns(2, |columns| {
+                    let mut batch_count =
+                        self.asset_lab
+                            .run_batch_count
+                            .max(1)
+                            .min(MAX_GENERATION_BATCH_COUNT) as i64;
+                    let count_width = columns[0].available_width();
+                    if inspector_drag_i64(
+                        &mut columns[0],
+                        "Attempts",
+                        &mut batch_count,
+                        1.0,
+                        count_width,
+                    ) {
+                        self.asset_lab.run_batch_count =
+                            batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
+                    }
+
+                    if seed_field.is_some() {
+                        kit::labeled_combo_field(
+                            &mut columns[1],
+                            "Seed Strategy",
+                            ("asset_lab_seed_strategy", node.id),
+                            seed_strategy_label(self.asset_lab.run_seed_strategy),
+                            |ui| {
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.asset_lab.run_seed_strategy,
+                                    SeedStrategy::Increment,
+                                    "Increment",
+                                );
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.asset_lab.run_seed_strategy,
+                                    SeedStrategy::Random,
+                                    "Random",
+                                );
+                                automation_selectable_value(
+                                    ui,
+                                    &mut self.asset_lab.run_seed_strategy,
+                                    SeedStrategy::Keep,
+                                    "Keep",
+                                );
+                            },
+                        );
+                    } else {
+                        kit::field_label(&mut columns[1], "Seed Strategy");
+                        columns[1].add_sized(
+                            [columns[1].available_width(), kit::FIELD_H],
+                            egui::Label::new(kit::caption("No seed role")).truncate(),
+                        );
+                    }
+                });
+
+                if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    ui.label(
+                        RichText::new(
+                            "No seed role detected; multiple attempts will reuse identical inputs.",
+                        )
+                        .color(kit::MARKER)
+                        .size(11.0),
+                    );
+                }
+            });
     }
 
     pub(super) fn asset_lab_node_input_field(
@@ -3386,8 +3792,8 @@ impl LatentSlateApp {
             } => {
                 self.update_asset_lab_node_input(asset_id, node_id, input_name, None);
             }
-            AssetLabAction::GenerateNode(node_id) => {
-                self.generate_asset_lab_node(asset_id, node_id);
+            AssetLabAction::GenerateNode { node_id, batch } => {
+                self.generate_asset_lab_node(asset_id, node_id, batch);
             }
             AssetLabAction::CreateEditStepFromVersion(version) => {
                 self.create_asset_lab_edit_step_from_version(asset_id, &version);
@@ -3681,14 +4087,12 @@ impl LatentSlateApp {
         node.inputs = generation_record_source_inputs(config, &source_record);
         if let Some(provider) = provider.as_ref() {
             retain_node_inputs_for_provider(&mut node.inputs, provider);
-        }
-        if let Some(provider) = provider.as_ref() {
-            if let Some((input_name, value)) = provider.inputs.iter().find_map(|input| {
-                asset_lab_generation_ref_for_input(&asset, input, version)
-                    .map(|value| (input.name.clone(), value))
-            }) {
-                node.inputs.insert(input_name, value);
-            }
+            fill_missing_asset_lab_media_inputs_from_version(
+                &asset,
+                provider,
+                &mut node.inputs,
+                version,
+            );
         }
         let node_id = node.id;
         let updated = self
@@ -3864,6 +4268,14 @@ impl LatentSlateApp {
             self.asset_lab.draft_provider_id = provider_id;
             if let Some(provider) = provider.as_ref() {
                 retain_node_inputs_for_provider(&mut self.asset_lab.draft_inputs, provider);
+                if let Some(version) = self.asset_lab.draft_base_version.as_deref() {
+                    fill_missing_asset_lab_media_inputs_from_version(
+                        &asset,
+                        provider,
+                        &mut self.asset_lab.draft_inputs,
+                        version,
+                    );
+                }
             } else {
                 self.asset_lab.draft_inputs.clear();
             }
@@ -3876,19 +4288,40 @@ impl LatentSlateApp {
             return;
         }
 
+        let selected_version_for_media_fill = self.asset_lab.selected_version.clone();
         let updated = self
             .editor
             .project
             .update_generative_config(asset_id, |config| {
-                if let Some(node) = config
+                if let Some(node_index) = config
                     .lab_graph
                     .nodes
-                    .iter_mut()
-                    .find(|node| node.id == node_id)
+                    .iter()
+                    .position(|node| node.id == node_id)
                 {
+                    let source_version = config.lab_graph.nodes[node_index]
+                        .parent_node_id
+                        .and_then(|parent_id| {
+                            config
+                                .lab_graph
+                                .nodes
+                                .iter()
+                                .find(|node| node.id == parent_id)
+                                .and_then(|node| node.output_version.clone())
+                        })
+                        .or_else(|| selected_version_for_media_fill.clone());
+                    let node = &mut config.lab_graph.nodes[node_index];
                     node.provider_id = provider_id;
                     if let Some(provider) = provider.as_ref() {
                         retain_node_inputs_for_provider(&mut node.inputs, provider);
+                        if let Some(version) = source_version.as_deref() {
+                            fill_missing_asset_lab_media_inputs_from_version(
+                                &asset,
+                                provider,
+                                &mut node.inputs,
+                                version,
+                            );
+                        }
                     } else {
                         node.inputs.clear();
                     }
@@ -3998,21 +4431,12 @@ impl LatentSlateApp {
         let mut node = AssetLabNode::new_with_parent(Some(provider.id), Some(source_node_id));
         node.inputs = self.asset_lab.draft_inputs.clone();
         retain_node_inputs_for_provider(&mut node.inputs, &provider);
-        if let Some(input_name) = asset_lab_primary_media_input_name(&asset, &provider) {
-            if !node.inputs.contains_key(input_name) {
-                if let Some(input) = provider
-                    .inputs
-                    .iter()
-                    .find(|input| input.name == input_name)
-                {
-                    if let Some(value) =
-                        asset_lab_generation_ref_for_input(&asset, input, &base_version)
-                    {
-                        node.inputs.insert(input_name.to_string(), value);
-                    }
-                }
-            }
-        }
+        fill_missing_asset_lab_media_inputs_from_version(
+            &asset,
+            &provider,
+            &mut node.inputs,
+            &base_version,
+        );
 
         let node_id = node.id;
         let updated = self
@@ -4034,10 +4458,15 @@ impl LatentSlateApp {
         Some(node_id)
     }
 
-    pub(super) fn generate_asset_lab_node(&mut self, asset_id: Uuid, node_id: Uuid) {
+    pub(super) fn generate_asset_lab_node(
+        &mut self,
+        asset_id: Uuid,
+        node_id: Uuid,
+        batch: BatchSettings,
+    ) {
         if self.asset_lab.draft_source_node_id == Some(node_id) {
             if let Some(committed_node_id) = self.commit_asset_lab_draft(asset_id, node_id) {
-                self.generate_asset_lab_node(asset_id, committed_node_id);
+                self.generate_asset_lab_node(asset_id, committed_node_id, batch);
             }
             return;
         }
@@ -4113,22 +4542,18 @@ impl LatentSlateApp {
         let mut node_config = config_snapshot;
         node_config.provider_id = Some(provider.id);
         node_config.inputs = node.inputs.clone();
+        node_config.batch = BatchSettings {
+            count: batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT),
+            seed_strategy: batch.seed_strategy,
+            seed_field: batch.seed_field,
+        };
         if let Some(parent_version) = parent_output_version.as_deref() {
-            if let Some(input_name) = asset_lab_primary_media_input_name(&asset, &provider) {
-                if !node_config.inputs.contains_key(input_name) {
-                    if let Some(value) = asset_lab_generation_ref_for_input(
-                        &asset,
-                        provider
-                            .inputs
-                            .iter()
-                            .find(|input| input.name == input_name)
-                            .expect("primary media input should exist"),
-                        parent_version,
-                    ) {
-                        node_config.inputs.insert(input_name.to_string(), value);
-                    }
-                }
-            }
+            fill_missing_asset_lab_media_inputs_from_version(
+                &asset,
+                &provider,
+                &mut node_config.inputs,
+                parent_version,
+            );
         }
         node_config.lab_graph.selected_node_id = Some(node_id);
         let folder_path = project_root.join(folder);
@@ -4143,6 +4568,7 @@ impl LatentSlateApp {
         ) {
             Ok(status) => {
                 self.editor.status = format!("{status} from Asset Lab step.");
+                self.asset_lab.reset_run_controls();
             }
             Err(err) => self.editor.status = err,
         }

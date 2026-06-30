@@ -49,9 +49,13 @@ pub fn resolve_provider_inputs(
                         snapshot.insert(input.name.clone(), binding);
                     } else if input.required {
                         missing_required.push(input.name.clone());
+                    } else {
+                        values.insert(input.name.clone(), Value::String(String::new()));
                     }
                 } else if input.required {
                     missing_required.push(input.name.clone());
+                } else {
+                    values.insert(input.name.clone(), Value::String(String::new()));
                 }
             }
             _ => {

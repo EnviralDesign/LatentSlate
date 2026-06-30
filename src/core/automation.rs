@@ -396,7 +396,12 @@ pub enum AutomationCommand {
     /// Delete an Asset Lab node.
     DeleteAssetLabNode { asset_id: Uuid, node_id: Uuid },
     /// Queue generation for an Asset Lab node.
-    GenerateAssetLabNode { asset_id: Uuid, node_id: Uuid },
+    GenerateAssetLabNode {
+        asset_id: Uuid,
+        node_id: Uuid,
+        #[serde(default)]
+        batch: Option<BatchSettings>,
+    },
     /// Start generation for a generative asset.
     StartGeneration {
         asset_id: Uuid,
@@ -677,6 +682,8 @@ pub struct ProjectSettingsPatch {
     pub fps: Option<f64>,
     #[serde(default)]
     pub duration_seconds: Option<f64>,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub preview_max_width: Option<u32>,
     #[serde(default)]
@@ -1943,7 +1950,7 @@ pub fn agent_help_json() -> Value {
             "seek": { "type": "seek", "time": 4.25 },
             "set_project_settings": {
                 "type": "set_project_settings",
-                "patch": { "width": 1280, "height": 720, "fps": 24.0, "duration_seconds": 30.0 }
+                "patch": { "width": 1280, "height": 720, "fps": 24.0, "duration_seconds": 30.0, "description": "Agent-facing project notes and constraints." }
             },
             "add_marker": {
                 "type": "add_marker",
@@ -2107,6 +2114,16 @@ pub fn build_agent_bootstrap(
             project.generative_configs.len()
         ),
         String::new(),
+    ];
+
+    let project_description = project.settings.description.trim();
+    if !project_description.is_empty() {
+        lines.push("Project Description".to_string());
+        lines.push(project_description.to_string());
+        lines.push(String::new());
+    }
+
+    lines.extend([
         "Current Selection".to_string(),
         format!("Assets: {}", uuid_list_or_empty(&selection.asset_ids)),
         format!("Clips: {}", uuid_list_or_empty(&selection.clip_ids)),
@@ -2114,7 +2131,7 @@ pub fn build_agent_bootstrap(
         format!("Markers: {}", uuid_list_or_empty(&selection.marker_ids)),
         String::new(),
         "Known Tracks".to_string(),
-    ];
+    ]);
 
     if project.tracks.is_empty() {
         lines.push("- None".to_string());
@@ -2446,7 +2463,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "create_project", "fields": { "parent_dir": "folder path", "name": "string", "settings?": "ProjectSettings" } },
             { "type": "open_project", "fields": { "folder": "project folder path" } },
             { "type": "save_project", "fields": {} },
-            { "type": "set_project_settings", "fields": { "patch": { "width?": "u32", "height?": "u32", "fps?": "f64", "duration_seconds?": "f64", "preview_max_width?": "u32", "preview_max_height?": "u32", "provider_scope?": "{ \"mode\": \"all\" } or { \"mode\": \"selected\", \"provider_ids\": [\"uuid\"] }" } } }
+            { "type": "set_project_settings", "fields": { "patch": { "width?": "u32", "height?": "u32", "fps?": "f64", "duration_seconds?": "f64", "description?": "string; optional project description and agent-facing instructions", "preview_max_width?": "u32", "preview_max_height?": "u32", "provider_scope?": "{ \"mode\": \"all\" } or { \"mode\": \"selected\", \"provider_ids\": [\"uuid\"] }" } } }
         ],
         "assets": [
             { "type": "import_asset", "fields": { "path": "media file path" } },
@@ -2509,7 +2526,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "add_asset_lab_node", "fields": { "asset_id": "uuid", "provider_id?": "uuid", "parent_node_id?": "uuid", "inputs?": "map" } },
             { "type": "set_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid", "patch": "AssetLabNodePatch" } },
             { "type": "delete_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid" } },
-            { "type": "generate_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid" } }
+            { "type": "generate_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid", "batch?": "BatchSettings; count + seed_strategy for repeated attempts" } }
         ],
         "export_and_diagnostics": [
             { "type": "export_video", "fields": { "request?": "ExportVideoRequest" } },

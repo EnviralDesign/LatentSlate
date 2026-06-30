@@ -273,6 +273,7 @@ impl LatentSlateApp {
                 crate::core::automation::AutomationCommand::GenerateAssetLabNode {
                     asset_id,
                     node_id,
+                    batch,
                 } => {
                     let before: std::collections::HashSet<Uuid> = self
                         .editor
@@ -280,7 +281,7 @@ impl LatentSlateApp {
                         .iter()
                         .map(|job| job.id)
                         .collect();
-                    self.generate_asset_lab_node(asset_id, node_id);
+                    self.generate_asset_lab_node(asset_id, node_id, batch.unwrap_or_default());
                     let jobs: Vec<_> = self
                         .editor
                         .generation_queue

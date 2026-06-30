@@ -81,6 +81,7 @@ use confirmations::*;
 use export_modal::*;
 use generation_runtime::*;
 use preview_transform::*;
+use project_modals::*;
 use provider_builder::*;
 use timeline_geometry::*;
 use timeline_paint::*;
@@ -169,6 +170,7 @@ const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1296.0, 864.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
 const ASSET_LAB_MODAL_SIZE: [f32; 2] = [1520.0, 940.0];
+const PROJECT_DELETE_MODAL_SIZE: [f32; 2] = [520.0, 340.0];
 const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
 const TRACK_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 300.0];
 const BRIDGE_KEYFRAME_MODAL_SIZE: [f32; 2] = [500.0, 340.0];
@@ -285,6 +287,7 @@ pub struct LatentSlateApp {
     new_project_name: String,
     new_project_parent: PathBuf,
     project_settings: ProjectSettings,
+    project_description_editor: Option<ProjectDescriptionEditorState>,
     gen_video_fps: f64,
     gen_video_frames: u32,
     selected_provider_file: Option<PathBuf>,
@@ -298,6 +301,7 @@ pub struct LatentSlateApp {
     asset_lab_node_preview_textures: HashMap<AssetLabNodePreviewKey, AssetLabPreviewTexture>,
     asset_lab_video_decoder: VideoDecodeWorker,
     provider_template_kind: ProviderTemplateKind,
+    project_delete_confirmation: Option<ProjectDeleteConfirmation>,
     asset_delete_confirmation: Option<AssetDeleteConfirmation>,
     track_delete_confirmation: Option<TrackDeleteConfirmation>,
     bridge_keyframe_confirmation: Option<BridgeKeyframeConfirmation>,
@@ -509,6 +513,7 @@ impl LatentSlateApp {
             .unwrap_or_else(crate::core::automation::default_port);
         Self {
             project_settings: editor.project.settings.clone(),
+            project_description_editor: None,
             editor,
             preview_layers: None,
             preview_layer_textures: HashMap::new(),
@@ -575,6 +580,7 @@ impl LatentSlateApp {
             asset_lab_node_preview_textures: HashMap::new(),
             asset_lab_video_decoder: VideoDecodeWorker::new(8192, 8192),
             provider_template_kind: ProviderTemplateKind::default(),
+            project_delete_confirmation: None,
             asset_delete_confirmation: None,
             track_delete_confirmation: None,
             bridge_keyframe_confirmation: None,
@@ -665,9 +671,11 @@ impl LatentSlateApp {
             || self.editor.overlays.queue
             || self.editor.overlays.agent_api
             || self.unsaved_close_confirmation_open
+            || self.project_delete_confirmation.is_some()
             || self.asset_delete_confirmation.is_some()
             || self.track_delete_confirmation.is_some()
             || self.bridge_keyframe_confirmation.is_some()
+            || self.project_description_editor.is_some()
             || self.provider_json_editor_path.is_some()
             || self.provider_builder_open
     }

@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align, Context, Layout, RichText, Ui, Vec2};
+use eframe::egui::{
+    self, Align, Color32, Context, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
+    Vec2,
+};
 use uuid::Uuid;
 
 use crate::state::{ProjectProviderScope, ProjectSettings, ProviderEntry, ProviderOutputType};
@@ -8,11 +11,18 @@ use crate::ui_kit as kit;
 
 use super::{
     automation_checkbox, inspector_drag_f64, inspector_drag_i64, inspector_two_drag_f64,
-    inspector_two_drag_u32, ExportModalState, LatentSlateApp,
+    inspector_two_drag_u32, modal_size, ExportModalState, LatentSlateApp,
 };
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
 const PROJECT_WIZARD_MIN_SIZE: [f32; 2] = [560.0, 500.0];
+const PROJECT_DESCRIPTION_MODAL_SIZE: [f32; 2] = [760.0, 560.0];
+
+#[derive(Clone, Debug)]
+pub(super) struct ProjectDescriptionEditorState {
+    draft: String,
+}
+
 pub(super) fn project_wizard_size(ctx: &Context) -> Vec2 {
     let available = ctx.content_rect().size();
     let max_w = (available.x - 24.0).max(320.0);
@@ -103,6 +113,7 @@ impl LatentSlateApp {
                         kit::field_label(ui, "Recent Projects");
                         let recent = recent_projects(&self.new_project_parent);
                         let mut selected_project: Option<PathBuf> = None;
+                        let mut delete_project: Option<PathBuf> = None;
                         let mut browse_clicked = false;
                         kit::body_with_footer(
                             ui,
@@ -120,17 +131,15 @@ impl LatentSlateApp {
                                         );
                                     }
                                     for folder in recent {
-                                        if kit::secondary_button(
-                                            ui,
-                                            folder
-                                                .file_name()
-                                                .and_then(|v| v.to_str())
-                                                .unwrap_or("Project"),
-                                            ui.available_width(),
-                                        )
-                                        .clicked()
-                                        {
-                                            selected_project = Some(folder);
+                                        let name = folder
+                                            .file_name()
+                                            .and_then(|v| v.to_str())
+                                            .unwrap_or("Project");
+                                        let row_action = recent_project_row(ui, name, &folder);
+                                        if row_action.delete_clicked {
+                                            delete_project = Some(folder.clone());
+                                        } else if row_action.open_clicked {
+                                            selected_project = Some(folder.clone());
                                         }
                                     }
                                 });
@@ -147,7 +156,9 @@ impl LatentSlateApp {
                                 }
                             },
                         );
-                        if let Some(folder) = selected_project {
+                        if let Some(folder) = delete_project {
+                            self.request_delete_project_folder(folder);
+                        } else if let Some(folder) = selected_project {
                             if self.open_project_folder(folder) {
                                 self.editor.overlays.new_project = false;
                             }
@@ -176,6 +187,7 @@ impl LatentSlateApp {
         let project_settings = &mut self.project_settings;
         let new_project_parent = &mut self.new_project_parent;
         let mut create_clicked = false;
+        let mut edit_description_clicked = false;
 
         kit::body_with_footer(
             ui,
@@ -188,7 +200,9 @@ impl LatentSlateApp {
                     ui.add_space(kit::FORM_ROW_GAP);
                     kit::labeled_text_field(ui, "Project Name", new_project_name);
                     ui.add_space(10.0);
-                    settings_fields(ui, project_settings);
+                    if settings_fields(ui, project_settings) {
+                        edit_description_clicked = true;
+                    }
                 });
             },
             |ui| {
@@ -226,11 +240,16 @@ impl LatentSlateApp {
                 Err(err) => self.editor.status = err,
             }
         }
+
+        if edit_description_clicked {
+            self.open_project_description_editor();
+        }
     }
 
     pub(super) fn project_settings_modal(&mut self, ctx: &Context) {
         let mut open = true;
         let mut close_clicked = false;
+        let mut edit_description_clicked = false;
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "project_settings", true);
         let providers = self.editor.provider_entries.clone();
         egui::Window::new("Project Settings")
@@ -262,7 +281,9 @@ impl LatentSlateApp {
                             Layout::top_down(Align::Min),
                             |ui| {
                                 kit::card_panel(ui, body_height, |ui| {
-                                    settings_fields(ui, &mut self.project_settings)
+                                    if settings_fields(ui, &mut self.project_settings) {
+                                        edit_description_clicked = true;
+                                    }
                                 });
                             },
                         );
@@ -282,20 +303,110 @@ impl LatentSlateApp {
                     });
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
-                        if kit::secondary_button(ui, "Cancel", 120.0).clicked() {
-                            self.project_settings = self.editor.project.settings.clone();
-                            self.editor.overlays.project_settings = false;
-                        }
-                        if kit::primary_button(ui, "Save Changes", 180.0).clicked() {
-                            self.editor.project.settings = self.project_settings.clone();
-                            self.editor.preview_dirty = true;
-                            self.editor.overlays.project_settings = false;
-                        }
+                        let delete_enabled = self.editor.project.project_path.is_some();
+                        ui.add_enabled_ui(delete_enabled, |ui| {
+                            if kit::danger_button(ui, "Delete Project...", 160.0).clicked() {
+                                self.request_delete_current_project();
+                            }
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if kit::primary_button(ui, "Save Changes", 180.0).clicked() {
+                                self.editor.project.settings = self.project_settings.clone();
+                                self.editor.preview_dirty = true;
+                                self.editor.overlays.project_settings = false;
+                            }
+                            if kit::secondary_button(ui, "Cancel", 120.0).clicked() {
+                                self.project_settings = self.editor.project.settings.clone();
+                                self.editor.overlays.project_settings = false;
+                            }
+                        });
                     });
                 });
             });
         if close_clicked || outside_clicked || !open {
             self.editor.overlays.project_settings = false;
+        }
+        if edit_description_clicked {
+            self.open_project_description_editor();
+        }
+    }
+
+    pub(super) fn open_project_description_editor(&mut self) {
+        self.project_description_editor = Some(ProjectDescriptionEditorState {
+            draft: self.project_settings.description.clone(),
+        });
+    }
+
+    pub(super) fn project_description_modal(&mut self, ctx: &Context) {
+        if self.project_description_editor.is_none() {
+            return;
+        }
+
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut save_clicked = false;
+        let mut cancel_clicked = false;
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "project_description", true);
+        let size = modal_size(ctx, PROJECT_DESCRIPTION_MODAL_SIZE, [560.0, 420.0]);
+
+        egui::Window::new("Project Description")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Project Description",
+                    Some("Optional notes and agent-facing project instructions."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    let Some(editor) = self.project_description_editor.as_mut() else {
+                        return;
+                    };
+                    kit::body_with_footer(
+                        ui,
+                        220.0,
+                        kit::PRIMARY_BUTTON_H,
+                        |ui| {
+                            kit::field_label(ui, "Description");
+                            ui.add_space(kit::FIELD_LABEL_GAP);
+                            kit::multiline_text_field(
+                                ui,
+                                &mut editor.draft,
+                                ui.available_width(),
+                                kit::MultilineTextFieldOptions::rows(12),
+                            );
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            ui.label(kit::caption(
+                                "Included in the Agent API primer so agents can understand project-specific goals, style, and tool-use notes.",
+                            ));
+                        },
+                        |ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if kit::primary_button(ui, "Save", 120.0).clicked() {
+                                    save_clicked = true;
+                                }
+                                if kit::secondary_button(ui, "Cancel", 120.0).clicked() {
+                                    cancel_clicked = true;
+                                }
+                            });
+                        },
+                    );
+                });
+            });
+
+        if save_clicked {
+            if let Some(editor) = self.project_description_editor.take() {
+                self.project_settings.description = editor.draft.trim().to_string();
+            }
+        } else if cancel_clicked || close_clicked || outside_clicked || !open {
+            self.project_description_editor = None;
         }
     }
 
@@ -378,7 +489,141 @@ impl LatentSlateApp {
     }
 }
 
-pub(super) fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
+struct RecentProjectRowAction {
+    open_clicked: bool,
+    delete_clicked: bool,
+}
+
+fn recent_project_row(ui: &mut Ui, name: &str, folder: &Path) -> RecentProjectRowAction {
+    const DELETE_BUTTON_W: f32 = 26.0;
+    const DELETE_BUTTON_H: f32 = 22.0;
+    const ROW_TEXT_SIZE: f32 = 12.0;
+    const ROW_PAD_X: f32 = 10.0;
+    const DELETE_INSET_X: f32 = (kit::SECONDARY_BUTTON_H - DELETE_BUTTON_H) * 0.5;
+
+    let width = ui.available_width().max(96.0);
+    let (rect, row_response) =
+        ui.allocate_exact_size(Vec2::new(width, kit::SECONDARY_BUTTON_H), Sense::hover());
+    let delete_rect = Rect::from_center_size(
+        Pos2::new(
+            rect.right() - DELETE_INSET_X - DELETE_BUTTON_W * 0.5,
+            rect.center().y,
+        ),
+        Vec2::new(DELETE_BUTTON_W, DELETE_BUTTON_H),
+    );
+    let open_rect = Rect::from_min_max(
+        rect.min,
+        Pos2::new(
+            (delete_rect.left() - kit::FIELD_COMPOUND_GAP).max(rect.left()),
+            rect.bottom(),
+        ),
+    );
+    let open_response = ui
+        .interact(
+            open_rect,
+            ui.id().with(("recent_project_open", folder)),
+            Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let delete_response = ui
+        .interact(
+            delete_rect,
+            ui.id().with(("recent_project_delete", folder)),
+            Sense::click(),
+        )
+        .on_hover_text("Move this project folder to the Windows Recycle Bin.")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let pointer_in_row = ui
+        .input(|input| input.pointer.hover_pos())
+        .is_some_and(|pos| rect.contains(pos));
+    let hovered = row_response.hovered()
+        || open_response.hovered()
+        || open_response.has_focus()
+        || delete_response.hovered()
+        || delete_response.has_focus()
+        || pointer_in_row;
+    let fill = if open_response.is_pointer_button_down_on() {
+        Color32::from_rgb(27, 72, 52)
+    } else if hovered {
+        Color32::from_rgb(44, 46, 52)
+    } else {
+        Color32::from_rgb(34, 35, 39)
+    };
+    let stroke = if hovered {
+        kit::BORDER.gamma_multiply(1.35)
+    } else {
+        kit::BORDER
+    };
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(kit::STANDALONE_BUTTON_RADIUS),
+        fill,
+    );
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(kit::STANDALONE_BUTTON_RADIUS),
+        Stroke::new(1.0, stroke),
+        StrokeKind::Inside,
+    );
+
+    let reserved_delete_w = DELETE_BUTTON_W + ROW_PAD_X;
+    let text_width = (rect.width() - reserved_delete_w - ROW_PAD_X * 2.0).max(0.0);
+    let galley = egui::WidgetText::from(RichText::new(name).color(kit::TEXT).size(ROW_TEXT_SIZE))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            text_width,
+            egui::FontId::proportional(ROW_TEXT_SIZE),
+        );
+    let text_pos = Pos2::new(
+        rect.left() + ROW_PAD_X,
+        rect.center().y - galley.size().y * 0.5,
+    );
+    ui.painter().galley(text_pos, galley, kit::TEXT);
+
+    let mut delete_clicked = false;
+    if hovered {
+        let delete_fill = if delete_response.is_pointer_button_down_on() {
+            Color32::from_rgb(92, 22, 27)
+        } else if delete_response.hovered() {
+            Color32::from_rgb(112, 28, 32)
+        } else {
+            Color32::from_rgb(44, 29, 32)
+        };
+        let delete_stroke = if delete_response.hovered() {
+            kit::DANGER
+        } else {
+            kit::DANGER.gamma_multiply(0.55)
+        };
+        ui.painter().rect_filled(
+            delete_rect,
+            egui::CornerRadius::same(kit::STANDALONE_BUTTON_RADIUS),
+            delete_fill,
+        );
+        ui.painter().rect_stroke(
+            delete_rect,
+            egui::CornerRadius::same(kit::STANDALONE_BUTTON_RADIUS),
+            Stroke::new(1.0, delete_stroke),
+            StrokeKind::Inside,
+        );
+        ui.painter().text(
+            delete_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "x",
+            egui::FontId::proportional(12.0),
+            kit::TEXT_ON_ACCENT,
+        );
+        delete_clicked = delete_response.clicked();
+    }
+
+    RecentProjectRowAction {
+        open_clicked: open_response.clicked(),
+        delete_clicked,
+    }
+}
+
+pub(super) fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) -> bool {
+    let mut edit_description_clicked = false;
     kit::field_label(ui, "Resolution");
     ui.horizontal_wrapped(|ui| {
         for preset in RESOLUTION_PRESETS {
@@ -421,6 +666,23 @@ pub(super) fn settings_fields(ui: &mut Ui, settings: &mut ProjectSettings) {
     ) {
         settings.duration_seconds = (minutes * 60.0).max(1.0);
     }
+    ui.add_space(kit::ACTION_GAP);
+    let description_label = if settings.description.trim().is_empty() {
+        "Add Project Description..."
+    } else {
+        "Edit Project Description..."
+    };
+    if kit::secondary_button(ui, description_label, ui.available_width()).clicked() {
+        edit_description_clicked = true;
+    }
+    if !settings.description.trim().is_empty() {
+        ui.add_space(kit::FIELD_LABEL_GAP);
+        ui.label(kit::caption(format!(
+            "{} chars of agent-facing project notes.",
+            settings.description.chars().count()
+        )));
+    }
+    edit_description_clicked
 }
 
 fn provider_scope_fields(ui: &mut Ui, settings: &mut ProjectSettings, providers: &[ProviderEntry]) {

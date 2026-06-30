@@ -1118,7 +1118,7 @@ impl ProviderBuilderInput {
             label,
             description: String::new(),
             input_type_key,
-            required: schema.map(|schema| schema.required).unwrap_or(false),
+            required: true,
             role: None,
             default_text,
             enum_options,
@@ -1251,7 +1251,6 @@ impl ProviderBuilderInput {
             .or(schema.default.as_ref());
 
         self.input_type_key = next_type;
-        self.required = schema.required;
         self.multiline = schema.multiline || heuristic_multiline;
         self.ui_min = schema.min;
         self.ui_max = schema.max;
@@ -1911,6 +1910,14 @@ pub(super) fn provider_builder_input_inspector_editor(
     } else {
         input.multiline = false;
     }
+    automation_checkbox(ui, &mut input.required, "Required input");
+    if matches!(input.input_type_key.as_str(), "image" | "video" | "audio") && !input.required {
+        ui.add_space(kit::FIELD_LABEL_GAP);
+        ui.label(kit::caption(
+            "Unset optional media is sent to the workflow as a blank path.",
+        ));
+    }
+    ui.add_space(kit::FORM_ROW_GAP);
     provider_builder_input_action_row(ui, index, len, input, action);
 }
 
