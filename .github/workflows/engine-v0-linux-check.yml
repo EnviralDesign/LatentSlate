@@ -16,13 +16,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Install FFmpeg development libraries
+      - name: Install Linux development libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             clang libclang-dev pkg-config \
+            libasound2-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
             libavcodec-dev libavformat-dev libavutil-dev \
             libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+      - name: Enable an ephemeral Linux window backend
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          old = 'features = ["glow", "default_fonts"]'
+          new = 'features = ["glow", "default_fonts", "x11"]'
+          if text.count(old) != 1:
+              raise SystemExit("Expected one eframe feature declaration")
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Cargo check
