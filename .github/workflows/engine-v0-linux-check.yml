@@ -53,74 +53,29 @@ jobs:
 
           replace_once(
               "src/egui_app/provider_builder.rs",
-              '''pub(super) enum ProviderSourceKind {
-              ComfyUi,
-              OpenAi,
-              Xai,
-              CustomHttp,
-              Other,
-          }''',
-              '''pub(super) enum ProviderSourceKind {
-              ComfyUi,
-              LatentSlateEngine,
-              OpenAi,
-              Xai,
-              CustomHttp,
-              Other,
-          }''',
+              "    ComfyUi,\n    OpenAi,",
+              "    ComfyUi,\n    LatentSlateEngine,\n    OpenAi,",
           )
           replace_once(
               "src/egui_app/provider_builder.rs",
-              '''        match self {
-                  Self::ComfyUi => "ComfyUI",
-                  Self::OpenAi => "OpenAI",
-                  Self::Xai => "xAI",
-                  Self::CustomHttp => "Custom HTTP",
-                  Self::Other => "Other",
-              }''',
-              '''        match self {
-                  Self::ComfyUi => "ComfyUI",
-                  Self::LatentSlateEngine => "LatentSlate Engine",
-                  Self::OpenAi => "OpenAI",
-                  Self::Xai => "xAI",
-                  Self::CustomHttp => "Custom HTTP",
-                  Self::Other => "Other",
-              }''',
+              '            Self::ComfyUi => "ComfyUI",',
+              '            Self::ComfyUi => "ComfyUI",\n            Self::LatentSlateEngine => "LatentSlate Engine",',
           )
           replace_once(
               "src/egui_app/provider_builder.rs",
-              '''        match self {
-                  Self::ComfyUi => 0,
-                  Self::OpenAi => 1,
-                  Self::Xai => 2,
-                  Self::CustomHttp => 3,
-                  Self::Other => 4,
-              }''',
-              '''        match self {
-                  Self::LatentSlateEngine => 0,
-                  Self::ComfyUi => 1,
-                  Self::OpenAi => 2,
-                  Self::Xai => 3,
-                  Self::CustomHttp => 4,
-                  Self::Other => 5,
-              }''',
+              "            Self::ComfyUi => 0,\n            Self::OpenAi => 1,\n            Self::Xai => 2,\n            Self::CustomHttp => 3,\n            Self::Other => 4,",
+              "            Self::LatentSlateEngine => 0,\n            Self::ComfyUi => 1,\n            Self::OpenAi => 2,\n            Self::Xai => 3,\n            Self::CustomHttp => 4,\n            Self::Other => 5,",
           )
           replace_once(
               "src/egui_app/provider_builder.rs",
-              '''        ProviderConnection::XaiImage { model, .. } | ProviderConnection::XaiVideo { model, .. } => {
-                  (ProviderSourceKind::Xai, model.clone())
-              }
-              ProviderConnection::CustomHttp { base_url, .. } => {''',
-              '''        ProviderConnection::XaiImage { model, .. } | ProviderConnection::XaiVideo { model, .. } => {
-                  (ProviderSourceKind::Xai, model.clone())
-              }
-              ProviderConnection::LatentSlateEngine {
-                  base_url, tool_key, ..
-              } => (
-                  ProviderSourceKind::LatentSlateEngine,
-                  format!("{tool_key} · {base_url}"),
-              ),
-              ProviderConnection::CustomHttp { base_url, .. } => {''',
+              "        ProviderConnection::CustomHttp { base_url, .. } => {",
+              '''        ProviderConnection::LatentSlateEngine {
+              base_url, tool_key, ..
+          } => (
+              ProviderSourceKind::LatentSlateEngine,
+              format!("{tool_key} · {base_url}"),
+          ),
+          ProviderConnection::CustomHttp { base_url, .. } => {''',
           )
           PY
 
