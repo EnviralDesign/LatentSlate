@@ -107,8 +107,8 @@ jobs:
           replace_once(
               "src/providers/mod.rs",
               '''        ProviderConnection::CustomHttp { .. } => Err(ProviderExecutionError::Error(
-                  "Custom HTTP providers are planned but not implemented yet.".to_string(),
-              )),''',
+                      "Custom HTTP providers are planned but not implemented yet.".to_string(),
+                  )),''',
               '''        ProviderConnection::LatentSlateEngine {
                   base_url,
                   api_key,
@@ -132,8 +132,8 @@ jobs:
                   .await
               }
               ProviderConnection::CustomHttp { .. } => Err(ProviderExecutionError::Error(
-                  "Custom HTTP providers are planned but not implemented yet.".to_string(),
-              )),''',
+                      "Custom HTTP providers are planned but not implemented yet.".to_string(),
+                  )),''',
           )
 
           replace_once(
