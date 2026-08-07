@@ -1,0 +1,237 @@
+name: Apply cached Engine availability fix
+
+on:
+  push:
+    branches:
+      - agent/latent-engine-v0
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/latent-engine-v0
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply cached catalog fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/providers/latentslate_engine.rs")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one match, found {count}: {old[:120]!r}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '''const CONNECTION_SETTINGS_FILE: &str = "engine.json";
+          ''',
+              '''const CONNECTION_SETTINGS_FILE: &str = "engine.json";
+          const CACHED_CATALOG_UNAVAILABLE_REASON: &str =
+              "LatentSlate Engine is offline; this tool was loaded from the cached catalog.";
+          ''',
+          )
+
+          replace_once(
+              '''    let catalog = match fetch_catalog_blocking(&settings) {
+                  Ok(catalog) => {
+                      if let Err(err) = save_catalog_cache(&catalog) {
+                          println!("Failed to cache LatentSlate Engine catalog: {err}");
+                      }
+                      catalog
+                  }
+                  Err(live_error) => match load_catalog_cache() {
+                      Ok(catalog) => {
+                          println!(
+                              "LatentSlate Engine unavailable at {}; using cached catalog: {live_error}",
+                              settings.base_url
+                          );
+                          catalog
+                      }
+                      Err(_) => return Ok(Vec::new()),
+                  },
+              };
+
+              catalog_to_provider_entries(&catalog, &settings)
+          ''',
+              '''    let (mut catalog, loaded_from_cache) = match fetch_catalog_blocking(&settings) {
+                  Ok(catalog) => {
+                      if let Err(err) = save_catalog_cache(&catalog) {
+                          println!("Failed to cache LatentSlate Engine catalog: {err}");
+                      }
+                      (catalog, false)
+                  }
+                  Err(live_error) => match load_catalog_cache() {
+                      Ok(catalog) => {
+                          println!(
+                              "LatentSlate Engine unavailable at {}; using cached catalog: {live_error}",
+                              settings.base_url
+                          );
+                          (catalog, true)
+                      }
+                      Err(_) => return Ok(Vec::new()),
+                  },
+              };
+
+              if loaded_from_cache {
+                  mark_cached_catalog_unavailable(&mut catalog);
+              }
+              catalog_to_provider_entries(&catalog, &settings)
+          ''',
+          )
+
+          replace_once(
+              '''fn load_catalog_cache() -> Result<EngineCatalog, String> {
+              let json = fs::read(catalog_cache_path()).map_err(|err| err.to_string())?;
+              serde_json::from_slice(&json).map_err(|err| err.to_string())
+          }
+
+          fn catalog_to_provider_entries(
+          ''',
+              '''fn load_catalog_cache() -> Result<EngineCatalog, String> {
+              let json = fs::read(catalog_cache_path()).map_err(|err| err.to_string())?;
+              serde_json::from_slice(&json).map_err(|err| err.to_string())
+          }
+
+          fn mark_cached_catalog_unavailable(catalog: &mut EngineCatalog) {
+              for tool in &mut catalog.tools {
+                  tool.available = false;
+                  tool.unavailable_reason = Some(CACHED_CATALOG_UNAVAILABLE_REASON.to_string());
+              }
+          }
+
+          fn catalog_to_provider_entries(
+          ''',
+          )
+
+          replace_once('''                "name": "H3 Between Keyframes",''', '''                "name": "First/Last Frame Video",''')
+          replace_once('''                    { "key": "prompt", "label": "Direction", "type": "text", "required": true },''', '''                    { "key": "prompt", "label": "Prompt", "type": "text", "required": true },''')
+
+          replace_once(
+              '''    #[test]
+              fn endpoint_joining_is_location_agnostic() {
+          ''',
+              '''    #[test]
+              fn cached_catalog_tools_are_inspectable_but_unavailable() {
+                  let mut catalog: EngineCatalog = serde_json::from_value(json!({
+                      "protocol_version": "1.0",
+                      "engine_version": "0.1.0",
+                      "bundles": [],
+                      "tools": [{
+                          "id": "369a630e-4d64-4e3c-8f15-1809757a10e5",
+                          "key": "h3.text_to_video",
+                          "schema_revision": 1,
+                          "schema_hash": "sha256:test",
+                          "name": "Text to Video",
+                          "description": "Cached description.",
+                          "workflow_kind": "text_to_video",
+                          "output": { "type": "video" },
+                          "inputs": [],
+                          "available": true
+                      }]
+                  }))
+                  .expect("catalog");
+
+                  mark_cached_catalog_unavailable(&mut catalog);
+                  let entries =
+                      catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
+                          .expect("providers");
+                  let provider = &entries[0];
+                  let ProviderConnection::LatentSlateEngine {
+                      available,
+                      unavailable_reason,
+                      ..
+                  } = &provider.connection
+                  else {
+                      panic!("expected LatentSlate Engine provider");
+                  };
+
+                  assert!(!*available);
+                  assert_eq!(
+                      unavailable_reason.as_deref(),
+                      Some(CACHED_CATALOG_UNAVAILABLE_REASON)
+                  );
+                  assert!(provider
+                      .description
+                      .as_deref()
+                      .unwrap_or_default()
+                      .contains(CACHED_CATALOG_UNAVAILABLE_REASON));
+              }
+
+              #[test]
+              fn endpoint_joining_is_location_agnostic() {
+          ''',
+          )
+
+          path.write_text(text)
+          PY
+
+      - name: Format source
+        run: cargo fmt --all
+
+      - name: Preserve permanent manifest
+        run: cp Cargo.toml /tmp/Cargo.toml.permanent
+
+      - name: Enable ephemeral Linux window backend
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          old = 'features = ["glow", "default_fonts"]'
+          new = 'features = ["glow", "default_fonts", "x11"]'
+          if text.count(old) != 1:
+              raise SystemExit("Expected one eframe feature declaration")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Install Linux development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang libclang-dev pkg-config \
+            libasound2-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxrandr-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libavcodec-dev libavformat-dev libavutil-dev \
+            libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --locked
+
+      - name: Engine adapter tests
+        run: cargo test --locked providers::latentslate_engine::tests
+
+      - name: Restore permanent manifest
+        if: success()
+        run: cp /tmp/Cargo.toml.permanent Cargo.toml
+
+      - name: Commit validated fix
+        if: success()
+        shell: bash
+        run: |
+          rm .github/workflows/engine-cache-offline-one-shot.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "mark cached Engine tools offline"
+          git push origin HEAD:agent/latent-engine-v0
