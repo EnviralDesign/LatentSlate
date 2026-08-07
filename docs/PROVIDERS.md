@@ -77,14 +77,18 @@ schema changes may require manually repairing affected generative configs.
 
 ### Current Engine Tools
 
-The V0 Engine catalog contains two simple upstream-Diffusers MiniMax-H3 tools:
+The V0 Engine catalog currently follows four existing LatentSlate categories:
 
-- `h3.text_to_video`: text to short video with synchronized audio.
-- `h3.first_last_frame_video`: first-frame plus optional last-frame video with synchronized audio.
+- `h3.text_to_video`: Text to Video with synchronized audio.
+- `h3.first_last_frame_video`: First/Last Frame Video with synchronized audio.
+- `flux2_klein9b.text_to_image`: Text to Image with FLUX.2 Klein 9B.
+- `flux2_klein9b.image_to_image`: Image to Image with one source image and FLUX.2 Klein 9B.
 
-The Engine is deliberately not optimized yet. Full H3 inference has not been
-validated on the target RTX 5080 / 64 GB workstation, and the stock INT8 loading
-path may still exceed comfortable system-RAM headroom.
+These are deliberately simple correctness-first implementations. Full H3 and Klein
+inference have not yet been validated on the target RTX 5080 / 64 GB workstation.
+The Engine owns model loading, quantization profiles, and model-family eviction;
+LatentSlate consumes the same catalog, schema, queue, upload, and artifact contract
+for both image and video tools.
 
 ## ComfyUI Setup
 

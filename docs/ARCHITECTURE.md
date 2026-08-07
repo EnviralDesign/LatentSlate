@@ -123,7 +123,7 @@ source segments from the project timeline.
 
 Current runtime adapters:
 
-- LatentSlate Engine image/video/audio contract over HTTP; the current Engine catalog exposes two H3 video tools.
+- LatentSlate Engine image/video/audio contract over HTTP; the current catalog exposes H3 video and Klein 9B image tools.
 - ComfyUI image/video/audio through workflow API JSON plus manifest bindings.
 - OpenAI image.
 - xAI image.

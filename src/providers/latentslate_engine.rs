@@ -801,6 +801,83 @@ mod tests {
     }
 
     #[test]
+    fn klein_image_tools_normalize_into_existing_image_categories() {
+        let catalog: EngineCatalog = serde_json::from_value(json!({
+            "protocol_version": "1.0",
+            "engine_version": "0.1.0",
+            "bundles": [],
+            "tools": [
+                {
+                    "id": "e329a7d2-c145-4299-96ef-f2b70376d499",
+                    "key": "flux2_klein9b.text_to_image",
+                    "schema_revision": 1,
+                    "schema_hash": "sha256:t2i",
+                    "name": "Text to Image",
+                    "workflow_kind": "text_to_image",
+                    "output": { "type": "image" },
+                    "inputs": [
+                        { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
+                        { "key": "size", "label": "Size", "type": "choice", "required": true, "default": "1024x1024", "options": [
+                            { "value": "1024x1024", "label": "1024x1024" }
+                        ]},
+                        { "key": "seed", "label": "Seed", "type": "integer", "required": true, "default": 0, "role": "seed" }
+                    ],
+                    "available": true
+                },
+                {
+                    "id": "3333a6bd-8e71-4236-9372-bad407161803",
+                    "key": "flux2_klein9b.image_to_image",
+                    "schema_revision": 1,
+                    "schema_hash": "sha256:i2i",
+                    "name": "Image to Image",
+                    "workflow_kind": "image_to_image",
+                    "output": { "type": "image" },
+                    "inputs": [
+                        { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
+                        { "key": "source_image", "label": "Source Image", "type": "image", "required": true, "role": "source_image" },
+                        { "key": "size", "label": "Size", "type": "choice", "required": true, "default": "source", "options": [
+                            { "value": "source", "label": "source" },
+                            { "value": "1024x1024", "label": "1024x1024" }
+                        ]},
+                        { "key": "seed", "label": "Seed", "type": "integer", "required": true, "default": 0, "role": "seed" }
+                    ],
+                    "available": true
+                }
+            ]
+        }))
+        .expect("catalog");
+
+        let entries = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
+            .expect("providers");
+        assert_eq!(entries.len(), 2);
+
+        let text = &entries[0];
+        assert_eq!(text.name, "Text to Image");
+        assert_eq!(text.output_type, ProviderOutputType::Image);
+        assert_eq!(text.workflow_kind, ProviderWorkflowKind::TextToImage);
+        assert!(matches!(
+            &text.inputs[1].input_type,
+            ProviderInputType::Enum { options }
+                if options == &["1024x1024".to_string()]
+        ));
+
+        let edit = &entries[1];
+        assert_eq!(edit.name, "Image to Image");
+        assert_eq!(edit.output_type, ProviderOutputType::Image);
+        assert_eq!(edit.workflow_kind, ProviderWorkflowKind::ImageToImage);
+        assert_eq!(edit.inputs[1].role, Some(InputRole::StartImage));
+        assert!(matches!(
+            edit.inputs[1].input_type,
+            ProviderInputType::Image
+        ));
+        assert!(matches!(
+            &edit.connection,
+            ProviderConnection::LatentSlateEngine { tool_key, .. }
+                if tool_key == "flux2_klein9b.image_to_image"
+        ));
+    }
+
+    #[test]
     fn cached_catalog_tools_are_inspectable_but_unavailable() {
         let mut catalog: EngineCatalog = serde_json::from_value(json!({
             "protocol_version": "1.0",
