@@ -65,7 +65,7 @@ pub fn catalog_cache_path() -> PathBuf {
 }
 
 pub fn load_connection_settings() -> EngineConnectionSettings {
-    let mut settings = fs::read_to_string(connection_settings_path())
+    let mut settings: EngineConnectionSettings = fs::read_to_string(connection_settings_path())
         .ok()
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
@@ -779,11 +779,11 @@ mod tests {
         assert_eq!(provider.inputs[1].role, Some(InputRole::StartImage));
         assert_eq!(provider.inputs[2].role, Some(InputRole::EndImage));
         assert!(matches!(
-            provider.inputs[3].input_type,
+            &provider.inputs[3].input_type,
             ProviderInputType::Enum { .. }
         ));
         assert!(matches!(
-            provider.connection,
+            &provider.connection,
             ProviderConnection::LatentSlateEngine { .. }
         ));
     }

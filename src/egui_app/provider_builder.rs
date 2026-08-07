@@ -1333,6 +1333,7 @@ pub(super) struct ProviderFileSummary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderSourceKind {
     ComfyUi,
+    LatentSlateEngine,
     OpenAi,
     Xai,
     CustomHttp,
@@ -1343,6 +1344,7 @@ impl ProviderSourceKind {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::ComfyUi => "ComfyUI",
+            Self::LatentSlateEngine => "LatentSlate Engine",
             Self::OpenAi => "OpenAI",
             Self::Xai => "xAI",
             Self::CustomHttp => "Custom HTTP",
@@ -1352,11 +1354,12 @@ impl ProviderSourceKind {
 
     pub(super) fn sort_key(self) -> u8 {
         match self {
-            Self::ComfyUi => 0,
-            Self::OpenAi => 1,
-            Self::Xai => 2,
-            Self::CustomHttp => 3,
-            Self::Other => 4,
+            Self::LatentSlateEngine => 0,
+            Self::ComfyUi => 1,
+            Self::OpenAi => 2,
+            Self::Xai => 3,
+            Self::CustomHttp => 4,
+            Self::Other => 5,
         }
     }
 }
@@ -1592,6 +1595,12 @@ fn provider_connection_summary(connection: &ProviderConnection) -> (ProviderSour
         ProviderConnection::XaiImage { model, .. } | ProviderConnection::XaiVideo { model, .. } => {
             (ProviderSourceKind::Xai, model.clone())
         }
+        ProviderConnection::LatentSlateEngine {
+            base_url, tool_key, ..
+        } => (
+            ProviderSourceKind::LatentSlateEngine,
+            format!("{tool_key} · {base_url}"),
+        ),
         ProviderConnection::CustomHttp { base_url, .. } => {
             (ProviderSourceKind::CustomHttp, base_url.clone())
         }
