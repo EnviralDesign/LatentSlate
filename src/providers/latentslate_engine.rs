@@ -20,6 +20,8 @@ use super::{ProviderExecutionError, ProviderOutput, ProviderProgress};
 const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8765";
 const CATALOG_CACHE_FILE: &str = "engine_catalog.json";
 const CONNECTION_SETTINGS_FILE: &str = "engine.json";
+const CACHED_CATALOG_UNAVAILABLE_REASON: &str =
+    "LatentSlate Engine is offline; this tool was loaded from the cached catalog.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConnectionSettings {
@@ -89,12 +91,12 @@ pub fn load_provider_entries() -> Result<Vec<ProviderEntry>, String> {
         return Ok(Vec::new());
     }
 
-    let catalog = match fetch_catalog_blocking(&settings) {
+    let (mut catalog, loaded_from_cache) = match fetch_catalog_blocking(&settings) {
         Ok(catalog) => {
             if let Err(err) = save_catalog_cache(&catalog) {
                 println!("Failed to cache LatentSlate Engine catalog: {err}");
             }
-            catalog
+            (catalog, false)
         }
         Err(live_error) => match load_catalog_cache() {
             Ok(catalog) => {
@@ -102,12 +104,15 @@ pub fn load_provider_entries() -> Result<Vec<ProviderEntry>, String> {
                     "LatentSlate Engine unavailable at {}; using cached catalog: {live_error}",
                     settings.base_url
                 );
-                catalog
+                (catalog, true)
             }
             Err(_) => return Ok(Vec::new()),
         },
     };
 
+    if loaded_from_cache {
+        mark_cached_catalog_unavailable(&mut catalog);
+    }
     catalog_to_provider_entries(&catalog, &settings)
 }
 
@@ -155,6 +160,13 @@ fn save_catalog_cache(catalog: &EngineCatalog) -> Result<(), String> {
 fn load_catalog_cache() -> Result<EngineCatalog, String> {
     let json = fs::read(catalog_cache_path()).map_err(|err| err.to_string())?;
     serde_json::from_slice(&json).map_err(|err| err.to_string())
+}
+
+fn mark_cached_catalog_unavailable(catalog: &mut EngineCatalog) {
+    for tool in &mut catalog.tools {
+        tool.available = false;
+        tool.unavailable_reason = Some(CACHED_CATALOG_UNAVAILABLE_REASON.to_string());
+    }
 }
 
 fn catalog_to_provider_entries(
@@ -751,12 +763,12 @@ mod tests {
                 "key": "h3.first_last_frame_video",
                 "schema_revision": 1,
                 "schema_hash": "sha256:test",
-                "name": "H3 Between Keyframes",
+                "name": "First/Last Frame Video",
                 "description": "Generate a shot.",
                 "workflow_kind": "first_frame_last_frame_video",
                 "output": { "type": "video" },
                 "inputs": [
-                    { "key": "prompt", "label": "Direction", "type": "text", "required": true },
+                    { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
                     { "key": "start_image", "label": "First Frame", "type": "image", "required": true, "role": "start_image" },
                     { "key": "end_image", "label": "Last Frame", "type": "image", "required": false, "role": "end_image" },
                     { "key": "quality", "label": "Quality", "type": "choice", "required": true, "default": "draft", "options": [
@@ -786,6 +798,52 @@ mod tests {
             &provider.connection,
             ProviderConnection::LatentSlateEngine { .. }
         ));
+    }
+
+    #[test]
+    fn cached_catalog_tools_are_inspectable_but_unavailable() {
+        let mut catalog: EngineCatalog = serde_json::from_value(json!({
+            "protocol_version": "1.0",
+            "engine_version": "0.1.0",
+            "bundles": [],
+            "tools": [{
+                "id": "369a630e-4d64-4e3c-8f15-1809757a10e5",
+                "key": "h3.text_to_video",
+                "schema_revision": 1,
+                "schema_hash": "sha256:test",
+                "name": "Text to Video",
+                "description": "Cached description.",
+                "workflow_kind": "text_to_video",
+                "output": { "type": "video" },
+                "inputs": [],
+                "available": true
+            }]
+        }))
+        .expect("catalog");
+
+        mark_cached_catalog_unavailable(&mut catalog);
+        let entries = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
+            .expect("providers");
+        let provider = &entries[0];
+        let ProviderConnection::LatentSlateEngine {
+            available,
+            unavailable_reason,
+            ..
+        } = &provider.connection
+        else {
+            panic!("expected LatentSlate Engine provider");
+        };
+
+        assert!(!*available);
+        assert_eq!(
+            unavailable_reason.as_deref(),
+            Some(CACHED_CATALOG_UNAVAILABLE_REASON)
+        );
+        assert!(provider
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains(CACHED_CATALOG_UNAVAILABLE_REASON));
     }
 
     #[test]
