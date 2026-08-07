@@ -81,23 +81,14 @@ jobs:
           if text.count(old_end) != 1:
               raise SystemExit(f"provider-builder test ending matches: {text.count(old_end)}")
           path.write_text(text.replace(old_end, new_end, 1))
-
-          ci_path = Path(".github/workflows/ci.yml")
-          ci = ci_path.read_text()
-          old_ci = "    branches: [main]\n"
-          new_ci = "    branches: [main, agent/latent-engine-v0]\n"
-          if ci.count(old_ci) != 1:
-              raise SystemExit(f"CI branch-trigger matches: {ci.count(old_ci)}")
-          ci_path.write_text(ci.replace(old_ci, new_ci, 1))
           PY
 
-      - name: Commit the fix directly to the feature branch
+      - name: Commit the source fix directly to the feature branch
         shell: bash
         run: |
-          rm .github/workflows/fix-branch-ci-one-shot.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/egui_app/provider_builder.rs .github/workflows/ci.yml .github/workflows/fix-branch-ci-one-shot.yml
+          git add src/egui_app/provider_builder.rs
           git diff --cached --check
           git commit -m "make provider builder test self-contained"
           git push origin HEAD:agent/latent-engine-v0
