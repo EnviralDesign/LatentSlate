@@ -2762,6 +2762,16 @@ mod tests {
     #[test]
     fn edit_existing_provider_preserves_manifest_output_key() {
         let output_key = "custom_video_output";
+        let workflow_path = std::env::temp_dir().join(format!(
+            "latentslate-provider-builder-{}.json",
+            Uuid::new_v4()
+        ));
+        std::fs::write(
+            &workflow_path,
+            r#"{"42":{"class_type":"PreviewVideo","inputs":{},"_meta":{"title":"Preview Video"}}}"#,
+        )
+        .expect("write workflow fixture");
+        let workflow_path_string = workflow_path.to_string_lossy().into_owned();
         let manifest = ProviderManifest::ComfyUi {
             schema_version: 1,
             name: Some("Video Provider".to_string()),
@@ -2770,7 +2780,7 @@ mod tests {
             workflow_kind: ProviderWorkflowKind::ImageToVideo,
             timeline_bridge: None,
             workflow: ComfyWorkflowRef {
-                workflow_path: "workflow.json".to_string(),
+                workflow_path: workflow_path_string.clone(),
                 workflow_hash: None,
             },
             inputs: Vec::new(),
@@ -2795,7 +2805,7 @@ mod tests {
             inputs: Vec::new(),
             connection: ProviderConnection::ComfyUi {
                 base_url: "http://127.0.0.1:8188".to_string(),
-                workflow_path: Some("workflow.json".to_string()),
+                workflow_path: Some(workflow_path_string),
                 manifest: Some(manifest),
             },
         };
@@ -2812,5 +2822,6 @@ mod tests {
             panic!("expected saved comfy manifest");
         };
         assert_eq!(output.selector.input_key, output_key);
+        std::fs::remove_file(workflow_path).expect("remove workflow fixture");
     }
 }
