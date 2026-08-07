@@ -190,8 +190,12 @@ jobs:
 
           replace_once(
               "Cargo.toml",
-              '''reqwest = { version = "0.12", features = ["json"] }''',
-              '''reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }''',
+              '''bytemuck = { version = "1.15", features = ["derive"] }
+          reqwest = { version = "0.12", features = ["json"] }
+          cpal = "0.15"''',
+              '''bytemuck = { version = "1.15", features = ["derive"] }
+          reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
+          cpal = "0.15"''',
           )
           PY
 
