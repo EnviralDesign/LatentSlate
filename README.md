@@ -50,6 +50,7 @@ The goal is to let you build and test your workflow in ComfyUI, then bring it in
 - Asset Lab for visual generation lineage, staged variants, provider changes, and branch exploration.
 - Generation queue with progress, status feedback, and cancellation.
 - ComfyUI Provider Builder for turning API workflow JSON into timeline-editable provider inputs.
+- Experimental first-party LatentSlate Engine catalog with Text to Video, First/Last Frame Video, Text to Image, and Image to Image tools.
 - Experimental OpenAI image, xAI image, and xAI video adapters.
 - FFmpeg-backed MP4 export with optional audio mixdown.
 
