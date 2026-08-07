@@ -1,0 +1,139 @@
+ng,
+    label: String,
+    #[serde(rename = "type")]
+    r#type: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    default: Option<Value>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    options: Vec<EngineChoice>,
+    #[serde(default)]
+    ui: Option<EngineInputUi>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EngineChoice {
+    value: String,
+    #[serde(default)]
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EngineInputUi {
+    #[serde(default)]
+    min: Option<f64>,
+    #[serde(default)]
+    max: Option<f64>,
+    #[serde(default)]
+    step: Option<f64>,
+    #[serde(default)]
+    placeholder: Option<String>,
+    #[serde(default)]
+    multiline: bool,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    advanced: bool,
+    #[serde(default)]
+    unit: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineAsset {
+    id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineJob {
+    id: Uuid,
+    status: String,
+    #[serde(default)]
+    progress: Option<f64>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    artifacts: Vec<EngineArtifact>,
+    #[serde(default)]
+    error: Option<EngineErrorBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineArtifact {
+    #[serde(default)]
+    role: String,
+    filename: String,
+    download_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineErrorResponse {
+    error: EngineErrorBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct EngineErrorBody {
+    message: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_tools_normalize_into_provider_entries() {
+        let catalog: EngineCatalog = serde_json::from_value(json!({
+            "protocol_version": "1.0",
+            "engine_version": "0.1.0",
+            "bundles": [],
+            "tools": [{
+                "id": "8c038628-e5bd-4954-80e3-32956321089b",
+                "key": "h3.first_last_frame_video",
+                "schema_revision": 1,
+                "schema_hash": "sha256:test",
+                "name": "H3 Between Keyframes",
+                "description": "Generate a shot.",
+                "workflow_kind": "first_frame_last_frame_video",
+                "output": { "type": "video" },
+                "inputs": [
+                    { "key": "prompt", "label": "Direction", "type": "text", "required": true },
+                    { "key": "start_image", "label": "First Frame", "type": "image", "required": true, "role": "start_image" },
+                    { "key": "end_image", "label": "Last Frame", "type": "image", "required": false, "role": "end_image" },
+                    { "key": "quality", "label": "Quality", "type": "choice", "required": true, "default": "draft", "options": [
+                        { "value": "draft", "label": "Draft" },
+                        { "value": "final", "label": "Final" }
+                    ]}
+                ],
+                "available": true
+            }]
+        }))
+        .expect("catalog");
+        let entries = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
+            .expect("providers");
+        let provider = &entries[0];
+        assert_eq!(provider.id, catalog.tools[0].id);
+        assert_eq!(provider.workflow_kind, ProviderWorkflowKind::FirstFrameLastFrameVideo);
+        assert_eq!(provider.inputs[1].role, Some(InputRole::StartImage));
+        assert_eq!(provider.inputs[2].role, Some(InputRole::EndImage));
+        assert!(matches!(
+            provider.inputs[3].input_type,
+            ProviderInputType::Enum { .. }
+        ));
+        assert!(matches!(
+            provider.connection,
+            ProviderConnection::LatentSlateEngine { .. }
+        ));
+    }
+
+    #[test]
+    fn endpoint_joining_is_location_agnostic() {
+        assert_eq!(
+            endpoint("https://example.test/engine/", "/v1/catalog"),
+            "https://example.test/engine/v1/catalog"
+        );
+    }
+}

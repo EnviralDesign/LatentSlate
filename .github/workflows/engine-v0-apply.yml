@@ -1,0 +1,211 @@
+name: Apply LatentSlate Engine v0 branch integration
+
+on:
+  push:
+    branches:
+      - agent/latent-engine-v0
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/latent-engine-v0
+          fetch-depth: 0
+
+      - name: Reconstruct Engine adapter
+        shell: bash
+        run: |
+          mkdir -p src/providers
+          cat .engine-v0/adapter-* > src/providers/latentslate_engine.rs
+          rm -rf .engine-v0
+
+      - name: Apply Engine integration patches
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected one match in {path}, found {count}: {old[:80]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/state/providers.rs",
+              '''    XaiVideo {
+                  #[serde(default)]
+                  api_key: Option<String>,
+                  model: String,
+                  #[serde(default)]
+                  base_url: Option<String>,
+              },
+              CustomHttp {''',
+              '''    XaiVideo {
+                  #[serde(default)]
+                  api_key: Option<String>,
+                  model: String,
+                  #[serde(default)]
+                  base_url: Option<String>,
+              },
+              LatentSlateEngine {
+                  base_url: String,
+                  #[serde(default)]
+                  api_key: Option<String>,
+                  tool_key: String,
+                  schema_revision: u32,
+                  schema_hash: String,
+                  available: bool,
+                  #[serde(default)]
+                  unavailable_reason: Option<String>,
+              },
+              CustomHttp {''',
+          )
+
+          replace_once(
+              "src/providers/mod.rs",
+              '''mod cloud;
+          pub mod comfyui;
+          pub mod openai;
+          pub mod xai;''',
+              '''mod cloud;
+          pub mod comfyui;
+          pub mod latentslate_engine;
+          pub mod openai;
+          pub mod xai;''',
+          )
+
+          replace_once(
+              "src/providers/mod.rs",
+              '''        ProviderConnection::CustomHttp { .. } => {
+                      Err("Custom HTTP providers are planned but not implemented yet.".to_string())
+                  }''',
+              '''        ProviderConnection::LatentSlateEngine {
+                      base_url, api_key, ..
+                  } => {
+                      latentslate_engine::test_connection(
+                          provider,
+                          &base_url,
+                          api_key.as_deref(),
+                          live,
+                      )
+                      .await
+                  }
+                  ProviderConnection::CustomHttp { .. } => {
+                      Err("Custom HTTP providers are planned but not implemented yet.".to_string())
+                  }''',
+          )
+
+          replace_once(
+              "src/providers/mod.rs",
+              '''        ProviderConnection::CustomHttp { .. } => Err(ProviderExecutionError::Error(
+                  "Custom HTTP providers are planned but not implemented yet.".to_string(),
+              )),''',
+              '''        ProviderConnection::LatentSlateEngine {
+                  base_url,
+                  api_key,
+                  schema_revision,
+                  schema_hash,
+                  available,
+                  unavailable_reason,
+                  ..
+              } => {
+                  latentslate_engine::generate_output(
+                      provider,
+                      &base_url,
+                      api_key.as_deref(),
+                      schema_revision,
+                      &schema_hash,
+                      available,
+                      unavailable_reason.as_deref(),
+                      inputs,
+                      progress_tx,
+                  )
+                  .await
+              }
+              ProviderConnection::CustomHttp { .. } => Err(ProviderExecutionError::Error(
+                  "Custom HTTP providers are planned but not implemented yet.".to_string(),
+              )),''',
+          )
+
+          replace_once(
+              "src/core/provider_store.rs",
+              '''pub fn load_local_provider_entries() -> io::Result<Vec<ProviderEntry>> {
+              load_provider_entries_from(&local_providers_root())
+          }''',
+              '''pub fn load_local_provider_entries() -> io::Result<Vec<ProviderEntry>> {
+              let mut entries = load_provider_entries_from(&local_providers_root())?;
+              match crate::providers::latentslate_engine::load_provider_entries() {
+                  Ok(engine_entries) => merge_provider_entries(&mut entries, engine_entries),
+                  Err(err) => println!("Failed to load LatentSlate Engine tools: {err}"),
+              }
+              Ok(entries)
+          }
+
+          fn merge_provider_entries(entries: &mut Vec<ProviderEntry>, incoming: Vec<ProviderEntry>) {
+              for provider in incoming {
+                  if let Some(index) = entries.iter().position(|entry| entry.id == provider.id) {
+                      entries[index] = provider;
+                  } else {
+                      entries.push(provider);
+                  }
+              }
+          }''',
+          )
+
+          replace_once(
+              "src/egui_app/provider_builder.rs",
+              '''            ProviderConnection::CustomHttp { base_url, .. } => (base_url.clone(), None, None),''',
+              '''            ProviderConnection::CustomHttp { base_url, .. }
+                      | ProviderConnection::LatentSlateEngine { base_url, .. } => {
+                          (base_url.clone(), None, None)
+                      }''',
+          )
+
+          replace_once(
+              "src/editor.rs",
+              '''        | ProviderConnection::CustomHttp { api_key, .. } => Some(api_key.is_some()),
+                  ProviderConnection::ComfyUi { .. } => None,''',
+              '''        | ProviderConnection::CustomHttp { api_key, .. }
+                  | ProviderConnection::LatentSlateEngine { api_key, .. } => Some(api_key.is_some()),
+                  ProviderConnection::ComfyUi { .. } => None,''',
+          )
+
+          replace_once(
+              "src/editor.rs",
+              '''        ProviderConnection::XaiImage { .. } | ProviderConnection::XaiVideo { .. } => "xai",
+                  ProviderConnection::CustomHttp { .. } => "custom_http",''',
+              '''        ProviderConnection::XaiImage { .. } | ProviderConnection::XaiVideo { .. } => "xai",
+                  ProviderConnection::LatentSlateEngine { .. } => "latentslate_engine",
+                  ProviderConnection::CustomHttp { .. } => "custom_http",''',
+          )
+
+          replace_once(
+              "Cargo.toml",
+              '''reqwest = { version = "0.12", features = ["json"] }''',
+              '''reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }''',
+          )
+          PY
+
+      - name: Format Rust
+        run: cargo fmt --all
+
+      - name: Remove temporary branch workflow
+        run: rm .github/workflows/engine-v0-apply.yml
+
+      - name: Commit integration
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "integrate LatentSlate Engine catalog"
+          git push origin HEAD:agent/latent-engine-v0
