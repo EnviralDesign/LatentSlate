@@ -186,6 +186,17 @@ pub enum ProviderConnection {
         #[serde(default)]
         base_url: Option<String>,
     },
+    LatentSlateEngine {
+        base_url: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        tool_key: String,
+        schema_revision: u32,
+        schema_hash: String,
+        available: bool,
+        #[serde(default)]
+        unavailable_reason: Option<String>,
+    },
     CustomHttp {
         base_url: String,
         api_key: Option<String>,

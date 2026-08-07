@@ -21,7 +21,7 @@ imageproc = "0.26"
 ab_glyph = "0.2"
 ffmpeg-next = { version = "8.1.0", default-features = false, features = ["codec", "format", "software-scaling", "software-resampling"] }
 bytemuck = { version = "1.15", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
 cpal = "0.15"
 tokio-tungstenite = "0.23"
 futures-util = "0.3"

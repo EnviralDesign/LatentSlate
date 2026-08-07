@@ -263,7 +263,10 @@ impl ProviderBuilderState {
             | ProviderConnection::XaiVideo { base_url, .. } => {
                 (base_url.clone().unwrap_or_default(), None, None)
             }
-            ProviderConnection::CustomHttp { base_url, .. } => (base_url.clone(), None, None),
+            ProviderConnection::CustomHttp { base_url, .. }
+            | ProviderConnection::LatentSlateEngine { base_url, .. } => {
+                (base_url.clone(), None, None)
+            }
         };
 
         let (workflow_nodes, workflow_error) = workflow_path

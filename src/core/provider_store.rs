@@ -10,7 +10,22 @@ use crate::state::{
 };
 
 pub fn load_local_provider_entries() -> io::Result<Vec<ProviderEntry>> {
-    load_provider_entries_from(&local_providers_root())
+    let mut entries = load_provider_entries_from(&local_providers_root())?;
+    match crate::providers::latentslate_engine::load_provider_entries() {
+        Ok(engine_entries) => merge_provider_entries(&mut entries, engine_entries),
+        Err(err) => println!("Failed to load LatentSlate Engine tools: {err}"),
+    }
+    Ok(entries)
+}
+
+fn merge_provider_entries(entries: &mut Vec<ProviderEntry>, incoming: Vec<ProviderEntry>) {
+    for provider in incoming {
+        if let Some(index) = entries.iter().position(|entry| entry.id == provider.id) {
+            entries[index] = provider;
+        } else {
+            entries.push(provider);
+        }
+    }
 }
 
 pub fn load_local_provider_entries_or_empty() -> Vec<ProviderEntry> {

@@ -7,6 +7,7 @@ use crate::state::{ProviderConnection, ProviderEntry, ProviderOutputType};
 
 mod cloud;
 pub mod comfyui;
+pub mod latentslate_engine;
 pub mod openai;
 pub mod xai;
 
@@ -118,6 +119,11 @@ pub async fn test_provider_connection(
             )
             .await
         }
+        ProviderConnection::LatentSlateEngine {
+            base_url, api_key, ..
+        } => {
+            latentslate_engine::test_connection(provider, &base_url, api_key.as_deref(), live).await
+        }
         ProviderConnection::CustomHttp { .. } => {
             Err("Custom HTTP providers are planned but not implemented yet.".to_string())
         }
@@ -202,6 +208,28 @@ pub async fn execute_generation(
         )
         .await
         .map_err(ProviderExecutionError::Error),
+        ProviderConnection::LatentSlateEngine {
+            base_url,
+            api_key,
+            schema_revision,
+            schema_hash,
+            available,
+            unavailable_reason,
+            ..
+        } => {
+            latentslate_engine::generate_output(
+                provider,
+                &base_url,
+                api_key.as_deref(),
+                schema_revision,
+                &schema_hash,
+                available,
+                unavailable_reason.as_deref(),
+                inputs,
+                progress_tx,
+            )
+            .await
+        }
         ProviderConnection::CustomHttp { .. } => Err(ProviderExecutionError::Error(
             "Custom HTTP providers are planned but not implemented yet.".to_string(),
         )),

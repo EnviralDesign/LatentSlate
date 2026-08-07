@@ -2851,7 +2851,8 @@ fn redacted_provider_entry_json(provider: &ProviderEntry) -> Value {
         ProviderConnection::OpenAiImage { api_key, .. }
         | ProviderConnection::XaiImage { api_key, .. }
         | ProviderConnection::XaiVideo { api_key, .. }
-        | ProviderConnection::CustomHttp { api_key, .. } => Some(api_key.is_some()),
+        | ProviderConnection::CustomHttp { api_key, .. }
+        | ProviderConnection::LatentSlateEngine { api_key, .. } => Some(api_key.is_some()),
         ProviderConnection::ComfyUi { .. } => None,
     };
     if let Some(api_key_present) = api_key_present {
@@ -2872,6 +2873,7 @@ fn provider_source_label(provider: &ProviderEntry) -> &'static str {
         ProviderConnection::ComfyUi { .. } => "comfyui",
         ProviderConnection::OpenAiImage { .. } => "openai",
         ProviderConnection::XaiImage { .. } | ProviderConnection::XaiVideo { .. } => "xai",
+        ProviderConnection::LatentSlateEngine { .. } => "latentslate_engine",
         ProviderConnection::CustomHttp { .. } => "custom_http",
     }
 }
