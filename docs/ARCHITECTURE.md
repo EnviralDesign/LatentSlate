@@ -1,6 +1,7 @@
 # Architecture
 
-This is the concise architecture reference for the current app. It describes what exists now, not an aspirational design.
+This is the concise architecture reference for the current app. It describes what
+exists now, not an aspirational design.
 
 ## System Shape
 
@@ -12,15 +13,21 @@ Editor model/controller (`src/editor.rs`)
         |
         +--> Project/state model (`src/state/`)
         +--> Preview/export/audio/media core (`src/core/`)
-        +--> Provider execution (`src/providers/`)
+        +--> Shared provider execution (`src/providers/`)
+        |       +--> LatentSlate Engine over HTTP
+        |       +--> ComfyUI over HTTP/WebSocket
+        |       +--> cloud APIs
         +--> Loopback automation (`src/core/automation.rs`)
 ```
 
-The UI should call shared editor/core operations instead of duplicating behavior in widget code. The automation harness also routes through those paths where practical.
+The UI should call shared editor/core operations instead of duplicating behavior
+in widget code. The automation harness also routes through those paths where
+practical.
 
 ## Project Model
 
-A project is a folder. The app stores imported and generated media inside that folder so projects can be moved or zipped more predictably.
+A project is a folder. The app stores imported and generated media inside that
+folder so projects can be moved or zipped more predictably.
 
 ```text
 my-project/
@@ -43,8 +50,10 @@ Important rules:
 - Deleting an asset removes its project-local owned media, generated folder, and asset-specific caches when no remaining asset references the same project-relative path; external or unsafe paths are only removed from the project model.
 - Writable app-managed state lives under `LatentSlateData/` next to the running executable unless `LATENTSLATE_HOME` is set.
 - Default projects are written to `LatentSlateData/projects/`.
-- Provider entries are written to `LatentSlateData/providers/`.
+- User-authored provider entries are written to `LatentSlateData/providers/`.
+- LatentSlate Engine connection settings may be stored in `LatentSlateData/engine.json`; its last successful tool catalog is cached in `LatentSlateData/engine_catalog.json`.
 - Provider entries contain inline ComfyUI manifest bindings and inline cloud provider API keys.
+- Engine tools are generated in memory from a live or cached Engine catalog and are not written as editable provider JSON files.
 - Project settings can optionally scope providers with a project-level allowlist; provider pickers, generation, Asset Lab provider selection, and default Agent API provider metadata honor that scope.
 - `LatentSlateData/workflows/` is created as an optional local home for ComfyUI API workflow JSON files.
 - App scratch files are written under `LatentSlateData/tmp/`; project-derived caches are written under each project folder's `.cache/`.
@@ -63,7 +72,8 @@ Important rules:
 
 ## Assets And Generative Versions
 
-All media is represented as an asset. Standard assets point at imported files. Generative assets point at a UUID-keyed generated folder and a config file.
+All media is represented as an asset. Standard assets point at imported files.
+Generative assets point at a UUID-keyed generated folder and a config file.
 
 Generative config tracks:
 
@@ -74,36 +84,90 @@ Generative config tracks:
 - active version
 - Asset Lab node lineage
 
-The active version is the file shown on the timeline and used when another generation references that asset. A generative asset with no active version is intentionally hollow; the preview and provider-input paths do not scan its folder for arbitrary leftover files.
+The active version is the file shown on the timeline and used when another
+generation references that asset. A generative asset with no active version is
+intentionally hollow; the preview and provider-input paths do not scan its folder
+for arbitrary leftover files.
 
-Generative video assets store target timing as duration, FPS, and frame count.
-For a hollow generative video used by one clip, resizing the clip updates that
-target timing. After a version exists, clip resizing is treated as timeline
-editing; target timing remains an explicit asset setting for future generations.
+Generative video assets store target timing as duration, FPS, and frame count. For
+a hollow generative video used by one clip, resizing the clip updates that target
+timing. After a version exists, clip resizing is treated as timeline editing;
+target timing remains an explicit asset setting for future generations.
 
-## Provider Flow
+## Provider And Tool Model
 
-Provider entries describe an output type, input schema, and connection.
+`ProviderEntry` remains the shared frontend/runtime shape. It describes:
+
+- stable provider/tool UUID
+- output media type
+- LatentSlate creative workflow kind
+- schema-driven inputs and semantic roles
+- adapter-specific connection/execution data
+
+This lets the timeline, Attributes panel, Asset Lab, Agent API, generation queue,
+media resolution, batching, seed handling, and version persistence stay shared.
+The source of the entry may differ:
+
+- **LatentSlate Engine:** automatically normalized from the Engine's versioned tool catalog.
+- **ComfyUI:** loaded from a user-authored provider JSON and embedded graph manifest.
+- **Cloud APIs:** loaded from a local provider JSON with adapter-specific settings.
+
+The Engine is first-class rather than routed through generic `CustomHttp`. Its
+connection records the endpoint, stable tool key, availability, and current
+schema revision/hash. Engine schemas are read-only in LatentSlate; the Engine
+registry is their source of truth.
+
 `workflow_kind: "video_to_bridge"` providers are video seam tools that require
 width, height, seed, left/right video, and timing roles, then receive pre-baked
 source segments from the project timeline.
 
 Current runtime adapters:
 
+- LatentSlate Engine image/video/audio contract over HTTP; the current Engine catalog exposes two H3 video tools.
 - ComfyUI image/video/audio through workflow API JSON plus manifest bindings.
 - OpenAI image.
 - xAI image.
 - xAI Grok video.
 
-`CustomHttp` is modeled but not implemented at runtime.
+`CustomHttp` remains modeled but is not implemented at runtime.
 
-Generation jobs flow through the shared queue:
+## Provider Discovery
+
+Local provider files are loaded first. LatentSlate then requests
+`GET /v1/catalog` from the configured Engine and merges the resulting tools by
+stable UUID. A live catalog replaces a local entry with the same UUID, preserving
+the Engine as source of truth.
+
+The last successful Engine catalog is cached. If the Engine is offline at app
+startup, cached tools remain inspectable and selectable, but execution still
+requires a reachable compatible Engine.
+
+Every Engine job includes the catalog's schema revision and hash. The Engine
+rejects stale requests explicitly. Project-level schema snapshots and a
+reconciliation screen are not implemented yet; the stable identities and
+revision/hash contract are the framework for that later work.
+
+## Generation Flow
+
+All providers enter the existing shared queue:
 
 1. Resolve provider and current input values.
-2. Resolve media inputs from project assets/timeline context when supported.
-3. Execute provider adapter.
-4. Save output as the next version under the generative asset folder.
-5. Update config, active version, thumbnails, and preview state.
+2. Resolve media inputs from project assets and timeline context.
+3. Execute the adapter.
+4. Save the returned bytes as the next project-local version.
+5. Update config, active version, thumbnails, metadata, and preview state.
+
+For LatentSlate Engine specifically:
+
+1. Upload each resolved media input with multipart HTTP.
+2. Replace local paths with Engine asset references.
+3. Submit a schema-pinned asynchronous job.
+4. Poll job state and forward progress into the existing queue UI.
+5. Download the primary artifact over HTTP.
+6. Hand the bytes back to the normal generative-version path.
+
+The same flow works for localhost, LAN, and remote/Vast.ai deployments. There is
+no shared-filesystem optimization in the public Engine contract.
 
 See [PROVIDERS.md](./PROVIDERS.md) for setup details.
 
@@ -133,10 +197,10 @@ Export:
 
 ## Agent API And Automation
 
-The desktop Agent API is loopback-only and opt-in through the top-bar API
-popover, `--automation`, or `LATENTSLATE_AUTOMATION=1`. It exposes semantic
-commands, current UI registry data, screenshots, preview diagnostics, generation
-queue control, long-running generation waits, export control, self-documenting
+The desktop Agent API is loopback-only and opt-in through the top-bar API popover,
+`--automation`, or `LATENTSLATE_AUTOMATION=1`. It exposes semantic commands,
+current UI registry data, screenshots, preview diagnostics, generation queue
+control, long-running generation waits, export control, self-documenting
 help/schema routes, and rendered timeline/clip/asset captures.
 
 State-changing Agent API commands should route through the highest practical
@@ -144,11 +208,8 @@ editor/app operation so the visible UI, preview caches, selection, dirty state,
 queue panels, and timeline playhead update like human-driven actions. Read-only
 captures do not move the visible timeline unless the request opts into `seek_ui`.
 
-Rendered captures are saved under
-`LatentSlateData/tmp/agent-captures`. The app clears this folder on startup so
-each launched session begins with an empty capture scratch area. `normal` mode
-matches the compositor output as closely as practical; `enhanced` mode adds
-agent-readable inspection overlays such as timing labels and clip/source
-boundaries.
+Rendered captures are saved under `LatentSlateData/tmp/agent-captures`. The app
+clears this folder on startup. `normal` mode matches the compositor output as
+closely as practical; `enhanced` mode adds agent-readable inspection overlays.
 
 See [DESKTOP_TEST_HARNESS.md](./DESKTOP_TEST_HARNESS.md).
