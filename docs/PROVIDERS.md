@@ -121,11 +121,13 @@ Supported schema input types:
 - `video`
 - `audio`
 
-Numeric inputs can optionally declare a semantic `role`. Width, height, and seed
-roles support existing image/video setup and batching behavior. Video providers
-can additionally mark timing inputs as `duration_seconds`, `fps`, or
-`frame_count`; LatentSlate syncs those fields from the generative video's target
-timing before generation. Use the input UI `min`/`max` metadata on a
+Inputs can optionally declare a semantic `role`. Width, height, and seed roles
+support existing image/video setup and batching behavior. Image-to-video
+providers should mark their source image input as `start_image`; first/last-frame
+video providers should mark their media inputs as `start_image` and `end_image`.
+Video providers can additionally mark timing inputs as `duration_seconds`, `fps`,
+or `frame_count`; LatentSlate syncs those fields from the generative video's
+target timing before generation. Use the input UI `min`/`max` metadata on a
 `duration_seconds` role to express provider duration rails.
 
 Timeline bridge video providers are purpose-built seam tools. Set
@@ -141,8 +143,8 @@ but compatibility still depends on the provider workflow and manifest binding.
 For the Agent API, `inputs.<provider_field>` is canonical for media parameters:
 `{ "type": "asset_ref", "asset_id": "...", "pinned": true }`.
 `reference_slots` are accepted as compatibility aliases when the slot name
-matches the provider field or a semantic media slot such as `image`,
-`start_image`, `end_image`, `video`, or `audio`.
+matches the provider field, a generic media slot such as `image`, `video`, or
+`audio`, or an explicit media role slot such as `start_image` or `end_image`.
 
 ## Workflow Drift
 

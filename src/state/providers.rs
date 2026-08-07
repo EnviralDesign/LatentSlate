@@ -127,6 +127,8 @@ pub enum InputRole {
     DurationSeconds,
     Fps,
     FrameCount,
+    StartImage,
+    EndImage,
     LeftVideo,
     RightVideo,
     LeftReplaceFrames,
@@ -261,10 +263,10 @@ fn infer_workflow_kind(
         ProviderOutputType::Video => {
             let has_start = image_inputs
                 .iter()
-                .any(|input| provider_input_reference_slot(input).starts_with("start"));
+                .any(|input| input.role == Some(InputRole::StartImage));
             let has_end = image_inputs
                 .iter()
-                .any(|input| provider_input_reference_slot(input).starts_with("end"));
+                .any(|input| input.role == Some(InputRole::EndImage));
             if has_start && has_end {
                 ProviderWorkflowKind::FirstFrameLastFrameVideo
             } else if !image_inputs.is_empty() {
@@ -283,21 +285,6 @@ fn infer_workflow_kind(
             }
         }
     }
-}
-
-fn provider_input_reference_slot(input: &ProviderInputField) -> &'static str {
-    let key = format!("{} {}", input.name, input.label).to_ascii_lowercase();
-    if contains_any(&key, &["end", "last", "final"]) {
-        "end_image"
-    } else if contains_any(&key, &["start", "first", "initial", "init"]) {
-        "start_image"
-    } else {
-        "image"
-    }
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 pub fn input_value_as_string(value: &serde_json::Value) -> Option<String> {

@@ -531,11 +531,13 @@ multi-line string explaining the parameter. Blank descriptions are omitted from
 JSON. Agents should prefer these descriptions over guessing from ComfyUI node
 names when choosing providers or setting input values.
 
-Numeric provider inputs can opt into semantic roles. Required roles remain
-`width`, `height`, and `seed` where the builder requires them. Video providers
-can optionally mark inputs as `duration_seconds`, `fps`, or `frame_count`; the
-editor syncs those inputs from the generative video's target timing before
-generation.
+Provider inputs can opt into semantic roles. Required roles remain `width`,
+`height`, and `seed` where the builder requires them. Image-to-video providers
+should mark their source image as `start_image`; first/last-frame video
+providers should mark media inputs as `start_image` and `end_image`. Video
+providers can optionally mark timing inputs as `duration_seconds`, `fps`, or
+`frame_count`; the editor syncs those inputs from the generative video's target
+timing before generation.
 
 Purpose-built seam providers should set `workflow_kind: "video_to_bridge"` and
 expose roles for `width`, `height`, `seed`, `left_video`, `right_video`, `fps`,
@@ -678,10 +680,13 @@ Patch a generative config:
 ```
 
 `inputs` is the canonical API shape for provider parameters, including
-image/video/audio assets. `reference_slots` remains useful for timeline hints
-and older agent calls; when a reference slot matches a media provider field name
-or semantic slot (`image`, `start_image`, `end_image`, `video`, `audio`) and
-`inputs.<field>` is absent, LatentSlate copies it into `inputs`.
+image/video/audio assets. Providers should use explicit media roles such as
+`start_image` and `end_image` for I2V and first/last-frame video workflows.
+`reference_slots` remains useful for timeline hints and older agent calls; when
+a reference slot matches a media provider field name, a generic media slot
+(`image`, `video`, `audio`), or an explicit media role slot (`start_image`,
+`end_image`) and `inputs.<field>` is absent, LatentSlate copies it into
+`inputs`.
 
 Version operations:
 

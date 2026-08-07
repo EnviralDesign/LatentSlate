@@ -2313,7 +2313,7 @@ pub fn agent_schema_json() -> Value {
                 "input_type": "ProviderInputType",
                 "required?": "bool",
                 "default?": "json value",
-                "role?": "width|height|seed|duration_seconds|fps|frame_count|left_video|right_video|left_replace_frames|right_replace_frames|edge_blend_frames",
+                "role?": "width|height|seed|duration_seconds|fps|frame_count|start_image|end_image|left_video|right_video|left_replace_frames|right_replace_frames|edge_blend_frames",
                 "ui?": "InputUi"
             }
         },
@@ -2352,6 +2352,7 @@ pub fn agent_schema_json() -> Value {
             "Provider API keys live in provider JSON connection.api_key and are redacted in API responses.",
             "Provider and provider-input descriptions are returned with provider metadata and should guide tool selection and parameter values.",
             "Timeline bridge providers use workflow_kind=video_to_bridge and roles width, height, seed, left_video, right_video, fps, left_replace_frames, right_replace_frames, and edge_blend_frames.",
+            "Image-to-video providers should use role=start_image for their image input. First/last-frame video providers should use roles start_image and end_image.",
             "create_bridge_from_clips uses a video_to_bridge provider when provider_id names one, or when exactly one video_to_bridge provider is available in the project scope.",
             "Project provider scope filters /agent/v1/state providers and list_providers by default; pass include_all=true to list_providers or include=all_providers to state for repair workflows.",
             "State providers and queue are compact by default; use include=providers:full, include=queue:full, or list_providers for heavy details.",
@@ -2512,7 +2513,7 @@ fn agent_command_schema_json() -> Value {
         "generation": [
             { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "duration_seconds?": "f64", "frame_count?": "u32" } },
             { "type": "get_generative_config", "fields": { "asset_id": "uuid" } },
-            { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; canonical for literal and media provider parameters", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name or semantic slots like image/start_image/end_image are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string" } } },
+            { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; canonical for literal and media provider parameters", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name, generic media slot, or explicit media role slot are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string" } } },
             { "type": "replace_generative_config", "fields": { "asset_id": "uuid", "config": "GenerativeConfig" } },
             { "type": "start_generation", "fields": { "asset_id": "uuid", "context_clip_id?": "uuid", "wait?": "bool" } },
             { "type": "list_jobs|get_job|cancel_job", "fields": { "job_id?": "uuid" } },

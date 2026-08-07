@@ -904,6 +904,23 @@ impl ProviderBuilderState {
                 InputRole::EdgeBlendFrames,
             ];
         }
+        if self.workflow_kind == ProviderWorkflowKind::FirstFrameLastFrameVideo {
+            return vec![
+                InputRole::StartImage,
+                InputRole::EndImage,
+                InputRole::Width,
+                InputRole::Height,
+                InputRole::Seed,
+            ];
+        }
+        if self.workflow_kind == ProviderWorkflowKind::ImageToVideo {
+            return vec![
+                InputRole::StartImage,
+                InputRole::Width,
+                InputRole::Height,
+                InputRole::Seed,
+            ];
+        }
         if self.output_type == ProviderOutputType::Audio {
             vec![InputRole::Seed]
         } else {
@@ -1970,6 +1987,8 @@ pub(super) fn provider_input_role_label(value: Option<InputRole>) -> &'static st
         Some(InputRole::DurationSeconds) => "Duration",
         Some(InputRole::Fps) => "FPS",
         Some(InputRole::FrameCount) => "Frames",
+        Some(InputRole::StartImage) => "Start Image",
+        Some(InputRole::EndImage) => "End Image",
         Some(InputRole::LeftVideo) => "Left Video",
         Some(InputRole::RightVideo) => "Right Video",
         Some(InputRole::LeftReplaceFrames) => "Left Frames",
@@ -1987,6 +2006,8 @@ pub(super) fn provider_input_role_color(role: InputRole) -> Color32 {
         InputRole::DurationSeconds => kit::AUDIO,
         InputRole::Fps => kit::PRIMARY,
         InputRole::FrameCount => Color32::from_rgb(182, 118, 238),
+        InputRole::StartImage => kit::IMAGE,
+        InputRole::EndImage => kit::IMAGE.gamma_multiply(1.12),
         InputRole::LeftVideo => kit::VIDEO,
         InputRole::RightVideo => kit::VIDEO.gamma_multiply(1.12),
         InputRole::LeftReplaceFrames => Color32::from_rgb(182, 118, 238),
@@ -2077,6 +2098,8 @@ pub(super) fn provider_input_role_field(
                 InputRole::DurationSeconds,
                 InputRole::Fps,
                 InputRole::FrameCount,
+                InputRole::StartImage,
+                InputRole::EndImage,
                 InputRole::LeftVideo,
                 InputRole::RightVideo,
                 InputRole::LeftReplaceFrames,
@@ -2100,6 +2123,7 @@ pub(super) fn provider_input_role_field(
 
 fn builder_role_compatible_with_type(role: InputRole, input_type_key: &str) -> bool {
     match role {
+        InputRole::StartImage | InputRole::EndImage => input_type_key == "image",
         InputRole::LeftVideo | InputRole::RightVideo => input_type_key == "video",
         _ => is_numeric_type_value(input_type_key),
     }

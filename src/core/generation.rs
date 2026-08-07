@@ -158,21 +158,14 @@ fn reference_frame_time(project: &Project, reference: &InputValue, fps: f64) -> 
 
 pub fn semantic_reference_slot(input: &ProviderInputField) -> Option<&'static str> {
     match input.role {
+        Some(InputRole::StartImage) => return Some("start_image"),
+        Some(InputRole::EndImage) => return Some("end_image"),
         Some(InputRole::LeftVideo) => return Some("left_video"),
         Some(InputRole::RightVideo) => return Some("right_video"),
         _ => {}
     }
     match input.input_type {
-        ProviderInputType::Image => {
-            let key = format!("{} {}", input.name, input.label).to_ascii_lowercase();
-            if contains_any(&key, &["end", "last", "final"]) {
-                Some("end_image")
-            } else if contains_any(&key, &["start", "first", "initial", "init"]) {
-                Some("start_image")
-            } else {
-                Some("image")
-            }
-        }
+        ProviderInputType::Image => Some("image"),
         ProviderInputType::Video => Some("video"),
         ProviderInputType::Audio => Some("audio"),
         _ => None,

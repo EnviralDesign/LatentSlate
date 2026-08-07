@@ -671,9 +671,17 @@ impl LatentSlateApp {
             }
         };
 
-        let fps = default_generative_video_fps();
-        let frame_count = default_generative_video_frames();
-        let duration = frame_count as f64 / fps.max(1.0);
+        let mut next_config =
+            self.continuation_config_from_source_asset(source_clip.asset_id, provider_id);
+        let selected_provider = next_config.provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+        });
+        let (duration, fps, frame_count) =
+            initial_context_video_timing(selected_provider.as_ref(), None);
         let target_track_id = if reference == SingleI2VReference::VideoLastFrame {
             source_clip.track_id
         } else {
@@ -687,8 +695,6 @@ impl LatentSlateApp {
             }
         };
 
-        let mut next_config =
-            self.continuation_config_from_source_asset(source_clip.asset_id, provider_id);
         next_config.reference_slots.remove("end_image");
         let start_reference = InputValue::AssetRef {
             asset_id: source_clip.asset_id,
@@ -702,6 +708,9 @@ impl LatentSlateApp {
         next_config
             .reference_slots
             .insert("image".to_string(), start_reference);
+        if let Some(provider) = selected_provider.as_ref() {
+            seed_provider_timing_inputs(&mut next_config, provider, duration, fps, frame_count);
+        }
         self.editor
             .project
             .update_generative_config(asset_id, move |config| {
@@ -869,15 +878,24 @@ impl LatentSlateApp {
             return;
         }
 
-        let fallback_duration =
-            default_generative_video_frames() as f64 / default_generative_video_fps();
-        let duration = (last.anchor_time - first.anchor_time)
-            .abs()
-            .max(fallback_duration);
-        let fps = default_generative_video_fps();
-        let frame_count = frames_from_seconds(duration, fps).round().max(1.0) as u32;
         let start_time = first.anchor_time.min(last.anchor_time);
         let target_track_id = self.bridge_target_track_id(first.clip.track_id);
+        let seed_source_asset_id = [first.clip.asset_id, last.clip.asset_id]
+            .into_iter()
+            .find(|asset_id| self.editor.project.generative_config(*asset_id).is_some())
+            .unwrap_or(first.clip.asset_id);
+        let mut next_config =
+            self.continuation_config_from_source_asset(seed_source_asset_id, provider_id);
+        let selected_provider = next_config.provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+        });
+        let duration_hint = (last.anchor_time - first.anchor_time).abs();
+        let (duration, fps, frame_count) =
+            initial_context_video_timing(selected_provider.as_ref(), Some(duration_hint));
 
         let asset_id = match self.editor.create_generative_video(fps, frame_count) {
             Ok(asset_id) => asset_id,
@@ -886,13 +904,6 @@ impl LatentSlateApp {
                 return;
             }
         };
-
-        let seed_source_asset_id = [first.clip.asset_id, last.clip.asset_id]
-            .into_iter()
-            .find(|asset_id| self.editor.project.generative_config(*asset_id).is_some())
-            .unwrap_or(first.clip.asset_id);
-        let mut next_config =
-            self.continuation_config_from_source_asset(seed_source_asset_id, provider_id);
         next_config.reference_slots.insert(
             "start_image".to_string(),
             InputValue::AssetRef {
@@ -911,6 +922,9 @@ impl LatentSlateApp {
                 frame_reference: last.frame_reference,
             },
         );
+        if let Some(provider) = selected_provider.as_ref() {
+            seed_provider_timing_inputs(&mut next_config, provider, duration, fps, frame_count);
+        }
         self.editor
             .project
             .update_generative_config(asset_id, move |config| {
@@ -1027,6 +1041,8 @@ impl LatentSlateApp {
                 | crate::state::InputRole::DurationSeconds
                 | crate::state::InputRole::Fps
                 | crate::state::InputRole::FrameCount
+                | crate::state::InputRole::StartImage
+                | crate::state::InputRole::EndImage
                 | crate::state::InputRole::LeftVideo
                 | crate::state::InputRole::RightVideo
                 | crate::state::InputRole::LeftReplaceFrames
@@ -3370,6 +3386,75 @@ fn clamp_provider_duration(duration: f64, bounds: ProviderDurationBounds) -> f64
     duration
 }
 
+const DEFAULT_CONTEXT_VIDEO_DURATION_SECONDS: f64 = 5.0;
+
+fn initial_context_video_timing(
+    provider: Option<&ProviderEntry>,
+    duration_hint: Option<f64>,
+) -> (f64, f64, u32) {
+    let fps = provider_numeric_default(provider, InputRole::Fps)
+        .unwrap_or_else(default_generative_video_fps)
+        .clamp(1.0, 240.0);
+    let bounds = provider_duration_bounds(provider);
+    let duration_default = provider_numeric_default(provider, InputRole::DurationSeconds);
+    let frame_default = provider_numeric_default(provider, InputRole::FrameCount)
+        .map(|frames| frames.round().clamp(1.0, 1_000_000.0) as u32);
+
+    let hinted_duration = duration_hint.filter(|duration| duration.is_finite() && *duration > 0.0);
+    if let Some(duration) = hinted_duration.or(duration_default) {
+        let duration = clamp_provider_duration(duration, bounds);
+        let frame_count = frames_from_seconds(duration, fps)
+            .round()
+            .clamp(1.0, 1_000_000.0) as u32;
+        return (duration, fps, frame_count);
+    }
+
+    if let Some(frame_count) = frame_default {
+        let duration = clamp_provider_duration(frame_count as f64 / fps, bounds);
+        let frame_count = frames_from_seconds(duration, fps)
+            .round()
+            .clamp(1.0, 1_000_000.0) as u32;
+        return (duration, fps, frame_count);
+    }
+
+    let duration = clamp_provider_duration(DEFAULT_CONTEXT_VIDEO_DURATION_SECONDS, bounds);
+    let frame_count = frames_from_seconds(duration, fps)
+        .round()
+        .clamp(1.0, 1_000_000.0) as u32;
+    (duration, fps, frame_count)
+}
+
+fn provider_numeric_default(provider: Option<&ProviderEntry>, role: InputRole) -> Option<f64> {
+    provider?
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(role))
+        .and_then(|input| {
+            input
+                .default
+                .as_ref()
+                .and_then(input_value_as_f64)
+                .map(|value| clamp_provider_input_number(value, input))
+        })
+}
+
+fn seed_provider_timing_inputs(
+    config: &mut GenerativeConfig,
+    provider: &ProviderEntry,
+    duration: f64,
+    fps: f64,
+    frame_count: u32,
+) {
+    for input in provider.inputs.iter() {
+        let Some(value) = provider_timing_role_value(input, duration, fps, frame_count) else {
+            continue;
+        };
+        config
+            .inputs
+            .insert(input.name.clone(), InputValue::Literal { value });
+    }
+}
+
 fn provider_duration_bounds_label(bounds: ProviderDurationBounds) -> String {
     match (bounds.min, bounds.max) {
         (Some(min), Some(max)) => format!(
@@ -3397,6 +3482,8 @@ fn provider_timing_role_value(
         InputRole::Width
         | InputRole::Height
         | InputRole::Seed
+        | InputRole::StartImage
+        | InputRole::EndImage
         | InputRole::LeftVideo
         | InputRole::RightVideo
         | InputRole::LeftReplaceFrames

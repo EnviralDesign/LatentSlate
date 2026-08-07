@@ -40,6 +40,7 @@ Important rules:
 - Imported media is copied into the project folder.
 - Assets store project-relative paths where possible.
 - Generated assets have their own UUID-keyed folder with `config.json` plus versioned output files.
+- Deleting an asset removes its project-local owned media, generated folder, and asset-specific caches when no remaining asset references the same project-relative path; external or unsafe paths are only removed from the project model.
 - Writable app-managed state lives under `LatentSlateData/` next to the running executable unless `LATENTSLATE_HOME` is set.
 - Default projects are written to `LatentSlateData/projects/`.
 - Provider entries are written to `LatentSlateData/providers/`.

@@ -26,7 +26,6 @@ use super::{
     VIDEO_EXTENSIONS,
 };
 
-const ASSET_LAB_WHEEL_ZOOM_MULTIPLIER: f32 = 4.0;
 const ASSET_LAB_GRAPH_ZOOM_MIN: f32 = 0.20;
 const ASSET_LAB_GRAPH_ZOOM_MAX: f32 = 4.8;
 
@@ -1333,7 +1332,7 @@ pub(super) fn asset_lab_preview(
         if scroll_delta.abs() > f32::EPSILON {
             let old_zoom = state.preview_zoom.max(PREVIEW_ZOOM_MIN);
             let zoom_factor = (1.0
-                + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY * ASSET_LAB_WHEEL_ZOOM_MULTIPLIER)
+                + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY * PREVIEW_WHEEL_ZOOM_MULTIPLIER)
                 .clamp(0.5, 2.0);
             let new_zoom = (old_zoom * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
             if let Some(pointer) = ui.ctx().pointer_hover_pos() {
@@ -2102,7 +2101,7 @@ impl LatentSlateApp {
                 .graph_zoom
                 .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
             let zoom_factor =
-                (1.0 + wheel_delta * 0.015 * ASSET_LAB_WHEEL_ZOOM_MULTIPLIER).clamp(0.28, 1.88);
+                (1.0 + wheel_delta * 0.015 * PREVIEW_WHEEL_ZOOM_MULTIPLIER).clamp(0.28, 1.88);
             let new_zoom =
                 (old_zoom * zoom_factor).clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
             if (new_zoom - old_zoom).abs() > f32::EPSILON {
@@ -2955,31 +2954,27 @@ impl LatentSlateApp {
             .corner_radius(kit::field_radius())
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
-                StripBuilder::new(ui)
-                    .size(Size::remainder().at_least(96.0))
-                    .size(Size::exact(104.0))
-                    .horizontal(|mut strip| {
-                        strip.cell(|ui| {
-                            kit::field_label(ui, "Run");
-                            ui.add_sized(
-                                [ui.available_width(), 18.0],
-                                egui::Label::new(kit::caption(seed_preview)).truncate(),
-                            );
-                        });
-                        strip.cell(|ui| {
-                            ui.add_space(2.0);
-                            ui.add_enabled_ui(can_generate, |ui| {
-                                if kit::primary_button(ui, generate_label, ui.available_width())
-                                    .clicked()
-                                {
-                                    *action = Some(AssetLabAction::GenerateNode {
-                                        node_id: node.id,
-                                        batch: self.asset_lab_run_batch(provider),
-                                    });
-                                }
-                            });
-                        });
+                ui.horizontal(|ui| {
+                    let spacing = ui.spacing().item_spacing.x;
+                    let button_w = 104.0;
+                    let left_w = (ui.available_width() - button_w - spacing).max(96.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(left_w);
+                        kit::field_label(ui, "Run");
+                        ui.add_sized(
+                            [ui.available_width(), 18.0],
+                            egui::Label::new(kit::caption(seed_preview)).truncate(),
+                        );
                     });
+                    ui.add_enabled_ui(can_generate, |ui| {
+                        if kit::primary_button(ui, generate_label, button_w).clicked() {
+                            *action = Some(AssetLabAction::GenerateNode {
+                                node_id: node.id,
+                                batch: self.asset_lab_run_batch(provider),
+                            });
+                        }
+                    });
+                });
 
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.columns(2, |columns| {

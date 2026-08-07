@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::constants::{DEFAULT_CLIP_DURATION_SECONDS, PREVIEW_CACHE_BUDGET_BYTES};
+use crate::core::audio::cache::peak_cache_path;
 use crate::core::automation::{
     AutomationCommand, AutomationResponse, ClipMoveMode, ClipMoveTarget, SequencePlacementItem,
 };
@@ -891,31 +893,85 @@ impl EditorState {
 
         let project_root = self.project.project_path.clone();
         let mut removed_assets = 0usize;
+        let mut removed_asset_ids = Vec::new();
         let mut folders_to_delete = Vec::new();
+        let mut files_to_delete = Vec::new();
         for asset_id in unique_asset_ids {
-            let folder_to_delete = project_root.as_ref().and_then(|root| {
-                self.project
-                    .find_asset(asset_id)
-                    .and_then(generative_folder)
-                    .and_then(|folder| project_local_folder(root, folder))
-            });
+            let (folder_to_delete, file_to_delete) =
+                project_root.as_ref().map_or((None, None), |root| {
+                    let Some(asset) = self.project.find_asset(asset_id) else {
+                        return (None, None);
+                    };
+                    let folder_to_delete = generative_folder(asset).and_then(|folder| {
+                        let key = project_relative_key(folder)?;
+                        let path = project_local_path(root, folder)?;
+                        Some((path, key))
+                    });
+                    (folder_to_delete, project_local_media_file(root, asset))
+                });
             if self.project.remove_asset(asset_id) {
                 removed_assets += 1;
+                removed_asset_ids.push(asset_id);
                 if let Some(folder) = folder_to_delete {
                     folders_to_delete.push(folder);
+                }
+                if let Some(file) = file_to_delete {
+                    files_to_delete.push(file);
                 }
             }
         }
 
         if removed_assets > 0 {
+            let remaining_folders: HashSet<String> = self
+                .project
+                .assets
+                .iter()
+                .filter_map(|asset| {
+                    generative_folder(asset).and_then(|folder| project_relative_key(folder))
+                })
+                .collect();
+            let remaining_files: HashSet<String> = self
+                .project
+                .assets
+                .iter()
+                .filter_map(asset_project_media_key)
+                .collect();
+
             self.previewer.release_media_handles();
-            for folder in folders_to_delete {
+            for asset_id in &removed_asset_ids {
+                self.thumbnailer.clear_cache_for_asset(*asset_id);
+                if let Some(root) = project_root.as_ref() {
+                    remove_project_cache_file(&peak_cache_path(root, *asset_id), "audio peak");
+                    remove_asset_prefixed_cache_files(root, "reference_frames", *asset_id);
+                    remove_asset_prefixed_cache_files(root, "bridge_segments", *asset_id);
+                }
+            }
+            for (folder, key) in folders_to_delete {
+                if remaining_folders.contains(&key) {
+                    continue;
+                }
                 self.previewer.invalidate_folder(&folder);
                 if let Err(err) = fs::remove_dir_all(&folder) {
                     if err.kind() != std::io::ErrorKind::NotFound {
                         println!(
                             "Failed to delete generated folder {}: {err}",
                             folder.display()
+                        );
+                    }
+                }
+            }
+            for (file, key) in files_to_delete {
+                if remaining_files.contains(&key) {
+                    continue;
+                }
+                if let Some(parent) = file.parent() {
+                    self.previewer.invalidate_folder(parent);
+                }
+                if let Err(err) = fs::remove_file(&file) {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        println!(
+                            "Failed to delete asset media file {}: {err}",
+                            file.display()
                         );
                     }
                 }
@@ -2921,6 +2977,8 @@ fn provider_timing_role_value(
         InputRole::Width
         | InputRole::Height
         | InputRole::Seed
+        | InputRole::StartImage
+        | InputRole::EndImage
         | InputRole::LeftVideo
         | InputRole::RightVideo
         | InputRole::LeftReplaceFrames
@@ -3528,18 +3586,100 @@ fn set_generative_folder(asset: &mut Asset, next_folder: PathBuf) {
     }
 }
 
-fn project_local_folder(project_root: &Path, folder: &Path) -> Option<PathBuf> {
-    if folder.is_absolute()
-        || folder.components().any(|component| {
-            matches!(
-                component,
-                Component::ParentDir | Component::Prefix(_) | Component::RootDir
-            )
-        })
-    {
+fn asset_project_media_key(asset: &Asset) -> Option<String> {
+    let (path, expected_root) = asset_media_path_and_root(asset)?;
+    if !relative_path_starts_with(path, expected_root) {
         return None;
     }
-    Some(project_root.join(folder))
+    project_relative_key(path)
+}
+
+fn project_local_media_file(project_root: &Path, asset: &Asset) -> Option<(PathBuf, String)> {
+    let (path, _) = asset_media_path_and_root(asset)?;
+    let key = asset_project_media_key(asset)?;
+    Some((project_root.join(path), key))
+}
+
+fn asset_media_path_and_root(asset: &Asset) -> Option<(&PathBuf, &'static str)> {
+    match &asset.kind {
+        AssetKind::Video { path } => Some((path, "video")),
+        AssetKind::Image { path } => Some((path, "images")),
+        AssetKind::Audio { path } => Some((path, "audio")),
+        _ => None,
+    }
+}
+
+fn project_local_path(project_root: &Path, relative_path: &Path) -> Option<PathBuf> {
+    project_relative_key(relative_path)?;
+    Some(project_root.join(relative_path))
+}
+
+fn project_relative_key(relative_path: &Path) -> Option<String> {
+    if relative_path.is_absolute() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for component in relative_path.components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_string_lossy();
+                if part.trim().is_empty() {
+                    return None;
+                }
+                parts.push(part.replace('\\', "/"));
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/").to_ascii_lowercase())
+}
+
+fn relative_path_starts_with(relative_path: &Path, expected_root: &str) -> bool {
+    relative_path
+        .components()
+        .find_map(|component| match component {
+            Component::Normal(part) => {
+                Some(part.to_string_lossy().eq_ignore_ascii_case(expected_root))
+            }
+            Component::CurDir => None,
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => Some(false),
+        })
+        .unwrap_or(false)
+}
+
+fn remove_project_cache_file(path: &Path, label: &str) {
+    if let Err(err) = fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            println!(
+                "Failed to delete {label} cache file {}: {err}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn remove_asset_prefixed_cache_files(project_root: &Path, cache_dir_name: &str, asset_id: Uuid) {
+    let cache_dir = project_root.join(".cache").join(cache_dir_name);
+    let Ok(entries) = fs::read_dir(&cache_dir) else {
+        return;
+    };
+    let prefix = format!("{asset_id}_");
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with(&prefix) {
+            remove_project_cache_file(&path, cache_dir_name);
+        }
+    }
 }
 
 fn unique_asset_copy_name(assets: &[Asset], source_name: &str) -> String {
