@@ -27,31 +27,35 @@ jobs:
           path = Path("src/egui_app/provider_builder.rs")
           text = path.read_text()
 
-          old = '''    fn edit_existing_provider_preserves_manifest_output_key() {
-              let output_key = "custom_video_output";
-          '''
-          new = '''    fn edit_existing_provider_preserves_manifest_output_key() {
-              let output_key = "custom_video_output";
-              let workflow_path = std::env::temp_dir().join(format!(
-                  "latentslate-provider-builder-{}.json",
-                  Uuid::new_v4()
-              ));
-              std::fs::write(
-                  &workflow_path,
-                  r#"{"42":{"class_type":"PreviewVideo","inputs":{},"_meta":{"title":"Preview Video"}}}"#,
-              )
-              .expect("write workflow fixture");
-              let workflow_path_string = workflow_path.to_string_lossy().into_owned();
-          '''
+          old = (
+              '    fn edit_existing_provider_preserves_manifest_output_key() {\n'
+              '        let output_key = "custom_video_output";\n'
+          )
+          new = (
+              '    fn edit_existing_provider_preserves_manifest_output_key() {\n'
+              '        let output_key = "custom_video_output";\n'
+              '        let workflow_path = std::env::temp_dir().join(format!(\n'
+              '            "latentslate-provider-builder-{}.json",\n'
+              '            Uuid::new_v4()\n'
+              '        ));\n'
+              '        std::fs::write(\n'
+              '            &workflow_path,\n'
+              '            r#"{"42":{"class_type":"PreviewVideo","inputs":{},"_meta":{"title":"Preview Video"}}}"#,\n'
+              '        )\n'
+              '        .expect("write workflow fixture");\n'
+              '        let workflow_path_string = workflow_path.to_string_lossy().into_owned();\n'
+          )
           if text.count(old) != 1:
-              raise SystemExit("provider-builder test preamble did not match exactly once")
+              raise SystemExit(
+                  f"provider-builder test preamble matches: {text.count(old)}"
+              )
           text = text.replace(old, new, 1)
 
           old_workflow = '                workflow_path: "workflow.json".to_string(),'
           replacement = '                workflow_path: workflow_path_string.clone(),'
           if text.count(old_workflow) != 1:
               raise SystemExit(
-                  f"expected exactly one manifest workflow path, found {text.count(old_workflow)}"
+                  f"manifest workflow-path matches: {text.count(old_workflow)}"
               )
           text = text.replace(old_workflow, replacement, 1)
 
@@ -59,30 +63,31 @@ jobs:
           connection_replacement = '                workflow_path: Some(workflow_path_string),'
           if text.count(old_connection) != 1:
               raise SystemExit(
-                  f"expected exactly one connection workflow path, found {text.count(old_connection)}"
+                  f"connection workflow-path matches: {text.count(old_connection)}"
               )
           text = text.replace(old_connection, connection_replacement, 1)
 
-          old_end = '''        assert_eq!(output.selector.input_key, output_key);
-              }
-          }
-          '''
-          new_end = '''        assert_eq!(output.selector.input_key, output_key);
-                  std::fs::remove_file(workflow_path).expect("remove workflow fixture");
-              }
-          }
-          '''
+          old_end = (
+              '        assert_eq!(output.selector.input_key, output_key);\n'
+              '    }\n'
+              '}\n'
+          )
+          new_end = (
+              '        assert_eq!(output.selector.input_key, output_key);\n'
+              '        std::fs::remove_file(workflow_path).expect("remove workflow fixture");\n'
+              '    }\n'
+              '}\n'
+          )
           if text.count(old_end) != 1:
-              raise SystemExit("provider-builder test ending did not match exactly once")
-          text = text.replace(old_end, new_end, 1)
-          path.write_text(text)
+              raise SystemExit(f"provider-builder test ending matches: {text.count(old_end)}")
+          path.write_text(text.replace(old_end, new_end, 1))
 
           ci_path = Path(".github/workflows/ci.yml")
           ci = ci_path.read_text()
           old_ci = "    branches: [main]\n"
           new_ci = "    branches: [main, agent/latent-engine-v0]\n"
           if ci.count(old_ci) != 1:
-              raise SystemExit("CI branch trigger did not match exactly once")
+              raise SystemExit(f"CI branch-trigger matches: {ci.count(old_ci)}")
           ci_path.write_text(ci.replace(old_ci, new_ci, 1))
           PY
 
