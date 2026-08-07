@@ -183,8 +183,10 @@ jobs:
       - name: Format source
         run: cargo fmt --all
 
-      - name: Preserve permanent manifest
-        run: cp Cargo.toml /tmp/Cargo.toml.permanent
+      - name: Preserve permanent manifest and lockfile
+        run: |
+          cp Cargo.toml /tmp/Cargo.toml.permanent
+          cp Cargo.lock /tmp/Cargo.lock.permanent
 
       - name: Enable ephemeral Linux window backend
         shell: bash
@@ -211,18 +213,23 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev \
             libavfilter-dev libavdevice-dev libswscale-dev libswresample-dev
 
+      - name: Resolve ephemeral Linux feature lockfile
+        run: cargo metadata --format-version 1 > /dev/null
+
       - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Cargo check
-        run: cargo check --locked
+        run: cargo check
 
       - name: Engine adapter tests
-        run: cargo test --locked providers::latentslate_engine::tests
+        run: cargo test providers::latentslate_engine::tests
 
-      - name: Restore permanent manifest
+      - name: Restore permanent manifest and lockfile
         if: success()
-        run: cp /tmp/Cargo.toml.permanent Cargo.toml
+        run: |
+          cp /tmp/Cargo.toml.permanent Cargo.toml
+          cp /tmp/Cargo.lock.permanent Cargo.lock
 
       - name: Commit validated fix
         if: success()
