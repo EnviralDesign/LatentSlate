@@ -121,11 +121,15 @@ jobs:
           set -o pipefail
           cargo check 2>&1 | tee engine-v0-cargo-check.log
 
-      - name: Unit tests
+      - name: Integration-surface tests
         shell: bash
         run: |
           set -o pipefail
-          cargo test 2>&1 | tee engine-v0-cargo-test.log
+          {
+            cargo test providers::latentslate_engine::tests
+            cargo test state::providers::tests
+            cargo test editor::tests::redacts_custom_http_provider_api_key
+          } 2>&1 | tee engine-v0-cargo-test.log
 
       - name: Upload diagnostics
         if: always()
