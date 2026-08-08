@@ -5,28 +5,30 @@ import re
 path = Path("scripts/provider_identity_one_shot.py")
 text = path.read_text()
 
-old = '''replace_once(
-    "src/egui_app/provider_builder.rs",
-    ''' + "'''" + '''        Pos2::new(rect.left(), rect.bottom() - 2.0),
-    ''' + "'''" + ''',
-    ''' + "'''" + '''        Pos2::new(text_left, rect.bottom() - 2.0),
-    ''' + "'''" + ''',
+old = (
+    "replace_once(\n"
+    "    \"src/egui_app/provider_builder.rs\",\n"
+    "    '''        Pos2::new(rect.left(), rect.bottom() - 2.0),\n"
+    "''',\n"
+    "    '''        Pos2::new(text_left, rect.bottom() - 2.0),\n"
+    "''',\n"
+    ")\n"
 )
-'''
-new = '''replace_once(
-    "src/egui_app/provider_builder.rs",
-    ''' + "'''" + '''    paint_truncated_row_text_bottom(
-        ui,
-        Pos2::new(rect.left(), rect.bottom() - 2.0),
-        kit::caption(&summary.subtitle),
-    ''' + "'''" + ''',
-    ''' + "'''" + '''    paint_truncated_row_text_bottom(
-        ui,
-        Pos2::new(text_left, rect.bottom() - 2.0),
-        kit::caption(&summary.subtitle),
-    ''' + "'''" + ''',
+new = (
+    "replace_once(\n"
+    "    \"src/egui_app/provider_builder.rs\",\n"
+    "    '''    paint_truncated_row_text_bottom(\n"
+    "        ui,\n"
+    "        Pos2::new(rect.left(), rect.bottom() - 2.0),\n"
+    "        kit::caption(&summary.subtitle),\n"
+    "''',\n"
+    "    '''    paint_truncated_row_text_bottom(\n"
+    "        ui,\n"
+    "        Pos2::new(text_left, rect.bottom() - 2.0),\n"
+    "        kit::caption(&summary.subtitle),\n"
+    "''',\n"
+    ")\n"
 )
-'''
 if text.count(old) != 1:
     raise SystemExit(f"Expected one ambiguous provider-row selector, found {text.count(old)}")
 text = text.replace(old, new, 1)
