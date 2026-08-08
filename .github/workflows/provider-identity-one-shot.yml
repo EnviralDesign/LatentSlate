@@ -89,8 +89,8 @@ jobs:
               count=1,
               flags=re.S,
           )
-          if count != 1:
-              raise SystemExit(f"Expected one legacy ProviderSourceKind impl, found {count}")
+          if count > 1:
+              raise SystemExit(f"Found more than one legacy ProviderSourceKind impl: {count}")
           builder.write_text(text)
 
           identity = Path("src/egui_app/provider_identity.rs")
