@@ -22,11 +22,13 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Correct migration selector
+      - name: Correct migration selectors
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path("scripts/provider_identity_one_shot.py")
           text = path.read_text()
           old = '''replace_once(
@@ -53,7 +55,18 @@ jobs:
           '''
           if text.count(old) != 1:
               raise SystemExit(f"Expected one ambiguous selector block, found {text.count(old)}")
-          path.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+
+          text, docs_count = re.subn(
+              r'\nreplace_once\(\n    "docs/PROVIDERS\.md",.*?\n\)\n?\Z',
+              '\n',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if docs_count != 1:
+              raise SystemExit(f"Expected one optional docs edit block, found {docs_count}")
+          path.write_text(text)
           PY
 
       - name: Add provider identity badges and Engine catalog observability
