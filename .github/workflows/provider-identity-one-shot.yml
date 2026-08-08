@@ -58,26 +58,6 @@ jobs:
               raise SystemExit(f"Expected one ambiguous selector block, found {text.count(old)}")
           text = text.replace(old, new, 1)
 
-          old_pattern = r'''r"#\\[derive\\(Clone, Copy, Debug, PartialEq, Eq\\)\\]\\npub\\(super\\) enum ProviderSourceKind \\{.*?\\n\\}\\n\\npub\\(super\\) fn provider_row\\("'''
-          new_pattern = r'''r"#\\[derive\\(Clone, Copy, Debug, PartialEq, Eq\\)\\]\\npub\\(super\\) enum ProviderSourceKind \\{.*?\\n\\}\\n\\nimpl ProviderSourceKind \\{.*?\\n\\}\\n\\npub\\(super\\) fn provider_row\\("'''
-          if text.count(old_pattern) != 1:
-              raise SystemExit(f"Expected one ProviderSourceKind migration pattern, found {text.count(old_pattern)}")
-          text = text.replace(old_pattern, new_pattern, 1)
-
-          replacements = {
-              "pub(super) fn provider_labeled_selector(":
-                  "pub(super) fn provider_labeled_selector<Id: Hash + 'static>(",
-              "    id_salt: impl Hash,": "    id_salt: Id,",
-              "    provider_identity_row(ui, provider, selected, true)":
-                  "    provider_identity_row(ui, provider, selected, provider_is_available(provider))",
-              "    provider_identity_row(ui, provider, false, true)":
-                  "    provider_identity_row(ui, provider, false, provider_is_available(provider))",
-          }
-          for old_text, new_text in replacements.items():
-              if text.count(old_text) != 1:
-                  raise SystemExit(f"Expected one migration replacement, found {text.count(old_text)}: {old_text!r}")
-              text = text.replace(old_text, new_text, 1)
-
           text, docs_count = re.subn(
               r'\nreplace_once\(\n    "docs/PROVIDERS\.md",.*?\n\)\n?\Z',
               '\n',
@@ -92,6 +72,50 @@ jobs:
 
       - name: Add provider identity badges and Engine catalog observability
         run: python scripts/provider_identity_one_shot.py
+
+      - name: Repair generated source
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          builder = Path("src/egui_app/provider_builder.rs")
+          text = builder.read_text()
+          text, count = re.subn(
+              r'\nimpl ProviderSourceKind \{.*?\n\}\n\npub\(super\) fn provider_row\(',
+              '\npub(super) fn provider_row(',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"Expected one legacy ProviderSourceKind impl, found {count}")
+          builder.write_text(text)
+
+          identity = Path("src/egui_app/provider_identity.rs")
+          text = identity.read_text()
+          replacements = {
+              "pub(super) fn provider_labeled_selector(":
+                  "pub(super) fn provider_labeled_selector<Id: Hash + 'static>(",
+              "    id_salt: impl Hash,": "    id_salt: Id,",
+              "    provider_identity_row(ui, provider, selected, true)":
+                  "    provider_identity_row(ui, provider, selected, provider_is_available(provider))",
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected one generated-source replacement, found {text.count(old)}: {old!r}")
+              text = text.replace(old, new, 1)
+          identity.write_text(text)
+
+          attributes = Path("src/egui_app/attributes_panel.rs")
+          text = attributes.read_text()
+          old = "    provider_identity_row(ui, provider, false, true)"
+          new = "    provider_identity_row(ui, provider, false, provider_is_available(provider))"
+          if text.count(old) != 1:
+              raise SystemExit(f"Expected one context-menu identity row, found {text.count(old)}")
+          attributes.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Format source
         run: cargo fmt --all
