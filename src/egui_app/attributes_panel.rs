@@ -368,6 +368,12 @@ impl LatentSlateApp {
             self.editor.status = "Provider is outside this project's provider scope.".to_string();
             return false;
         }
+        if !provider_is_available_for_generation(provider) {
+            self.editor.status = provider_unavailable_reason(provider)
+                .unwrap_or("Provider is unavailable for new generation.")
+                .to_string();
+            return false;
+        }
         true
     }
 
@@ -515,6 +521,12 @@ impl LatentSlateApp {
         }
         if !self.editor.provider_in_project_scope(provider.id) {
             self.editor.status = "Provider is outside this project's provider scope.".to_string();
+            return;
+        }
+        if !provider_is_available_for_generation(&provider) {
+            self.editor.status = provider_unavailable_reason(&provider)
+                .unwrap_or("Bridge provider is unavailable for new generation.")
+                .to_string();
             return;
         }
         let mut video_clips: Vec<Clip> = clips
@@ -1867,11 +1879,6 @@ impl LatentSlateApp {
         version_options.dedup();
 
         let selected_version_value = config_snapshot.active_version.clone().unwrap_or_default();
-        let provider_label = selected_provider
-            .as_ref()
-            .map(|provider| provider.name.clone())
-            .unwrap_or_else(|| "None selected".to_string());
-
         let batch = config_snapshot.batch.clone();
         let resolved_seed_field = selected_provider
             .as_ref()
@@ -1951,19 +1958,20 @@ impl LatentSlateApp {
 
             ui.add_space(kit::FORM_ROW_GAP);
             kit::field_label(ui, "Provider");
-            kit::combo_field(
+            provider_combo_field(
                 ui,
                 ("gen_provider", asset_id),
-                provider_label,
+                selected_provider.as_ref(),
+                "None selected",
                 ui.available_width(),
                 |ui| {
                     automation_selectable_value(ui, &mut next_provider_id, None, "None selected");
                     for provider in compatible_providers.iter() {
-                        automation_selectable_value(
+                        provider_selectable_value(
                             ui,
                             &mut next_provider_id,
                             Some(provider.id),
-                            provider.name.as_str(),
+                            provider,
                         );
                     }
                 },
@@ -1983,6 +1991,19 @@ impl LatentSlateApp {
                         .color(kit::MARKER)
                         .size(11.0),
                 );
+            } else if let Some(provider) = selected_provider
+                .as_ref()
+                .filter(|provider| !provider_is_available_for_generation(provider))
+            {
+                ui.add_space(kit::FORM_ROW_GAP);
+                ui.label(
+                    RichText::new(
+                        provider_unavailable_reason(provider)
+                            .unwrap_or("Selected provider is unavailable for new generation."),
+                    )
+                    .color(kit::MARKER)
+                    .size(11.0),
+                );
             } else if compatible_providers.is_empty() {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(kit::caption(format!(
@@ -1993,9 +2014,15 @@ impl LatentSlateApp {
 
             ui.add_space(kit::ACTION_GAP);
             let generate_w = ui.available_width();
-            if kit::primary_button(ui, "Generate", generate_w).clicked() {
-                generate_clicked = true;
-            }
+            let can_generate = selected_provider.as_ref().is_some_and(|provider| {
+                self.editor.provider_in_project_scope(provider.id)
+                    && provider_is_available_for_generation(provider)
+            });
+            ui.add_enabled_ui(can_generate, |ui| {
+                if kit::primary_button(ui, "Generate", generate_w).clicked() {
+                    generate_clicked = true;
+                }
+            });
             if let Some(status) = self.generation_status_for_asset(asset_id) {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(kit::caption(status));
@@ -2482,6 +2509,12 @@ impl LatentSlateApp {
         if !self.editor.provider_in_project_scope(provider.id) {
             self.editor.status =
                 "Selected provider is outside this project's provider scope.".to_string();
+            return;
+        }
+        if !provider_is_available_for_generation(&provider) {
+            self.editor.status = provider_unavailable_reason(&provider)
+                .unwrap_or("Selected provider is unavailable for new generation.")
+                .to_string();
             return;
         }
         let Some(folder_path) = self
@@ -3523,62 +3556,5 @@ fn retain_literal_inputs(inputs: &mut HashMap<String, InputValue>) {
 }
 
 fn provider_choice_menu_row(ui: &mut Ui, provider: &ProviderEntry) -> egui::Response {
-    let accent = provider_output_color(provider.output_type);
-    let height = 30.0;
-    let width = ui.available_width().max(210.0);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
-    let response = crate::core::automation::instrument_response(
-        response.on_hover_cursor(egui::CursorIcon::PointingHand),
-        "button",
-        Some(provider.name.clone()),
-        true,
-        false,
-    );
-
-    let fill = if response.hovered() {
-        kit::PANEL_RAISED
-    } else {
-        Color32::TRANSPARENT
-    };
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(3), fill);
-
-    let accent_rect = Rect::from_min_size(
-        Pos2::new(rect.left() + 2.0, rect.top() + 6.0),
-        Vec2::new(3.0, rect.height() - 12.0),
-    );
-    ui.painter()
-        .rect_filled(accent_rect, egui::CornerRadius::same(2), accent);
-
-    let kind = provider.resolved_workflow_kind().short_label();
-    let content = rect.shrink2(Vec2::new(12.0, 3.0));
-    let kind_w = 46.0_f32.min(content.width() * 0.32);
-    let name_w = (content.width() - kind_w - 8.0).max(24.0);
-    paint_truncated_row_text_top(
-        ui,
-        Pos2::new(content.left(), content.center().y - 6.5),
-        kit::value(&provider.name),
-        12.0,
-        name_w,
-        kit::TEXT,
-    );
-    paint_truncated_row_text_top(
-        ui,
-        Pos2::new(content.right() - kind_w, content.center().y - 6.5),
-        kit::caption(kind).color(accent.gamma_multiply(0.95)),
-        11.0,
-        kind_w,
-        accent,
-    );
-
-    if let Some(description) = provider
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|description| !description.is_empty())
-    {
-        response.on_hover_text(description)
-    } else {
-        response
-    }
+    provider_choice_button_row(ui, provider)
 }

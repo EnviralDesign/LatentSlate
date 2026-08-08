@@ -19,7 +19,7 @@ impl LatentSlateApp {
                 close_clicked = kit::modal_header_with_close(
                     ui,
                     "AI Providers",
-                    Some("Local provider definitions and workflow manifests."),
+                    Some("LatentSlate Engine catalog and local provider definitions."),
                     true,
                 );
                 kit::modal_body(ui, |ui| {
@@ -125,6 +125,96 @@ impl LatentSlateApp {
         });
     }
 
+    fn engine_provider_section(&mut self, ui: &mut Ui) {
+        let settings = crate::providers::latentslate_engine::load_connection_settings();
+        let engine_providers = self
+            .editor
+            .provider_entries
+            .iter()
+            .filter(|provider| {
+                matches!(
+                    provider.connection,
+                    ProviderConnection::LatentSlateEngine { .. }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let state = engine_provider_state(settings.enabled, &engine_providers);
+        let available_count = engine_providers
+            .iter()
+            .filter(|provider| provider_is_available_for_generation(provider))
+            .count();
+        let first_unavailable_reason = engine_providers.iter().find_map(|provider| {
+            provider_unavailable_reason(provider).map(|reason| {
+                (
+                    reason.to_string(),
+                    provider_engine_state(provider).unwrap_or(EngineProviderState::Unavailable),
+                )
+            })
+        });
+        let mut refresh_clicked = false;
+
+        ui.horizontal(|ui| {
+            provider_source_kind_badge(ui, ProviderSourceKind::LatentSlateEngine);
+            ui.label(kit::section_label("LATENTSLATE ENGINE"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if kit::secondary_button(ui, "Refresh", 70.0).clicked() {
+                    refresh_clicked = true;
+                }
+                engine_state_badge(ui, state);
+            });
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+        ui.add(
+            egui::Label::new(kit::caption(format!("Endpoint  {}", settings.base_url))).truncate(),
+        )
+        .on_hover_text(&settings.base_url);
+        ui.add_space(2.0);
+        ui.label(kit::caption(format!(
+            "{} discovered  ·  {} available",
+            engine_providers.len(),
+            available_count
+        )));
+
+        egui::CollapsingHeader::new(format!("Engine tools ({})", engine_providers.len()))
+            .id_salt("latentslate_engine_tools")
+            .default_open(true)
+            .show(ui, |ui| {
+                if engine_providers.is_empty() {
+                    ui.label(kit::caption(match state {
+                        EngineProviderState::Disabled => {
+                            "Engine discovery is disabled in engine.json."
+                        }
+                        _ => "No Engine tools have been discovered yet.",
+                    }));
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("latentslate_engine_tool_list")
+                    .max_height(132.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        for provider in &engine_providers {
+                            engine_provider_tool_row(ui, provider);
+                        }
+                    });
+            });
+
+        if let Some((reason, reason_state)) = first_unavailable_reason {
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(RichText::new(reason).color(reason_state.color()).size(10.5))
+                    .truncate(),
+            )
+            .on_hover_text(provider_engine_state_summary(state, &engine_providers));
+        }
+
+        if refresh_clicked {
+            self.editor.refresh_providers();
+        }
+    }
+
     pub(super) fn add_provider_controls(&mut self, ui: &mut Ui) {
         kit::field_label(ui, "Add Provider");
         ui.add_space(kit::FORM_ROW_GAP);
@@ -201,6 +291,11 @@ impl LatentSlateApp {
     pub(super) fn provider_editor_choice_card(&mut self, ui: &mut Ui) {
         let card_h = ui.available_height();
         kit::card_panel(ui, card_h, |ui| {
+            self.engine_provider_section(ui);
+            ui.add_space(kit::ACTION_GAP);
+            ui.separator();
+            ui.add_space(kit::ACTION_GAP);
+
             let Some(path) = self.selected_provider_file.clone() else {
                 kit::empty_state(
                     ui,
@@ -1285,4 +1380,74 @@ impl LatentSlateApp {
         self.provider_builder_open = false;
         self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
     }
+}
+
+fn engine_provider_tool_row(ui: &mut Ui, provider: &ProviderEntry) {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 38.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(5), kit::PANEL_SUNKEN);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(5),
+        Stroke::new(1.0, kit::BORDER_SOFT),
+        egui::StrokeKind::Inside,
+    );
+
+    let content = rect.shrink2(Vec2::new(7.0, 4.0));
+    let source_size = provider_source_badge_size();
+    let source_rect = Rect::from_min_size(
+        Pos2::new(
+            content.right() - source_size.x,
+            content.center().y - source_size.y * 0.5,
+        ),
+        source_size,
+    );
+    paint_provider_source_badge(ui, source_rect, provider);
+    let state = provider_engine_state(provider).unwrap_or(EngineProviderState::Unavailable);
+    let state_w = engine_state_badge_width(state);
+    let state_rect = Rect::from_min_size(
+        Pos2::new(source_rect.left() - 5.0 - state_w, content.center().y - 9.0),
+        Vec2::new(state_w, 18.0),
+    );
+    paint_engine_state_badge(ui, state_rect, state);
+    let text_w = (state_rect.left() - content.left() - 6.0).max(24.0);
+    paint_truncated_row_text_top(
+        ui,
+        Pos2::new(content.left(), content.top()),
+        kit::value(&provider.name),
+        11.5,
+        text_w,
+        if provider_is_available_for_generation(provider) {
+            kit::TEXT
+        } else {
+            kit::TEXT_MUTED
+        },
+    );
+    let detail = format!(
+        "{}  ·  {}",
+        provider.resolved_workflow_kind().label(),
+        provider_output_type_label(provider.output_type)
+    );
+    paint_truncated_row_text_bottom(
+        ui,
+        Pos2::new(content.left(), content.bottom()),
+        kit::caption(detail),
+        10.5,
+        text_w,
+        kit::TEXT_MUTED,
+    );
+    response.on_hover_text(provider_identity_tooltip(provider));
+}
+
+fn provider_engine_state_summary(
+    state: EngineProviderState,
+    providers: &[ProviderEntry],
+) -> String {
+    let mut text = format!("LatentSlate Engine state: {}", state.label());
+    if let Some(reason) = providers.iter().find_map(provider_unavailable_reason) {
+        text.push_str("\n\n");
+        text.push_str(reason);
+    }
+    text
 }

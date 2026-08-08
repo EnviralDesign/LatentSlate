@@ -173,7 +173,7 @@ fn queue_empty_state(ui: &mut Ui) {
 fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     let height = queue_job_height(job);
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let radius = egui::CornerRadius::same(8);
     ui.painter().rect_filled(rect, radius, kit::PANEL);
     ui.painter().rect_stroke(
@@ -207,7 +207,11 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     let meta_y = content.top() + 24.0;
     let provider_rect = Rect::from_min_size(
         Pos2::new(content.left(), meta_y),
-        Vec2::new((content.width() - 54.0).max(0.0), 14.0),
+        Vec2::new((content.width() - 94.0).max(0.0), 14.0),
+    );
+    let source_rect = Rect::from_min_size(
+        Pos2::new(content.right() - 90.0, meta_y - 2.0),
+        provider_source_badge_size(),
     );
     let output_rect = Rect::from_min_size(
         Pos2::new(content.right() - 52.0, meta_y),
@@ -221,6 +225,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
         10.0,
         false,
     );
+    paint_provider_source_badge(ui, source_rect, &job.provider);
     queue_clipped_label(ui, output_rect, output_label, kit::TEXT_DIM, 10.0, false);
 
     match job.status {
@@ -283,6 +288,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
         );
         cancel_clicked = cancel_response.clicked();
     }
+    let _ = response.on_hover_text(provider_identity_tooltip(&job.provider));
     cancel_clicked
 }
 

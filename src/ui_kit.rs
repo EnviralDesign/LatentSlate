@@ -760,7 +760,10 @@ pub fn combo_field<R>(
     configure_field_widget_style(&mut child, rect.width());
 
     let combo_salt = egui::Id::new(("combo_field", id_salt));
-    let combo_button_id = child.make_persistent_id(combo_salt);
+    // `ComboBox::from_id_salt` hashes its input into an `Id` before resolving
+    // the persistent widget ID inside its child UI. Mirror that extra hash so
+    // automation opens the popup owned by the rendered combo box.
+    let combo_button_id = child.make_persistent_id(egui::Id::new(combo_salt));
     if crate::core::automation::consume_pending_click_for_egui_id(response.id)
         || crate::core::automation::consume_pending_click_for_egui_id(combo_button_id)
     {
@@ -773,8 +776,10 @@ pub fn combo_field<R>(
                 .size(FIELD_TEXT_SIZE),
         )
         .width(rect.width())
+        .truncate()
         .show_ui(&mut child, add_contents);
 
+    let real_clicked = inner.response.clicked();
     let combo_response = crate::core::automation::instrument_response(
         inner.response,
         "combo",
@@ -782,6 +787,10 @@ pub fn combo_field<R>(
         true,
         false,
     );
+    if combo_response.clicked() && !real_clicked {
+        egui::Popup::open_id(child.ctx(), combo_button_id.with("popup"));
+        child.ctx().request_repaint();
+    }
     response.union(combo_response)
 }
 
@@ -2535,4 +2544,33 @@ pub fn draw_accent_row_with_status(
         true,
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combo_popup_id_matches_egui_and_renders_when_opened() {
+        let ctx = egui::Context::default();
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(180.0, FIELD_H), Sense::hover());
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            let combo_salt = egui::Id::new(("combo_field", "automation-test"));
+            let predicted_button_id = child.make_persistent_id(egui::Id::new(combo_salt));
+
+            egui::Popup::open_id(ui.ctx(), predicted_button_id.with("popup"));
+            let inner = egui::ComboBox::from_id_salt(combo_salt)
+                .selected_text("Selected")
+                .show_ui(&mut child, |ui| ui.label("Option"));
+
+            assert_eq!(inner.response.id, predicted_button_id);
+            assert!(inner.inner.is_some(), "the requested popup should render");
+        });
+    }
 }

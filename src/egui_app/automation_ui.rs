@@ -131,6 +131,7 @@ impl LatentSlateApp {
                                     crate::core::timeline_bridge::provider_is_timeline_bridge(
                                         provider,
                                     ) && provider.output_type == ProviderOutputType::Video
+                                        && provider_is_available_for_generation(provider)
                                 })
                                 .map(|provider| provider.id)
                         })
@@ -147,6 +148,7 @@ impl LatentSlateApp {
                                         provider,
                                     ) && provider.output_type == ProviderOutputType::Video
                                         && self.editor.provider_in_project_scope(provider.id)
+                                        && provider_is_available_for_generation(provider)
                                 })
                                 .map(|provider| provider.id)
                                 .collect();

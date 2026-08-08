@@ -14,8 +14,9 @@ use crate::ui_kit as kit;
 
 use super::{
     automation_checkbox, automation_selectable_value, inspector_numeric_field,
-    inspector_numeric_rect, paint_truncated_row_text_bottom, paint_truncated_row_text_top,
-    INSPECTOR_NUMERIC_H,
+    inspector_numeric_rect, paint_provider_source_kind_badge, paint_truncated_row_text_bottom,
+    paint_truncated_row_text_top, provider_source_badge_size, provider_source_kind,
+    ProviderSourceKind, INSPECTOR_NUMERIC_H,
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderTemplateKind {
@@ -1330,40 +1331,6 @@ pub(super) struct ProviderFileSummary {
     pub(super) output_type: Option<ProviderOutputType>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ProviderSourceKind {
-    ComfyUi,
-    LatentSlateEngine,
-    OpenAi,
-    Xai,
-    CustomHttp,
-    Other,
-}
-
-impl ProviderSourceKind {
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::ComfyUi => "ComfyUI",
-            Self::LatentSlateEngine => "LatentSlate Engine",
-            Self::OpenAi => "OpenAI",
-            Self::Xai => "xAI",
-            Self::CustomHttp => "Custom HTTP",
-            Self::Other => "Other",
-        }
-    }
-
-    pub(super) fn sort_key(self) -> u8 {
-        match self {
-            Self::LatentSlateEngine => 0,
-            Self::ComfyUi => 1,
-            Self::OpenAi => 2,
-            Self::Xai => 3,
-            Self::CustomHttp => 4,
-            Self::Other => 5,
-        }
-    }
-}
-
 pub(super) fn provider_row(
     ui: &mut Ui,
     _path: &Path,
@@ -1403,6 +1370,7 @@ fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSu
     let badge_h = 20.0;
     let output_w = provider_badge_width(output_label);
     let workflow_w = provider_badge_width(workflow_label);
+    let source_w = provider_source_badge_size().x;
     let badge_y = rect.center().y - badge_h * 0.5;
     let output_rect = Rect::from_min_size(
         Pos2::new(rect.right() - output_w, badge_y),
@@ -1412,7 +1380,11 @@ fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSu
         Pos2::new(output_rect.left() - badge_gap - workflow_w, badge_y),
         Vec2::new(workflow_w, badge_h),
     );
-    let text_width = (workflow_rect.left() - rect.left() - 8.0).max(24.0);
+    let source_rect = Rect::from_min_size(
+        Pos2::new(workflow_rect.left() - badge_gap - source_w, badge_y + 1.0),
+        Vec2::new(source_w, provider_source_badge_size().y),
+    );
+    let text_width = (source_rect.left() - rect.left() - 8.0).max(24.0);
 
     paint_truncated_row_text_top(
         ui,
@@ -1431,6 +1403,7 @@ fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSu
         kit::TEXT_MUTED,
     );
 
+    paint_provider_source_kind_badge(ui, source_rect, summary.source);
     paint_provider_badge(ui, workflow_rect, workflow_label, kit::TEXT_MUTED, false);
     paint_provider_badge(ui, output_rect, output_label, output_color, true);
 }
@@ -1573,7 +1546,8 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
 }
 
 fn provider_connection_summary(connection: &ProviderConnection) -> (ProviderSourceKind, String) {
-    match connection {
+    let source = provider_source_kind(connection);
+    let detail = match connection {
         ProviderConnection::ComfyUi {
             base_url,
             workflow_path,
@@ -1584,27 +1558,18 @@ fn provider_connection_summary(connection: &ProviderConnection) -> (ProviderSour
                 .and_then(|path| Path::new(path).file_name())
                 .and_then(|name| name.to_str())
                 .map(str::to_string);
-            (
-                ProviderSourceKind::ComfyUi,
-                workflow_name.unwrap_or_else(|| base_url.clone()),
-            )
+            workflow_name.unwrap_or_else(|| base_url.clone())
         }
-        ProviderConnection::OpenAiImage { model, .. } => {
-            (ProviderSourceKind::OpenAi, model.clone())
-        }
+        ProviderConnection::OpenAiImage { model, .. } => model.clone(),
         ProviderConnection::XaiImage { model, .. } | ProviderConnection::XaiVideo { model, .. } => {
-            (ProviderSourceKind::Xai, model.clone())
+            model.clone()
         }
         ProviderConnection::LatentSlateEngine {
             base_url, tool_key, ..
-        } => (
-            ProviderSourceKind::LatentSlateEngine,
-            format!("{tool_key} · {base_url}"),
-        ),
-        ProviderConnection::CustomHttp { base_url, .. } => {
-            (ProviderSourceKind::CustomHttp, base_url.clone())
-        }
-    }
+        } => format!("{tool_key} · {base_url}"),
+        ProviderConnection::CustomHttp { base_url, .. } => base_url.clone(),
+    };
+    (source, detail)
 }
 
 pub(super) fn provider_workflow_sort_key(workflow_kind: Option<ProviderWorkflowKind>) -> u8 {

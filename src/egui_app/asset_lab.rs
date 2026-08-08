@@ -1819,7 +1819,10 @@ impl LatentSlateApp {
                         .unwrap_or(true)
                         && kit::secondary_button(ui, "+ Step", 82.0).clicked()
                     {
-                        let provider_id = compatible_providers.first().map(|provider| provider.id);
+                        let provider_id = compatible_providers
+                            .iter()
+                            .find(|provider| provider_is_available_for_generation(provider))
+                            .map(|provider| provider.id);
                         *action = Some(AssetLabAction::AddNode(provider_id));
                     }
                 });
@@ -1999,7 +2002,10 @@ impl LatentSlateApp {
                 kit::TEXT_DIM,
             );
             if kit::secondary_button(ui, "+ Step", 82.0).clicked() {
-                let provider_id = compatible_providers.first().map(|provider| provider.id);
+                let provider_id = compatible_providers
+                    .iter()
+                    .find(|provider| provider_is_available_for_generation(provider))
+                    .map(|provider| provider.id);
                 *action = Some(AssetLabAction::AddNode(provider_id));
             }
             return;
@@ -2804,24 +2810,21 @@ impl LatentSlateApp {
                     });
                     ui.add_space(kit::FORM_ROW_GAP);
 
-                    let provider_label = selected_provider
-                        .as_ref()
-                        .map(|provider| provider.name.clone())
-                        .unwrap_or_else(|| "Select provider".to_string());
                     let mut provider_choice = display_node.provider_id;
-                    kit::labeled_combo_field(
+                    labeled_provider_combo_field(
                         ui,
                         "Provider",
                         ("asset_lab_node_provider", node.id),
-                        provider_label,
+                        selected_provider.as_ref(),
+                        "Select provider",
                         |ui| {
                             automation_selectable_value(ui, &mut provider_choice, None, "None");
                             for provider in compatible_providers {
-                                automation_selectable_value(
+                                provider_selectable_value(
                                     ui,
                                     &mut provider_choice,
                                     Some(provider.id),
-                                    &provider.name,
+                                    provider,
                                 );
                             }
                         },
@@ -2837,6 +2840,20 @@ impl LatentSlateApp {
                         ui.label(
                             RichText::new(
                                 "Selected provider is outside this project's provider scope.",
+                            )
+                            .color(kit::MARKER)
+                            .size(11.0),
+                        );
+                    } else if let Some(provider) = selected_provider
+                        .as_ref()
+                        .filter(|provider| !provider_is_available_for_generation(provider))
+                    {
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        ui.label(
+                            RichText::new(
+                                provider_unavailable_reason(provider).unwrap_or(
+                                    "Selected provider is unavailable for new generation.",
+                                ),
                             )
                             .color(kit::MARKER)
                             .size(11.0),
@@ -2939,6 +2956,7 @@ impl LatentSlateApp {
             && provider.is_some()
             && !provider
                 .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
+            && provider.is_some_and(provider_is_available_for_generation)
             && pending_job_status.is_none();
         let generate_label = pending_job_status
             .map(|status| match status {
@@ -3989,6 +4007,12 @@ impl LatentSlateApp {
                         "Provider is outside this project's provider scope.".to_string();
                     return;
                 }
+                if !provider_is_available_for_generation(provider) {
+                    self.editor.status = provider_unavailable_reason(provider)
+                        .unwrap_or("Provider is unavailable for new generation.")
+                        .to_string();
+                    return;
+                }
                 Some(provider_id)
             }
             None => None,
@@ -4040,6 +4064,7 @@ impl LatentSlateApp {
             .iter()
             .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
             .filter(|provider| self.editor.provider_in_project_scope(provider.id))
+            .filter(|provider| provider_is_available_for_generation(provider))
             .find(|provider| {
                 provider.id == source_record.provider_id
                     && provider.inputs.iter().any(|input| {
@@ -4052,6 +4077,7 @@ impl LatentSlateApp {
                     .iter()
                     .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
                     .filter(|provider| self.editor.provider_in_project_scope(provider.id))
+                    .filter(|provider| provider_is_available_for_generation(provider))
                     .find(|provider| {
                         provider.inputs.iter().any(|input| {
                             asset_lab_generation_ref_for_input(&asset, input, version).is_some()
@@ -4066,11 +4092,13 @@ impl LatentSlateApp {
             })
             .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
             .filter(|provider| self.editor.provider_in_project_scope(provider.id))
+            .filter(|provider| provider_is_available_for_generation(provider))
             .or_else(|| {
                 self.editor
                     .provider_entries
                     .iter()
                     .filter(|provider| asset_lab_provider_is_compatible(&asset, provider))
+                    .filter(|provider| provider_is_available_for_generation(provider))
                     .find(|provider| self.editor.provider_in_project_scope(provider.id))
             })
             .cloned();
@@ -4254,6 +4282,12 @@ impl LatentSlateApp {
                         "Provider is outside this project's provider scope.".to_string();
                     return;
                 }
+                if !provider_is_available_for_generation(provider) {
+                    self.editor.status = provider_unavailable_reason(provider)
+                        .unwrap_or("Provider is unavailable for new generation.")
+                        .to_string();
+                    return;
+                }
                 Some(provider.clone())
             }
             None => None,
@@ -4422,6 +4456,12 @@ impl LatentSlateApp {
                 "Selected provider is outside this project's provider scope.".to_string();
             return None;
         }
+        if !provider_is_available_for_generation(&provider) {
+            self.editor.status = provider_unavailable_reason(&provider)
+                .unwrap_or("Selected provider is unavailable for new generation.")
+                .to_string();
+            return None;
+        }
 
         let mut node = AssetLabNode::new_with_parent(Some(provider.id), Some(source_node_id));
         node.inputs = self.asset_lab.draft_inputs.clone();
@@ -4514,6 +4554,12 @@ impl LatentSlateApp {
         if !self.editor.provider_in_project_scope(provider.id) {
             self.editor.status =
                 "Selected provider is outside this project's provider scope.".to_string();
+            return;
+        }
+        if !provider_is_available_for_generation(&provider) {
+            self.editor.status = provider_unavailable_reason(&provider)
+                .unwrap_or("Selected provider is unavailable for new generation.")
+                .to_string();
             return;
         }
         if provider.output_type != output_type {

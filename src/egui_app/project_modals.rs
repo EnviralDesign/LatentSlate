@@ -10,8 +10,10 @@ use crate::state::{ProjectProviderScope, ProjectSettings, ProviderEntry, Provide
 use crate::ui_kit as kit;
 
 use super::{
-    automation_checkbox, inspector_drag_f64, inspector_drag_i64, inspector_two_drag_f64,
-    inspector_two_drag_u32, modal_size, ExportModalState, LatentSlateApp,
+    automation_checkbox, engine_state_badge, engine_state_badge_width, inspector_drag_f64,
+    inspector_drag_i64, inspector_two_drag_f64, inspector_two_drag_u32, modal_size,
+    provider_engine_state, provider_identity_tooltip, provider_is_available_for_generation,
+    provider_source_badge, provider_source_badge_size, ExportModalState, LatentSlateApp,
 };
 const PROJECT_WIZARD_SIZE: [f32; 2] = [760.0, 660.0];
 const PROJECT_WIZARD_CARD_H: f32 = 526.0;
@@ -788,21 +790,34 @@ fn provider_scope_fields(ui: &mut Ui, settings: &mut ProjectSettings, providers:
 
 fn provider_scope_row(ui: &mut Ui, provider: &ProviderEntry, enabled: &mut bool) {
     ui.horizontal(|ui| {
-        let label = format!("Enable {}", provider.name);
         let _ = automation_checkbox(ui, enabled, "");
-        let badge_w = 58.0;
-        let gap = kit::FIELD_COMPOUND_GAP * 2.0;
-        let name_w = (ui.available_width() - badge_w - gap).max(90.0);
+        let output_w = 58.0;
+        let source_w = provider_source_badge_size().x;
+        let state_w = provider_engine_state(provider)
+            .map(engine_state_badge_width)
+            .unwrap_or(0.0);
+        let badge_count = if state_w > 0.0 { 3.0 } else { 2.0 };
+        let gaps = kit::FIELD_COMPOUND_GAP * badge_count;
+        let name_w = (ui.available_width() - output_w - source_w - state_w - gaps).max(72.0);
+        let name_color = if provider_is_available_for_generation(provider) {
+            kit::TEXT
+        } else {
+            kit::TEXT_MUTED
+        };
         ui.add_sized(
             [name_w, kit::FIELD_H],
-            egui::Label::new(kit::body(provider.name.clone())).truncate(),
+            egui::Label::new(kit::body(provider.name.clone()).color(name_color)).truncate(),
         )
-        .on_hover_text(label);
+        .on_hover_text(provider_identity_tooltip(provider));
+        if let Some(state) = provider_engine_state(provider) {
+            engine_state_badge(ui, state);
+        }
+        provider_source_badge(ui, provider);
         kit::media_pill_sized(
             ui,
             provider_output_label(provider),
             kit::TEXT_MUTED,
-            badge_w,
+            output_w,
         );
     });
 }

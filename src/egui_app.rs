@@ -69,6 +69,7 @@ mod preview_runtime;
 mod preview_transform;
 mod project_modals;
 mod provider_builder;
+mod provider_identity;
 mod provider_modal;
 mod queue_panel;
 mod shell_chrome;
@@ -83,6 +84,7 @@ use generation_runtime::*;
 use preview_transform::*;
 use project_modals::*;
 use provider_builder::*;
+use provider_identity::*;
 use timeline_geometry::*;
 use timeline_paint::*;
 
