@@ -22,6 +22,40 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Correct migration selector
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/provider_identity_one_shot.py")
+          text = path.read_text()
+          old = '''replace_once(
+              "src/egui_app/provider_builder.rs",
+              ''' + "'''" + '''        Pos2::new(rect.left(), rect.bottom() - 2.0),
+          ''' + "'''" + ''',
+              ''' + "'''" + '''        Pos2::new(text_left, rect.bottom() - 2.0),
+          ''' + "'''" + ''',
+          )
+          '''
+          new = '''replace_once(
+              "src/egui_app/provider_builder.rs",
+              ''' + "'''" + '''    paint_truncated_row_text_bottom(
+                  ui,
+                  Pos2::new(rect.left(), rect.bottom() - 2.0),
+                  kit::caption(&summary.subtitle),
+          ''' + "'''" + ''',
+              ''' + "'''" + '''    paint_truncated_row_text_bottom(
+                  ui,
+                  Pos2::new(text_left, rect.bottom() - 2.0),
+                  kit::caption(&summary.subtitle),
+          ''' + "'''" + ''',
+          )
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f"Expected one ambiguous selector block, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Add provider identity badges and Engine catalog observability
         run: python scripts/provider_identity_one_shot.py
 
