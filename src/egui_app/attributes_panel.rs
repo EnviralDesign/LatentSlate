@@ -782,15 +782,21 @@ impl LatentSlateApp {
 
         let mut next_config =
             self.continuation_config_from_source_asset(source_clip.asset_id, provider_id);
-        next_config.reference_slots.insert(
-            "image".to_string(),
-            InputValue::AssetRef {
-                asset_id: source_clip.asset_id,
-                source_clip_id: Some(source_clip.id),
-                pinned: true,
-                frame_reference: None,
-            },
-        );
+        let source_reference = InputValue::AssetRef {
+            asset_id: source_clip.asset_id,
+            source_clip_id: Some(source_clip.id),
+            pinned: true,
+            frame_reference: None,
+        };
+        next_config
+            .reference_slots
+            .insert("image".to_string(), source_reference.clone());
+        next_config
+            .reference_slots
+            .insert("start_image".to_string(), source_reference.clone());
+        next_config
+            .reference_slots
+            .insert("source_image".to_string(), source_reference);
         self.editor
             .project
             .update_generative_config(asset_id, move |config| {
@@ -1023,6 +1029,9 @@ impl LatentSlateApp {
         else {
             return;
         };
+        if engine_image_to_image_source_mode_descriptor(provider) {
+            return;
+        }
         let Some(source_asset) = self.editor.project.find_asset(source_asset_id) else {
             return;
         };
@@ -1062,6 +1071,9 @@ impl LatentSlateApp {
                 | crate::state::InputRole::EdgeBlendFrames => None,
             };
             if let Some(value) = input_value {
+                if config.inputs.contains_key(&input.name) {
+                    continue;
+                }
                 config
                     .inputs
                     .insert(input.name.clone(), InputValue::Literal { value });
@@ -1103,6 +1115,7 @@ impl LatentSlateApp {
         else {
             return;
         };
+        migrate_legacy_size_input(config, provider);
         let input_names: HashSet<&str> = provider
             .inputs
             .iter()
@@ -2107,6 +2120,19 @@ impl LatentSlateApp {
             } else {
                 Some(next_version.trim().to_string())
             };
+            let restored_provider = next_active.as_ref().and_then(|version| {
+                config_snapshot
+                    .versions
+                    .iter()
+                    .find(|record| record.version == *version)
+                    .and_then(|record| {
+                        self.editor
+                            .provider_entries
+                            .iter()
+                            .find(|provider| provider.id == record.provider_id)
+                    })
+                    .cloned()
+            });
             self.editor
                 .project
                 .update_generative_config(asset_id, |config| {
@@ -2122,6 +2148,13 @@ impl LatentSlateApp {
                         }
                     }
                 });
+            if let Some(provider) = restored_provider.as_ref() {
+                self.editor
+                    .project
+                    .update_generative_config(asset_id, |config| {
+                        migrate_legacy_size_input(config, provider);
+                    });
+            }
             config_dirty = true;
             preview_dirty = true;
         }
@@ -2134,6 +2167,13 @@ impl LatentSlateApp {
             self.editor
                 .project
                 .set_generative_provider_id(asset_id, next_provider_id);
+            if let Some(provider) = next_provider {
+                self.editor
+                    .project
+                    .update_generative_config(asset_id, |config| {
+                        migrate_legacy_size_input(config, provider);
+                    });
+            }
             self.apply_timeline_bridge_provider_change(asset_id, context_clip_id, next_provider);
             config_dirty = true;
         }
@@ -2164,6 +2204,24 @@ impl LatentSlateApp {
             config_dirty = true;
         }
         if config_dirty {
+            let selected_provider = self
+                .editor
+                .project
+                .generative_config(asset_id)
+                .and_then(|config| config.provider_id)
+                .and_then(|provider_id| {
+                    self.editor
+                        .provider_entries
+                        .iter()
+                        .find(|provider| provider.id == provider_id)
+                });
+            if let Some(provider) = selected_provider {
+                self.editor
+                    .project
+                    .update_generative_config(asset_id, |config| {
+                        migrate_legacy_size_input(config, provider);
+                    });
+            }
             if let Err(err) = self.editor.project.save_generative_config(asset_id) {
                 self.editor.status = format!("Failed to save generative config: {err}");
             }
@@ -2570,12 +2628,49 @@ impl LatentSlateApp {
                 ui.label(kit::caption("No inputs defined."));
                 return;
             }
+            let engine_source_mode = engine_image_to_image_source_mode_active(
+                &self.editor.project,
+                context_clip_id,
+                &provider,
+                config_snapshot,
+            );
+            if engine_source_mode {
+                ui.label(kit::caption(
+                    "Dimensions inherit from the source. Engine applies EXIF transpose and floor-to-16 alignment.",
+                ));
+                ui.add_space(kit::FORM_ROW_GAP);
+                if kit::field_button(ui, "Override with project dimensions", ui.available_width())
+                    .clicked()
+                {
+                    for input in provider.inputs.iter().filter(|input| {
+                        matches!(input.role, Some(InputRole::Width | InputRole::Height))
+                    }) {
+                        let value = match input.role {
+                            Some(InputRole::Width) => self.editor.project.settings.width,
+                            Some(InputRole::Height) => self.editor.project.settings.height,
+                            _ => continue,
+                        };
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::Number(value.into()),
+                            },
+                        ));
+                    }
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
 
             let mut visible_index = 0usize;
             for input in provider.inputs.iter() {
                 if is_timing_role(input.role)
                     && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
                         && input.role == Some(InputRole::Fps))
+                {
+                    continue;
+                }
+                if engine_source_mode
+                    && matches!(input.role, Some(InputRole::Width | InputRole::Height))
                 {
                     continue;
                 }
@@ -2588,8 +2683,10 @@ impl LatentSlateApp {
                 } else {
                     input.label.clone()
                 };
-                let current_value = literal_config_input(config_snapshot, &input.name)
-                    .or_else(|| input.default.clone());
+                let current_value =
+                    displayed_dimension_input_value(&self.editor.project, config_snapshot, input)
+                        .or_else(|| literal_config_input(config_snapshot, &input.name))
+                        .or_else(|| input.default.clone());
                 match &input.input_type {
                     ProviderInputType::Text => {
                         let mut value = current_value

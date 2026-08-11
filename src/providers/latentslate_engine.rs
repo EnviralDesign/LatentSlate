@@ -884,9 +884,8 @@ mod tests {
                     "output": { "type": "image" },
                     "inputs": [
                         { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
-                        { "key": "size", "label": "Size", "type": "choice", "required": true, "default": "1024x1024", "options": [
-                            { "value": "1024x1024", "label": "1024x1024" }
-                        ]},
+                        { "key": "width", "label": "Width", "type": "integer", "required": true, "default": 1024, "role": "width" },
+                        { "key": "height", "label": "Height", "type": "integer", "required": true, "default": 1024, "role": "height" },
                         { "key": "seed", "label": "Seed", "type": "integer", "required": true, "default": 0, "role": "seed" }
                     ],
                     "available": true
@@ -902,10 +901,8 @@ mod tests {
                     "inputs": [
                         { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
                         { "key": "source_image", "label": "Source Image", "type": "image", "required": true, "role": "source_image" },
-                        { "key": "size", "label": "Size", "type": "choice", "required": true, "default": "source", "options": [
-                            { "value": "source", "label": "source" },
-                            { "value": "1024x1024", "label": "1024x1024" }
-                        ]},
+                        { "key": "width", "label": "Width", "type": "integer", "required": false, "role": "width" },
+                        { "key": "height", "label": "Height", "type": "integer", "required": false, "role": "height" },
                         { "key": "seed", "label": "Seed", "type": "integer", "required": true, "default": 0, "role": "seed" }
                     ],
                     "available": true
@@ -922,10 +919,15 @@ mod tests {
         assert_eq!(text.name, "Text to Image");
         assert_eq!(text.output_type, ProviderOutputType::Image);
         assert_eq!(text.workflow_kind, ProviderWorkflowKind::TextToImage);
+        assert_eq!(text.inputs[1].role, Some(InputRole::Width));
+        assert_eq!(text.inputs[2].role, Some(InputRole::Height));
         assert!(matches!(
-            &text.inputs[1].input_type,
-            ProviderInputType::Enum { options }
-                if options == &["1024x1024".to_string()]
+            text.inputs[1].input_type,
+            ProviderInputType::Integer
+        ));
+        assert!(matches!(
+            text.inputs[2].input_type,
+            ProviderInputType::Integer
         ));
 
         let edit = &entries[1];
@@ -933,6 +935,12 @@ mod tests {
         assert_eq!(edit.output_type, ProviderOutputType::Image);
         assert_eq!(edit.workflow_kind, ProviderWorkflowKind::ImageToImage);
         assert_eq!(edit.inputs[1].role, Some(InputRole::StartImage));
+        assert_eq!(edit.inputs[2].role, Some(InputRole::Width));
+        assert_eq!(edit.inputs[3].role, Some(InputRole::Height));
+        assert!(!edit.inputs[2].required);
+        assert!(!edit.inputs[3].required);
+        assert_eq!(edit.inputs[2].default, None);
+        assert_eq!(edit.inputs[3].default, None);
         assert!(matches!(
             edit.inputs[1].input_type,
             ProviderInputType::Image

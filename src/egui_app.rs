@@ -27,8 +27,10 @@ use crate::core::export::{
 };
 use crate::core::generation::{
     asset_source_available_for_provider_input, compatible_asset_for_provider_input,
-    next_version_label, random_seed_i64, resolve_provider_inputs, resolve_seed_field,
-    semantic_reference_slot, update_seed_inputs,
+    displayed_dimension_input_value, engine_image_to_image_source_mode_active,
+    engine_image_to_image_source_mode_descriptor, migrate_legacy_size_input, next_version_label,
+    random_seed_i64, resolve_provider_inputs, resolve_seed_field, semantic_reference_slot,
+    update_seed_inputs,
 };
 use crate::core::media::{probe_duration_seconds, probe_video_metadata};
 use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};

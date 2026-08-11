@@ -4801,6 +4801,7 @@ impl LatentSlateApp {
             self.editor.status = message.clone();
             return Err(message);
         }
+        self.editor.reconcile_generative_config_dimensions(asset_id);
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
             let message = format!("Failed to save active version: {err}");
             self.editor.status = message.clone();
@@ -4999,6 +5000,7 @@ impl LatentSlateApp {
             self.editor.status = message.clone();
             return Err(message);
         }
+        self.editor.reconcile_generative_config_dimensions(asset_id);
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
             let message = format!("Deleted version, but config save failed: {err}");
             self.editor.status = message.clone();

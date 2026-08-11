@@ -227,6 +227,17 @@ setup and batching behavior. I2V providers should mark their source image as
 `frame_count`; LatentSlate syncs those fields from the generative video's target
 timing before generation.
 
+Engine image and video tools use integer `width` and `height` roles rather than a
+single size preset. New generation requests default to the project canvas size;
+an explicit config (including continuation dimensions) wins, and image-to-image
+uses a bound source image's dimensions when no explicit dimensions are present.
+An Engine image-to-image descriptor with an optional, default-free width/height
+pair uses source mode: with a bound source and no explicit pair, LatentSlate
+omits both fields so Engine can apply source-mode EXIF transpose and its
+floor-to-16 alignment itself. Klein currently uses this contract.
+Legacy `size: "WIDTHxHEIGHT"` configs are migrated for a refreshed Engine tool,
+while stale `size` is omitted from the submitted request.
+
 Timeline bridge video providers set `workflow_kind: "video_to_bridge"` and expose
 roles for `width`, `height`, `seed`, `left_video`, `right_video`, `fps`,
 `left_replace_frames`, `right_replace_frames`, and `edge_blend_frames`.

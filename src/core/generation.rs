@@ -32,6 +32,23 @@ pub fn resolve_provider_inputs(
     provider: &ProviderEntry,
     config: &GenerativeConfig,
 ) -> ResolvedInputs {
+    // Catalogs before the granular dimension contract represented dimensions as
+    // a single `size` choice.  Keep old project configs useful, but never send
+    // that retired field to a provider whose catalog now declares width/height.
+    let mut reconciled_config = config.clone();
+    migrate_legacy_size_input(&mut reconciled_config, provider);
+    let config = &reconciled_config;
+    let source_bound = image_to_image_source_bound(project, context_clip_id, provider, config);
+    let engine_source_bound =
+        engine_image_to_image_source_mode_descriptor(provider) && source_bound;
+    let engine_source_mode =
+        engine_image_to_image_source_mode_active(project, context_clip_id, provider, config);
+    let partial_engine_dimensions = engine_source_bound
+        && has_any_explicit_dimension(provider, config)
+        && !has_explicit_dimension_pair(provider, config);
+    let source_dimensions = (!engine_source_bound && has_missing_dimension(provider, config))
+        .then(|| image_to_image_source_dimensions(project, context_clip_id, provider, config))
+        .flatten();
     let mut values = HashMap::new();
     let mut snapshot = HashMap::new();
     let mut missing_required = Vec::new();
@@ -59,8 +76,17 @@ pub fn resolve_provider_inputs(
                 }
             }
             _ => {
-                let mut value =
-                    literal_input_value(config, &input.name).or_else(|| input.default.clone());
+                let omit_dimension = is_dimension_input(input)
+                    && (engine_source_mode
+                        || (partial_engine_dimensions
+                            && literal_input_value(config, &input.name).is_none()));
+                let mut value = (!omit_dimension)
+                    .then(|| {
+                        effective_dimension_input_value(project, config, input, source_dimensions)
+                            .or_else(|| literal_input_value(config, &input.name))
+                            .or_else(|| input.default.clone())
+                    })
+                    .flatten();
                 if value.is_none()
                     && matches!(
                         input.input_type,
@@ -84,6 +110,247 @@ pub fn resolve_provider_inputs(
         values,
         snapshot,
         missing_required,
+    }
+}
+
+/// Migrates the retired `size: "WIDTHxHEIGHT"` config value when a refreshed
+/// provider declares explicit dimension roles.  Providers that still expose a
+/// real `size` input (for example a cloud image API) are left untouched.
+pub fn migrate_legacy_size_input(config: &mut GenerativeConfig, provider: &ProviderEntry) -> bool {
+    if !provider_uses_granular_dimensions(provider)
+        || provider.inputs.iter().any(|input| input.name == "size")
+    {
+        return false;
+    }
+
+    let legacy_size = literal_input_value(config, "size");
+    let mut changed = false;
+    if let Some((width, height)) = legacy_size.as_ref().and_then(parse_legacy_size) {
+        for (role, value) in [(InputRole::Width, width), (InputRole::Height, height)] {
+            if let Some(input) = provider
+                .inputs
+                .iter()
+                .find(|input| input.role == Some(role))
+            {
+                if !config.inputs.contains_key(&input.name) {
+                    config.inputs.insert(
+                        input.name.clone(),
+                        InputValue::Literal {
+                            value: Value::Number(value.into()),
+                        },
+                    );
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed |= config.inputs.remove("size").is_some();
+    changed
+}
+
+/// Returns the effective width or height for a provider field without forcing
+/// the engine's alignment or budget constraints into the editor.  The engine
+/// remains the authority for those model-specific decisions.
+pub fn effective_dimension_input_value(
+    project: &Project,
+    config: &GenerativeConfig,
+    input: &ProviderInputField,
+    source_dimensions: Option<(u32, u32)>,
+) -> Option<Value> {
+    let role = input.role?;
+    if !matches!(role, InputRole::Width | InputRole::Height) {
+        return None;
+    }
+
+    if let Some(value) = literal_input_value(config, &input.name) {
+        return Some(value);
+    }
+
+    if let Some((width, height)) = literal_input_value(config, "size")
+        .as_ref()
+        .and_then(parse_legacy_size)
+    {
+        return Some(dimension_value(role, width, height));
+    }
+
+    if let Some((width, height)) = source_dimensions {
+        return Some(dimension_value(role, width, height));
+    }
+
+    let project_dimension = match role {
+        InputRole::Width => project.settings.width,
+        InputRole::Height => project.settings.height,
+        _ => unreachable!("dimension role was checked above"),
+    };
+    (project_dimension > 0).then(|| Value::Number(project_dimension.into()))
+}
+
+/// Returns a cheap display value for a width/height control. It intentionally
+/// does not inspect source media: UI rendering must never invoke ffprobe.
+pub fn displayed_dimension_input_value(
+    project: &Project,
+    config: &GenerativeConfig,
+    input: &ProviderInputField,
+) -> Option<Value> {
+    effective_dimension_input_value(project, config, input, None)
+}
+
+fn provider_uses_granular_dimensions(provider: &ProviderEntry) -> bool {
+    provider.inputs.iter().any(|input| {
+        matches!(input.role, Some(InputRole::Width | InputRole::Height))
+            && matches!(
+                input.input_type,
+                ProviderInputType::Integer | ProviderInputType::Number
+            )
+    })
+}
+
+fn is_dimension_input(input: &ProviderInputField) -> bool {
+    matches!(input.role, Some(InputRole::Width | InputRole::Height))
+}
+
+fn has_explicit_dimension_pair(provider: &ProviderEntry, config: &GenerativeConfig) -> bool {
+    [InputRole::Width, InputRole::Height]
+        .into_iter()
+        .all(|role| {
+            provider
+                .inputs
+                .iter()
+                .find(|input| input.role == Some(role))
+                .is_some_and(|input| literal_input_value(config, &input.name).is_some())
+        })
+}
+
+fn has_any_explicit_dimension(provider: &ProviderEntry, config: &GenerativeConfig) -> bool {
+    provider.inputs.iter().any(|input| {
+        is_dimension_input(input) && literal_input_value(config, &input.name).is_some()
+    })
+}
+
+fn has_missing_dimension(provider: &ProviderEntry, config: &GenerativeConfig) -> bool {
+    provider.inputs.iter().any(|input| {
+        matches!(input.role, Some(InputRole::Width | InputRole::Height))
+            && literal_input_value(config, &input.name).is_none()
+    })
+}
+
+/// Whether the catalog declares optional source-mode dimensions for this
+/// Engine image-to-image tool.
+pub fn engine_image_to_image_source_mode_descriptor(provider: &ProviderEntry) -> bool {
+    matches!(
+        &provider.connection,
+        crate::state::ProviderConnection::LatentSlateEngine { .. }
+    ) && provider.workflow_kind == crate::state::ProviderWorkflowKind::ImageToImage
+        && [InputRole::Width, InputRole::Height]
+            .into_iter()
+            .all(|role| {
+                provider
+                    .inputs
+                    .iter()
+                    .find(|input| input.role == Some(role))
+                    .is_some_and(|input| !input.required && input.default.is_none())
+            })
+}
+
+/// True when an Engine image-to-image descriptor advertises source-mode
+/// dimensions: its optional width/height pair is absent so Engine derives the
+/// aligned dimensions from the source.
+pub fn engine_image_to_image_source_mode_active(
+    project: &Project,
+    context_clip_id: Option<Uuid>,
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
+) -> bool {
+    engine_image_to_image_source_mode_descriptor(provider)
+        && image_to_image_source_bound(project, context_clip_id, provider, config)
+        && !has_any_explicit_dimension(provider, config)
+}
+
+fn parse_legacy_size(value: &Value) -> Option<(u32, u32)> {
+    let size = value.as_str()?.trim();
+    let (width, height) = size.split_once(['x', 'X'])?;
+    Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
+fn dimension_value(role: InputRole, width: u32, height: u32) -> Value {
+    let value = match role {
+        InputRole::Width => width,
+        InputRole::Height => height,
+        _ => unreachable!("dimension_value only accepts width or height"),
+    };
+    Value::Number(value.into())
+}
+
+fn image_to_image_source_dimensions(
+    project: &Project,
+    context_clip_id: Option<Uuid>,
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
+) -> Option<(u32, u32)> {
+    if provider.workflow_kind != crate::state::ProviderWorkflowKind::ImageToImage {
+        return None;
+    }
+
+    provider
+        .inputs
+        .iter()
+        .filter(|input| matches!(input.input_type, ProviderInputType::Image))
+        .find_map(|input| {
+            let binding = asset_input_value(project, context_clip_id, provider, config, input)?;
+            let path = asset_ref_path(project, &binding, input, provider, config)?;
+            crate::core::media::probe_media_dimensions(&path)
+        })
+}
+
+fn image_to_image_source_bound(
+    project: &Project,
+    context_clip_id: Option<Uuid>,
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
+) -> bool {
+    if provider.workflow_kind != crate::state::ProviderWorkflowKind::ImageToImage {
+        return false;
+    }
+
+    provider
+        .inputs
+        .iter()
+        .filter(|input| matches!(input.input_type, ProviderInputType::Image))
+        .any(|input| {
+            let Some(binding) =
+                asset_input_value(project, context_clip_id, provider, config, input)
+            else {
+                return false;
+            };
+            image_input_binding_is_resolvable(project, &binding)
+        })
+}
+
+fn image_input_binding_is_resolvable(project: &Project, binding: &InputValue) -> bool {
+    let Some(root) = project.project_path.as_ref() else {
+        return false;
+    };
+    match binding {
+        InputValue::AssetRef { asset_id, .. } => {
+            let Some(asset) = project.find_asset(*asset_id) else {
+                return false;
+            };
+            if asset.is_image() {
+                active_asset_source_path(root, asset).is_some_and(|path| path.exists())
+            } else if asset.is_video() {
+                video_asset_source_path(root, asset).is_some_and(|path| path.exists())
+            } else {
+                false
+            }
+        }
+        InputValue::GenerationRef {
+            asset_id, version, ..
+        } => project.find_asset(*asset_id).is_some_and(|asset| {
+            (asset.is_image() || asset.is_video())
+                && generative_asset_source_path(root, asset, Some(version))
+                    .is_some_and(|path| path.exists())
+        }),
+        InputValue::Literal { .. } => false,
     }
 }
 
@@ -850,4 +1117,192 @@ fn is_seed_compatible_type(input: &ProviderInputField) -> bool {
         input.input_type,
         ProviderInputType::Integer | ProviderInputType::Number
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ProviderConnection, ProviderOutputType, ProviderWorkflowKind};
+    use serde_json::json;
+
+    fn dimension_input(name: &str, role: InputRole, default: u32) -> ProviderInputField {
+        ProviderInputField {
+            name: name.to_string(),
+            label: name.to_string(),
+            description: None,
+            input_type: ProviderInputType::Integer,
+            required: true,
+            default: Some(json!(default)),
+            role: Some(role),
+            ui: None,
+        }
+    }
+
+    fn dimensions_provider() -> ProviderEntry {
+        let mut provider = ProviderEntry::new(
+            "Dimensions",
+            ProviderOutputType::Image,
+            ProviderConnection::CustomHttp {
+                base_url: "http://localhost".to_string(),
+                api_key: None,
+            },
+        );
+        provider.workflow_kind = ProviderWorkflowKind::TextToImage;
+        provider.inputs = vec![
+            dimension_input("width", InputRole::Width, 512),
+            dimension_input("height", InputRole::Height, 512),
+        ];
+        provider
+    }
+
+    fn source_mode_image_to_image_provider() -> ProviderEntry {
+        let mut provider = ProviderEntry::new(
+            "Source mode image to image",
+            ProviderOutputType::Image,
+            ProviderConnection::LatentSlateEngine {
+                base_url: "http://localhost:8765".to_string(),
+                api_key: None,
+                tool_key: "private.my_edit_recipe".to_string(),
+                schema_revision: 1,
+                schema_hash: "sha256:test".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        provider.workflow_kind = ProviderWorkflowKind::ImageToImage;
+        provider.inputs = vec![
+            ProviderInputField {
+                name: "source_image".to_string(),
+                label: "Source Image".to_string(),
+                description: None,
+                input_type: ProviderInputType::Image,
+                required: true,
+                default: None,
+                role: Some(InputRole::StartImage),
+                ui: None,
+            },
+            ProviderInputField {
+                name: "width".to_string(),
+                label: "Width".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: false,
+                default: None,
+                role: Some(InputRole::Width),
+                ui: None,
+            },
+            ProviderInputField {
+                name: "height".to_string(),
+                label: "Height".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: false,
+                default: None,
+                role: Some(InputRole::Height),
+                ui: None,
+            },
+        ];
+        provider
+    }
+
+    fn test_project_with_source(path: &str, video: bool) -> (Project, Asset) {
+        let root = std::env::temp_dir().join(format!("latentslate-dimension-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        std::fs::write(root.join(path), b"test").expect("write test source");
+        let mut project = Project::new("dimensions");
+        project.project_path = Some(root);
+        let asset = if video {
+            Asset::new_video("source", PathBuf::from(path))
+        } else {
+            Asset::new_image("source", PathBuf::from(path))
+        };
+        project.assets.push(asset.clone());
+        (project, asset)
+    }
+
+    #[test]
+    fn granular_dimensions_prefer_current_then_legacy_then_project() {
+        let provider = dimensions_provider();
+        let mut project = Project::new("dimensions");
+        project.settings.width = 1600;
+        project.settings.height = 900;
+
+        let empty =
+            resolve_provider_inputs(&project, None, &provider, &GenerativeConfig::default());
+        assert_eq!(empty.values.get("width"), Some(&json!(1600)));
+        assert_eq!(empty.values.get("height"), Some(&json!(900)));
+
+        let mut legacy = GenerativeConfig::default();
+        legacy.inputs.insert(
+            "size".to_string(),
+            InputValue::Literal {
+                value: json!("960x540"),
+            },
+        );
+        legacy.inputs.insert(
+            "width".to_string(),
+            InputValue::Literal { value: json!(777) },
+        );
+        let resolved = resolve_provider_inputs(&project, None, &provider, &legacy);
+        assert_eq!(resolved.values.get("width"), Some(&json!(777)));
+        assert_eq!(resolved.values.get("height"), Some(&json!(540)));
+        assert!(!resolved.values.contains_key("size"));
+        assert!(!resolved.snapshot.contains_key("size"));
+    }
+
+    #[test]
+    fn source_mode_omits_dimensions_but_keeps_a_partial_pair() {
+        let provider = source_mode_image_to_image_provider();
+        let (project, source) = test_project_with_source("source.png", false);
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "source_image".to_string(),
+            InputValue::AssetRef {
+                asset_id: source.id,
+                source_clip_id: None,
+                pinned: true,
+                frame_reference: None,
+            },
+        );
+
+        let source_mode = resolve_provider_inputs(&project, None, &provider, &config);
+        assert!(source_mode.values.contains_key("source_image"));
+        assert!(!source_mode.values.contains_key("width"));
+        assert!(!source_mode.values.contains_key("height"));
+
+        config.inputs.insert(
+            "width".to_string(),
+            InputValue::Literal { value: json!(777) },
+        );
+        let partial = resolve_provider_inputs(&project, None, &provider, &config);
+        assert_eq!(partial.values.get("width"), Some(&json!(777)));
+        assert!(!partial.values.contains_key("height"));
+
+        let _ = std::fs::remove_dir_all(project.project_path.expect("test root"));
+    }
+
+    #[test]
+    fn source_mode_recognizes_video_frame_bindings_without_extracting_them() {
+        let provider = source_mode_image_to_image_provider();
+        let (project, source) = test_project_with_source("source.mp4", true);
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "source_image".to_string(),
+            InputValue::AssetRef {
+                asset_id: source.id,
+                source_clip_id: None,
+                pinned: true,
+                frame_reference: Some(SourceFrameReference::First),
+            },
+        );
+
+        assert!(image_to_image_source_bound(
+            &project, None, &provider, &config
+        ));
+        assert!(engine_image_to_image_source_mode_active(
+            &project, None, &provider, &config
+        ));
+
+        let _ = std::fs::remove_dir_all(project.project_path.expect("test root"));
+    }
 }

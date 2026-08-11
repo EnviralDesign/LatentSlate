@@ -12,7 +12,7 @@ use crate::core::audio::cache::peak_cache_path;
 use crate::core::automation::{
     AutomationCommand, AutomationResponse, ClipMoveMode, ClipMoveTarget, SequencePlacementItem,
 };
-use crate::core::generation::semantic_reference_slot;
+use crate::core::generation::{migrate_legacy_size_input, semantic_reference_slot};
 use crate::core::media::{probe_missing_duration, resolve_asset_duration_seconds};
 use crate::core::provider_store::{
     default_openai_image_provider_entry, default_provider_entry, default_xai_image_provider_entry,
@@ -170,6 +170,58 @@ impl EditorState {
     pub fn refresh_providers(&mut self) {
         self.provider_entries = load_local_provider_entries_or_empty();
         self.provider_files = list_local_provider_files();
+        self.reconcile_generative_dimension_configs();
+    }
+
+    /// Persist safe catalog-driven input migrations after a provider refresh so
+    /// projects do not retain retired fields until their next submission.
+    fn reconcile_generative_dimension_configs(&mut self) {
+        let providers: std::collections::HashMap<Uuid, ProviderEntry> = self
+            .provider_entries
+            .iter()
+            .cloned()
+            .map(|provider| (provider.id, provider))
+            .collect();
+        let mut changed_assets = Vec::new();
+        for (asset_id, config) in self.project.generative_configs.iter_mut() {
+            let Some(provider_id) = config.provider_id else {
+                continue;
+            };
+            let Some(provider) = providers.get(&provider_id) else {
+                continue;
+            };
+            if migrate_legacy_size_input(config, provider) {
+                changed_assets.push(*asset_id);
+            }
+        }
+        for asset_id in changed_assets {
+            if let Err(err) = self.project.save_generative_config(asset_id) {
+                println!("Failed to persist provider input migration for {asset_id}: {err}");
+            }
+        }
+    }
+
+    /// Reconciles retired provider inputs after a config restore, before its
+    /// caller persists the restored config.
+    pub fn reconcile_generative_config_dimensions(&mut self, asset_id: Uuid) -> bool {
+        let Some(provider) = self
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| config.provider_id)
+            .and_then(|provider_id| {
+                self.provider_entries
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        let mut changed = false;
+        self.project.update_generative_config(asset_id, |config| {
+            changed = migrate_legacy_size_input(config, &provider);
+        });
+        changed
     }
 
     pub fn provider_in_project_scope(&self, provider_id: Uuid) -> bool {
@@ -1912,6 +1964,7 @@ impl EditorState {
                 if !updated {
                     return AutomationResponse::not_found("Generative asset not found.");
                 }
+                self.reconcile_generative_config_dimensions(*asset_id);
                 if let Err(err) = self.project.save_generative_config(*asset_id) {
                     return AutomationResponse::error(format!(
                         "Failed to save generative config: {err}"
@@ -1982,6 +2035,7 @@ impl EditorState {
                 if !updated {
                     return AutomationResponse::not_found("Generative asset not found.");
                 }
+                self.reconcile_generative_config_dimensions(*asset_id);
                 if let Err(err) = self.project.save_generative_config(*asset_id) {
                     return AutomationResponse::error(format!(
                         "Failed to save generative config: {err}"
@@ -3122,6 +3176,7 @@ fn validate_generative_input_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ProviderInputField;
 
     #[test]
     fn redacts_custom_http_provider_api_key() {
@@ -3142,6 +3197,88 @@ mod tests {
                 .get("api_key_present")
                 .and_then(|value| value.as_bool()),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn restored_version_migrates_legacy_size_before_persisting() {
+        let mut editor = EditorState::new();
+        editor.project = Project::new("restore-dimensions");
+        let mut provider = ProviderEntry::new(
+            "Klein",
+            ProviderOutputType::Image,
+            ProviderConnection::LatentSlateEngine {
+                base_url: "http://localhost:8765".to_string(),
+                api_key: None,
+                tool_key: "flux2_klein9b.text_to_image".to_string(),
+                schema_revision: 1,
+                schema_hash: "sha256:test".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        provider.inputs = vec![
+            ProviderInputField {
+                name: "width".to_string(),
+                label: "Width".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: None,
+                role: Some(InputRole::Width),
+                ui: None,
+            },
+            ProviderInputField {
+                name: "height".to_string(),
+                label: "Height".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: None,
+                role: Some(InputRole::Height),
+                ui: None,
+            },
+        ];
+        let provider_id = provider.id;
+        editor.provider_entries = vec![provider];
+
+        let asset_id = editor.project.add_asset(Asset::new_generative_image(
+            "generated",
+            PathBuf::from("generated/image/test"),
+        ));
+        let mut snapshot = std::collections::HashMap::new();
+        snapshot.insert(
+            "size".to_string(),
+            InputValue::Literal {
+                value: json!("960x540"),
+            },
+        );
+        editor.project.update_generative_config(asset_id, |config| {
+            config.versions.push(crate::state::GenerationRecord {
+                version: "v1".to_string(),
+                timestamp: chrono::Utc::now(),
+                provider_id,
+                inputs_snapshot: snapshot,
+                lab_node_id: None,
+            });
+        });
+
+        editor.project.update_generative_config(asset_id, |config| {
+            assert!(apply_active_generation_version_to_config(config, "v1"));
+        });
+        assert!(editor.reconcile_generative_config_dimensions(asset_id));
+        let config = editor
+            .project
+            .generative_config(asset_id)
+            .expect("restored config");
+        assert!(!config.inputs.contains_key("size"));
+        assert_eq!(
+            config.inputs.get("width"),
+            Some(&InputValue::Literal { value: json!(960) })
+        );
+        assert_eq!(
+            config.inputs.get("height"),
+            Some(&InputValue::Literal { value: json!(540) })
         );
     }
 
