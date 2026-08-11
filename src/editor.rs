@@ -3283,6 +3283,96 @@ mod tests {
     }
 
     #[test]
+    fn restored_h3_version_migrates_quality_to_steps_before_persisting() {
+        let mut editor = EditorState::new();
+        editor.project = Project::new("restore-h3");
+        let mut provider = ProviderEntry::new(
+            "H3",
+            ProviderOutputType::Video,
+            ProviderConnection::LatentSlateEngine {
+                base_url: "http://localhost:8765".to_string(),
+                api_key: None,
+                tool_key: "h3.first_last_frame_video".to_string(),
+                schema_revision: 2,
+                schema_hash: "sha256:test".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        provider.inputs = vec![
+            ProviderInputField {
+                name: "width".to_string(),
+                label: "Width".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: Some(json!(960)),
+                role: Some(InputRole::Width),
+                ui: None,
+            },
+            ProviderInputField {
+                name: "height".to_string(),
+                label: "Height".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: Some(json!(544)),
+                role: Some(InputRole::Height),
+                ui: None,
+            },
+            ProviderInputField {
+                name: "steps".to_string(),
+                label: "Steps".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: Some(json!(20)),
+                role: None,
+                ui: None,
+            },
+        ];
+        let provider_id = provider.id;
+        editor.provider_entries = vec![provider];
+
+        let asset_id = editor.project.add_asset(Asset::new_generative_image(
+            "generated",
+            PathBuf::from("generated/image/test"),
+        ));
+        let mut snapshot = std::collections::HashMap::new();
+        snapshot.insert(
+            "quality".to_string(),
+            InputValue::Literal {
+                value: json!("final"),
+            },
+        );
+        editor.project.update_generative_config(asset_id, |config| {
+            config.versions.push(crate::state::GenerationRecord {
+                version: "v1".to_string(),
+                timestamp: chrono::Utc::now(),
+                provider_id,
+                inputs_snapshot: snapshot,
+                lab_node_id: None,
+            });
+        });
+
+        editor.project.update_generative_config(asset_id, |config| {
+            assert!(apply_active_generation_version_to_config(config, "v1"));
+        });
+        assert!(editor.reconcile_generative_config_dimensions(asset_id));
+        let config = editor
+            .project
+            .generative_config(asset_id)
+            .expect("restored config");
+        assert_eq!(
+            config.inputs.get("steps"),
+            Some(&InputValue::Literal { value: json!(30) })
+        );
+        assert!(!config.inputs.contains_key("quality"));
+        assert!(!config.inputs.contains_key("width"));
+        assert!(!config.inputs.contains_key("height"));
+    }
+
+    #[test]
     fn move_clip_validates_target_track_before_changing_start_time() {
         let mut editor = EditorState::new();
         editor.project = Project::new("move-test");

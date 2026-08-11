@@ -15,8 +15,8 @@ use crate::core::timeline_bridge::{
 };
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
-    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, Project, ProviderEntry,
-    ProviderInputField, ProviderInputType, SourceFrameReference,
+    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, Project, ProviderConnection,
+    ProviderEntry, ProviderInputField, ProviderInputType, SourceFrameReference,
 };
 
 #[derive(Debug, Clone)]
@@ -113,39 +113,85 @@ pub fn resolve_provider_inputs(
     }
 }
 
-/// Migrates the retired `size: "WIDTHxHEIGHT"` config value when a refreshed
-/// provider declares explicit dimension roles.  Providers that still expose a
-/// real `size` input (for example a cloud image API) are left untouched.
+/// Migrates retired provider inputs when a refreshed provider schema replaces
+/// them. Providers that still expose a real `size` input (for example a cloud
+/// image API) are left untouched.
 pub fn migrate_legacy_size_input(config: &mut GenerativeConfig, provider: &ProviderEntry) -> bool {
-    if !provider_uses_granular_dimensions(provider)
-        || provider.inputs.iter().any(|input| input.name == "size")
-    {
-        return false;
-    }
-
-    let legacy_size = literal_input_value(config, "size");
     let mut changed = false;
-    if let Some((width, height)) = legacy_size.as_ref().and_then(parse_legacy_size) {
-        for (role, value) in [(InputRole::Width, width), (InputRole::Height, height)] {
-            if let Some(input) = provider
-                .inputs
-                .iter()
-                .find(|input| input.role == Some(role))
-            {
-                if !config.inputs.contains_key(&input.name) {
-                    config.inputs.insert(
-                        input.name.clone(),
-                        InputValue::Literal {
-                            value: Value::Number(value.into()),
-                        },
-                    );
-                    changed = true;
+    if provider_uses_granular_dimensions(provider)
+        && !provider.inputs.iter().any(|input| input.name == "size")
+    {
+        let legacy_size = literal_input_value(config, "size");
+        if let Some((width, height)) = legacy_size.as_ref().and_then(parse_legacy_size) {
+            for (role, value) in [(InputRole::Width, width), (InputRole::Height, height)] {
+                if let Some(input) = provider
+                    .inputs
+                    .iter()
+                    .find(|input| input.role == Some(role))
+                {
+                    if !config.inputs.contains_key(&input.name) {
+                        config.inputs.insert(
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: Value::Number(value.into()),
+                            },
+                        );
+                        changed = true;
+                    }
                 }
             }
         }
+        changed |= config.inputs.remove("size").is_some();
     }
-    changed |= config.inputs.remove("size").is_some();
+
+    changed |= migrate_legacy_h3_quality_input(config, provider);
     changed
+}
+
+/// H3 schema revision 2 replaces the `quality` choice with an integer `steps`
+/// input. Dimensions deliberately remain absent from this conversion: project
+/// resolution is the authoritative fallback for the new width/height roles.
+fn migrate_legacy_h3_quality_input(
+    config: &mut GenerativeConfig,
+    provider: &ProviderEntry,
+) -> bool {
+    let Some(steps_input) = h3_integer_steps_input(provider) else {
+        return false;
+    };
+
+    let mut changed = false;
+    if !config.inputs.contains_key(&steps_input.name) {
+        let steps = literal_input_value(config, "quality")
+            .as_ref()
+            .and_then(Value::as_str)
+            .and_then(|quality| match quality {
+                "draft" => Some(16),
+                "balanced" => Some(20),
+                "final" => Some(30),
+                _ => None,
+            });
+        if let Some(steps) = steps {
+            config.inputs.insert(
+                steps_input.name.clone(),
+                InputValue::Literal {
+                    value: Value::Number(steps.into()),
+                },
+            );
+            changed = true;
+        }
+    }
+    changed |= config.inputs.remove("quality").is_some();
+    changed
+}
+
+fn h3_integer_steps_input(provider: &ProviderEntry) -> Option<&ProviderInputField> {
+    let ProviderConnection::LatentSlateEngine { tool_key, .. } = &provider.connection else {
+        return None;
+    };
+    tool_key.strip_prefix("h3.")?;
+    provider.inputs.iter().find(|input| {
+        input.name == "steps" && matches!(input.input_type, ProviderInputType::Integer)
+    })
 }
 
 /// Returns the effective width or height for a provider field without forcing
@@ -1205,6 +1251,38 @@ mod tests {
         provider
     }
 
+    fn h3_provider() -> ProviderEntry {
+        let mut provider = ProviderEntry::new(
+            "H3",
+            ProviderOutputType::Video,
+            ProviderConnection::LatentSlateEngine {
+                base_url: "http://localhost:8765".to_string(),
+                api_key: None,
+                tool_key: "h3.first_last_frame_video".to_string(),
+                schema_revision: 2,
+                schema_hash: "sha256:h3".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        provider.workflow_kind = ProviderWorkflowKind::FirstFrameLastFrameVideo;
+        provider.inputs = vec![
+            dimension_input("width", InputRole::Width, 960),
+            dimension_input("height", InputRole::Height, 544),
+            ProviderInputField {
+                name: "steps".to_string(),
+                label: "Steps".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: Some(json!(20)),
+                role: None,
+                ui: None,
+            },
+        ];
+        provider
+    }
+
     fn test_project_with_source(path: &str, video: bool) -> (Project, Asset) {
         let root = std::env::temp_dir().join(format!("latentslate-dimension-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create test root");
@@ -1248,6 +1326,57 @@ mod tests {
         assert_eq!(resolved.values.get("height"), Some(&json!(540)));
         assert!(!resolved.values.contains_key("size"));
         assert!(!resolved.snapshot.contains_key("size"));
+    }
+
+    #[test]
+    fn h3_quality_migrates_to_steps_without_overriding_project_dimensions() {
+        let provider = h3_provider();
+        let mut project = Project::new("h3");
+        project.settings.width = 1920;
+        project.settings.height = 1080;
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "quality".to_string(),
+            InputValue::Literal {
+                value: json!("draft"),
+            },
+        );
+
+        assert!(migrate_legacy_size_input(&mut config, &provider));
+        assert_eq!(
+            config.inputs.get("steps"),
+            Some(&InputValue::Literal { value: json!(16) })
+        );
+        assert!(!config.inputs.contains_key("quality"));
+
+        let resolved = resolve_provider_inputs(&project, None, &provider, &config);
+        assert_eq!(resolved.values.get("width"), Some(&json!(1920)));
+        assert_eq!(resolved.values.get("height"), Some(&json!(1080)));
+        assert_eq!(resolved.values.get("steps"), Some(&json!(16)));
+        assert!(!resolved.values.contains_key("quality"));
+    }
+
+    #[test]
+    fn h3_quality_is_removed_without_overwriting_explicit_steps() {
+        let provider = h3_provider();
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "quality".to_string(),
+            InputValue::Literal {
+                value: json!("final"),
+            },
+        );
+        config.inputs.insert(
+            "steps".to_string(),
+            InputValue::Literal { value: json!(24) },
+        );
+
+        assert!(migrate_legacy_size_input(&mut config, &provider));
+        assert_eq!(
+            config.inputs.get("steps"),
+            Some(&InputValue::Literal { value: json!(24) })
+        );
+        assert!(!config.inputs.contains_key("quality"));
     }
 
     #[test]

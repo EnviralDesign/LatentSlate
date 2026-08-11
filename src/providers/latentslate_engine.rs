@@ -828,7 +828,7 @@ mod tests {
             "tools": [{
                 "id": "8c038628-e5bd-4954-80e3-32956321089b",
                 "key": "h3.first_last_frame_video",
-                "schema_revision": 1,
+                "schema_revision": 2,
                 "schema_hash": "sha256:test",
                 "name": "First/Last Frame Video",
                 "description": "Generate a shot.",
@@ -838,10 +838,9 @@ mod tests {
                     { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
                     { "key": "start_image", "label": "First Frame", "type": "image", "required": true, "role": "start_image" },
                     { "key": "end_image", "label": "Last Frame", "type": "image", "required": false, "role": "end_image" },
-                    { "key": "quality", "label": "Quality", "type": "choice", "required": true, "default": "draft", "options": [
-                        { "value": "draft", "label": "Draft" },
-                        { "value": "final", "label": "Final" }
-                    ]}
+                    { "key": "width", "label": "Width", "type": "integer", "required": true, "default": 960, "role": "width" },
+                    { "key": "height", "label": "Height", "type": "integer", "required": true, "default": 544, "role": "height" },
+                    { "key": "steps", "label": "Steps", "type": "integer", "required": true, "default": 20 }
                 ],
                 "available": true
             }]
@@ -857,10 +856,15 @@ mod tests {
         );
         assert_eq!(provider.inputs[1].role, Some(InputRole::StartImage));
         assert_eq!(provider.inputs[2].role, Some(InputRole::EndImage));
+        assert_eq!(provider.inputs[3].role, Some(InputRole::Width));
+        assert_eq!(provider.inputs[3].default, Some(json!(960)));
+        assert_eq!(provider.inputs[4].role, Some(InputRole::Height));
+        assert_eq!(provider.inputs[4].default, Some(json!(544)));
         assert!(matches!(
-            &provider.inputs[3].input_type,
-            ProviderInputType::Enum { .. }
+            provider.inputs[5].input_type,
+            ProviderInputType::Integer
         ));
+        assert_eq!(provider.inputs[5].default, Some(json!(20)));
         assert!(matches!(
             &provider.connection,
             ProviderConnection::LatentSlateEngine { .. }
