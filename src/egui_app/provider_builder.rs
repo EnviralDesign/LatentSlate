@@ -884,7 +884,10 @@ impl ProviderBuilderState {
                 invalid_type_inputs.join(", ")
             ));
         }
-        if !missing_roles.is_empty() {
+        // Older provider manifests predate semantic roles and remain valid at
+        // runtime. Require complete roles for newly authored providers without
+        // making an unrelated edit silently unsaveable for legacy entries.
+        if !missing_roles.is_empty() && self.source_path.is_none() {
             Some(format!(
                 "Missing required roles: {}.",
                 missing_roles.join(", ")
