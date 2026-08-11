@@ -29,6 +29,27 @@ loaded. When reachable, its catalog tools appear automatically in provider
 pickers and generation forms. There is no provider JSON to export, bind, or
 repair.
 
+For a local source checkout, initialize the portable Engine data root, inspect
+it, validate its resources/variants, and start the service:
+
+```powershell
+cd C:\repos\LatentSlate-Engine
+uv sync
+uv run latentslate-engine data init
+uv run latentslate-engine data path
+uv run latentslate-engine resources list
+uv run latentslate-engine variants validate
+uv run latentslate-engine serve --host 127.0.0.1 --port 8765
+```
+
+`LATENTSLATE_ENGINE_HOME` owns the portable `models/`, `loras/`, `variants/`,
+`cache/`, and `jobs/` trees. A local model or LoRA is added by placing it under
+the matching family directory with its inspectable TOML sidecar, then placing
+or editing a variant TOML that selects it. Restart the Engine to rebuild the
+catalog; reload providers or restart LatentSlate to consume the refreshed
+schemas. Unsupported or incomplete artifacts remain visible in Engine
+diagnostics but are not advertised as runnable tools.
+
 The machine-level connection can be changed with environment variables:
 
 ```text
@@ -77,18 +98,18 @@ schema changes may require manually repairing affected generative configs.
 
 ### Current Engine Tools
 
-The V0 Engine catalog currently follows four existing LatentSlate categories:
+The built-in catalog covers H3 and LTX video, Wan video, and Klein 4B/9B image
+families. Data-defined variants become normal catalog tools only when their
+selected resources and runtime contracts validate. This includes the locally
+proven Klein 4B Comfy-native stored-FP8 text-to-image and one-to-three-reference
+image-edit paths, plus the staged native Wan 2.2 14B I2V recipe when all required
+Comfy-aligned components are present.
 
-- `h3.text_to_video`: Text to Video with synchronized audio.
-- `h3.first_last_frame_video`: First/Last Frame Video with synchronized audio.
-- `flux2_klein9b.text_to_image`: Text to Image with FLUX.2 Klein 9B.
-- `flux2_klein9b.image_to_image`: Image to Image with one source image and FLUX.2 Klein 9B.
-
-These are deliberately simple correctness-first implementations. Full H3 and Klein
-inference have not yet been validated on the target RTX 5080 / 64 GB workstation.
-The Engine owns model loading, quantization profiles, and model-family eviction;
-LatentSlate consumes the same catalog, schema, queue, upload, and artifact contract
-for both image and video tools.
+H3 and LTX complete BF16 repositories are pinned and validated before loading;
+their full target-hardware output acceptance remains part of hands-on testing.
+The Engine owns model loading, stored-precision contracts, optimization profiles,
+residency, and model-family eviction. LatentSlate consumes the same catalog,
+schema, queue, upload, and artifact contract for every image/video variant.
 
 ## ComfyUI Setup
 
