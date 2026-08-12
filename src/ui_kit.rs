@@ -1768,7 +1768,14 @@ pub fn timeline_transport_icon_button(
     )
 }
 
-pub fn queue_toggle_button(ui: &mut Ui, count: usize, active: bool, attention: bool) -> Response {
+/// Renders the Generation Queue control with independent activity and failure cues.
+pub fn queue_toggle_button(
+    ui: &mut Ui,
+    count: usize,
+    active: bool,
+    attention: bool,
+    has_failed_jobs: bool,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(TOP_BAR_BUTTON_MIN_W, TOP_BAR_BUTTON_H),
         Sense::click(),
@@ -1827,6 +1834,27 @@ pub fn queue_toggle_button(ui: &mut Ui, count: usize, active: bool, attention: b
             label,
             FontId::proportional(9.0),
             Color32::from_rgb(18, 13, 8),
+        );
+    }
+
+    if has_failed_jobs {
+        let badge_rect = Rect::from_center_size(
+            Pos2::new(rect.left() - 1.0, rect.top() + 1.0),
+            Vec2::splat(14.0),
+        );
+        ui.painter()
+            .circle_filled(badge_rect.center(), badge_rect.width() * 0.5, DANGER);
+        ui.painter().circle_stroke(
+            badge_rect.center(),
+            badge_rect.width() * 0.5,
+            Stroke::new(1.0, APP_BG),
+        );
+        ui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "!",
+            FontId::proportional(10.0),
+            TEXT_ON_ACCENT,
         );
     }
 

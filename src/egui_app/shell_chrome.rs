@@ -197,11 +197,15 @@ impl LatentSlateApp {
                             })
                             .count();
                         let attention = active_count > 0;
+                        let has_failed_jobs = self.editor.generation_queue.iter().any(|job| {
+                            matches!(job.status, crate::state::GenerationJobStatus::Failed)
+                        });
                         let queue_response = kit::queue_toggle_button(
                             ui,
                             active_count,
                             self.editor.overlays.queue,
                             attention,
+                            has_failed_jobs,
                         );
                         self.queue_button_rect = Some(queue_response.rect);
                         if queue_response.clicked() {
@@ -309,7 +313,8 @@ impl LatentSlateApp {
                     } else {
                         self.editor.status.clone()
                     };
-                    let status_color = status_text_color(&self.editor.status);
+                    let status_color =
+                        status_text_color(&self.editor.status, &self.editor.generation_queue);
                     let mut status_rich = RichText::new(status_text).small().color(status_color);
                     if status_color == kit::DANGER {
                         status_rich = status_rich.strong();
@@ -424,9 +429,9 @@ impl LatentSlateApp {
     }
 }
 
-fn status_text_color(status: &str) -> Color32 {
+fn status_text_color(status: &str, generation_queue: &[crate::state::GenerationJob]) -> Color32 {
     let lower = status.to_ascii_lowercase();
-    if [
+    let has_error_keyword = [
         "failed",
         "missing",
         "error",
@@ -438,8 +443,15 @@ fn status_text_color(status: &str) -> Color32 {
         "offline",
     ]
     .iter()
-    .any(|needle| lower.contains(needle))
-    {
+    .any(|needle| lower.contains(needle));
+    let matches_failed_generation_error = generation_queue.iter().any(|job| {
+        job.status == crate::state::GenerationJobStatus::Failed
+            && job.error.as_deref().is_some_and(|error| {
+                !error.is_empty() && (status == error || status.starts_with(error))
+            })
+    });
+
+    if has_error_keyword || matches_failed_generation_error {
         kit::DANGER
     } else {
         kit::TEXT_MUTED
