@@ -1,0 +1,70 @@
+name: Finalize timeline media bindings
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/timeline-media-bindings
+    paths:
+      - .github/workflows/finalize-timeline-media-bindings.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: windows-latest
+    steps:
+      - name: Check out staging branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/timeline-media-bindings
+
+      - name: Reconstruct implementation patch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parts = Get-ChildItem '.agent-patch/part*.b64' | Sort-Object Name
+          if ($parts.Count -lt 3) {
+            throw "Incomplete implementation payload: found only $($parts.Count) parts."
+          }
+          $encoded = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\timeline-media-bindings.patch", [Convert]::FromBase64String($encoded))
+          Write-Host "Reconstructed $($parts.Count) payload parts."
+
+      - name: Apply feature cleanly to current main
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name "LatentSlate Agent"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin main
+          git reset --hard origin/main
+          git apply --check "$env:RUNNER_TEMP\timeline-media-bindings.patch"
+          git apply "$env:RUNNER_TEMP\timeline-media-bindings.patch"
+          git diff --check
+
+      - name: Format Rust
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Cargo check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo check --locked
+
+      - name: Commit clean feature branch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git add -A
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "implement timeline-aware media input bindings"
+          }
+          git push --force-with-lease origin HEAD:agent/timeline-media-bindings
