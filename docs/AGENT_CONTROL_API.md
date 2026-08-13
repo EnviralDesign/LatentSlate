@@ -656,22 +656,16 @@ Patch a generative config:
   "patch": {
     "provider_id": "uuid",
     "inputs": {
-      "prompt": { "type": "literal", "value": "A wide desert shot at sunset" },
-      "nla_input_image": {
-        "type": "asset_ref",
-        "asset_id": "uuid",
-        "source_clip_id": "uuid",
-        "pinned": true,
-        "frame_reference": "first"
-      }
+      "prompt": { "type": "literal", "value": "A wide desert shot at sunset" }
     },
-    "reference_slots": {
+    "media_bindings": {
       "start_image": {
-        "type": "asset_ref",
-        "asset_id": "uuid",
-        "source_clip_id": "uuid",
-        "pinned": true,
-        "frame_reference": "first"
+        "source": {
+          "type": "follow_timeline",
+          "query": { "scope": { "type": "auto" }, "prefer_touching": true }
+        },
+        "sample": { "type": "frame", "at": { "type": "output_start" } },
+        "coverage": "strict"
       }
     },
     "batch": { "count": 2, "seed_strategy": "increment" }

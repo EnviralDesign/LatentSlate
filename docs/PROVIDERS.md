@@ -242,11 +242,12 @@ Timeline bridge video providers set `workflow_kind: "video_to_bridge"` and expos
 roles for `width`, `height`, `seed`, `left_video`, `right_video`, `fps`,
 `left_replace_frames`, `right_replace_frames`, and `edge_blend_frames`.
 
-Media inputs can use project asset references and timeline-context suggestions.
-For the Agent API, `inputs.<provider_field>` is canonical:
-`{ "type": "asset_ref", "asset_id": "...", "pinned": true }`.
-`reference_slots` remain compatibility aliases when the slot matches a provider
-field or semantic media role.
+Media inputs use canonical `media_bindings` on the generative config: source
+(Follow Timeline / Timeline Clip / Project Asset / Frozen Input), sample, and
+Strict coverage. Legacy `{ "type": "asset_ref", "asset_id": "...", "pinned": true }`
+values still load and migrate. `reference_slots` remain compatibility aliases.
+`get_generative_config` returns the live config plus a `media_bindings` inspection
+map (current resolution summary, not materialized files).
 
 ## Drift And Compatibility
 

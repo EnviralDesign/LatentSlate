@@ -58,7 +58,7 @@ fn default_right_width() -> f32 {
 }
 
 fn default_timeline_height() -> f32 {
-    220.0
+    260.0
 }
 
 fn default_timeline_zoom() -> f32 {

@@ -312,6 +312,8 @@ impl LatentSlateApp {
             timestamp: chrono::Utc::now(),
             provider_id: job.provider.id,
             inputs_snapshot: job.inputs_snapshot.clone(),
+            media_bindings_snapshot: job.media_bindings_snapshot.clone(),
+            resolved_media_inputs: job.resolved_media_inputs.clone(),
             lab_node_id: job.lab_node_id,
         };
         self.editor
@@ -325,15 +327,21 @@ impl LatentSlateApp {
                         .find(|node| node.id == node_id)
                     {
                         node.provider_id = Some(job.provider.id);
-                        node.inputs = job.inputs_snapshot.clone();
                         node.output_version = Some(version.clone());
+                        if !job.media_bindings_snapshot.is_empty() {
+                            node.media_bindings = job.media_bindings_snapshot.clone();
+                        }
                     }
                     config.lab_graph.selected_node_id = Some(node_id);
                 }
                 if job.activate_on_success || job.lab_node_id.is_none() {
                     config.provider_id = Some(job.provider.id);
                     config.active_version = Some(version.clone());
-                    config.inputs = job.inputs_snapshot.clone();
+                    for (name, value) in &job.inputs_snapshot {
+                        if matches!(value, InputValue::Literal { .. }) {
+                            config.inputs.insert(name.clone(), value.clone());
+                        }
+                    }
                 }
                 if let Some(existing) = config
                     .versions
@@ -459,10 +467,14 @@ impl LatentSlateApp {
 
         let resolved = resolve_provider_inputs(
             &self.editor.project,
+            Some(asset_id),
             context_clip_id,
             &provider,
             &config_snapshot,
         );
+        if !resolved.media_errors.is_empty() {
+            return Err(resolved.media_errors.join("\n"));
+        }
         if !resolved.missing_required.is_empty() {
             return Err(missing_provider_inputs_message(
                 &provider,
@@ -559,6 +571,7 @@ impl LatentSlateApp {
                 let mut node =
                     AssetLabNode::new_with_parent(Some(provider.id), next_parent_node_id);
                 node.inputs = inputs_snapshot.clone();
+                node.media_bindings = resolved.media_bindings_snapshot.clone();
                 let node_id = node.id;
                 let updated = self
                     .editor
@@ -589,6 +602,7 @@ impl LatentSlateApp {
                                     found = true;
                                     node.provider_id = Some(provider.id);
                                     node.inputs = inputs_snapshot.clone();
+                                    node.media_bindings = resolved.media_bindings_snapshot.clone();
                                     node.output_version = None;
                                     config.lab_graph.selected_node_id = Some(existing_node_id);
                                 }
@@ -602,6 +616,7 @@ impl LatentSlateApp {
                     let mut node =
                         AssetLabNode::new_with_parent(Some(provider.id), lab_node_parent_id);
                     node.inputs = inputs_snapshot.clone();
+                    node.media_bindings = resolved.media_bindings_snapshot.clone();
                     let node_id = node.id;
                     let updated =
                         self.editor
@@ -636,6 +651,8 @@ impl LatentSlateApp {
                 folder_path: folder_path.clone(),
                 inputs,
                 inputs_snapshot,
+                media_bindings_snapshot: resolved.media_bindings_snapshot.clone(),
+                resolved_media_inputs: resolved.resolved_media_inputs.clone(),
                 seed_advance,
                 version: None,
                 lab_node_id: job_lab_node_id,
@@ -707,13 +724,13 @@ fn missing_provider_inputs_message(provider: &ProviderEntry, missing: &[String])
             if let Some(input) = provider.inputs.iter().find(|input| input.name == *name) {
                 match input.input_type {
                     ProviderInputType::Image => format!(
-                        "{name} (image; set patch.inputs.{name} to {{\"type\":\"asset_ref\",\"asset_id\":\"uuid\",\"pinned\":true}})"
+                        "{name} (image; set patch.media_bindings.{name} source/sample, or a legacy asset_ref)"
                     ),
                     ProviderInputType::Video => format!(
-                        "{name} (video; set patch.inputs.{name} to {{\"type\":\"asset_ref\",\"asset_id\":\"uuid\",\"pinned\":true}})"
+                        "{name} (video; set patch.media_bindings.{name} source/sample, or a legacy asset_ref)"
                     ),
                     ProviderInputType::Audio => format!(
-                        "{name} (audio; set patch.inputs.{name} to {{\"type\":\"asset_ref\",\"asset_id\":\"uuid\",\"pinned\":true}})"
+                        "{name} (audio; set patch.media_bindings.{name} source/sample, or a legacy asset_ref)"
                     ),
                     _ => name.clone(),
                 }
@@ -725,6 +742,6 @@ fn missing_provider_inputs_message(provider: &ProviderEntry, missing: &[String])
         .join(", ");
 
     format!(
-        "Missing inputs: {details}. Provider media inputs are canonical under patch.inputs.<field>; matching reference_slots.<field> or semantic reference slots are accepted as compatibility aliases."
+        "Missing inputs: {details}. Provider media fields are canonical under patch.media_bindings.<field>; matching inputs/reference_slots still migrate as compatibility aliases."
     )
 }

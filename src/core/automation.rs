@@ -787,6 +787,8 @@ pub struct GenerativeConfigPatch {
     #[serde(default)]
     pub reference_slots: Option<HashMap<String, InputValue>>,
     #[serde(default)]
+    pub media_bindings: Option<HashMap<String, crate::state::MediaBindingSpec>>,
+    #[serde(default)]
     pub batch: Option<BatchSettings>,
     #[serde(default)]
     pub active_version: Option<String>,
@@ -800,6 +802,8 @@ pub struct AssetLabNodePatch {
     pub parent_node_id: Option<Option<Uuid>>,
     #[serde(default)]
     pub inputs: Option<HashMap<String, InputValue>>,
+    #[serde(default)]
+    pub media_bindings: Option<HashMap<String, crate::state::MediaBindingSpec>>,
     #[serde(default)]
     pub output_version: Option<Option<String>>,
     #[serde(default)]
@@ -1941,7 +1945,7 @@ pub fn agent_help_json() -> Value {
             "Read /agent/v1/state to get IDs and current editor state; default providers and jobs are compact.",
             "Use GET /agent/v1/state?include=providers:full or list_providers when full provider input descriptions are needed.",
             "Use semantic commands first; use get_ui/click_ui/text_ui only for UI fallback.",
-            "Set provider media parameters with inputs.<field> = { type: \"asset_ref\", asset_id: \"uuid\", pinned: true }. reference_slots are compatibility aliases and timeline hints.",
+            "Set provider media with patch.media_bindings.<field> = { source, sample, coverage }. Legacy inputs.<field> asset_ref values still migrate. reference_slots remain compatibility aliases.",
             "Use start_generation as a non-blocking enqueue step, then POST /agent/v1/wait/generation with a returned job_id when you need to synchronize.",
             "After state-changing commands, read state or capture an enhanced frame/cutsheet.",
             "Use export_video and poll /agent/v1/export for final validation."
@@ -1971,14 +1975,20 @@ pub fn agent_help_json() -> Value {
                 "patch": {
                     "provider_id": "uuid",
                     "inputs": {
-                        "nla_input_image": {
-                            "type": "asset_ref",
-                            "asset_id": "source-asset-uuid",
-                            "pinned": true
-                        },
                         "nla_pos_prompt": {
                             "type": "literal",
                             "value": "turn the input image into a polished product still"
+                        }
+                    },
+                    "media_bindings": {
+                        "nla_input_image": {
+                            "source": {
+                                "type": "project_asset",
+                                "asset_id": "source-asset-uuid",
+                                "version": null
+                            },
+                            "sample": { "type": "frame", "at": { "type": "source_start" } },
+                            "coverage": "strict"
                         }
                     }
                 }
@@ -2513,7 +2523,7 @@ fn agent_command_schema_json() -> Value {
         "generation": [
             { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "duration_seconds?": "f64", "frame_count?": "u32" } },
             { "type": "get_generative_config", "fields": { "asset_id": "uuid" } },
-            { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; canonical for literal and media provider parameters", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name, generic media slot, or explicit media role slot are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string" } } },
+            { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; canonical for literal parameters", "media_bindings?": "map of provider media field name to MediaBindingSpec (source/sample/coverage)", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name, generic media slot, or explicit media role slot are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string" } } },
             { "type": "replace_generative_config", "fields": { "asset_id": "uuid", "config": "GenerativeConfig" } },
             { "type": "start_generation", "fields": { "asset_id": "uuid", "context_clip_id?": "uuid", "wait?": "bool" } },
             { "type": "list_jobs|get_job|cancel_job", "fields": { "job_id?": "uuid" } },

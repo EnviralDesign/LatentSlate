@@ -1881,7 +1881,43 @@ impl EditorState {
             }
             AutomationCommand::GetGenerativeConfig { asset_id } => {
                 match self.project.generative_config(*asset_id) {
-                    Some(config) => AutomationResponse::ok(json!({ "config": config })),
+                    Some(config) => {
+                        let context_clip_id =
+                            crate::core::media_binding::resolve_generation_context(
+                                &self.project,
+                                *asset_id,
+                                self.selected_clip_id().filter(|clip_id| {
+                                    self.project.clips.iter().any(|clip| {
+                                        clip.id == *clip_id && clip.asset_id == *asset_id
+                                    })
+                                }),
+                                None,
+                            )
+                            .ok()
+                            .flatten();
+                        let media_bindings = config
+                            .provider_id
+                            .and_then(|provider_id| {
+                                self.provider_entries
+                                    .iter()
+                                    .find(|provider| provider.id == provider_id)
+                            })
+                            .map(|provider| {
+                                crate::core::media_binding::inspect_config_media_bindings(
+                                    &self.project,
+                                    *asset_id,
+                                    context_clip_id,
+                                    provider,
+                                    config,
+                                )
+                            })
+                            .unwrap_or_default();
+                        AutomationResponse::ok(json!({
+                            "config": config,
+                            "context_clip_id": context_clip_id,
+                            "media_bindings": media_bindings,
+                        }))
+                    }
                     None => AutomationResponse::not_found("Generative config not found."),
                 }
             }
@@ -1946,6 +1982,9 @@ impl EditorState {
                     if let Some(reference_slots) = patch.reference_slots.clone() {
                         config.reference_slots.extend(reference_slots);
                     }
+                    if let Some(media_bindings) = patch.media_bindings.clone() {
+                        config.media_bindings.extend(media_bindings);
+                    }
                     if let Some(batch) = patch.batch.clone() {
                         config.batch = batch;
                     }
@@ -1963,6 +2002,18 @@ impl EditorState {
                 });
                 if !updated {
                     return AutomationResponse::not_found("Generative asset not found.");
+                }
+                if let Some(mut config) = self.project.generative_config(*asset_id).cloned() {
+                    crate::core::media_binding::canonicalize_media_bindings(
+                        &mut config,
+                        target_provider_id.and_then(|provider_id| {
+                            self.provider_entries
+                                .iter()
+                                .find(|provider| provider.id == provider_id)
+                        }),
+                        &self.project,
+                    );
+                    self.project.generative_configs.insert(*asset_id, config);
                 }
                 self.reconcile_generative_config_dimensions(*asset_id);
                 if let Err(err) = self.project.save_generative_config(*asset_id) {
@@ -2567,12 +2618,20 @@ impl EditorState {
                 &project_root.join(&target_folder),
             )?;
             set_generative_folder(&mut asset, target_folder.clone());
-            let config = self
+            let new_id = asset.id;
+            let mut config = self
                 .project
                 .generative_configs
                 .get(&source.id)
                 .cloned()
                 .unwrap_or_default();
+            crate::core::media_binding::rebase_config_media_bindings(
+                &mut config,
+                source.id,
+                new_id,
+                &source_folder,
+                &target_folder,
+            );
             let new_id = self.project.add_asset(asset);
             self.project.generative_configs.insert(new_id, config);
             self.project
@@ -3259,6 +3318,8 @@ mod tests {
                 timestamp: chrono::Utc::now(),
                 provider_id,
                 inputs_snapshot: snapshot,
+                media_bindings_snapshot: Default::default(),
+                resolved_media_inputs: Default::default(),
                 lab_node_id: None,
             });
         });
@@ -3351,6 +3412,8 @@ mod tests {
                 timestamp: chrono::Utc::now(),
                 provider_id,
                 inputs_snapshot: snapshot,
+                media_bindings_snapshot: Default::default(),
+                resolved_media_inputs: Default::default(),
                 lab_node_id: None,
             });
         });

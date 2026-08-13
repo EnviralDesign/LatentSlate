@@ -66,6 +66,7 @@ mod confirmations;
 mod export_modal;
 mod export_modal_ui;
 mod generation_runtime;
+mod media_binding_ui;
 mod preview_canvas;
 mod preview_runtime;
 mod preview_transform;
@@ -75,6 +76,7 @@ mod provider_identity;
 mod provider_modal;
 mod queue_panel;
 mod shell_chrome;
+mod timeline_bindings;
 mod timeline_geometry;
 mod timeline_paint;
 mod timeline_panel;
@@ -93,12 +95,12 @@ use timeline_paint::*;
 const TIMELINE_LABEL_W: f32 = 140.0;
 const TIMELINE_HEADER_H: f32 = 32.0;
 const TIMELINE_RULER_H: f32 = 24.0;
-const TIMELINE_TRACK_H: f32 = 36.0;
+const TIMELINE_TRACK_H: f32 = 44.0;
 const TIMELINE_ADD_ROW_H: f32 = 42.0;
-const TIMELINE_CLIP_H: f32 = 32.0;
-const TIMELINE_CLIP_Y_PAD: f32 = 2.0;
+const TIMELINE_CLIP_H: f32 = 38.0;
+const TIMELINE_CLIP_Y_PAD: f32 = 3.0;
 const TIMELINE_KEYFRAME_HIT_W: f32 = 40.0;
-const TIMELINE_KEYFRAME_THUMB: f32 = 24.0;
+const TIMELINE_KEYFRAME_THUMB: f32 = 28.0;
 const TIMELINE_KEYFRAME_LABEL_W: f32 = 140.0;
 const TIMELINE_SCROLLBAR_H: f32 = 12.0;
 const TIMELINE_MIN_ZOOM_FLOOR: f32 = 0.1;
@@ -332,6 +334,7 @@ pub struct LatentSlateApp {
     agent_api_port: u16,
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
+    generation_context_by_asset: HashMap<Uuid, Uuid>,
 }
 
 struct PendingAutomationUiAction {
@@ -611,6 +614,7 @@ impl LatentSlateApp {
             agent_api_port,
             pending_automation_ui_actions: Vec::new(),
             pending_automation_screenshot: None,
+            generation_context_by_asset: HashMap::new(),
         }
     }
 

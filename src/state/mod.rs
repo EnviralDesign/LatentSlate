@@ -9,6 +9,7 @@
 
 mod asset;
 mod generative;
+mod media_binding;
 mod project;
 mod providers;
 mod selection;
@@ -16,6 +17,7 @@ mod selection;
 pub use asset::*;
 #[allow(unused_imports)]
 pub use generative::*;
+pub use media_binding::*;
 pub use project::*;
 #[allow(unused_imports)]
 pub use providers::*;

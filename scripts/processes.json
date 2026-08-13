@@ -1,8 +1,8 @@
 {
   "stack_name": "My Stack",
   "remote_control": {
-    "enabled": false,
-    "port": 47821
+    "enabled": true,
+    "port": 47634
   },
   "log_directory": ".",
   "process_error_flash_seconds": 5,

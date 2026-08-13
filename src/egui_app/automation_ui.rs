@@ -888,6 +888,9 @@ impl LatentSlateApp {
                     if let Some(inputs) = patch.inputs.clone() {
                         node.inputs = inputs;
                     }
+                    if let Some(media_bindings) = patch.media_bindings.clone() {
+                        node.media_bindings = media_bindings;
+                    }
                     if let Some(output_version) = patch.output_version.clone() {
                         node.output_version = output_version;
                     }

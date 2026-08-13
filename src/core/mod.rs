@@ -5,6 +5,7 @@ pub mod export;
 pub mod ffmpeg_runtime;
 pub mod generation;
 pub mod media;
+pub mod media_binding;
 pub mod paths;
 pub mod preview;
 pub mod provider_store;

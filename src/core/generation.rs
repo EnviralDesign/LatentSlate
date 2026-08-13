@@ -10,13 +10,18 @@ use std::process::Command;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::media_binding::{
+    input_value_from_plan, lookup_media_binding, materialize_plan, resolve_media_binding,
+    MediaResolveContext,
+};
 use crate::core::timeline_bridge::{
     provider_is_timeline_bridge, timeline_bridge_parameters, TimelineBridgeParameters,
 };
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
-    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, Project, ProviderConnection,
-    ProviderEntry, ProviderInputField, ProviderInputType, SourceFrameReference,
+    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, MediaBindingSpec, Project,
+    ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType, ResolvedMediaInput,
+    SourceFrameReference,
 };
 
 #[derive(Debug, Clone)]
@@ -24,10 +29,14 @@ pub struct ResolvedInputs {
     pub values: HashMap<String, Value>,
     pub snapshot: HashMap<String, InputValue>,
     pub missing_required: Vec<String>,
+    pub media_errors: Vec<String>,
+    pub media_bindings_snapshot: HashMap<String, MediaBindingSpec>,
+    pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
 }
 
 pub fn resolve_provider_inputs(
     project: &Project,
+    target_asset_id: Option<Uuid>,
     context_clip_id: Option<Uuid>,
     provider: &ProviderEntry,
     config: &GenerativeConfig,
@@ -52,28 +61,116 @@ pub fn resolve_provider_inputs(
     let mut values = HashMap::new();
     let mut snapshot = HashMap::new();
     let mut missing_required = Vec::new();
+    let mut media_errors = Vec::new();
+    let mut media_bindings_snapshot = HashMap::new();
+    let mut resolved_media_inputs = HashMap::new();
+    let mut materialized_by_key: HashMap<String, PathBuf> = HashMap::new();
 
     for input in provider.inputs.iter() {
         match input.input_type {
             ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
-                let binding = asset_input_value(project, context_clip_id, provider, config, input);
-                if let Some(binding) = binding {
-                    if let Some(path) = asset_ref_path(project, &binding, input, provider, config) {
-                        values.insert(
-                            input.name.clone(),
-                            Value::String(path.to_string_lossy().to_string()),
-                        );
-                        snapshot.insert(input.name.clone(), binding);
+                let bridge_role = provider_is_timeline_bridge(provider)
+                    && matches!(
+                        input.role,
+                        Some(InputRole::LeftVideo | InputRole::RightVideo)
+                    );
+                if bridge_role {
+                    let binding =
+                        asset_input_value(project, context_clip_id, provider, config, input);
+                    if let Some(binding) = binding {
+                        if let Some(path) =
+                            asset_ref_path(project, &binding, input, provider, config)
+                        {
+                            values.insert(
+                                input.name.clone(),
+                                Value::String(path.to_string_lossy().to_string()),
+                            );
+                            snapshot.insert(input.name.clone(), binding);
+                        } else if input.required {
+                            missing_required.push(input.name.clone());
+                        } else {
+                            values.insert(input.name.clone(), Value::String(String::new()));
+                        }
                     } else if input.required {
                         missing_required.push(input.name.clone());
                     } else {
                         values.insert(input.name.clone(), Value::String(String::new()));
                     }
-                } else if input.required {
-                    missing_required.push(input.name.clone());
-                } else {
-                    values.insert(input.name.clone(), Value::String(String::new()));
+                    continue;
                 }
+
+                let Some(spec) = lookup_media_binding(config, input, project) else {
+                    if input.required {
+                        let label = if input.label.trim().is_empty() {
+                            input.name.clone()
+                        } else {
+                            input.label.clone()
+                        };
+                        let message = format!("{label}: choose a source.");
+                        missing_required.push(input.name.clone());
+                        media_errors.push(message);
+                    } else {
+                        values.insert(input.name.clone(), Value::String(String::new()));
+                    }
+                    continue;
+                };
+                media_bindings_snapshot.insert(input.name.clone(), spec.clone());
+                let plan = resolve_media_binding(
+                    MediaResolveContext {
+                        project,
+                        target_asset_id,
+                        context_clip_id,
+                        field: input,
+                        provider: Some(provider),
+                        config: Some(config),
+                    },
+                    &spec,
+                );
+                if !plan.is_ok() {
+                    if input.required || lookup_media_binding(config, input, project).is_some() {
+                        let messages = plan.error_messages();
+                        media_errors.extend(messages.clone());
+                        if input.required {
+                            missing_required.push(input.name.clone());
+                        }
+                    }
+                    continue;
+                }
+                let cache_identity = format!(
+                    "{:?}:{:?}:{:?}:{:?}",
+                    plan.source_asset_id,
+                    plan.source_clip_id,
+                    plan.source_frame_time,
+                    plan.source_range
+                );
+                let path = if let Some(existing) = materialized_by_key.get(&cache_identity) {
+                    existing.clone()
+                } else {
+                    match materialize_plan(project, &plan) {
+                        Ok(path) => {
+                            materialized_by_key.insert(cache_identity, path.clone());
+                            path
+                        }
+                        Err(err) => {
+                            let message = err.message(&plan.field_label);
+                            media_errors.push(message);
+                            if input.required {
+                                missing_required.push(input.name.clone());
+                            }
+                            continue;
+                        }
+                    }
+                };
+                if let Some(resolved) = plan.to_resolved(path.clone()) {
+                    resolved_media_inputs.insert(input.name.clone(), resolved);
+                }
+                if let Some(binding) = input_value_from_plan(&plan) {
+                    snapshot.insert(input.name.clone(), binding);
+                }
+                values.insert(
+                    input.name.clone(),
+                    Value::String(path.to_string_lossy().to_string()),
+                );
             }
             _ => {
                 let omit_dimension = is_dimension_input(input)
@@ -110,6 +207,9 @@ pub fn resolve_provider_inputs(
         values,
         snapshot,
         missing_required,
+        media_errors,
+        media_bindings_snapshot,
+        resolved_media_inputs,
     }
 }
 
@@ -902,7 +1002,7 @@ fn prepare_timeline_bridge_source_segment(
     }
 }
 
-fn video_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
+pub(crate) fn video_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
     match &asset.kind {
         AssetKind::Video { path } => Some(project_root.join(path)),
         AssetKind::GenerativeVideo { active_version, .. } => {
@@ -912,7 +1012,7 @@ fn video_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf
     }
 }
 
-fn active_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
+pub(crate) fn active_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
     match &asset.kind {
         AssetKind::Image { path } | AssetKind::Video { path } | AssetKind::Audio { path } => {
             Some(project_root.join(path))
@@ -925,7 +1025,7 @@ fn active_asset_source_path(project_root: &Path, asset: &Asset) -> Option<PathBu
     }
 }
 
-fn generative_asset_source_path(
+pub(crate) fn generative_asset_source_path(
     project_root: &Path,
     asset: &Asset,
     version: Option<&str>,
@@ -998,7 +1098,7 @@ fn asset_level_frame_time(asset: &Asset, frame: SourceFrameReference, fps: f64) 
     }
 }
 
-fn source_media_fps(asset: &Asset, fallback_fps: f64) -> f64 {
+pub(crate) fn source_media_fps(asset: &Asset, fallback_fps: f64) -> f64 {
     match asset.kind {
         AssetKind::GenerativeVideo { fps, .. } if fps > 0.0 => fps,
         _ => fallback_fps.max(1.0),
@@ -1043,7 +1143,7 @@ fn extract_video_reference_frame(
     decode_video_reference_frame(asset_id, time_seconds, source_path, &output_path)
 }
 
-fn decode_video_reference_frame(
+pub(crate) fn decode_video_reference_frame(
     asset_id: Uuid,
     time_seconds: f64,
     source_path: &Path,
@@ -1057,7 +1157,7 @@ fn decode_video_reference_frame(
     output_path.exists().then(|| output_path.to_path_buf())
 }
 
-fn extract_video_reference_frame_with_command(
+pub(crate) fn extract_video_reference_frame_with_command(
     time_seconds: f64,
     source_path: &Path,
     output_path: &Path,
@@ -1305,8 +1405,13 @@ mod tests {
         project.settings.width = 1600;
         project.settings.height = 900;
 
-        let empty =
-            resolve_provider_inputs(&project, None, &provider, &GenerativeConfig::default());
+        let empty = resolve_provider_inputs(
+            &project,
+            None,
+            None,
+            &provider,
+            &GenerativeConfig::default(),
+        );
         assert_eq!(empty.values.get("width"), Some(&json!(1600)));
         assert_eq!(empty.values.get("height"), Some(&json!(900)));
 
@@ -1321,7 +1426,7 @@ mod tests {
             "width".to_string(),
             InputValue::Literal { value: json!(777) },
         );
-        let resolved = resolve_provider_inputs(&project, None, &provider, &legacy);
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &legacy);
         assert_eq!(resolved.values.get("width"), Some(&json!(777)));
         assert_eq!(resolved.values.get("height"), Some(&json!(540)));
         assert!(!resolved.values.contains_key("size"));
@@ -1349,7 +1454,7 @@ mod tests {
         );
         assert!(!config.inputs.contains_key("quality"));
 
-        let resolved = resolve_provider_inputs(&project, None, &provider, &config);
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
         assert_eq!(resolved.values.get("width"), Some(&json!(1920)));
         assert_eq!(resolved.values.get("height"), Some(&json!(1080)));
         assert_eq!(resolved.values.get("steps"), Some(&json!(16)));
@@ -1394,7 +1499,7 @@ mod tests {
             },
         );
 
-        let source_mode = resolve_provider_inputs(&project, None, &provider, &config);
+        let source_mode = resolve_provider_inputs(&project, None, None, &provider, &config);
         assert!(source_mode.values.contains_key("source_image"));
         assert!(!source_mode.values.contains_key("width"));
         assert!(!source_mode.values.contains_key("height"));
@@ -1403,7 +1508,7 @@ mod tests {
             "width".to_string(),
             InputValue::Literal { value: json!(777) },
         );
-        let partial = resolve_provider_inputs(&project, None, &provider, &config);
+        let partial = resolve_provider_inputs(&project, None, None, &provider, &config);
         assert_eq!(partial.values.get("width"), Some(&json!(777)));
         assert!(!partial.values.contains_key("height"));
 

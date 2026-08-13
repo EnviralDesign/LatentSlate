@@ -720,6 +720,25 @@ impl LatentSlateApp {
         next_config
             .reference_slots
             .insert("image".to_string(), start_reference);
+        let source_version = source_asset.active_version().map(str::to_string);
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "start_image",
+            source_clip.id,
+            source_clip.asset_id,
+            source_version.clone(),
+            super::media_binding_ui::sample_from_frame_reference(frame_reference, false),
+        );
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "image",
+            source_clip.id,
+            source_clip.asset_id,
+            source_version,
+            super::media_binding_ui::sample_from_frame_reference(frame_reference, false),
+        );
         if let Some(provider) = selected_provider.as_ref() {
             seed_provider_timing_inputs(&mut next_config, provider, duration, fps, frame_count);
         }
@@ -797,6 +816,42 @@ impl LatentSlateApp {
         next_config
             .reference_slots
             .insert("source_image".to_string(), source_reference);
+        let selected_provider = next_config.provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+        });
+        let source_version = source_asset.active_version().map(str::to_string);
+        let image_sample = super::media_binding_ui::sample_from_frame_reference(None, false);
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "image",
+            source_clip.id,
+            source_clip.asset_id,
+            source_version.clone(),
+            image_sample.clone(),
+        );
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "start_image",
+            source_clip.id,
+            source_clip.asset_id,
+            source_version.clone(),
+            image_sample.clone(),
+        );
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "source_image",
+            source_clip.id,
+            source_clip.asset_id,
+            source_version,
+            image_sample,
+        );
         self.editor
             .project
             .update_generative_config(asset_id, move |config| {
@@ -939,6 +994,34 @@ impl LatentSlateApp {
                 pinned: true,
                 frame_reference: last.frame_reference,
             },
+        );
+        let first_version = self
+            .editor
+            .project
+            .find_asset(first.clip.asset_id)
+            .and_then(|asset| asset.active_version().map(str::to_string));
+        let last_version = self
+            .editor
+            .project
+            .find_asset(last.clip.asset_id)
+            .and_then(|asset| asset.active_version().map(str::to_string));
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "start_image",
+            first.clip.id,
+            first.clip.asset_id,
+            first_version,
+            super::media_binding_ui::sample_from_frame_reference(first.frame_reference, false),
+        );
+        super::media_binding_ui::seed_locked_clip_binding(
+            &mut next_config,
+            selected_provider.as_ref(),
+            "end_image",
+            last.clip.id,
+            last.clip.asset_id,
+            last_version,
+            super::media_binding_ui::sample_from_frame_reference(last.frame_reference, true),
         );
         if let Some(provider) = selected_provider.as_ref() {
             seed_provider_timing_inputs(&mut next_config, provider, duration, fps, frame_count);
@@ -1464,6 +1547,15 @@ impl LatentSlateApp {
             }
         });
         ui.add_space(kit::FORM_ROW_GAP);
+        let is_generative = clip_asset_id.is_some_and(|asset_id| {
+            generative_output_for_asset(&self.editor.project, asset_id).is_some()
+        });
+        if is_generative {
+            if let Some(asset_id) = clip_asset_id {
+                self.generative_asset_attributes(ui, asset_id, Some(clip_id));
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
+        }
         inspector_card(ui, "Transform", |ui| {
             transform_editor(ui, &mut next_transform, &mut transform_changed);
         });
@@ -1562,12 +1654,6 @@ impl LatentSlateApp {
         }
         if preview_dirty {
             self.editor.sync_timeline_bridge_clips();
-        }
-        if let Some(asset_id) = clip_asset_id {
-            if generative_output_for_asset(&self.editor.project, asset_id).is_some() {
-                ui.add_space(kit::FORM_ROW_GAP);
-                self.generative_asset_attributes(ui, asset_id, Some(clip_id));
-            }
         }
         if preview_dirty {
             self.editor.preview_dirty = true;
@@ -2042,6 +2128,16 @@ impl LatentSlateApp {
             }
         });
 
+        ui.add_space(kit::FORM_ROW_GAP);
+        self.media_binding_context_picker(ui, asset_id, context_clip_id);
+        let input_updates = self.provider_inputs_card(
+            ui,
+            asset_id,
+            context_clip_id,
+            selected_provider.clone(),
+            &config_snapshot,
+        );
+
         if output_type == ProviderOutputType::Video
             && selected_provider.as_ref().is_none_or(|provider| {
                 !crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
@@ -2102,15 +2198,6 @@ impl LatentSlateApp {
                 ui.label(RichText::new(hint).color(kit::MARKER).size(11.0));
             }
         });
-
-        ui.add_space(kit::FORM_ROW_GAP);
-        let input_updates = self.provider_inputs_card(
-            ui,
-            asset_id,
-            context_clip_id,
-            selected_provider.clone(),
-            &config_snapshot,
-        );
 
         let mut config_dirty = false;
         let mut preview_dirty = false;
@@ -2550,6 +2637,18 @@ impl LatentSlateApp {
             .generative_config(asset_id)
             .cloned()
             .unwrap_or_default();
+        let context_clip_id = match crate::core::media_binding::resolve_generation_context(
+            &self.editor.project,
+            asset_id,
+            context_clip_id,
+            self.generation_context_by_asset.get(&asset_id).copied(),
+        ) {
+            Ok(clip_id) => clip_id,
+            Err(err) => {
+                self.editor.status = err.message("Generate");
+                return;
+            }
+        };
         let Some(provider_id) = config_for_generation.provider_id else {
             self.editor.status = "Select a provider first.".to_string();
             return;
@@ -2661,7 +2760,8 @@ impl LatentSlateApp {
                 ui.add_space(kit::FORM_ROW_GAP);
             }
 
-            let mut visible_index = 0usize;
+            let mut media_inputs = Vec::new();
+            let mut other_inputs = Vec::new();
             for input in provider.inputs.iter() {
                 if is_timing_role(input.role)
                     && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
@@ -2674,6 +2774,15 @@ impl LatentSlateApp {
                 {
                     continue;
                 }
+                if crate::core::media_binding::bound_media_type_for_input(input).is_some() {
+                    media_inputs.push(input);
+                } else {
+                    other_inputs.push(input);
+                }
+            }
+
+            let mut visible_index = 0usize;
+            for input in media_inputs.into_iter().chain(other_inputs) {
                 if visible_index > 0 {
                     ui.add_space(kit::FORM_ROW_GAP);
                 }
@@ -2798,14 +2907,17 @@ impl LatentSlateApp {
                     ProviderInputType::Image
                     | ProviderInputType::Video
                     | ProviderInputType::Audio => {
-                        if let Some(update) =
-                            self.provider_asset_input_field(ui, asset_id, context_clip_id, input)
-                        {
-                            updates.push((input.name.clone(), update));
-                        }
+                        self.media_binding_field(ui, asset_id, context_clip_id, &provider, input);
                     }
                 }
             }
+            self.media_binding_bulk_actions(
+                ui,
+                asset_id,
+                context_clip_id,
+                &provider,
+                config_snapshot,
+            );
         });
         updates
     }

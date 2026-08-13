@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 //! Generative asset config model and persistence helpers.
 
-use crate::state::{Asset, AssetKind, Project, ProviderEntry, ProviderOutputType};
+use crate::state::{
+    Asset, AssetKind, MediaBindingSpec, Project, ProviderEntry, ProviderOutputType,
+    ResolvedMediaInput,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -128,6 +131,10 @@ pub struct GenerationRecord {
     pub timestamp: DateTime<Utc>,
     pub provider_id: Uuid,
     pub inputs_snapshot: HashMap<String, InputValue>,
+    #[serde(default)]
+    pub media_bindings_snapshot: HashMap<String, MediaBindingSpec>,
+    #[serde(default)]
+    pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lab_node_id: Option<Uuid>,
 }
@@ -143,6 +150,8 @@ pub struct AssetLabNode {
     #[serde(default)]
     pub inputs: HashMap<String, InputValue>,
     #[serde(default)]
+    pub media_bindings: HashMap<String, MediaBindingSpec>,
+    #[serde(default)]
     pub output_version: Option<String>,
 }
 
@@ -153,6 +162,7 @@ impl AssetLabNode {
             parent_node_id: None,
             provider_id,
             inputs: HashMap::new(),
+            media_bindings: HashMap::new(),
             output_version: None,
         }
     }
@@ -285,6 +295,8 @@ pub struct GenerativeConfig {
     #[serde(default)]
     pub reference_slots: HashMap<String, InputValue>,
     #[serde(default)]
+    pub media_bindings: HashMap<String, MediaBindingSpec>,
+    #[serde(default)]
     pub batch: BatchSettings,
     #[serde(default)]
     pub versions: Vec<GenerationRecord>,
@@ -300,6 +312,7 @@ impl Default for GenerativeConfig {
             provider_id: None,
             inputs: HashMap::new(),
             reference_slots: HashMap::new(),
+            media_bindings: HashMap::new(),
             batch: BatchSettings::default(),
             versions: Vec::new(),
             active_version: None,
@@ -508,6 +521,10 @@ pub struct GenerationJob {
     pub folder_path: PathBuf,
     pub inputs: HashMap<String, serde_json::Value>,
     pub inputs_snapshot: HashMap<String, InputValue>,
+    #[serde(default)]
+    pub media_bindings_snapshot: HashMap<String, MediaBindingSpec>,
+    #[serde(default)]
+    pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
     pub seed_advance: Option<GenerationSeedAdvance>,
     pub version: Option<String>,
     pub lab_node_id: Option<Uuid>,

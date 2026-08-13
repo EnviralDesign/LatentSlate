@@ -567,6 +567,14 @@ impl LatentSlateApp {
                     cache_buckets.get(&clip.id).map(Vec::as_slice),
                     contextual_keyframe_label,
                 );
+                self.paint_clip_media_binding_marks(
+                    &track_painter,
+                    clip,
+                    clip_rect,
+                    zoom,
+                    self.editor.layout.timeline_scroll_x,
+                    rects.tracks.left(),
+                );
             }
             if track_muted {
                 track_painter.rect_filled(
@@ -604,6 +612,7 @@ impl LatentSlateApp {
             self.paint_track_reorder_indicator(&painter, rects, insertion_index);
         }
         self.paint_timeline_playhead(&overlay_painter, rects, duration, zoom);
+        self.paint_media_binding_overlay(ui, &overlay_painter, rects, &clip_geoms, zoom);
         if let Some(time) = self.timeline_snap_preview {
             let x = time_to_timeline_x(
                 time,

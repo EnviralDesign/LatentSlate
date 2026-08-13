@@ -132,6 +132,11 @@ pub(super) enum AssetLabAction {
         input_name: String,
         value: InputValue,
     },
+    UpdateNodeMediaBinding {
+        node_id: Uuid,
+        input_name: String,
+        spec: Option<crate::state::MediaBindingSpec>,
+    },
     ClearNodeInput {
         node_id: Uuid,
         input_name: String,
@@ -434,6 +439,31 @@ fn fill_missing_asset_lab_media_inputs_from_version(
         }
     }
     filled
+}
+
+fn sync_lab_node_media_bindings(
+    node: &mut AssetLabNode,
+    provider: Option<&ProviderEntry>,
+    project: &crate::state::Project,
+) {
+    let Some(provider) = provider else {
+        return;
+    };
+    for input in &provider.inputs {
+        if crate::core::media_binding::bound_media_type_for_input(input).is_none() {
+            continue;
+        }
+        if node.media_bindings.contains_key(&input.name) {
+            continue;
+        }
+        if let Some(value) = node.inputs.get(&input.name) {
+            if let Some(spec) =
+                crate::core::media_binding::legacy_input_to_binding(value, input, project)
+            {
+                node.media_bindings.insert(input.name.clone(), spec);
+            }
+        }
+    }
 }
 
 fn retain_node_inputs_for_provider(
@@ -1444,7 +1474,7 @@ fn generation_version_dependents(project: &Project, asset_id: Uuid, version: &st
         if *config_asset_id == asset_id {
             continue;
         }
-        if !generative_config_references_version(config, asset_id, version) {
+        if !generative_config_references_version(config, project, asset_id, version) {
             continue;
         }
         let label = project
@@ -1459,6 +1489,7 @@ fn generation_version_dependents(project: &Project, asset_id: Uuid, version: &st
 
 fn generative_config_references_version(
     config: &GenerativeConfig,
+    project: &Project,
     asset_id: Uuid,
     version: &str,
 ) -> bool {
@@ -1472,6 +1503,9 @@ fn generative_config_references_version(
                 .values()
                 .any(|input| input_references_generation_version(input, asset_id, version))
         })
+        || crate::core::media_binding::config_references_locked_version(
+            config, project, asset_id, version,
+        )
 }
 
 fn input_references_generation_version(input: &InputValue, asset_id: Uuid, version: &str) -> bool {
@@ -3210,11 +3244,16 @@ impl LatentSlateApp {
         action: &mut Option<AssetLabAction>,
     ) {
         let current_value = node.inputs.get(&input.name).cloned();
-        let current_label = current_value
+        let mut current_label = current_value
             .as_ref()
             .and_then(|value| self.asset_lab_node_input_label(value))
             .unwrap_or_else(|| "None selected".to_string());
+        if let Some(spec) = node.media_bindings.get(&input.name) {
+            current_label =
+                crate::core::media_binding::source_menu_label(spec, &self.editor.project);
+        }
         let mut next_value = current_value.clone();
+        let mut follow_auto = false;
         provider_input_labeled_combo_field(
             ui,
             &asset_lab_input_label(input),
@@ -3223,6 +3262,13 @@ impl LatentSlateApp {
             current_label,
             |ui| {
                 automation_selectable_value(ui, &mut next_value, None, "None");
+                if ui
+                    .selectable_label(false, "Follow Timeline / Auto")
+                    .clicked()
+                {
+                    follow_auto = true;
+                    ui.close();
+                }
 
                 let internal_sources =
                     self.asset_lab_internal_generation_sources(asset, node, input, versions);
@@ -3256,7 +3302,13 @@ impl LatentSlateApp {
                 }
             },
         );
-        if next_value != current_value {
+        if follow_auto {
+            *action = Some(AssetLabAction::UpdateNodeMediaBinding {
+                node_id: node.id,
+                input_name: input.name.clone(),
+                spec: Some(crate::state::MediaBindingSpec::follow_auto()),
+            });
+        } else if next_value != current_value {
             *action = match next_value {
                 Some(value) => Some(AssetLabAction::UpdateNodeInput {
                     node_id: node.id,
@@ -3268,6 +3320,49 @@ impl LatentSlateApp {
                     input_name: input.name.clone(),
                 }),
             };
+        }
+        let mut inspect_config = GenerativeConfig::default();
+        inspect_config.media_bindings = node.media_bindings.clone();
+        inspect_config.inputs = node.inputs.clone();
+        inspect_config.provider_id = node.provider_id;
+        if let Some(spec) = crate::core::media_binding::lookup_media_binding(
+            &inspect_config,
+            input,
+            &self.editor.project,
+        ) {
+            let context = crate::core::media_binding::resolve_generation_context(
+                &self.editor.project,
+                asset.id,
+                self.editor.selected_clip_id(),
+                self.generation_context_by_asset.get(&asset.id).copied(),
+            )
+            .ok()
+            .flatten();
+            let provider = node.provider_id.and_then(|provider_id| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+            });
+            let plan = crate::core::media_binding::resolve_media_binding(
+                crate::core::media_binding::MediaResolveContext {
+                    project: &self.editor.project,
+                    target_asset_id: Some(asset.id),
+                    context_clip_id: context,
+                    field: input,
+                    provider,
+                    config: Some(&inspect_config),
+                },
+                &spec,
+            );
+            let summary =
+                crate::core::media_binding::resolved_now_summary(&self.editor.project, &plan);
+            let color = if plan.is_ok() {
+                kit::TEXT_MUTED
+            } else {
+                kit::DANGER
+            };
+            ui.add(egui::Label::new(egui::RichText::new(summary).color(color).size(11.0)).wrap());
         }
     }
 
@@ -3799,6 +3894,13 @@ impl LatentSlateApp {
             } => {
                 self.update_asset_lab_node_input(asset_id, node_id, input_name, Some(value));
             }
+            AssetLabAction::UpdateNodeMediaBinding {
+                node_id,
+                input_name,
+                spec,
+            } => {
+                self.update_asset_lab_node_media_binding(asset_id, node_id, input_name, spec);
+            }
             AssetLabAction::ClearNodeInput {
                 node_id,
                 input_name,
@@ -4116,6 +4218,7 @@ impl LatentSlateApp {
                 &mut node.inputs,
                 version,
             );
+            sync_lab_node_media_bindings(&mut node, Some(provider), &self.editor.project);
         }
         let node_id = node.id;
         let updated = self
@@ -4389,6 +4492,41 @@ impl LatentSlateApp {
             return;
         }
 
+        let spec = {
+            let provider = self
+                .editor
+                .project
+                .generative_config(asset_id)
+                .and_then(|config| {
+                    config
+                        .lab_graph
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == node_id)
+                        .and_then(|node| node.provider_id)
+                })
+                .and_then(|provider_id| {
+                    self.editor
+                        .provider_entries
+                        .iter()
+                        .find(|provider| provider.id == provider_id)
+                });
+            let input = provider.and_then(|provider| {
+                provider
+                    .inputs
+                    .iter()
+                    .find(|input| input.name == input_name)
+            });
+            match (value.as_ref(), input) {
+                (Some(value), Some(input)) => crate::core::media_binding::legacy_input_to_binding(
+                    value,
+                    input,
+                    &self.editor.project,
+                ),
+                _ => None,
+            }
+        };
+
         let updated = self
             .editor
             .project
@@ -4402,9 +4540,13 @@ impl LatentSlateApp {
                     match value {
                         Some(value) => {
                             node.inputs.insert(input_name.clone(), value);
+                            if let Some(spec) = spec {
+                                node.media_bindings.insert(input_name.clone(), spec);
+                            }
                         }
                         None => {
                             node.inputs.remove(&input_name);
+                            node.media_bindings.remove(&input_name);
                         }
                     }
                     config.lab_graph.selected_node_id = Some(node_id);
@@ -4416,6 +4558,43 @@ impl LatentSlateApp {
         }
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
             self.editor.status = format!("Failed to save step input: {err}");
+        }
+    }
+
+    fn update_asset_lab_node_media_binding(
+        &mut self,
+        asset_id: Uuid,
+        node_id: Uuid,
+        input_name: String,
+        spec: Option<crate::state::MediaBindingSpec>,
+    ) {
+        let updated = self
+            .editor
+            .project
+            .update_generative_config(asset_id, |config| {
+                if let Some(node) = config
+                    .lab_graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == node_id)
+                {
+                    match spec {
+                        Some(spec) => {
+                            node.media_bindings.insert(input_name.clone(), spec);
+                        }
+                        None => {
+                            node.media_bindings.remove(&input_name);
+                        }
+                    }
+                    config.lab_graph.selected_node_id = Some(node_id);
+                }
+            });
+        if !updated {
+            self.editor.status = "Asset does not support Asset Lab steps.".to_string();
+            return;
+        }
+        if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+            self.editor.status = format!("Failed to save media binding: {err}");
         }
     }
 
@@ -4472,6 +4651,7 @@ impl LatentSlateApp {
             &mut node.inputs,
             &base_version,
         );
+        sync_lab_node_media_bindings(&mut node, Some(&provider), &self.editor.project);
 
         let node_id = node.id;
         let updated = self
@@ -4596,11 +4776,47 @@ impl LatentSlateApp {
                 parent_version,
             );
         }
+        node_config.media_bindings = node.media_bindings.clone();
+        if node_config.media_bindings.is_empty() {
+            let mut tmp = node.clone();
+            tmp.inputs = node_config.inputs.clone();
+            sync_lab_node_media_bindings(&mut tmp, Some(&provider), &self.editor.project);
+            node_config.media_bindings = tmp.media_bindings;
+        }
         node_config.lab_graph.selected_node_id = Some(node_id);
+        let selected_clip = self.editor.selected_clip_id().filter(|clip_id| {
+            self.editor
+                .project
+                .clips
+                .iter()
+                .any(|clip| clip.id == *clip_id && clip.asset_id == asset_id)
+        });
+        let stored_context = self.generation_context_by_asset.get(&asset_id).copied();
+        let context_clip_id = match crate::core::media_binding::resolve_generation_context(
+            &self.editor.project,
+            asset_id,
+            selected_clip,
+            stored_context,
+        ) {
+            Ok(clip_id) => clip_id,
+            Err(err) => {
+                let has_follow = node_config.media_bindings.values().any(|spec| {
+                    matches!(
+                        spec.source,
+                        crate::state::MediaBindingSource::FollowTimeline { .. }
+                    )
+                });
+                if has_follow {
+                    self.editor.status = err.message("Generate");
+                    return;
+                }
+                None
+            }
+        };
         let folder_path = project_root.join(folder);
         match self.enqueue_generation_jobs(
             asset_id,
-            None,
+            context_clip_id,
             Some(node_id),
             provider,
             node_config,
@@ -4859,6 +5075,8 @@ impl LatentSlateApp {
             timestamp: chrono::Utc::now(),
             provider_id: source_record.provider_id,
             inputs_snapshot: source_record.inputs_snapshot,
+            media_bindings_snapshot: source_record.media_bindings_snapshot,
+            resolved_media_inputs: source_record.resolved_media_inputs,
             lab_node_id: source_record.lab_node_id,
         };
         self.editor
