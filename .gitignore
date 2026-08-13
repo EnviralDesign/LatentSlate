@@ -80,3 +80,4 @@ ehthumbs.db
 
 .venv
 generate-git-history-video-here.bat
+/.playwright-cli

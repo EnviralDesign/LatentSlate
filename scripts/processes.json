@@ -1,0 +1,42 @@
+{
+  "stack_name": "My Stack",
+  "remote_control": {
+    "enabled": false,
+    "port": 47821
+  },
+  "log_directory": ".",
+  "process_error_flash_seconds": 5,
+  "groups": [],
+  "processes": [
+    {
+      "id": "bcd64bd2-dfd8-4551-8b26-f88ce2c89dfe",
+      "name": "Lateslate",
+      "command": "latentslate.exe",
+      "working_directory": "C:\\repos\\nla-ai-videocreator-rust\\target\\release",
+      "process_type": "Process",
+      "auto_start": false,
+      "startup_delay_seconds": 0,
+      "auto_restart": false,
+      "respond_to_start_all": true,
+      "respond_to_stop_all": true,
+      "respond_to_restart_all": true,
+      "log_to_disk": false,
+      "log_rotation_count": 10
+    },
+    {
+      "id": "b13c4969-3a45-4586-b294-067cf2ea1772",
+      "name": "Latentslate Engine",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\repos\\LatentSlate-Engine\\scripts\\engine.ps1 serve --host 127.0.0.1 --port 8765",
+      "working_directory": "C:\\repos\\LatentSlate-Engine",
+      "process_type": "Process",
+      "auto_start": false,
+      "startup_delay_seconds": 0,
+      "auto_restart": false,
+      "respond_to_start_all": true,
+      "respond_to_stop_all": true,
+      "respond_to_restart_all": true,
+      "log_to_disk": false,
+      "log_rotation_count": 10
+    }
+  ]
+}
