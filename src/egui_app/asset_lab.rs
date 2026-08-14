@@ -2326,7 +2326,9 @@ impl LatentSlateApp {
                     job.lab_node_id == Some(ghost.parent_node_id)
                         && matches!(
                             job.status,
-                            GenerationJobStatus::Queued | GenerationJobStatus::Running
+                            GenerationJobStatus::Queued
+                                | GenerationJobStatus::Running
+                                | GenerationJobStatus::Canceling
                         )
                 });
                 let can_generate = asset.is_generative()
@@ -2389,7 +2391,9 @@ impl LatentSlateApp {
                     job.lab_node_id == Some(node.id)
                         && matches!(
                             job.status,
-                            GenerationJobStatus::Queued | GenerationJobStatus::Running
+                            GenerationJobStatus::Queued
+                                | GenerationJobStatus::Running
+                                | GenerationJobStatus::Canceling
                         )
                 })
                 .map(|job| job.status);
@@ -2397,6 +2401,7 @@ impl LatentSlateApp {
                 match status {
                     GenerationJobStatus::Queued => "Queued".to_string(),
                     GenerationJobStatus::Running => "Running".to_string(),
+                    GenerationJobStatus::Canceling => "Canceling".to_string(),
                     _ => "In progress".to_string(),
                 }
             } else {
@@ -2668,6 +2673,7 @@ impl LatentSlateApp {
                         .map(|status| match status {
                             GenerationJobStatus::Queued => "Queued",
                             GenerationJobStatus::Running => "Running",
+                            GenerationJobStatus::Canceling => "Canceling",
                             _ => "Generate",
                         })
                         .unwrap_or("Generate");
@@ -2809,7 +2815,9 @@ impl LatentSlateApp {
                         job.lab_node_id == Some(display_node.id)
                             && matches!(
                                 job.status,
-                                GenerationJobStatus::Queued | GenerationJobStatus::Running
+                                GenerationJobStatus::Queued
+                                    | GenerationJobStatus::Running
+                                    | GenerationJobStatus::Canceling
                             )
                     })
                     .map(|job| job.status);
@@ -2996,6 +3004,7 @@ impl LatentSlateApp {
             .map(|status| match status {
                 GenerationJobStatus::Queued => "Queued",
                 GenerationJobStatus::Running => "Running",
+                GenerationJobStatus::Canceling => "Canceling",
                 _ => "Generate",
             })
             .unwrap_or("Generate");

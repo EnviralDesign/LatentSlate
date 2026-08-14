@@ -197,7 +197,9 @@ impl LatentSlateApp {
             || self.editor.generation_queue.iter().any(|job| {
                 matches!(
                     job.status,
-                    GenerationJobStatus::Queued | GenerationJobStatus::Running
+                    GenerationJobStatus::Queued
+                        | GenerationJobStatus::Running
+                        | GenerationJobStatus::Canceling
                 )
             })
         {

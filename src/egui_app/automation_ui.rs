@@ -339,6 +339,16 @@ impl LatentSlateApp {
                 }
                 crate::core::automation::AutomationCommand::CancelJob { job_id } => {
                     let response = match self.cancel_generation_job(job_id) {
+                        CancelGenerationJobResult::Canceling { label } => {
+                            crate::core::automation::AutomationResponse::ok(serde_json::json!({
+                                "job_id": job_id,
+                                "label": label,
+                                "cancel_requested": true,
+                                "cancelled": false,
+                                "was_running": true,
+                                "status": self.editor.status,
+                            }))
+                        }
                         CancelGenerationJobResult::Cancelled { label, was_running } => {
                             crate::core::automation::AutomationResponse::ok(serde_json::json!({
                                 "job_id": job_id,

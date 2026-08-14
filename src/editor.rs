@@ -2734,6 +2734,11 @@ impl EditorState {
                 .iter()
                 .filter(|job| matches!(job.status, crate::state::GenerationJobStatus::Running))
                 .count();
+            let canceling_jobs = self
+                .generation_queue
+                .iter()
+                .filter(|job| matches!(job.status, crate::state::GenerationJobStatus::Canceling))
+                .count();
             let terminal_jobs = self
                 .generation_queue
                 .iter()
@@ -2769,6 +2774,7 @@ impl EditorState {
                             "queue": self.generation_queue.len(),
                             "queued_jobs": queued_jobs,
                             "running_jobs": running_jobs,
+                            "canceling_jobs": canceling_jobs,
                             "terminal_jobs": terminal_jobs,
                         },
                         "automation": {

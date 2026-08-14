@@ -193,6 +193,7 @@ impl LatentSlateApp {
                                     job.status,
                                     crate::state::GenerationJobStatus::Queued
                                         | crate::state::GenerationJobStatus::Running
+                                        | crate::state::GenerationJobStatus::Canceling
                                 )
                             })
                             .count();

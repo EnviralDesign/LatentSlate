@@ -493,6 +493,8 @@ pub fn next_generative_index(
 pub enum GenerationJobStatus {
     Queued,
     Running,
+    /// The local cancel request is waiting for its provider to stop or finish.
+    Canceling,
     Succeeded,
     Failed,
     Canceled,

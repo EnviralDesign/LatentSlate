@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::multipart::{Form, Part};
@@ -22,6 +24,13 @@ const CATALOG_CACHE_FILE: &str = "engine_catalog.json";
 const CONNECTION_SETTINGS_FILE: &str = "engine.json";
 const CACHED_CATALOG_UNAVAILABLE_REASON: &str =
     "LatentSlate Engine is offline; this tool was loaded from the cached catalog.";
+
+#[derive(Debug)]
+enum EngineCancellationRequest {
+    NotRequested,
+    Acknowledged,
+    Uncertain(ProviderExecutionError),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConnectionSettings {
@@ -350,6 +359,7 @@ pub async fn generate_output(
     unavailable_reason: Option<&str>,
     inputs: &HashMap<String, Value>,
     progress_tx: Option<mpsc::UnboundedSender<ProviderProgress>>,
+    cancel_token: Option<Arc<AtomicBool>>,
 ) -> Result<ProviderOutput, ProviderExecutionError> {
     if !available {
         return Err(ProviderExecutionError::Error(
@@ -360,7 +370,17 @@ pub async fn generate_output(
     }
 
     let client = build_async_client(Duration::from_secs(60 * 60 * 3))?;
-    let prepared_inputs = prepare_inputs(&client, provider, base_url, api_key, inputs).await?;
+    check_canceled(cancel_token.as_deref())?;
+    let prepared_inputs = prepare_inputs(
+        &client,
+        provider,
+        base_url,
+        api_key,
+        inputs,
+        cancel_token.as_deref(),
+    )
+    .await?;
+    check_canceled(cancel_token.as_deref())?;
     let response = send_with_auth(client.post(endpoint(base_url, "/v1/jobs")), api_key)
         .json(&json!({
             "tool_id": provider.id,
@@ -375,6 +395,7 @@ pub async fn generate_output(
         parse_json_response(response, "LatentSlate Engine job submission").await?;
     let mut unchanged_polls = 0_u32;
     let mut logged_transition = None;
+    let mut cancellation_request = EngineCancellationRequest::NotRequested;
 
     loop {
         let next_transition = engine_job_log_snapshot(&job);
@@ -393,7 +414,59 @@ pub async fn generate_output(
         }
         match job.status.as_str() {
             "queued" | "running" => {
-                tokio::time::sleep(engine_poll_delay(unchanged_polls)).await;
+                let cancellation_just_attempted =
+                    matches!(
+                        &cancellation_request,
+                        EngineCancellationRequest::NotRequested
+                    ) && cancellation_requested(cancel_token.as_deref());
+                if cancellation_just_attempted {
+                    let cancellation_result = match build_async_client(Duration::from_secs(8)) {
+                        Ok(cancellation_client) => {
+                            async {
+                                let response = send_with_auth(
+                                    cancellation_client.delete(endpoint(
+                                        base_url,
+                                        &format!("/v1/jobs/{}", job.id),
+                                    )),
+                                    api_key,
+                                )
+                                .send()
+                                .await
+                                .map_err(|err| {
+                                    offline("LatentSlate Engine job cancellation", err)
+                                })?;
+                                ensure_success(response, "LatentSlate Engine job cancellation")
+                                    .await
+                            }
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    cancellation_request = match cancellation_result {
+                        Ok(_) => {
+                            println!(
+                                "[LATENTSLATE ENGINE] job {}: cancellation requested",
+                                job.id
+                            );
+                            EngineCancellationRequest::Acknowledged
+                        }
+                        Err(error) => {
+                            // The request is bounded to a single DELETE.  Keep polling instead
+                            // of releasing the local queue based on an unacknowledged click.
+                            println!(
+                                "[LATENTSLATE ENGINE] job {}: cancellation request uncertain; polling terminal status",
+                                job.id
+                            );
+                            EngineCancellationRequest::Uncertain(error)
+                        }
+                    };
+                }
+                tokio::time::sleep(if cancellation_just_attempted {
+                    Duration::ZERO
+                } else {
+                    engine_poll_delay(unchanged_polls)
+                })
+                .await;
                 let response = send_with_auth(
                     client.get(endpoint(base_url, &format!("/v1/jobs/{}", job.id))),
                     api_key,
@@ -410,11 +483,32 @@ pub async fn generate_output(
                 }
                 job = next_job;
             }
-            "succeeded" => break,
+            "succeeded" => {
+                match cancellation_request {
+                    EngineCancellationRequest::Acknowledged => {
+                        return Err(ProviderExecutionError::Canceled(
+                            "LatentSlate Engine completed before the cancellation request took effect."
+                                .to_string(),
+                        ));
+                    }
+                    EngineCancellationRequest::Uncertain(error) => return Err(error),
+                    EngineCancellationRequest::NotRequested
+                        if cancellation_requested(cancel_token.as_deref()) =>
+                    {
+                        return Err(ProviderExecutionError::Canceled(
+                            "LatentSlate Engine completed before the cancellation request could be sent."
+                                .to_string(),
+                        ));
+                    }
+                    EngineCancellationRequest::NotRequested => {}
+                }
+                break;
+            }
             "canceled" => {
-                return Err(ProviderExecutionError::Error(job.message.unwrap_or_else(
-                    || "LatentSlate Engine job was canceled.".to_string(),
-                )))
+                return Err(ProviderExecutionError::Canceled(
+                    job.message
+                        .unwrap_or_else(|| "LatentSlate Engine job was canceled.".to_string()),
+                ))
             }
             "failed" => {
                 return Err(ProviderExecutionError::Error(
@@ -432,6 +526,7 @@ pub async fn generate_output(
         }
     }
 
+    check_canceled(cancel_token.as_deref())?;
     let artifact = job
         .artifacts
         .iter()
@@ -455,6 +550,7 @@ pub async fn generate_output(
         .await
         .map_err(|err| offline("LatentSlate Engine artifact download", err))?
         .to_vec();
+    check_canceled(cancel_token.as_deref())?;
     let extension = Path::new(&artifact.filename)
         .extension()
         .and_then(|extension| extension.to_str())
@@ -474,10 +570,12 @@ async fn prepare_inputs(
     base_url: &str,
     api_key: Option<&str>,
     inputs: &HashMap<String, Value>,
+    cancel_token: Option<&AtomicBool>,
 ) -> Result<HashMap<String, Value>, ProviderExecutionError> {
     let mut prepared = inputs.clone();
     let mut uploads = HashMap::<PathBuf, Uuid>::new();
     for input in provider.inputs.iter() {
+        check_canceled(cancel_token)?;
         if !matches!(
             input.input_type,
             ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio
@@ -508,7 +606,9 @@ async fn prepare_inputs(
         let asset_id = if let Some(asset_id) = uploads.get(&path) {
             *asset_id
         } else {
+            check_canceled(cancel_token)?;
             let asset_id = upload_asset(client, base_url, api_key, &path).await?;
+            check_canceled(cancel_token)?;
             uploads.insert(path.clone(), asset_id);
             asset_id
         };
@@ -518,6 +618,20 @@ async fn prepare_inputs(
         );
     }
     Ok(prepared)
+}
+
+fn cancellation_requested(cancel_token: Option<&AtomicBool>) -> bool {
+    cancel_token.is_some_and(|token| token.load(Ordering::Relaxed))
+}
+
+fn check_canceled(cancel_token: Option<&AtomicBool>) -> Result<(), ProviderExecutionError> {
+    if cancellation_requested(cancel_token) {
+        Err(ProviderExecutionError::Canceled(
+            "Generation cancellation requested.".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 async fn upload_asset(
@@ -597,9 +711,9 @@ async fn ensure_success(
 
 fn provider_error_message(error: ProviderExecutionError) -> String {
     match error {
-        ProviderExecutionError::Offline(message) | ProviderExecutionError::Error(message) => {
-            message
-        }
+        ProviderExecutionError::Offline(message)
+        | ProviderExecutionError::Error(message)
+        | ProviderExecutionError::Canceled(message) => message,
     }
 }
 
@@ -927,6 +1041,186 @@ struct EngineErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    fn test_engine_provider(base_url: String) -> ProviderEntry {
+        ProviderEntry::new(
+            "Engine test",
+            ProviderOutputType::Image,
+            ProviderConnection::LatentSlateEngine {
+                base_url,
+                api_key: Some("unit-token".to_string()),
+                tool_key: "unit.test".to_string(),
+                schema_revision: 1,
+                schema_hash: "sha256:unit".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        )
+    }
+
+    async fn read_mock_request(stream: &mut TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0_u8; 1024];
+            let count = stream.read(&mut chunk).await.expect("read request");
+            assert!(count > 0, "mock client closed before completing request");
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(offset) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break offset + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while bytes.len() < header_end + content_length {
+            let mut chunk = [0_u8; 1024];
+            let count = stream.read(&mut chunk).await.expect("read body");
+            assert!(
+                count > 0,
+                "mock client closed before request body completed"
+            );
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        String::from_utf8(bytes).expect("UTF-8 HTTP request")
+    }
+
+    async fn write_mock_json(stream: &mut TcpStream, status: u16, body: Value) {
+        let body = serde_json::to_string(&body).expect("mock JSON");
+        let reason = match status {
+            200 => "OK",
+            401 => "Unauthorized",
+            500 => "Internal Server Error",
+            _ => "Mock Status",
+        };
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write mock response");
+    }
+
+    async fn spawn_cancel_mock(
+        cancel: Arc<AtomicBool>,
+        terminal_status: &'static str,
+        delete_status: u16,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let address = listener.local_addr().expect("mock address");
+        let job_id = Uuid::new_v4();
+        let handle = tokio::spawn(async move {
+            let expected = [
+                ("POST", "/v1/jobs".to_string(), "running"),
+                ("DELETE", format!("/v1/jobs/{job_id}"), "running"),
+                ("GET", format!("/v1/jobs/{job_id}"), terminal_status),
+            ];
+            let mut trace = Vec::new();
+            for (index, (method, path, status)) in expected.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().await.expect("accept mock request");
+                let request = read_mock_request(&mut stream).await;
+                let request_line = request.lines().next().expect("request line").to_string();
+                assert_eq!(request_line, format!("{method} {path} HTTP/1.1"));
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer unit-token"),
+                    "request must retain Engine authentication"
+                );
+                trace.push(request_line);
+                if index == 0 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                let response_status = if index == 1 { delete_status } else { 200 };
+                let response_body = if index == 1 && delete_status != 200 {
+                    json!({ "error": { "message": "mock delete failure" } })
+                } else {
+                    json!({ "id": job_id, "status": status })
+                };
+                write_mock_json(&mut stream, response_status, response_body).await;
+            }
+            trace
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    async fn spawn_cancel_transport_failure_mock(
+        cancel: Arc<AtomicBool>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+        let address = listener.local_addr().expect("mock address");
+        let job_id = Uuid::new_v4();
+        let handle = tokio::spawn(async move {
+            let expected = [
+                ("POST", "/v1/jobs".to_string()),
+                ("DELETE", format!("/v1/jobs/{job_id}")),
+                ("GET", format!("/v1/jobs/{job_id}")),
+            ];
+            let mut trace = Vec::new();
+            for (index, (method, path)) in expected.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().await.expect("accept mock request");
+                let request = read_mock_request(&mut stream).await;
+                let request_line = request.lines().next().expect("request line").to_string();
+                assert_eq!(request_line, format!("{method} {path} HTTP/1.1"));
+                trace.push(request_line);
+                match index {
+                    0 => {
+                        cancel.store(true, Ordering::Relaxed);
+                        write_mock_json(
+                            &mut stream,
+                            200,
+                            json!({ "id": job_id, "status": "running" }),
+                        )
+                        .await;
+                    }
+                    1 => drop(stream),
+                    2 => {
+                        write_mock_json(
+                            &mut stream,
+                            200,
+                            json!({ "id": job_id, "status": "succeeded" }),
+                        )
+                        .await;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            trace
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    async fn run_test_generation(
+        provider: &ProviderEntry,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<ProviderOutput, ProviderExecutionError> {
+        let base_url = match &provider.connection {
+            ProviderConnection::LatentSlateEngine { base_url, .. } => base_url,
+            _ => unreachable!(),
+        };
+        generate_output(
+            provider,
+            base_url,
+            Some("unit-token"),
+            1,
+            "sha256:unit",
+            true,
+            None,
+            &HashMap::new(),
+            None,
+            Some(cancel),
+        )
+        .await
+    }
 
     fn test_engine_job(status: &str, progress: Option<f64>, message: Option<&str>) -> EngineJob {
         EngineJob {
@@ -937,6 +1231,118 @@ mod tests {
             artifacts: Vec::new(),
             error: None,
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_sends_one_authenticated_delete_then_waits_for_terminal_cancel() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (base_url, server) = spawn_cancel_mock(Arc::clone(&cancel), "canceled", 200).await;
+        let provider = test_engine_provider(base_url);
+
+        let result = generate_output(
+            &provider,
+            match &provider.connection {
+                ProviderConnection::LatentSlateEngine { base_url, .. } => base_url,
+                _ => unreachable!(),
+            },
+            Some("unit-token"),
+            1,
+            "sha256:unit",
+            true,
+            None,
+            &HashMap::new(),
+            None,
+            Some(cancel),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ProviderExecutionError::Canceled(_))));
+        let trace = server.await.expect("mock server");
+        assert_eq!(trace.len(), 3);
+        assert_eq!(trace[0], "POST /v1/jobs HTTP/1.1");
+        assert!(trace[1].starts_with("DELETE /v1/jobs/"));
+        assert_eq!(trace[2].replacen("GET", "DELETE", 1), trace[1]);
+    }
+
+    #[tokio::test]
+    async fn late_success_after_delete_is_canceled_without_downloading_or_publishing_output() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (base_url, server) = spawn_cancel_mock(Arc::clone(&cancel), "succeeded", 200).await;
+        let provider = test_engine_provider(base_url);
+
+        let result = generate_output(
+            &provider,
+            match &provider.connection {
+                ProviderConnection::LatentSlateEngine { base_url, .. } => base_url,
+                _ => unreachable!(),
+            },
+            Some("unit-token"),
+            1,
+            "sha256:unit",
+            true,
+            None,
+            &HashMap::new(),
+            None,
+            Some(cancel),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderExecutionError::Canceled(message))
+                if message.contains("completed before the cancellation request")
+        ));
+        let trace = server.await.expect("mock server");
+        assert_eq!(
+            trace.len(),
+            3,
+            "late success must not trigger artifact download"
+        );
+        assert!(trace
+            .iter()
+            .all(|request| !request.starts_with("GET /v1/artifacts/")));
+    }
+
+    async fn assert_failed_delete_is_preserved_on_terminal_success(delete_status: u16) {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (base_url, server) =
+            spawn_cancel_mock(Arc::clone(&cancel), "succeeded", delete_status).await;
+        let provider = test_engine_provider(base_url);
+
+        let result = run_test_generation(&provider, cancel).await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderExecutionError::Error(message))
+                if message.contains(&format!("failed ({delete_status})"))
+                    && message.contains("mock delete failure")
+        ));
+        assert_eq!(server.await.expect("mock server").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_delete_then_terminal_success_preserves_the_delete_error() {
+        assert_failed_delete_is_preserved_on_terminal_success(401).await;
+    }
+
+    #[tokio::test]
+    async fn server_error_delete_then_terminal_success_preserves_the_delete_error() {
+        assert_failed_delete_is_preserved_on_terminal_success(500).await;
+    }
+
+    #[tokio::test]
+    async fn transport_failed_delete_then_terminal_success_preserves_transport_error() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (base_url, server) = spawn_cancel_transport_failure_mock(Arc::clone(&cancel)).await;
+        let provider = test_engine_provider(base_url);
+
+        let result = run_test_generation(&provider, cancel).await;
+
+        assert!(matches!(
+            result,
+            Err(ProviderExecutionError::Offline(_)) | Err(ProviderExecutionError::Error(_))
+        ));
+        assert_eq!(server.await.expect("mock server").len(), 3);
     }
 
     #[test]

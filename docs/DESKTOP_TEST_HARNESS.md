@@ -121,6 +121,7 @@ Current command types include:
 - `create_generative_asset`
 - `set_generative_config`
 - `start_generation`
+- `cancel_job`
 - `capture`
 - `export_video`
 - `get_export_status`
@@ -199,3 +200,13 @@ Sources are checked in this order: explicit `-SourceBin`, `VCPKG_ROOT`,
 - Use automation commands for desktop smoke checks.
 - Use screenshots for gross layout and visibility validation, not brittle pixel-perfect goldens.
 - Keep provider/network behavior opt-in. Routine CI should not require ComfyUI, OpenAI, xAI, or other external services.
+
+## Generation Cancellation
+
+`cancel_job` reports `cancel_requested: true` for an active job while its status is
+`Canceling`. That is deliberately nonterminal: `wait/generation` remains pending and the
+queue does not begin a following job until the provider stops or finishes. LatentSlate
+Engine jobs receive one authenticated `DELETE /v1/jobs/{id}` and are then polled to a terminal
+state. A late success after an acknowledged cancellation is reported as canceled and its output
+is not bound to the asset. If the DELETE itself was not acknowledged, a later Engine success
+surfaces that original request error and is likewise not downloaded or bound.

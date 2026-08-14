@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -43,6 +45,7 @@ impl ProviderProgress {
 pub enum ProviderExecutionError {
     Offline(String),
     Error(String),
+    Canceled(String),
 }
 
 pub async fn test_provider_connection(
@@ -135,6 +138,7 @@ pub async fn execute_generation(
     inputs: &HashMap<String, Value>,
     output_type: ProviderOutputType,
     progress_tx: Option<mpsc::UnboundedSender<ProviderProgress>>,
+    cancel_token: Option<Arc<AtomicBool>>,
 ) -> Result<ProviderOutput, ProviderExecutionError> {
     match provider.connection.clone() {
         ProviderConnection::ComfyUi {
@@ -227,6 +231,7 @@ pub async fn execute_generation(
                 unavailable_reason.as_deref(),
                 inputs,
                 progress_tx,
+                cancel_token,
             )
             .await
         }

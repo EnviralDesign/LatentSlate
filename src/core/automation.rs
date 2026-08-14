@@ -2798,6 +2798,7 @@ mod tests {
         assert!(generation_job_status_is_terminal("Canceled"));
         assert!(!generation_job_status_is_terminal("Queued"));
         assert!(!generation_job_status_is_terminal("Running"));
+        assert!(!generation_job_status_is_terminal("Canceling"));
 
         assert!(generation_queue_is_idle(&[
             json!({ "status": "Succeeded" }),
@@ -2806,6 +2807,10 @@ mod tests {
         assert!(!generation_queue_is_idle(&[
             json!({ "status": "Succeeded" }),
             json!({ "status": "Running" }),
+        ]));
+        assert!(!generation_queue_is_idle(&[
+            json!({ "status": "Succeeded" }),
+            json!({ "status": "Canceling" }),
         ]));
     }
 

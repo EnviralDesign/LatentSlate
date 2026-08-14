@@ -11,7 +11,7 @@
     {
       "id": "bcd64bd2-dfd8-4551-8b26-f88ce2c89dfe",
       "name": "Lateslate",
-      "command": "latentslate.exe",
+      "command": "latentslate.exe --automation --automation-port 47890",
       "working_directory": "C:\\repos\\nla-ai-videocreator-rust\\target\\release",
       "process_type": "Process",
       "auto_start": false,

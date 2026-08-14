@@ -28,6 +28,7 @@ pub(super) enum GenerationFailure {
 
 #[derive(Debug)]
 pub(super) enum CancelGenerationJobResult {
+    Canceling { label: String },
     Cancelled { label: String, was_running: bool },
     NotFound,
     NotCancellable { status: GenerationJobStatus },
@@ -35,44 +36,36 @@ pub(super) enum CancelGenerationJobResult {
 
 impl LatentSlateApp {
     pub(super) fn cancel_generation_job(&mut self, job_id: Uuid) -> CancelGenerationJobResult {
+        let cancellation_token = self.generation_cancel_tokens.get(&job_id).cloned();
         let cancelled_label = if let Some(job) = self
             .editor
             .generation_queue
             .iter_mut()
             .find(|job| job.id == job_id)
         {
-            if !matches!(
-                job.status,
-                GenerationJobStatus::Queued | GenerationJobStatus::Running
-            ) {
-                self.editor.status = format!("Generation job is already {:?}.", job.status);
-                return CancelGenerationJobResult::NotCancellable { status: job.status };
-            }
-            let was_running = job.status == GenerationJobStatus::Running;
             let label = job.asset_label.clone();
-            job.status = GenerationJobStatus::Canceled;
-            job.progress_overall = None;
-            job.progress_node = None;
-            job.error = Some("Cancelled by user.".to_string());
+            let was_running =
+                match request_generation_cancellation(job, cancellation_token.as_deref()) {
+                    Ok(was_running) => was_running,
+                    Err(status) => {
+                        self.editor.status = format!("Generation job is already {status:?}.");
+                        return CancelGenerationJobResult::NotCancellable { status };
+                    }
+                };
             (label, was_running)
         } else {
             self.editor.status = "Generation job not found.".to_string();
             return CancelGenerationJobResult::NotFound;
         };
 
-        if self.generation_active == Some(job_id) {
-            self.generation_active = None;
-        }
-        if let Some(cancel) = self.generation_cancel_tokens.remove(&job_id) {
-            cancel.store(true, Ordering::Relaxed);
-        }
-
         let (label, was_running) = cancelled_label;
-        self.editor.status = if was_running {
-            format!("Cancelled generation for {label}; external provider may still finish.")
-        } else {
-            format!("Removed queued generation for {label}.")
-        };
+        if was_running {
+            self.editor.status = format!(
+                "Canceling generation for {label}; waiting for provider to stop or finish."
+            );
+            return CancelGenerationJobResult::Canceling { label };
+        }
+        self.editor.status = format!("Removed queued generation for {label}.");
         CancelGenerationJobResult::Cancelled { label, was_running }
     }
 
@@ -81,7 +74,7 @@ impl LatentSlateApp {
             self.handle_generation_event(event);
         }
 
-        if self.generation_active.is_none() {
+        if generation_queue_slot_available(self.generation_active) {
             self.start_next_generation_job();
         }
 
@@ -196,11 +189,39 @@ impl LatentSlateApp {
                     .iter()
                     .find(|job| job.id == job_id)
                     .cloned();
-                if job_snapshot.is_none()
-                    || job_snapshot
-                        .as_ref()
-                        .is_some_and(|job| job.status == GenerationJobStatus::Canceled)
+                if job_snapshot.is_none() {
+                    return;
+                }
+
+                if job_snapshot
+                    .as_ref()
+                    .is_some_and(|job| job.status == GenerationJobStatus::Canceling)
                 {
+                    self.finish_canceling_generation(job_id, result);
+                    return;
+                }
+
+                // A queued job can be locally canceled before it owns a provider.  In the
+                // unlikely event that a Finished message was already in flight, keep its output
+                // unpublished too.
+                if job_snapshot
+                    .as_ref()
+                    .is_some_and(|job| job.status == GenerationJobStatus::Canceled)
+                {
+                    if let Ok(output) = result {
+                        if let Err(message) = cleanup_unpublished_output(&output.path) {
+                            if let Some(entry) = self
+                                .editor
+                                .generation_queue
+                                .iter_mut()
+                                .find(|job| job.id == job_id)
+                            {
+                                entry.status = GenerationJobStatus::Failed;
+                                entry.error = Some(message.clone());
+                            }
+                            self.editor.status = message;
+                        }
+                    }
                     return;
                 }
 
@@ -255,6 +276,32 @@ impl LatentSlateApp {
                 }
             }
         }
+    }
+
+    fn finish_canceling_generation(
+        &mut self,
+        job_id: Uuid,
+        result: Result<GenerationOutput, GenerationFailure>,
+    ) {
+        let (mut status, mut message, unpublished_output) = resolve_canceling_completion(result);
+        if let Some(path) = unpublished_output {
+            if let Err(cleanup_error) = cleanup_unpublished_output(&path) {
+                status = GenerationJobStatus::Failed;
+                message = cleanup_error;
+            }
+        }
+        if let Some(entry) = self
+            .editor
+            .generation_queue
+            .iter_mut()
+            .find(|job| job.id == job_id)
+        {
+            entry.status = status;
+            entry.progress_overall = None;
+            entry.progress_node = None;
+            entry.error = Some(message.clone());
+        }
+        self.editor.status = message;
     }
 
     pub(super) fn advance_generation_seed_after_attempt(
@@ -434,6 +481,7 @@ impl LatentSlateApp {
                         .unwrap_or_default();
                     format!("Generating{pct}")
                 }
+                GenerationJobStatus::Canceling => "Canceling".to_string(),
                 GenerationJobStatus::Succeeded => job
                     .version
                     .as_ref()
@@ -700,7 +748,9 @@ impl LatentSlateApp {
                 job.asset_id == asset_id
                     && matches!(
                         job.status,
-                        GenerationJobStatus::Queued | GenerationJobStatus::Running
+                        GenerationJobStatus::Queued
+                            | GenerationJobStatus::Running
+                            | GenerationJobStatus::Canceling
                     )
             })
             .filter_map(|job| {
@@ -714,6 +764,173 @@ impl LatentSlateApp {
             .fold(config_seed_base, |base, reserved_next| {
                 Some(base.map_or(reserved_next, |base| base.max(reserved_next)))
             })
+    }
+}
+
+fn generation_queue_slot_available(generation_active: Option<Uuid>) -> bool {
+    generation_active.is_none()
+}
+
+fn request_generation_cancellation(
+    job: &mut GenerationJob,
+    cancel_token: Option<&AtomicBool>,
+) -> Result<bool, GenerationJobStatus> {
+    if !matches!(
+        job.status,
+        GenerationJobStatus::Queued | GenerationJobStatus::Running
+    ) {
+        return Err(job.status);
+    }
+    let was_running = job.status == GenerationJobStatus::Running;
+    job.status = if was_running {
+        GenerationJobStatus::Canceling
+    } else {
+        GenerationJobStatus::Canceled
+    };
+    job.progress_overall = None;
+    job.progress_node = None;
+    job.error = Some(if was_running {
+        "Canceling; waiting for provider to stop or finish.".to_string()
+    } else {
+        "Cancelled by user.".to_string()
+    });
+    if was_running {
+        if let Some(token) = cancel_token {
+            token.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(was_running)
+}
+
+fn resolve_canceling_completion(
+    result: Result<GenerationOutput, GenerationFailure>,
+) -> (GenerationJobStatus, String, Option<PathBuf>) {
+    match result {
+        Ok(output) => (
+            GenerationJobStatus::Canceled,
+            "Canceled; provider completed before cancellation took effect. Output was not bound."
+                .to_string(),
+            Some(output.path),
+        ),
+        Err(GenerationFailure::Canceled) => (
+            GenerationJobStatus::Canceled,
+            "Generation canceled.".to_string(),
+            None,
+        ),
+        Err(GenerationFailure::Offline(err)) => (
+            GenerationJobStatus::Failed,
+            format!(
+                "Canceling generation could not complete because the provider is offline: {err}"
+            ),
+            None,
+        ),
+        Err(GenerationFailure::Error(err)) => (
+            GenerationJobStatus::Failed,
+            format!("Canceling generation could not complete: {err}"),
+            None,
+        ),
+    }
+}
+
+fn cleanup_unpublished_output(path: &PathBuf) -> Result<(), String> {
+    std::fs::remove_file(path).map_err(|err| {
+        format!(
+            "Cancellation completed, but an unbound output could not be removed ({:?}).",
+            err.kind()
+        )
+    })
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+
+    fn test_generation_job(status: GenerationJobStatus) -> GenerationJob {
+        let provider = ProviderEntry::new(
+            "Test provider",
+            ProviderOutputType::Image,
+            ProviderConnection::CustomHttp {
+                base_url: "http://127.0.0.1".to_string(),
+                api_key: None,
+            },
+        );
+        GenerationJob {
+            id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+            status,
+            progress_overall: Some(0.5),
+            progress_node: Some(0.5),
+            attempts: 0,
+            next_attempt_at: None,
+            provider,
+            output_type: ProviderOutputType::Image,
+            asset_id: Uuid::new_v4(),
+            clip_id: None,
+            asset_label: "Test asset".to_string(),
+            folder_path: PathBuf::new(),
+            inputs: HashMap::new(),
+            inputs_snapshot: HashMap::new(),
+            media_bindings_snapshot: HashMap::new(),
+            resolved_media_inputs: HashMap::new(),
+            seed_advance: None,
+            version: None,
+            lab_node_id: None,
+            activate_on_success: true,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn cancelled_running_job_keeps_the_queue_slot_until_provider_finishes() {
+        let mut running = test_generation_job(GenerationJobStatus::Running);
+        let queued = test_generation_job(GenerationJobStatus::Queued);
+        let cancel = AtomicBool::new(false);
+
+        assert!(request_generation_cancellation(&mut running, Some(&cancel)).expect("cancel"));
+        assert_eq!(running.status, GenerationJobStatus::Canceling);
+        assert!(cancel.load(Ordering::Relaxed));
+        // cancel_generation_job keeps this active id until Finished, so a queued second job
+        // cannot overlap a provider job that is still stopping or finishing.
+        assert!(!generation_queue_slot_available(Some(running.id)));
+        assert_eq!(queued.status, GenerationJobStatus::Queued);
+        assert!(generation_queue_slot_available(None));
+    }
+
+    #[test]
+    fn late_success_while_canceling_is_terminally_canceled_and_never_bound() {
+        let path = PathBuf::from("C:/ignored/late-success.png");
+        let (status, message, unpublished_output) =
+            resolve_canceling_completion(Ok(GenerationOutput {
+                version: "v1".to_string(),
+                path: path.clone(),
+            }));
+        assert_eq!(status, GenerationJobStatus::Canceled);
+        assert!(message.contains("Output was not bound"));
+        assert_eq!(unpublished_output, Some(path));
+    }
+
+    #[test]
+    fn late_success_output_is_removed_from_disk_before_terminal_cancellation() {
+        let path = std::env::temp_dir().join(format!("latentslate-cancel-{}.png", Uuid::new_v4()));
+        std::fs::write(&path, b"unbound output").expect("create test output");
+        let (_, _, unpublished_output) = resolve_canceling_completion(Ok(GenerationOutput {
+            version: "v1".to_string(),
+            path: path.clone(),
+        }));
+        cleanup_unpublished_output(&unpublished_output.expect("late output"))
+            .expect("remove unbound output");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_is_reported_without_disclosing_output_path() {
+        let directory =
+            std::env::temp_dir().join(format!("latentslate-cancel-dir-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).expect("create test directory");
+        let error = cleanup_unpublished_output(&directory).expect_err("directory is not a file");
+        assert!(error.contains("could not be removed"));
+        assert!(!error.contains(&directory.display().to_string()));
+        std::fs::remove_dir(&directory).expect("remove test directory");
     }
 }
 

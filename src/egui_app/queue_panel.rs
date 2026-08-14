@@ -23,6 +23,7 @@ pub(super) fn queue_list_height(jobs: &[GenerationJob]) -> f32 {
 fn queue_job_height(job: &GenerationJob) -> f32 {
     match job.status {
         GenerationJobStatus::Running => QUEUE_JOB_RUNNING_H,
+        GenerationJobStatus::Canceling => QUEUE_JOB_RUNNING_H,
         GenerationJobStatus::Failed => QUEUE_JOB_FAILED_H,
         GenerationJobStatus::Queued
         | GenerationJobStatus::Succeeded
@@ -189,6 +190,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     let status_w = match job.status {
         GenerationJobStatus::Succeeded => 56.0,
         GenerationJobStatus::Running => 64.0,
+        GenerationJobStatus::Canceling => 64.0,
         GenerationJobStatus::Failed => 60.0,
         GenerationJobStatus::Queued => 62.0,
         GenerationJobStatus::Canceled => 74.0,
@@ -237,6 +239,13 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
                 Pos2::new(content.right() - 60.0, content.bottom()),
             );
             queue_progress_rows(ui, progress_rect, workflow, node);
+        }
+        GenerationJobStatus::Canceling => {
+            let cancel_rect = Rect::from_min_size(
+                Pos2::new(content.left(), content.top() + 44.0),
+                Vec2::new(content.width(), 30.0),
+            );
+            queue_clipped_label(ui, cancel_rect, "Canceling…", kit::TEXT_DIM, 10.0, false);
         }
         GenerationJobStatus::Failed => {
             if let Some(error) = job.error.as_ref() {
@@ -392,6 +401,7 @@ fn queue_status_style(status: GenerationJobStatus) -> (&'static str, Color32) {
     match status {
         GenerationJobStatus::Queued => ("Queued", kit::TEXT_MUTED),
         GenerationJobStatus::Running => ("Running", kit::MARKER),
+        GenerationJobStatus::Canceling => ("Canceling", kit::TEXT_DIM),
         GenerationJobStatus::Succeeded => ("Done", kit::PRIMARY_HOVER),
         GenerationJobStatus::Failed => ("Failed", kit::DANGER),
         GenerationJobStatus::Canceled => ("Canceled", kit::TEXT_DIM),
@@ -421,7 +431,9 @@ impl LatentSlateApp {
         let has_attention = jobs.iter().any(|job| {
             matches!(
                 job.status,
-                GenerationJobStatus::Queued | GenerationJobStatus::Running
+                GenerationJobStatus::Queued
+                    | GenerationJobStatus::Running
+                    | GenerationJobStatus::Canceling
             )
         });
         let has_clearable = jobs.iter().any(|job| queue_job_is_terminal(job.status));

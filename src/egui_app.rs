@@ -966,11 +966,13 @@ async fn execute_generation_job_async(
         &job.inputs,
         job.output_type,
         progress_tx,
+        Some(Arc::clone(&cancel_token)),
     )
     .await
     .map_err(|err| match err {
         crate::providers::ProviderExecutionError::Offline(err) => GenerationFailure::Offline(err),
         crate::providers::ProviderExecutionError::Error(err) => GenerationFailure::Error(err),
+        crate::providers::ProviderExecutionError::Canceled(_) => GenerationFailure::Canceled,
     })?;
 
     if cancel_token.load(Ordering::Relaxed) {
@@ -988,6 +990,18 @@ async fn execute_generation_job_async(
     }
     std::fs::write(&output_path, &output.bytes)
         .map_err(|err| GenerationFailure::Error(format!("Failed to save output: {err}")))?;
+
+    // The token can flip while the synchronous write is in progress.  Do not leave an
+    // unbound artifact behind when the provider cancellation wins that race.
+    if cancel_token.load(Ordering::Relaxed) {
+        std::fs::remove_file(&output_path).map_err(|err| {
+            GenerationFailure::Error(format!(
+                "Generation was canceled, but its unbound output could not be removed ({:?}).",
+                err.kind()
+            ))
+        })?;
+        return Err(GenerationFailure::Canceled);
+    }
 
     Ok(GenerationOutput {
         version,
