@@ -374,8 +374,18 @@ pub async fn generate_output(
     let mut job: EngineJob =
         parse_json_response(response, "LatentSlate Engine job submission").await?;
     let mut unchanged_polls = 0_u32;
+    let mut logged_transition = None;
 
     loop {
+        let next_transition = engine_job_log_snapshot(&job);
+        if logged_transition.as_ref() != Some(&next_transition) {
+            println!(
+                "[LATENTSLATE ENGINE] job {}: {}",
+                job.id,
+                format_engine_job_transition(&next_transition)
+            );
+            logged_transition = Some(next_transition);
+        }
         if let Some(progress) = job.progress {
             if let Some(tx) = progress_tx.as_ref() {
                 let _ = tx.send(ProviderProgress::overall(progress.clamp(0.0, 1.0) as f32));
@@ -633,6 +643,147 @@ fn engine_job_poll_changed(previous: &EngineJob, next: &EngineJob) -> bool {
     previous.status != next.status || previous.message != next.message || progress_changed
 }
 
+/// A privacy-safe, low-volume view of an Engine job update for process logging.
+///
+/// Engine status messages are intentionally reduced to a recognized phase instead of being
+/// written verbatim: an Engine implementation must never cause prompts, paths, or credentials
+/// to enter the LatentSlate process log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EngineJobLogSnapshot {
+    status: EngineJobLogStatus,
+    phase: Option<EngineJobPhase>,
+    progress_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EngineJobLogStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Canceled,
+    Unknown,
+}
+
+impl EngineJobLogStatus {
+    fn from_untrusted(value: &str) -> Self {
+        match value {
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "canceled" => Self::Canceled,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EngineJobPhase {
+    Validation,
+    WaitingForWorker,
+    WorkerStart,
+    Import,
+    Materialization,
+    Preparation,
+    Generation,
+    Encoding,
+    Finalizing,
+    Download,
+    Complete,
+}
+
+impl EngineJobPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Validation => "validation",
+            Self::WaitingForWorker => "waiting for worker",
+            Self::WorkerStart => "worker start",
+            Self::Import => "import",
+            Self::Materialization => "materialization",
+            Self::Preparation => "preparation",
+            Self::Generation => "generation",
+            Self::Encoding => "encoding",
+            Self::Finalizing => "finalizing",
+            Self::Download => "download",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+fn engine_job_log_snapshot(job: &EngineJob) -> EngineJobLogSnapshot {
+    EngineJobLogSnapshot {
+        status: EngineJobLogStatus::from_untrusted(&job.status),
+        phase: engine_job_phase(job.message.as_deref()),
+        progress_percent: job.progress.map(engine_log_progress_percent),
+    }
+}
+
+fn engine_log_progress_percent(progress: f64) -> u8 {
+    // Five-point buckets preserve useful movement without writing an entry for every poll.
+    ((progress.clamp(0.0, 1.0) * 20.0).floor() as u8).saturating_mul(5)
+}
+
+fn engine_job_phase(message: Option<&str>) -> Option<EngineJobPhase> {
+    let message = message?.trim().to_ascii_lowercase();
+    if message.contains("materializ") {
+        Some(EngineJobPhase::Materialization)
+    } else if message.contains("inspect") {
+        Some(EngineJobPhase::Validation)
+    } else if message.contains("validat") {
+        Some(EngineJobPhase::Validation)
+    } else if message.contains("waiting") && message.contains("worker") {
+        Some(EngineJobPhase::WaitingForWorker)
+    } else if message.contains("worker")
+        && (message.contains("start") || message.contains("launch") || message.contains("ready"))
+    {
+        Some(EngineJobPhase::WorkerStart)
+    } else if message.contains("import") {
+        Some(EngineJobPhase::Import)
+    } else if message.contains("prepar")
+        || message.contains("initializ")
+        || message.contains("build")
+        || message.contains("plan")
+    {
+        Some(EngineJobPhase::Preparation)
+    } else if message.contains("generat") || message.contains("sampl") || message.contains("render")
+    {
+        Some(EngineJobPhase::Generation)
+    } else if message.contains("encod") {
+        Some(EngineJobPhase::Encoding)
+    } else if message.contains("finaliz") || message.contains("publish") {
+        Some(EngineJobPhase::Finalizing)
+    } else if message.contains("download") {
+        Some(EngineJobPhase::Download)
+    } else if message.contains("complet") || message.contains("succeed") {
+        Some(EngineJobPhase::Complete)
+    } else {
+        None
+    }
+}
+
+fn format_engine_job_transition(snapshot: &EngineJobLogSnapshot) -> String {
+    let mut fields = vec![format!("status={}", snapshot.status.label())];
+    if let Some(phase) = snapshot.phase {
+        fields.push(format!("phase={}", phase.label()));
+    }
+    if let Some(progress_percent) = snapshot.progress_percent {
+        fields.push(format!("progress={progress_percent}%"));
+    }
+    fields.join(", ")
+}
+
 fn content_type_for_path(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
@@ -817,6 +968,82 @@ mod tests {
             &base,
             &test_engine_job("succeeded", Some(1.0), Some("Complete")),
         ));
+    }
+
+    #[test]
+    fn engine_job_log_snapshot_classifies_safe_phase_messages_without_retaining_them() {
+        let snapshot = engine_job_log_snapshot(&test_engine_job(
+            "running",
+            Some(0.0),
+            Some("Materializing source media at C:\\private\\clip.mp4"),
+        ));
+
+        assert_eq!(snapshot.phase, Some(EngineJobPhase::Materialization));
+        assert_eq!(
+            format_engine_job_transition(&snapshot),
+            "status=running, phase=materialization, progress=0%"
+        );
+        assert!(!format_engine_job_transition(&snapshot).contains("clip.mp4"));
+
+        let hostile = engine_job_log_snapshot(&test_engine_job(
+            "running\nsecret=C:\\private\\token.txt",
+            Some(0.0),
+            Some("prompt: private scene"),
+        ));
+        assert_eq!(
+            format_engine_job_transition(&hostile),
+            "status=unknown, progress=0%"
+        );
+
+        assert_eq!(
+            engine_job_phase(Some("Validating request")),
+            Some(EngineJobPhase::Validation)
+        );
+        assert_eq!(
+            engine_job_phase(Some("Starting worker")),
+            Some(EngineJobPhase::WorkerStart)
+        );
+        assert_eq!(
+            engine_job_phase(Some("Importing inputs")),
+            Some(EngineJobPhase::Import)
+        );
+        assert_eq!(
+            engine_job_phase(Some("Inspecting LTX transformer artifact")),
+            Some(EngineJobPhase::Validation)
+        );
+        assert_eq!(
+            engine_job_phase(Some("Building LTX transformer shell")),
+            Some(EngineJobPhase::Preparation)
+        );
+    }
+
+    #[test]
+    fn engine_job_log_snapshots_dedupe_polls_and_bucket_progress() {
+        let base =
+            engine_job_log_snapshot(&test_engine_job("running", Some(0.201), Some("Generating")));
+        let same_bucket = engine_job_log_snapshot(&test_engine_job(
+            "running",
+            Some(0.249),
+            Some("Generating frame"),
+        ));
+        let next_bucket = engine_job_log_snapshot(&test_engine_job(
+            "running",
+            Some(0.25),
+            Some("Generating frame"),
+        ));
+        let next_phase = engine_job_log_snapshot(&test_engine_job(
+            "running",
+            Some(0.25),
+            Some("Encoding output"),
+        ));
+
+        assert_eq!(base, same_bucket);
+        assert_ne!(base, next_bucket);
+        assert_ne!(next_bucket, next_phase);
+        assert_eq!(
+            format_engine_job_transition(&next_phase),
+            "status=running, phase=encoding, progress=25%"
+        );
     }
 
     #[test]
