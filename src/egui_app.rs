@@ -172,7 +172,7 @@ const MP4_FILE_FILTERS: &[kit::FileExtensionFilter<'static>] = &[kit::FileExtens
     name: "MP4 Video",
     extensions: MP4_EXTENSIONS,
 }];
-const PROVIDERS_MODAL_SIZE: [f32; 2] = [912.0, 672.0];
+const PROVIDERS_MODAL_SIZE: [f32; 2] = [1080.0, 760.0];
 const PROVIDER_JSON_MODAL_SIZE: [f32; 2] = [920.0, 700.0];
 const PROVIDER_BUILDER_MODAL_SIZE: [f32; 2] = [1296.0, 864.0];
 const EXPORT_MODAL_SIZE: [f32; 2] = [780.0, 640.0];
@@ -297,7 +297,10 @@ pub struct LatentSlateApp {
     project_description_editor: Option<ProjectDescriptionEditorState>,
     gen_video_fps: f64,
     gen_video_frames: u32,
-    selected_provider_file: Option<PathBuf>,
+    selected_provider: Option<ProviderModalSelection>,
+    engine_connection_draft: Option<EngineConnectionDraft>,
+    engine_catalog_search: String,
+    engine_available_only: bool,
     provider_json_editor_path: Option<PathBuf>,
     provider_json_text: String,
     provider_json_error: Option<String>,
@@ -577,7 +580,10 @@ impl LatentSlateApp {
             new_project_parent: default_projects_dir(),
             gen_video_fps: default_generative_video_fps(),
             gen_video_frames: default_generative_video_frames(),
-            selected_provider_file: None,
+            selected_provider: None,
+            engine_connection_draft: None,
+            engine_catalog_search: String::new(),
+            engine_available_only: false,
             provider_json_editor_path: None,
             provider_json_text: String::new(),
             provider_json_error: None,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +20,10 @@ use crate::state::{
 use super::{ProviderExecutionError, ProviderOutput, ProviderProgress};
 
 const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8765";
+const DEFAULT_CONNECTION_NAME: &str = "LatentSlate Engine";
+const DEFAULT_CONNECTION_ID: &str = "6c617465-6e74-736c-6174-650000000001";
 const CATALOG_CACHE_FILE: &str = "engine_catalog.json";
+const CATALOG_CACHE_DIR: &str = "engine_catalogs";
 const CONNECTION_SETTINGS_FILE: &str = "engine.json";
 const CACHED_CATALOG_UNAVAILABLE_REASON: &str =
     "LatentSlate Engine is offline; this tool was loaded from the cached catalog.";
@@ -32,8 +35,12 @@ enum EngineCancellationRequest {
     Uncertain(ProviderExecutionError),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineConnectionSettings {
+    #[serde(default = "default_connection_id")]
+    pub id: Uuid,
+    #[serde(default = "default_connection_name")]
+    pub name: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default = "default_base_url")]
@@ -47,12 +54,19 @@ pub struct EngineConnectionSettings {
 impl Default for EngineConnectionSettings {
     fn default() -> Self {
         Self {
+            id: default_connection_id(),
+            name: default_connection_name(),
             enabled: true,
             base_url: default_base_url(),
             api_key: None,
             catalog_timeout_ms: default_catalog_timeout_ms(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EngineConnectionsFile {
+    connections: Vec<EngineConnectionSettings>,
 }
 
 fn default_enabled() -> bool {
@@ -67,47 +81,180 @@ fn default_catalog_timeout_ms() -> u64 {
     800
 }
 
+pub fn default_connection_id() -> Uuid {
+    Uuid::parse_str(DEFAULT_CONNECTION_ID).expect("default Engine connection id")
+}
+
+pub fn default_connection_name() -> String {
+    DEFAULT_CONNECTION_NAME.to_string()
+}
+
+pub fn normalize_engine_base_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
+pub fn engine_base_urls_match(left: &str, right: &str) -> bool {
+    normalize_engine_base_url(left).eq_ignore_ascii_case(&normalize_engine_base_url(right))
+}
+
 pub fn connection_settings_path() -> PathBuf {
     crate::core::paths::app_runtime_root().join(CONNECTION_SETTINGS_FILE)
 }
 
+#[allow(dead_code)]
 pub fn catalog_cache_path() -> PathBuf {
-    crate::core::paths::app_runtime_root().join(CATALOG_CACHE_FILE)
+    catalog_cache_path_for(default_connection_id())
 }
 
-pub fn load_connection_settings() -> EngineConnectionSettings {
-    let mut settings: EngineConnectionSettings = fs::read_to_string(connection_settings_path())
-        .ok()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
+pub fn catalog_cache_path_for(connection_id: Uuid) -> PathBuf {
+    let root = crate::core::paths::app_runtime_root();
+    if connection_id == default_connection_id() {
+        root.join(CATALOG_CACHE_FILE)
+    } else {
+        root.join(CATALOG_CACHE_DIR)
+            .join(format!("{connection_id}.json"))
+    }
+}
 
+pub fn parse_engine_connections_json(json: &str) -> Option<Vec<EngineConnectionSettings>> {
+    let mut connections = if let Ok(file) = serde_json::from_str::<EngineConnectionsFile>(json) {
+        file.connections
+    } else if let Ok(single) = serde_json::from_str::<EngineConnectionSettings>(json) {
+        vec![single]
+    } else {
+        return None;
+    };
+    for connection in &mut connections {
+        connection.base_url = normalize_engine_base_url(&connection.base_url);
+        if connection.name.trim().is_empty() {
+            connection.name = default_connection_name();
+        }
+    }
+    ensure_unique_connection_ids(&mut connections);
+    Some(connections)
+}
+
+pub fn load_connections() -> Vec<EngineConnectionSettings> {
+    let mut connections = match fs::read_to_string(connection_settings_path()) {
+        Ok(json) => parse_engine_connections_json(&json)
+            .unwrap_or_else(|| vec![EngineConnectionSettings::default()]),
+        Err(_) => vec![EngineConnectionSettings::default()],
+    };
+    apply_env_overrides(&mut connections);
+    connections
+}
+
+#[allow(dead_code)]
+pub fn load_connection_settings() -> EngineConnectionSettings {
+    load_connections().into_iter().next().unwrap_or_default()
+}
+
+pub fn save_connections(connections: &[EngineConnectionSettings]) -> Result<(), String> {
+    let path = connection_settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let mut normalized = connections.to_vec();
+    for connection in &mut normalized {
+        connection.base_url = normalize_engine_base_url(&connection.base_url);
+        if connection.name.trim().is_empty() {
+            connection.name = default_connection_name();
+        }
+    }
+    ensure_unique_connection_ids(&mut normalized);
+    let file = EngineConnectionsFile {
+        connections: normalized,
+    };
+    let json = serde_json::to_string_pretty(&file).map_err(|err| err.to_string())?;
+    fs::write(path, json).map_err(|err| err.to_string())
+}
+
+pub fn next_engine_connection_name(existing: &[EngineConnectionSettings]) -> String {
+    if !existing
+        .iter()
+        .any(|connection| connection.name == DEFAULT_CONNECTION_NAME)
+    {
+        return default_connection_name();
+    }
+    for index in 2.. {
+        let name = format!("{DEFAULT_CONNECTION_NAME} {index}");
+        if !existing.iter().any(|connection| connection.name == name) {
+            return name;
+        }
+    }
+    default_connection_name()
+}
+
+pub fn new_engine_connection(existing: &[EngineConnectionSettings]) -> EngineConnectionSettings {
+    EngineConnectionSettings {
+        id: Uuid::new_v4(),
+        name: next_engine_connection_name(existing),
+        enabled: true,
+        base_url: default_base_url(),
+        api_key: None,
+        catalog_timeout_ms: default_catalog_timeout_ms(),
+    }
+}
+
+fn ensure_unique_connection_ids(connections: &mut [EngineConnectionSettings]) {
+    let mut seen = HashSet::new();
+    for connection in connections.iter_mut() {
+        if connection.id.is_nil() || !seen.insert(connection.id) {
+            connection.id = Uuid::new_v4();
+            seen.insert(connection.id);
+        }
+    }
+}
+
+fn apply_env_overrides(connections: &mut [EngineConnectionSettings]) {
+    if connections.is_empty() {
+        return;
+    }
+    let index = connections
+        .iter()
+        .position(|connection| connection.id == default_connection_id())
+        .unwrap_or(0);
+    let target = &mut connections[index];
     if let Ok(base_url) = std::env::var("LATENTSLATE_ENGINE_URL") {
         if !base_url.trim().is_empty() {
-            settings.base_url = base_url;
-            settings.enabled = true;
+            target.base_url = normalize_engine_base_url(&base_url);
+            target.enabled = true;
         }
     }
     if let Ok(token) = std::env::var("LATENTSLATE_ENGINE_TOKEN") {
-        settings.api_key = (!token.trim().is_empty()).then_some(token);
+        target.api_key = (!token.trim().is_empty()).then_some(token);
     }
-    settings.base_url = settings.base_url.trim_end_matches('/').to_string();
-    settings
 }
 
 pub fn load_provider_entries() -> Result<Vec<ProviderEntry>, String> {
-    let settings = load_connection_settings();
-    if !settings.enabled {
-        return Ok(Vec::new());
+    let mut providers = Vec::new();
+    for settings in load_connections() {
+        if !settings.enabled || settings.base_url.trim().is_empty() {
+            continue;
+        }
+        match load_provider_entries_for_connection(&settings) {
+            Ok(entries) => providers.extend(entries),
+            Err(err) => println!(
+                "Failed to load LatentSlate Engine tools from {}: {err}",
+                settings.base_url
+            ),
+        }
     }
+    Ok(providers)
+}
 
-    let (mut catalog, loaded_from_cache) = match fetch_catalog_blocking(&settings) {
+fn load_provider_entries_for_connection(
+    settings: &EngineConnectionSettings,
+) -> Result<Vec<ProviderEntry>, String> {
+    let cache_path = catalog_cache_path_for(settings.id);
+    let (mut catalog, loaded_from_cache) = match fetch_catalog_blocking(settings) {
         Ok(catalog) => {
-            if let Err(err) = save_catalog_cache(&catalog) {
+            if let Err(err) = save_catalog_cache(&cache_path, &catalog) {
                 println!("Failed to cache LatentSlate Engine catalog: {err}");
             }
             (catalog, false)
         }
-        Err(live_error) => match load_catalog_cache() {
+        Err(live_error) => match load_catalog_cache(&cache_path) {
             Ok(catalog) => {
                 println!(
                     "LatentSlate Engine unavailable at {}; using cached catalog: {live_error}",
@@ -122,7 +269,7 @@ pub fn load_provider_entries() -> Result<Vec<ProviderEntry>, String> {
     if loaded_from_cache {
         mark_cached_catalog_unavailable(&mut catalog);
     }
-    catalog_to_provider_entries(&catalog, &settings)
+    catalog_to_provider_entries(&catalog, settings)
 }
 
 fn fetch_catalog_blocking(settings: &EngineConnectionSettings) -> Result<EngineCatalog, String> {
@@ -152,8 +299,7 @@ fn fetch_catalog_blocking(settings: &EngineConnectionSettings) -> Result<EngineC
         .map_err(|err| format!("Engine catalog response was invalid: {err}"))
 }
 
-fn save_catalog_cache(catalog: &EngineCatalog) -> Result<(), String> {
-    let path = catalog_cache_path();
+fn save_catalog_cache(path: &Path, catalog: &EngineCatalog) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -161,13 +307,13 @@ fn save_catalog_cache(catalog: &EngineCatalog) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(catalog).map_err(|err| err.to_string())?;
     fs::write(&tmp, json).map_err(|err| err.to_string())?;
     if path.exists() {
-        fs::remove_file(&path).map_err(|err| err.to_string())?;
+        fs::remove_file(path).map_err(|err| err.to_string())?;
     }
     fs::rename(tmp, path).map_err(|err| err.to_string())
 }
 
-fn load_catalog_cache() -> Result<EngineCatalog, String> {
-    let json = fs::read(catalog_cache_path()).map_err(|err| err.to_string())?;
+fn load_catalog_cache(path: &Path) -> Result<EngineCatalog, String> {
+    let json = fs::read(path).map_err(|err| err.to_string())?;
     serde_json::from_slice(&json).map_err(|err| err.to_string())
 }
 
@@ -1641,5 +1787,77 @@ mod tests {
             endpoint("https://example.test/engine/", "/v1/catalog"),
             "https://example.test/engine/v1/catalog"
         );
+    }
+
+    #[test]
+    fn parses_legacy_singleton_engine_json() {
+        let connections = parse_engine_connections_json(
+            r#"{
+                "enabled": true,
+                "base_url": "http://127.0.0.1:8765/",
+                "api_key": null,
+                "catalog_timeout_ms": 800
+            }"#,
+        )
+        .expect("legacy engine.json");
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].id, default_connection_id());
+        assert_eq!(connections[0].name, "LatentSlate Engine");
+        assert_eq!(connections[0].base_url, "http://127.0.0.1:8765");
+        assert!(connections[0].enabled);
+    }
+
+    #[test]
+    fn parses_multiple_engine_connections() {
+        let connections = parse_engine_connections_json(
+            r#"{
+                "connections": [
+                    {
+                        "id": "6c617465-6e74-736c-6174-650000000001",
+                        "name": "LatentSlate Engine",
+                        "enabled": true,
+                        "base_url": "http://127.0.0.1:8765"
+                    },
+                    {
+                        "name": "Studio Engine",
+                        "enabled": false,
+                        "base_url": "https://engine.example.test/"
+                    }
+                ]
+            }"#,
+        )
+        .expect("multi engine.json");
+        assert_eq!(connections.len(), 2);
+        assert_eq!(connections[0].id, default_connection_id());
+        assert_eq!(connections[1].name, "Studio Engine");
+        assert_eq!(connections[1].base_url, "https://engine.example.test");
+        assert!(!connections[1].enabled);
+        assert_ne!(connections[0].id, connections[1].id);
+    }
+
+    #[test]
+    fn empty_connections_array_is_preserved() {
+        let connections =
+            parse_engine_connections_json(r#"{ "connections": [] }"#).expect("empty connections");
+        assert!(connections.is_empty());
+    }
+
+    #[test]
+    fn names_additional_engine_connections_uniquely() {
+        let existing = vec![EngineConnectionSettings::default()];
+        let second = new_engine_connection(&existing);
+        assert_eq!(second.name, "LatentSlate Engine 2");
+        assert_ne!(second.id, existing[0].id);
+    }
+
+    #[test]
+    fn default_catalog_cache_stays_on_legacy_path() {
+        let path = catalog_cache_path();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("engine_catalog.json")
+        );
+        let extra = catalog_cache_path_for(Uuid::new_v4());
+        assert!(extra.to_string_lossy().contains("engine_catalogs"));
     }
 }

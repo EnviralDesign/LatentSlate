@@ -748,7 +748,28 @@ pub fn combo_field<R>(
     width: f32,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Response {
+    combo_field_with_leading(
+        ui,
+        id_salt,
+        selected_text,
+        width,
+        0.0,
+        |_, _| {},
+        add_contents,
+    )
+}
+
+pub fn combo_field_with_leading<R>(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    selected_text: impl Into<String>,
+    width: f32,
+    leading_width: f32,
+    add_leading: impl FnOnce(&mut Ui, Rect),
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
     let selected_text = selected_text.into();
+    let leading_width = leading_width.max(0.0);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::hover());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -758,6 +779,10 @@ pub fn combo_field<R>(
     child.set_min_size(rect.size());
     child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
+    if leading_width > 0.0 {
+        let left_pad = 6.0 + leading_width + 6.0;
+        child.spacing_mut().button_padding = Vec2::new(left_pad, 5.0);
+    }
 
     let combo_salt = egui::Id::new(("combo_field", id_salt));
     // `ComboBox::from_id_salt` hashes its input into an `Id` before resolving
@@ -778,6 +803,14 @@ pub fn combo_field<R>(
         .width(rect.width())
         .truncate()
         .show_ui(&mut child, add_contents);
+
+    if leading_width > 0.0 {
+        let leading_rect = Rect::from_center_size(
+            Pos2::new(rect.left() + 6.0 + leading_width * 0.5, rect.center().y),
+            Vec2::new(leading_width, (FIELD_H - 10.0).max(14.0)),
+        );
+        add_leading(ui, leading_rect);
+    }
 
     let real_clicked = inner.response.clicked();
     let combo_response = crate::core::automation::instrument_response(

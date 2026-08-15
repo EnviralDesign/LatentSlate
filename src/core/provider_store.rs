@@ -324,3 +324,53 @@ fn is_json_file(path: &Path) -> bool {
         .map(|ext| ext.eq_ignore_ascii_case("json"))
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_templates_mint_a_fresh_id_on_every_add() {
+        let first = default_openai_image_provider_entry();
+        let second = default_openai_image_provider_entry();
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.name, second.name);
+
+        let xai_image = default_xai_image_provider_entry();
+        let xai_video = default_xai_video_provider_entry();
+        assert_ne!(xai_image.id, default_xai_image_provider_entry().id);
+        assert_ne!(xai_video.id, default_xai_video_provider_entry().id);
+    }
+
+    #[test]
+    fn merge_keeps_same_display_name_when_ids_differ() {
+        let first = default_openai_image_provider_entry();
+        let second = default_openai_image_provider_entry();
+        let mut entries = vec![first.clone()];
+        merge_provider_entries(&mut entries, vec![second.clone()]);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, first.id);
+        assert_eq!(entries[1].id, second.id);
+        assert_eq!(entries[0].name, entries[1].name);
+    }
+
+    #[test]
+    fn save_writes_one_file_per_id_not_per_name() {
+        let first = default_openai_image_provider_entry();
+        let second = default_openai_image_provider_entry();
+        let root = std::env::temp_dir().join(format!("latentslate-provider-id-{}", first.id));
+        let first_path = save_provider_entry_to(&root, &first).expect("save first");
+        let second_path = save_provider_entry_to(&root, &second).expect("save second");
+        assert_ne!(first_path, second_path);
+        let expected_name = format!("{}.json", first.id);
+        assert_eq!(
+            first_path.file_name().and_then(|name| name.to_str()),
+            Some(expected_name.as_str())
+        );
+        let loaded = load_provider_entries_from(&root).expect("load");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.iter().any(|entry| entry.id == first.id));
+        assert!(loaded.iter().any(|entry| entry.id == second.id));
+    }
+}

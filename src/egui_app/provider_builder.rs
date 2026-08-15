@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Ui, Vec2};
 use uuid::Uuid;
 
 use crate::state::{
@@ -13,13 +13,15 @@ use crate::state::{
 use crate::ui_kit as kit;
 
 use super::{
-    automation_checkbox, automation_selectable_value, inspector_numeric_field,
-    inspector_numeric_rect, paint_provider_source_kind_badge, paint_truncated_row_text_bottom,
-    paint_truncated_row_text_top, provider_source_badge_size, provider_source_kind,
-    ProviderSourceKind, INSPECTOR_NUMERIC_H,
+    automation_checkbox, automation_selectable_value, catalog_status_badge_width,
+    engine_provider_state, engine_state_badge_width, inspector_numeric_field,
+    inspector_numeric_rect, paint_engine_state_badge, paint_truncated_row_text_bottom,
+    paint_truncated_row_text_top, provider_engine_state, provider_source_kind,
+    provider_unavailable_reason, EngineProviderState, ProviderSourceKind, INSPECTOR_NUMERIC_H,
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderTemplateKind {
+    LatentSlateEngine,
     ComfyUi,
     OpenAiImage,
     XaiImage,
@@ -28,17 +30,68 @@ pub(super) enum ProviderTemplateKind {
 
 impl Default for ProviderTemplateKind {
     fn default() -> Self {
-        ProviderTemplateKind::ComfyUi
+        ProviderTemplateKind::LatentSlateEngine
     }
 }
 
 impl ProviderTemplateKind {
-    pub(super) const ALL: [ProviderTemplateKind; 4] = [
+    pub(super) const ALL: [ProviderTemplateKind; 5] = [
+        ProviderTemplateKind::LatentSlateEngine,
         ProviderTemplateKind::ComfyUi,
         ProviderTemplateKind::OpenAiImage,
         ProviderTemplateKind::XaiImage,
         ProviderTemplateKind::XaiVideo,
     ];
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ProviderModalSelection {
+    Engine(Uuid),
+    LocalFile(PathBuf),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct EngineConnectionDraft {
+    pub id: Uuid,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub enabled: bool,
+}
+
+impl EngineConnectionDraft {
+    pub(super) fn from_connection(
+        connection: &crate::providers::latentslate_engine::EngineConnectionSettings,
+    ) -> Self {
+        Self {
+            id: connection.id,
+            name: connection.name.clone(),
+            base_url: connection.base_url.clone(),
+            api_key: connection.api_key.clone().unwrap_or_default(),
+            enabled: connection.enabled,
+        }
+    }
+
+    pub(super) fn to_connection(
+        &self,
+        current: Option<&crate::providers::latentslate_engine::EngineConnectionSettings>,
+    ) -> crate::providers::latentslate_engine::EngineConnectionSettings {
+        crate::providers::latentslate_engine::EngineConnectionSettings {
+            id: self.id,
+            name: self.name.trim().to_string(),
+            enabled: self.enabled,
+            base_url: crate::providers::latentslate_engine::normalize_engine_base_url(
+                &self.base_url,
+            ),
+            api_key: {
+                let token = self.api_key.trim();
+                (!token.is_empty()).then(|| token.to_string())
+            },
+            catalog_timeout_ms: current
+                .map(|connection| connection.catalog_timeout_ms)
+                .unwrap_or(800),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1332,6 +1385,8 @@ pub(super) struct ProviderFileSummary {
     pub(super) source: ProviderSourceKind,
     pub(super) workflow_kind: Option<ProviderWorkflowKind>,
     pub(super) output_type: Option<ProviderOutputType>,
+    pub(super) engine_state: Option<EngineProviderState>,
+    pub(super) status_detail: Option<String>,
 }
 
 pub(super) fn provider_row(
@@ -1340,13 +1395,27 @@ pub(super) fn provider_row(
     summary: &ProviderFileSummary,
     selected: bool,
 ) -> egui::Response {
-    let accent = summary
-        .output_type
-        .map(provider_output_color)
-        .unwrap_or(kit::AUDIO);
-    let response = kit::draw_accent_row(ui, 52.0, selected, accent, |ui, rect| {
-        paint_provider_row_contents(ui, rect, summary);
+    // Group headers already name source and workflow; rows keep identity and Engine status.
+    let accent = if selected {
+        kit::PRIMARY
+    } else {
+        kit::BORDER_SOFT
+    };
+    let status_accent = summary.engine_state.and_then(|state| match state {
+        EngineProviderState::Live => None,
+        other => Some(other.color()),
     });
+    let response =
+        kit::draw_accent_row_with_status(ui, 52.0, selected, accent, status_accent, |ui, rect| {
+            paint_provider_row_contents(ui, rect, summary);
+        });
+    let response = crate::core::automation::instrument_response(
+        response,
+        "row",
+        Some(summary.name.clone()),
+        true,
+        false,
+    );
     let details = provider_summary_hover_text(summary);
     if details.trim().is_empty() {
         response
@@ -1356,38 +1425,52 @@ pub(super) fn provider_row(
 }
 
 fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSummary) {
-    let workflow_label = summary
-        .workflow_kind
-        .map(|workflow_kind| workflow_kind.short_label())
-        .unwrap_or("--");
-    let output_label = summary
-        .output_type
-        .map(provider_output_type_label)
-        .unwrap_or("Unknown");
-    let output_color = summary
-        .output_type
-        .map(provider_output_color)
-        .unwrap_or(kit::TEXT_MUTED);
+    let catalog_tool = summary.workflow_kind.is_some() && summary.engine_state.is_some();
+    let blocked = summary
+        .engine_state
+        .is_some_and(|state| state != EngineProviderState::Live);
+    let mut text_right = rect.right();
+    let mut live_pip = None;
+    let mut status_badge = None;
 
-    let badge_gap = 5.0;
-    let badge_h = 20.0;
-    let output_w = provider_badge_width(output_label);
-    let workflow_w = provider_badge_width(workflow_label);
-    let source_w = provider_source_badge_size().x;
-    let badge_y = rect.center().y - badge_h * 0.5;
-    let output_rect = Rect::from_min_size(
-        Pos2::new(rect.right() - output_w, badge_y),
-        Vec2::new(output_w, badge_h),
-    );
-    let workflow_rect = Rect::from_min_size(
-        Pos2::new(output_rect.left() - badge_gap - workflow_w, badge_y),
-        Vec2::new(workflow_w, badge_h),
-    );
-    let source_rect = Rect::from_min_size(
-        Pos2::new(workflow_rect.left() - badge_gap - source_w, badge_y + 1.0),
-        Vec2::new(source_w, provider_source_badge_size().y),
-    );
-    let text_width = (source_rect.left() - rect.left() - 8.0).max(24.0);
+    if catalog_tool {
+        if let Some(state) = summary.engine_state {
+            if state == EngineProviderState::Live {
+                let pip_r = 3.5;
+                live_pip = Some((
+                    Pos2::new(text_right - pip_r, rect.center().y),
+                    pip_r,
+                    state.color(),
+                ));
+                text_right -= pip_r * 2.0 + 8.0;
+            } else {
+                let badge_w = catalog_status_badge_width(state);
+                let badge_rect = Rect::from_min_size(
+                    Pos2::new(text_right - badge_w, rect.center().y - 9.0),
+                    Vec2::new(badge_w, 18.0),
+                );
+                text_right = badge_rect.left() - 8.0;
+                status_badge = Some((badge_rect, state.catalog_label(), state.color()));
+            }
+        }
+    } else if let Some(state) = summary.engine_state {
+        let badge_w = engine_state_badge_width(state);
+        let badge_rect = Rect::from_min_size(
+            Pos2::new(text_right - badge_w, rect.center().y - 9.0),
+            Vec2::new(badge_w, 18.0),
+        );
+        text_right = badge_rect.left() - 8.0;
+        status_badge = None;
+        paint_engine_state_badge(ui, badge_rect, state);
+    }
+
+    let text_width = (text_right - rect.left()).max(24.0);
+    let name_color = if blocked { kit::TEXT_MUTED } else { kit::TEXT };
+    let subtitle_color = if blocked {
+        kit::TEXT_DIM
+    } else {
+        kit::TEXT_MUTED
+    };
 
     paint_truncated_row_text_top(
         ui,
@@ -1395,7 +1478,7 @@ fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSu
         kit::value(&summary.name),
         12.0,
         text_width,
-        kit::TEXT,
+        name_color,
     );
     paint_truncated_row_text_bottom(
         ui,
@@ -1403,38 +1486,34 @@ fn paint_provider_row_contents(ui: &mut Ui, rect: Rect, summary: &ProviderFileSu
         kit::caption(&summary.subtitle),
         11.0,
         text_width,
-        kit::TEXT_MUTED,
+        subtitle_color,
     );
 
-    paint_provider_source_kind_badge(ui, source_rect, summary.source);
-    paint_provider_badge(ui, workflow_rect, workflow_label, kit::TEXT_MUTED, false);
-    paint_provider_badge(ui, output_rect, output_label, output_color, true);
+    if let Some((center, radius, color)) = live_pip {
+        ui.painter().circle_filled(center, radius, color);
+    }
+    if let Some((badge_rect, label, color)) = status_badge {
+        paint_compact_status_badge(ui, badge_rect, label, color);
+    }
 }
 
-fn provider_badge_width(label: &str) -> f32 {
-    (label.chars().count() as f32 * 6.5 + 18.0).clamp(38.0, 70.0)
-}
-
-fn paint_provider_badge(ui: &mut Ui, rect: Rect, label: &str, color: Color32, tinted: bool) {
-    let fill = if tinted {
-        color.gamma_multiply(0.14)
-    } else {
-        kit::FIELD_BG
-    };
-    let stroke_color = color.gamma_multiply(if tinted { 0.58 } else { 0.42 });
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(4), fill);
+fn paint_compact_status_badge(ui: &Ui, rect: Rect, label: &str, color: Color32) {
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(4),
+        color.gamma_multiply(0.12),
+    );
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(4),
-        Stroke::new(1.0, stroke_color),
+        egui::Stroke::new(1.0, color.gamma_multiply(0.54)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
         rect.center(),
-        Align2::CENTER_CENTER,
+        egui::Align2::CENTER_CENTER,
         label,
-        FontId::proportional(10.5),
+        egui::FontId::proportional(9.5),
         color,
     );
 }
@@ -1448,12 +1527,29 @@ fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
         .output_type
         .map(provider_output_type_label)
         .unwrap_or("Unknown output");
-    let mut text = format!(
-        "{} | {} | {}",
-        summary.source.label(),
-        workflow_label,
-        output_label
-    );
+    let mut text = if let Some(state) = summary.engine_state {
+        if summary.workflow_kind.is_some() {
+            format!("{} | {}", summary.source.label(), state.catalog_label())
+        } else {
+            format!("{} | {}", summary.source.label(), state.label())
+        }
+    } else {
+        format!(
+            "{} | {} | {}",
+            summary.source.label(),
+            workflow_label,
+            output_label
+        )
+    };
+    if let Some(detail) = summary
+        .status_detail
+        .as_deref()
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+    {
+        text.push_str("\n\n");
+        text.push_str(detail);
+    }
     if let Some(description) = summary
         .description
         .as_deref()
@@ -1466,19 +1562,9 @@ fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
     text
 }
 
-pub(super) fn provider_template_dropdown_label(
-    kind: ProviderTemplateKind,
-    unavailable: bool,
-) -> String {
-    if unavailable {
-        format!("{} (already added)", provider_template_label(kind))
-    } else {
-        provider_template_label(kind).to_string()
-    }
-}
-
 pub(super) fn provider_template_label(kind: ProviderTemplateKind) -> &'static str {
     match kind {
+        ProviderTemplateKind::LatentSlateEngine => "LatentSlate Engine",
         ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",
         ProviderTemplateKind::OpenAiImage => "OpenAI Image",
         ProviderTemplateKind::XaiImage => "xAI Image",
@@ -1520,6 +1606,8 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             source: ProviderSourceKind::Other,
             workflow_kind: None,
             output_type: None,
+            engine_state: None,
+            status_detail: None,
         };
     };
     let Ok(entry) = serde_json::from_str::<ProviderEntry>(&text) else {
@@ -1530,22 +1618,80 @@ pub(super) fn provider_file_summary(path: &Path) -> ProviderFileSummary {
             source: ProviderSourceKind::Other,
             workflow_kind: None,
             output_type: None,
+            engine_state: None,
+            status_detail: None,
         };
     };
+    provider_entry_summary(&entry)
+}
+
+pub(super) fn provider_entry_summary(entry: &ProviderEntry) -> ProviderFileSummary {
     let workflow_kind = entry.resolved_workflow_kind();
     let (source, detail) = provider_connection_summary(&entry.connection);
     ProviderFileSummary {
-        name: entry.name,
+        name: entry.name.clone(),
         subtitle: if detail.trim().is_empty() {
             source.label().to_string()
         } else {
             detail
         },
-        description: entry.description,
+        description: entry.description.clone(),
         source,
         workflow_kind: Some(workflow_kind),
         output_type: Some(entry.output_type),
+        engine_state: provider_engine_state(entry),
+        status_detail: provider_unavailable_reason(entry).map(str::to_string),
     }
+}
+
+pub(super) fn engine_connection_summary(
+    connection: &crate::providers::latentslate_engine::EngineConnectionSettings,
+    providers: &[ProviderEntry],
+) -> ProviderFileSummary {
+    let tools = engine_tools_for_connection(connection, providers);
+    let owned_tools = tools.into_iter().cloned().collect::<Vec<_>>();
+    let state = engine_provider_state(connection.enabled, &owned_tools);
+    let subtitle = if connection.base_url.trim().is_empty() {
+        "No endpoint configured".to_string()
+    } else {
+        connection.base_url.clone()
+    };
+    ProviderFileSummary {
+        name: connection.name.clone(),
+        subtitle,
+        description: None,
+        source: ProviderSourceKind::LatentSlateEngine,
+        workflow_kind: None,
+        output_type: None,
+        engine_state: Some(state),
+        status_detail: None,
+    }
+}
+
+pub(super) fn engine_tools_for_connection<'a>(
+    connection: &crate::providers::latentslate_engine::EngineConnectionSettings,
+    providers: &'a [ProviderEntry],
+) -> Vec<&'a ProviderEntry> {
+    providers
+        .iter()
+        .filter(|provider| match &provider.connection {
+            ProviderConnection::LatentSlateEngine { base_url, .. } => {
+                crate::providers::latentslate_engine::engine_base_urls_match(
+                    base_url,
+                    &connection.base_url,
+                )
+            }
+            _ => false,
+        })
+        .collect()
+}
+
+pub(super) fn engine_catalog_tool_summary(entry: &ProviderEntry) -> ProviderFileSummary {
+    let mut summary = provider_entry_summary(entry);
+    if let ProviderConnection::LatentSlateEngine { tool_key, .. } = &entry.connection {
+        summary.subtitle = tool_key.clone();
+    }
+    summary
 }
 
 fn provider_connection_summary(connection: &ProviderConnection) -> (ProviderSourceKind, String) {

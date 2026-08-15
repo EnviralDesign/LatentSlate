@@ -118,6 +118,7 @@ pub struct EditorState {
     pub selection: SelectionState,
     pub provider_entries: Vec<ProviderEntry>,
     pub provider_files: Vec<PathBuf>,
+    pub engine_connections: Vec<crate::providers::latentslate_engine::EngineConnectionSettings>,
     pub thumbnailer: Arc<Thumbnailer>,
     pub previewer: Arc<crate::core::preview::PreviewRenderer>,
     pub current_time: f64,
@@ -140,6 +141,7 @@ impl EditorState {
             selection: SelectionState::default(),
             provider_entries: load_local_provider_entries_or_empty(),
             provider_files: list_local_provider_files(),
+            engine_connections: crate::providers::latentslate_engine::load_connections(),
             thumbnailer: Arc::new(Thumbnailer::new(scratch.clone())),
             previewer: Arc::new(crate::core::preview::PreviewRenderer::new_with_limits(
                 scratch,
@@ -170,6 +172,7 @@ impl EditorState {
     pub fn refresh_providers(&mut self) {
         self.provider_entries = load_local_provider_entries_or_empty();
         self.provider_files = list_local_provider_files();
+        self.engine_connections = crate::providers::latentslate_engine::load_connections();
         self.reconcile_generative_dimension_configs();
     }
 

@@ -51,7 +51,7 @@ Important rules:
 - Writable app-managed state lives under `LatentSlateData/` next to the running executable unless `LATENTSLATE_HOME` is set.
 - Default projects are written to `LatentSlateData/projects/`.
 - User-authored provider entries are written to `LatentSlateData/providers/`.
-- LatentSlate Engine connection settings may be stored in `LatentSlateData/engine.json`; its last successful tool catalog is cached in `LatentSlateData/engine_catalog.json`.
+- LatentSlate Engine backends may be stored in `LatentSlateData/engine.json` as a `connections` list (a legacy singleton object still loads). Each backend caches its last successful catalog in `LatentSlateData/engine_catalog.json` or `LatentSlateData/engine_catalogs/<id>.json`.
 - Provider entries contain inline ComfyUI manifest bindings and inline cloud provider API keys.
 - Engine tools are generated in memory from a live or cached Engine catalog and are not written as editable provider JSON files.
 - Project settings can optionally scope providers with a project-level allowlist; provider pickers, generation, Asset Lab provider selection, and default Agent API provider metadata honor that scope.

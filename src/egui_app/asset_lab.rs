@@ -3016,84 +3016,88 @@ impl LatentSlateApp {
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let spacing = ui.spacing().item_spacing.x;
-                    let button_w = 104.0;
-                    let left_w = (ui.available_width() - button_w - spacing).max(96.0);
-                    ui.vertical(|ui| {
-                        ui.set_width(left_w);
-                        kit::field_label(ui, "Run");
-                        ui.add_sized(
-                            [ui.available_width(), 18.0],
-                            egui::Label::new(kit::caption(seed_preview)).truncate(),
-                        );
+                    ui.label(kit::section_label("Run"));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_enabled_ui(can_generate, |ui| {
+                            if kit::primary_button(ui, generate_label, 104.0).clicked() {
+                                *action = Some(AssetLabAction::GenerateNode {
+                                    node_id: node.id,
+                                    batch: self.asset_lab_run_batch(provider),
+                                });
+                            }
+                        });
                     });
-                    ui.add_enabled_ui(can_generate, |ui| {
-                        if kit::primary_button(ui, generate_label, button_w).clicked() {
-                            *action = Some(AssetLabAction::GenerateNode {
-                                node_id: node.id,
-                                batch: self.asset_lab_run_batch(provider),
-                            });
+                });
+                ui.add_space(kit::FORM_ROW_GAP);
+
+                let mut batch_count = self
+                    .asset_lab
+                    .run_batch_count
+                    .max(1)
+                    .min(MAX_GENERATION_BATCH_COUNT) as i64;
+                let mut attempts_changed = false;
+                let mut draw_attempts = |ui: &mut Ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
+                        kit::field_label(ui, "Attempts");
+                        let width = ui.available_width();
+                        let rect = inspector_numeric_rect(ui, width);
+                        if inspector_numeric_field(ui, rect, |ui, width| {
+                            ui.add_sized(
+                                [width, INSPECTOR_NUMERIC_H],
+                                egui::DragValue::new(&mut batch_count).speed(1.0),
+                            )
+                        }) {
+                            attempts_changed = true;
                         }
                     });
-                });
+                };
 
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.columns(2, |columns| {
-                    let mut batch_count =
-                        self.asset_lab
-                            .run_batch_count
-                            .max(1)
-                            .min(MAX_GENERATION_BATCH_COUNT) as i64;
-                    let count_width = columns[0].available_width();
-                    if inspector_drag_i64(
-                        &mut columns[0],
-                        "Attempts",
-                        &mut batch_count,
-                        1.0,
-                        count_width,
-                    ) {
-                        self.asset_lab.run_batch_count =
-                            batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
-                    }
+                if seed_field.is_some() {
+                    kit::field_grid_row(ui, &[0.9, 1.3], |ui, index| match index {
+                        0 => draw_attempts(ui),
+                        _ => {
+                            kit::labeled_combo_field(
+                                ui,
+                                "Seed Strategy",
+                                ("asset_lab_seed_strategy", node.id),
+                                seed_strategy_label(self.asset_lab.run_seed_strategy),
+                                |ui| {
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.asset_lab.run_seed_strategy,
+                                        SeedStrategy::Increment,
+                                        "Increment",
+                                    );
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.asset_lab.run_seed_strategy,
+                                        SeedStrategy::Random,
+                                        "Random",
+                                    );
+                                    automation_selectable_value(
+                                        ui,
+                                        &mut self.asset_lab.run_seed_strategy,
+                                        SeedStrategy::Keep,
+                                        "Keep",
+                                    );
+                                },
+                            );
+                        }
+                    });
+                } else {
+                    draw_attempts(ui);
+                }
+                if attempts_changed {
+                    self.asset_lab.run_batch_count =
+                        batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
+                }
 
-                    if seed_field.is_some() {
-                        kit::labeled_combo_field(
-                            &mut columns[1],
-                            "Seed Strategy",
-                            ("asset_lab_seed_strategy", node.id),
-                            seed_strategy_label(self.asset_lab.run_seed_strategy),
-                            |ui| {
-                                automation_selectable_value(
-                                    ui,
-                                    &mut self.asset_lab.run_seed_strategy,
-                                    SeedStrategy::Increment,
-                                    "Increment",
-                                );
-                                automation_selectable_value(
-                                    ui,
-                                    &mut self.asset_lab.run_seed_strategy,
-                                    SeedStrategy::Random,
-                                    "Random",
-                                );
-                                automation_selectable_value(
-                                    ui,
-                                    &mut self.asset_lab.run_seed_strategy,
-                                    SeedStrategy::Keep,
-                                    "Keep",
-                                );
-                            },
-                        );
-                    } else {
-                        kit::field_label(&mut columns[1], "Seed Strategy");
-                        columns[1].add_sized(
-                            [columns[1].available_width(), kit::FIELD_H],
-                            egui::Label::new(kit::caption("No seed role")).truncate(),
-                        );
-                    }
-                });
+                ui.add_space(kit::FIELD_LABEL_GAP);
+                ui.add(egui::Label::new(kit::caption(seed_preview)).truncate());
 
                 if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
-                    ui.add_space(kit::FORM_ROW_GAP);
+                    ui.add_space(kit::FIELD_LABEL_GAP);
                     ui.label(
                         RichText::new(
                             "No seed role detected; multiple attempts will reuse identical inputs.",

@@ -24,10 +24,11 @@ providers, while the Engine publishes its own tool catalog.
 
 ## LatentSlate Engine Setup
 
-LatentSlate checks for an Engine at `http://127.0.0.1:8765` when providers are
-loaded. When reachable, its catalog tools appear automatically in provider
-pickers and generation forms. There is no provider JSON to export, bind, or
-repair.
+LatentSlate treats each Engine as a backend in **AI Providers**. Add one or more
+Engine connections from the Add Provider dropdown, then inspect that backend's
+catalog on the right. When an Engine is reachable, its tools appear automatically
+in provider pickers and generation forms. There is no provider JSON to export,
+bind, or repair for Engine tools.
 
 For a local source checkout, initialize the portable Engine data root, inspect
 it, validate its resources/variants, and start the service:
@@ -57,16 +58,27 @@ LATENTSLATE_ENGINE_URL=http://127.0.0.1:8765
 LATENTSLATE_ENGINE_TOKEN=optional-bearer-token
 ```
 
-It can also be configured in `LatentSlateData/engine.json`:
+It can also be configured in `LatentSlateData/engine.json`. Multiple backends are
+supported:
 
 ```json
 {
-  "enabled": true,
-  "base_url": "http://127.0.0.1:8765",
-  "api_key": null,
-  "catalog_timeout_ms": 800
+  "connections": [
+    {
+      "id": "6c617465-6e74-736c-6174-650000000001",
+      "name": "LatentSlate Engine",
+      "enabled": true,
+      "base_url": "http://127.0.0.1:8765",
+      "api_key": null,
+      "catalog_timeout_ms": 800
+    }
+  ]
 }
 ```
+
+A legacy singleton `engine.json` object still loads as one backend. Environment
+variables overlay the default/first connection. Additional backends can be added
+from AI Providers.
 
 The same protocol is used for localhost, a LAN machine, and a remote/Vast.ai
 instance. LatentSlate sends media as multipart HTTP uploads and downloads the
@@ -74,10 +86,11 @@ resulting artifact over HTTP; it never assumes a shared filesystem. Remote
 connections should use a secure tunnel or HTTPS reverse proxy, especially when a
 bearer token is configured.
 
-A successful live catalog is cached in `LatentSlateData/engine_catalog.json`.
-When the Engine is offline, the cached schemas keep projects and generation forms
-inspectable, but generation remains unavailable until a compatible Engine can be
-reached.
+A successful live catalog is cached in `LatentSlateData/engine_catalog.json` for
+the default backend, or `LatentSlateData/engine_catalogs/<connection-id>.json`
+for additional backends. When an Engine is offline, the cached schemas keep
+projects and generation forms inspectable, but generation remains unavailable
+until a compatible Engine can be reached.
 
 ### Engine Catalog Ownership
 
@@ -86,10 +99,12 @@ change without changing those identities. Every tool publishes a schema revision
 and hash, and every submitted job includes both. A stale request is rejected with
 an explicit `schema_mismatch` rather than being silently reinterpreted.
 
-Engine-derived tools are read-only in LatentSlate. The existing **AI Providers**
-editor lists local provider JSON files, not dynamic Engine catalog entries. Change
-an Engine tool schema in the Engine repository; the next catalog refresh becomes
-the single source of truth for its UI.
+Engine-derived tools are read-only in LatentSlate. **AI Providers** lists Engine
+backends alongside local provider JSON files. Selecting an Engine backend edits
+the connection and shows its discovered catalog; it does not create editable
+provider JSON for those tools. Change an Engine tool schema in the Engine
+repository; the next catalog refresh becomes the single source of truth for its
+UI.
 
 Project-level schema snapshots and the reconciliation screen for older Engine
 schemas are not implemented yet. The revision/hash contract and stable IDs are in
@@ -133,7 +148,7 @@ kept beside the rest of the app data.
 
 A provider entry stores:
 
-- `id`: stable UUID referenced by generative assets
+- `id`: stable UUID referenced by generative assets. Each Add Provider action mints a new id, including a second OpenAI or xAI account. Display `name` is not unique and is not used as a key.
 - `name`: display name
 - `description`: optional multi-line guidance for humans and agents choosing a provider
 - `output_type`: `image`, `video`, or `audio`

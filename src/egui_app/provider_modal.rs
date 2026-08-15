@@ -2,9 +2,10 @@ use super::*;
 
 impl LatentSlateApp {
     pub(super) fn providers_modal(&mut self, ctx: &Context) {
+        self.ensure_provider_modal_selection();
         let mut open = true;
         let mut close_clicked = false;
-        let modal_size = modal_size(ctx, PROVIDERS_MODAL_SIZE, [744.0, 552.0]);
+        let modal_size = modal_size(ctx, PROVIDERS_MODAL_SIZE, [860.0, 620.0]);
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "providers", true);
         egui::Window::new("AI Providers (Global)")
             .title_bar(false)
@@ -19,17 +20,17 @@ impl LatentSlateApp {
                 close_clicked = kit::modal_header_with_close(
                     ui,
                     "AI Providers",
-                    Some("LatentSlate Engine catalog and local provider definitions."),
+                    Some("Engine backends, catalogs, and local provider definitions."),
                     true,
                 );
                 kit::modal_body(ui, |ui| {
                     let column_gap = 12.0;
-                    let column_w = ((ui.available_width() - column_gap) * 0.5).max(260.0);
+                    let list_w = ((ui.available_width() - column_gap) * 0.38).clamp(280.0, 360.0);
                     StripBuilder::new(ui)
                         .clip(true)
-                        .size(Size::exact(column_w))
+                        .size(Size::exact(list_w))
                         .size(Size::exact(column_gap))
-                        .size(Size::remainder().at_least(260.0))
+                        .size(Size::remainder().at_least(360.0))
                         .horizontal(|mut strip| {
                             strip.cell(|ui| self.provider_list_card(ui));
                             strip.empty();
@@ -38,6 +39,7 @@ impl LatentSlateApp {
                 });
             });
         if close_clicked || outside_clicked || !open {
+            self.persist_engine_connection_draft();
             self.editor.overlays.providers = false;
         }
     }
@@ -46,14 +48,20 @@ impl LatentSlateApp {
         let card_h = ui.available_height();
         kit::card_panel(ui, card_h, |ui| {
             self.add_provider_controls(ui);
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            ui.label(kit::caption(
+                "Engine backends discover their catalogs automatically.",
+            ));
 
             ui.add_space(kit::ACTION_GAP);
-            let selected = self.selected_provider_file.clone();
+            let selected = self.selected_provider.clone();
+            let engine_connections = self.editor.engine_connections.clone();
+            let provider_entries = self.editor.provider_entries.clone();
             let provider_files = self.editor.provider_files.clone();
-            let mut next_selection: Option<PathBuf> = None;
+            let mut next_selection: Option<ProviderModalSelection> = None;
 
             ui.horizontal(|ui| {
-                ui.label(kit::section_label("Installed"));
+                ui.label(kit::section_label("Providers"));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if kit::secondary_button(ui, "Reload", 76.0).clicked() {
                         self.editor.refresh_providers();
@@ -63,13 +71,35 @@ impl LatentSlateApp {
             ui.add_space(kit::FORM_ROW_GAP);
             kit::scroll_body(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-                if provider_files.is_empty() {
-                    kit::empty_state(
-                        ui,
-                        "No providers yet",
-                        "Create a provider or reload the local provider folder.",
-                    );
-                }
+                let engine_header = format!(
+                    "{} ({})",
+                    ProviderSourceKind::LatentSlateEngine.label(),
+                    engine_connections.len()
+                );
+                egui::CollapsingHeader::new(engine_header)
+                    .id_salt("provider_source_group_engine")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                        if engine_connections.is_empty() {
+                            ui.label(kit::caption(
+                                "Add a LatentSlate Engine backend from the dropdown.",
+                            ));
+                        }
+                        for connection in &engine_connections {
+                            let summary = engine_connection_summary(connection, &provider_entries);
+                            let is_selected = matches!(
+                                selected,
+                                Some(ProviderModalSelection::Engine(id)) if id == connection.id
+                            );
+                            let response = provider_row(ui, Path::new(""), &summary, is_selected);
+                            if response.clicked() {
+                                next_selection =
+                                    Some(ProviderModalSelection::Engine(connection.id));
+                            }
+                        }
+                    });
+
                 let mut summaries = provider_files
                     .iter()
                     .map(|path| (path.clone(), provider_file_summary(path)))
@@ -85,6 +115,14 @@ impl LatentSlateApp {
                         .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
                         .then_with(|| left_path.cmp(right_path))
                 });
+
+                if summaries.is_empty() && engine_connections.is_empty() {
+                    kit::empty_state(
+                        ui,
+                        "No providers yet",
+                        "Add an Engine backend or a local provider from the dropdown.",
+                    );
+                }
 
                 let mut index = 0;
                 while index < summaries.len() {
@@ -109,42 +147,209 @@ impl LatentSlateApp {
                                         summary.workflow_kind,
                                     )));
                                 }
-                                let is_selected = selected.as_ref() == Some(path);
+                                let is_selected = matches!(
+                                    selected,
+                                    Some(ProviderModalSelection::LocalFile(ref selected_path))
+                                        if selected_path == path
+                                );
                                 let response = provider_row(ui, path, summary, is_selected);
                                 if response.clicked() {
-                                    next_selection = Some(path.clone());
+                                    next_selection =
+                                        Some(ProviderModalSelection::LocalFile(path.clone()));
                                 }
                             }
                         });
                 }
             });
 
-            if let Some(path) = next_selection {
-                self.selected_provider_file = Some(path);
+            if let Some(selection) = next_selection {
+                self.select_provider_modal_item(selection);
             }
         });
     }
 
-    fn engine_provider_section(&mut self, ui: &mut Ui) {
-        let settings = crate::providers::latentslate_engine::load_connection_settings();
-        let engine_providers = self
+    fn ensure_provider_modal_selection(&mut self) {
+        match self.selected_provider.clone() {
+            Some(ProviderModalSelection::Engine(id)) => {
+                if let Some(connection) = self
+                    .editor
+                    .engine_connections
+                    .iter()
+                    .find(|connection| connection.id == id)
+                    .cloned()
+                {
+                    if self
+                        .engine_connection_draft
+                        .as_ref()
+                        .is_none_or(|draft| draft.id != id)
+                    {
+                        self.engine_connection_draft =
+                            Some(EngineConnectionDraft::from_connection(&connection));
+                    }
+                    return;
+                }
+            }
+            Some(ProviderModalSelection::LocalFile(path)) => {
+                if self
+                    .editor
+                    .provider_files
+                    .iter()
+                    .any(|entry| entry == &path)
+                {
+                    return;
+                }
+            }
+            None => {}
+        }
+
+        if let Some(connection) = self.editor.engine_connections.first().cloned() {
+            self.selected_provider = Some(ProviderModalSelection::Engine(connection.id));
+            self.engine_connection_draft =
+                Some(EngineConnectionDraft::from_connection(&connection));
+        } else {
+            self.selected_provider = None;
+            self.engine_connection_draft = None;
+        }
+    }
+
+    fn select_provider_modal_item(&mut self, selection: ProviderModalSelection) {
+        if self.selected_provider.as_ref() == Some(&selection) {
+            return;
+        }
+        self.persist_engine_connection_draft();
+        match &selection {
+            ProviderModalSelection::Engine(id) => {
+                self.engine_connection_draft = self
+                    .editor
+                    .engine_connections
+                    .iter()
+                    .find(|connection| connection.id == *id)
+                    .map(EngineConnectionDraft::from_connection);
+                self.engine_catalog_search.clear();
+            }
+            ProviderModalSelection::LocalFile(_) => {
+                self.engine_connection_draft = None;
+            }
+        }
+        self.selected_provider = Some(selection);
+    }
+
+    fn persist_engine_connection_draft(&mut self) {
+        let Some(draft) = self.engine_connection_draft.clone() else {
+            return;
+        };
+        let Some(index) = self
             .editor
-            .provider_entries
+            .engine_connections
             .iter()
-            .filter(|provider| {
-                matches!(
-                    provider.connection,
-                    ProviderConnection::LatentSlateEngine { .. }
-                )
-            })
+            .position(|connection| connection.id == draft.id)
+        else {
+            return;
+        };
+        let next = draft.to_connection(Some(&self.editor.engine_connections[index]));
+        if next == self.editor.engine_connections[index] {
+            return;
+        }
+        self.editor.engine_connections[index] = next;
+        if let Err(err) =
+            crate::providers::latentslate_engine::save_connections(&self.editor.engine_connections)
+        {
+            self.editor.status = format!("Failed to save Engine backend: {err}");
+        }
+    }
+
+    fn save_engine_connections_and_refresh(&mut self) {
+        match crate::providers::latentslate_engine::save_connections(
+            &self.editor.engine_connections,
+        ) {
+            Ok(()) => {
+                self.editor.refresh_providers();
+                self.ensure_provider_modal_selection();
+            }
+            Err(err) => {
+                self.editor.status = format!("Failed to save Engine backend: {err}");
+            }
+        }
+    }
+
+    fn create_engine_connection(&mut self) {
+        self.persist_engine_connection_draft();
+        let created = crate::providers::latentslate_engine::new_engine_connection(
+            &self.editor.engine_connections,
+        );
+        let created_id = created.id;
+        self.editor.engine_connections.push(created);
+        match crate::providers::latentslate_engine::save_connections(
+            &self.editor.engine_connections,
+        ) {
+            Ok(()) => {
+                self.editor.refresh_providers();
+                self.select_provider_modal_item(ProviderModalSelection::Engine(created_id));
+                self.editor.status = "Created LatentSlate Engine backend.".to_string();
+            }
+            Err(err) => {
+                self.editor
+                    .engine_connections
+                    .retain(|connection| connection.id != created_id);
+                self.editor.status = format!("Failed to create Engine backend: {err}");
+            }
+        }
+    }
+
+    fn delete_engine_connection(&mut self, connection_id: Uuid) {
+        self.editor
+            .engine_connections
+            .retain(|connection| connection.id != connection_id);
+        match crate::providers::latentslate_engine::save_connections(
+            &self.editor.engine_connections,
+        ) {
+            Ok(()) => {
+                self.engine_connection_draft = None;
+                self.selected_provider = None;
+                self.editor.refresh_providers();
+                self.ensure_provider_modal_selection();
+                self.editor.status = "Deleted LatentSlate Engine backend.".to_string();
+            }
+            Err(err) => {
+                self.editor.refresh_providers();
+                self.editor.status = format!("Failed to delete Engine backend: {err}");
+            }
+        }
+    }
+
+    fn engine_connection_inspector(&mut self, ui: &mut Ui, connection_id: Uuid) {
+        let Some(connection) = self
+            .editor
+            .engine_connections
+            .iter()
+            .find(|connection| connection.id == connection_id)
+            .cloned()
+        else {
+            kit::empty_state(
+                ui,
+                "Engine backend missing",
+                "Reload providers to refresh this selection.",
+            );
+            return;
+        };
+        if self
+            .engine_connection_draft
+            .as_ref()
+            .is_none_or(|draft| draft.id != connection_id)
+        {
+            self.engine_connection_draft =
+                Some(EngineConnectionDraft::from_connection(&connection));
+        }
+        let tools = engine_tools_for_connection(&connection, &self.editor.provider_entries)
+            .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        let state = engine_provider_state(settings.enabled, &engine_providers);
-        let available_count = engine_providers
+        let state = engine_provider_state(connection.enabled, &tools);
+        let available_count = tools
             .iter()
             .filter(|provider| provider_is_available_for_generation(provider))
             .count();
-        let first_unavailable_reason = engine_providers.iter().find_map(|provider| {
+        let first_unavailable_reason = tools.iter().find_map(|provider| {
             provider_unavailable_reason(provider).map(|reason| {
                 (
                     reason.to_string(),
@@ -152,66 +357,193 @@ impl LatentSlateApp {
                 )
             })
         });
-        let mut refresh_clicked = false;
 
         ui.horizontal(|ui| {
-            provider_source_kind_badge(ui, ProviderSourceKind::LatentSlateEngine);
-            ui.label(kit::section_label("LATENTSLATE ENGINE"));
+            ui.label(kit::section_label("Connection"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if kit::secondary_button(ui, "Refresh", 70.0).clicked() {
-                    refresh_clicked = true;
-                }
                 engine_state_badge(ui, state);
             });
         });
         ui.add_space(kit::FORM_ROW_GAP);
-        ui.add(
-            egui::Label::new(kit::caption(format!("Endpoint  {}", settings.base_url))).truncate(),
-        )
-        .on_hover_text(&settings.base_url);
-        ui.add_space(2.0);
-        ui.label(kit::caption(format!(
-            "{} discovered  ·  {} available",
-            engine_providers.len(),
-            available_count
-        )));
 
-        egui::CollapsingHeader::new(format!("Engine tools ({})", engine_providers.len()))
-            .id_salt("latentslate_engine_tools")
-            .default_open(true)
-            .show(ui, |ui| {
-                if engine_providers.is_empty() {
-                    ui.label(kit::caption(match state {
-                        EngineProviderState::Disabled => {
-                            "Engine discovery is disabled in engine.json."
-                        }
-                        _ => "No Engine tools have been discovered yet.",
-                    }));
-                    return;
+        let mut save_clicked = false;
+        let mut refresh_clicked = false;
+        let mut delete_clicked = false;
+        if let Some(draft) = self.engine_connection_draft.as_mut() {
+            kit::field_grid_row(ui, &[1.0, 1.6], |ui, index| match index {
+                0 => {
+                    kit::labeled_text_field(ui, "Name", &mut draft.name);
                 }
-                egui::ScrollArea::vertical()
-                    .id_salt("latentslate_engine_tool_list")
-                    .max_height(132.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 4.0;
-                        for provider in &engine_providers {
-                            engine_provider_tool_row(ui, provider);
-                        }
-                    });
+                _ => {
+                    kit::labeled_text_field(ui, "Endpoint", &mut draft.base_url);
+                }
             });
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::labeled_text_field(ui, "API Token", &mut draft.api_key);
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.horizontal(|ui| {
+                automation_checkbox(ui, &mut draft.enabled, "Enabled");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::danger_button(ui, "Delete", 84.0).clicked() {
+                        delete_clicked = true;
+                    }
+                    ui.add_space(kit::FIELD_COMPOUND_GAP);
+                    if kit::primary_button(ui, "Save", 72.0).clicked() {
+                        save_clicked = true;
+                    }
+                    if kit::secondary_button(ui, "Refresh", 76.0).clicked() {
+                        refresh_clicked = true;
+                    }
+                });
+            });
+        }
 
+        ui.add_space(kit::ACTION_GAP);
+        ui.separator();
+        ui.add_space(kit::ACTION_GAP);
+
+        ui.horizontal(|ui| {
+            ui.label(kit::section_label("Catalog"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(kit::caption(format!(
+                    "{} discovered  ·  {} available",
+                    tools.len(),
+                    available_count
+                )));
+            });
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+        kit::field_label(ui, "Search");
+        ui.add_space(kit::FIELD_LABEL_GAP);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = kit::FIELD_COMPOUND_GAP;
+            let checkbox_w = 124.0;
+            let field_w = (ui.available_width() - checkbox_w - kit::FIELD_COMPOUND_GAP).max(80.0);
+            kit::singleline_text_field(ui, &mut self.engine_catalog_search, field_w);
+            automation_checkbox(ui, &mut self.engine_available_only, "Available only");
+        });
         if let Some((reason, reason_state)) = first_unavailable_reason {
-            ui.add_space(2.0);
+            ui.add_space(kit::FIELD_LABEL_GAP);
             ui.add(
                 egui::Label::new(RichText::new(reason).color(reason_state.color()).size(10.5))
                     .truncate(),
             )
-            .on_hover_text(provider_engine_state_summary(state, &engine_providers));
+            .on_hover_text(provider_engine_state_summary(state, &tools));
         }
+        ui.add_space(kit::FORM_ROW_GAP);
 
-        if refresh_clicked {
-            self.editor.refresh_providers();
+        let search = self.engine_catalog_search.trim().to_ascii_lowercase();
+        let available_only = self.engine_available_only;
+        let mut filtered = tools
+            .iter()
+            .filter(|provider| {
+                if available_only && !provider_is_available_for_generation(provider) {
+                    return false;
+                }
+                if search.is_empty() {
+                    return true;
+                }
+                let tool_key = match &provider.connection {
+                    ProviderConnection::LatentSlateEngine { tool_key, .. } => {
+                        tool_key.to_ascii_lowercase()
+                    }
+                    _ => String::new(),
+                };
+                provider.name.to_ascii_lowercase().contains(&search)
+                    || tool_key.contains(&search)
+                    || provider
+                        .resolved_workflow_kind()
+                        .label()
+                        .to_ascii_lowercase()
+                        .contains(&search)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        filtered.sort_by(|left, right| {
+            provider_workflow_sort_key(Some(left.resolved_workflow_kind()))
+                .cmp(&provider_workflow_sort_key(Some(
+                    right.resolved_workflow_kind(),
+                )))
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+        });
+
+        kit::scroll_body(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+            if filtered.is_empty() {
+                kit::empty_state(
+                    ui,
+                    match state {
+                        EngineProviderState::Disabled => "Engine disabled",
+                        _ if tools.is_empty() => "No tools discovered",
+                        _ => "No matching tools",
+                    },
+                    match state {
+                        EngineProviderState::Disabled => {
+                            "Enable this backend, then refresh the catalog."
+                        }
+                        _ if tools.is_empty() => {
+                            "Save the endpoint and refresh when the Engine is reachable."
+                        }
+                        _ => "Adjust the search or availability filter.",
+                    },
+                );
+                return;
+            }
+            let mut index = 0;
+            while index < filtered.len() {
+                let workflow_kind = filtered[index].resolved_workflow_kind();
+                let group_start = index;
+                while index < filtered.len()
+                    && filtered[index].resolved_workflow_kind() == workflow_kind
+                {
+                    index += 1;
+                }
+                let group = &filtered[group_start..index];
+                let ready = group
+                    .iter()
+                    .filter(|provider| provider_is_available_for_generation(provider))
+                    .count();
+                let header = if ready == group.len() {
+                    format!(
+                        "{} ({})",
+                        provider_workflow_group_label(Some(workflow_kind)),
+                        group.len()
+                    )
+                } else {
+                    format!(
+                        "{} ({}/{} ready)",
+                        provider_workflow_group_label(Some(workflow_kind)),
+                        ready,
+                        group.len()
+                    )
+                };
+                egui::CollapsingHeader::new(header)
+                    .id_salt((
+                        "engine_catalog_group",
+                        provider_workflow_sort_key(Some(workflow_kind)),
+                    ))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                        for provider in group {
+                            let summary = engine_catalog_tool_summary(provider);
+                            let _ = provider_row(ui, Path::new(""), &summary, false);
+                        }
+                    });
+            }
+        });
+
+        if save_clicked || refresh_clicked {
+            self.persist_engine_connection_draft();
+            self.save_engine_connections_and_refresh();
+            if refresh_clicked {
+                self.editor.status = "Refreshed LatentSlate Engine catalog.".to_string();
+            } else {
+                self.editor.status = "Saved LatentSlate Engine backend.".to_string();
+            }
+        }
+        if delete_clicked {
+            self.delete_engine_connection(connection_id);
         }
     }
 
@@ -219,10 +551,7 @@ impl LatentSlateApp {
         kit::field_label(ui, "Add Provider");
         ui.add_space(kit::FORM_ROW_GAP);
 
-        let selected_label = provider_template_dropdown_label(
-            self.provider_template_kind,
-            self.provider_template_unavailable(self.provider_template_kind),
-        );
+        let selected_label = provider_template_label(self.provider_template_kind);
         let mut selected_kind = self.provider_template_kind;
         ui.horizontal(|ui| {
             let button_w = kit::FIELD_H;
@@ -234,47 +563,25 @@ impl LatentSlateApp {
                 combo_w,
                 |ui| {
                     for kind in ProviderTemplateKind::ALL {
-                        let unavailable = self.provider_template_unavailable(kind);
-                        let label = provider_template_dropdown_label(kind, unavailable);
-                        ui.add_enabled_ui(!unavailable, |ui| {
-                            automation_selectable_value(ui, &mut selected_kind, kind, &label);
-                        });
+                        automation_selectable_value(
+                            ui,
+                            &mut selected_kind,
+                            kind,
+                            provider_template_label(kind),
+                        );
                     }
                 },
             );
-            let unavailable = self.provider_template_unavailable(self.provider_template_kind);
-            ui.add_enabled_ui(!unavailable, |ui| {
-                if kit::primary_button(ui, "+", button_w).clicked() {
-                    self.create_selected_provider_template();
-                }
-            });
+            if kit::primary_button(ui, "+", button_w).clicked() {
+                self.create_selected_provider_template();
+            }
         });
         self.provider_template_kind = selected_kind;
     }
 
-    pub(super) fn provider_template_unavailable(&self, kind: ProviderTemplateKind) -> bool {
-        match kind {
-            ProviderTemplateKind::ComfyUi => false,
-            ProviderTemplateKind::OpenAiImage => self
-                .editor
-                .provider_entries
-                .iter()
-                .any(|entry| matches!(entry.connection, ProviderConnection::OpenAiImage { .. })),
-            ProviderTemplateKind::XaiImage => self
-                .editor
-                .provider_entries
-                .iter()
-                .any(|entry| matches!(entry.connection, ProviderConnection::XaiImage { .. })),
-            ProviderTemplateKind::XaiVideo => self
-                .editor
-                .provider_entries
-                .iter()
-                .any(|entry| matches!(entry.connection, ProviderConnection::XaiVideo { .. })),
-        }
-    }
-
     pub(super) fn create_selected_provider_template(&mut self) {
         match self.provider_template_kind {
+            ProviderTemplateKind::LatentSlateEngine => self.create_engine_connection(),
             ProviderTemplateKind::ComfyUi => self.open_provider_builder(None),
             ProviderTemplateKind::OpenAiImage => self.save_provider_template(
                 crate::core::provider_store::default_openai_image_provider_entry(),
@@ -290,76 +597,78 @@ impl LatentSlateApp {
 
     pub(super) fn provider_editor_choice_card(&mut self, ui: &mut Ui) {
         let card_h = ui.available_height();
-        kit::card_panel(ui, card_h, |ui| {
-            self.engine_provider_section(ui);
-            ui.add_space(kit::ACTION_GAP);
-            ui.separator();
-            ui.add_space(kit::ACTION_GAP);
-
-            let Some(path) = self.selected_provider_file.clone() else {
+        kit::card_panel(ui, card_h, |ui| match self.selected_provider.clone() {
+            Some(ProviderModalSelection::Engine(connection_id)) => {
+                self.engine_connection_inspector(ui, connection_id);
+            }
+            Some(ProviderModalSelection::LocalFile(path)) => {
+                self.local_provider_inspector(ui, path);
+            }
+            None => {
                 kit::empty_state(
                     ui,
                     "Select a provider",
-                    "Choose a local provider to edit, or add one from the provider catalog.",
+                    "Choose an Engine backend or a local provider to inspect.",
                 );
-                return;
-            };
-
-            if !path.exists() {
-                kit::empty_state(
-                    ui,
-                    "Provider missing",
-                    "Reload the provider list to refresh this selection.",
-                );
-                return;
-            }
-
-            let summary = provider_file_summary(&path);
-            let supports_builder = provider_file_supports_comfy_builder(&path);
-            let mut open_builder = false;
-            let mut open_json = false;
-            let mut delete_clicked = false;
-            ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new(&summary.name)
-                            .color(kit::TEXT)
-                            .strong()
-                            .size(15.0),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(kit::caption(if supports_builder {
-                        "Select an editor:"
-                    } else {
-                        "Cloud providers store settings and API keys in provider JSON."
-                    }));
-                    ui.add_space(24.0);
-                    if supports_builder {
-                        if kit::secondary_button(ui, "Edit in Builder", 250.0).clicked() {
-                            open_builder = true;
-                        }
-                        ui.add_space(8.0);
-                    }
-                    if kit::secondary_button(ui, "Edit as JSON", 250.0).clicked() {
-                        open_json = true;
-                    }
-                    ui.add_space(8.0);
-                    if kit::danger_button(ui, "Delete Provider", 250.0).clicked() {
-                        delete_clicked = true;
-                    }
-                });
-            });
-
-            if open_builder {
-                self.open_provider_builder(Some(path.clone()));
-            }
-            if open_json {
-                self.open_provider_json_editor(path.clone());
-            }
-            if delete_clicked {
-                self.delete_provider_file(path);
             }
         });
+    }
+
+    fn local_provider_inspector(&mut self, ui: &mut Ui, path: PathBuf) {
+        if !path.exists() {
+            kit::empty_state(
+                ui,
+                "Provider missing",
+                "Reload the provider list to refresh this selection.",
+            );
+            return;
+        }
+
+        let summary = provider_file_summary(&path);
+        let supports_builder = provider_file_supports_comfy_builder(&path);
+        let mut open_builder = false;
+        let mut open_json = false;
+        let mut delete_clicked = false;
+        ui.centered_and_justified(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(&summary.name)
+                        .color(kit::TEXT)
+                        .strong()
+                        .size(15.0),
+                );
+                ui.add_space(4.0);
+                ui.label(kit::caption(if supports_builder {
+                    "Select an editor:"
+                } else {
+                    "Cloud providers store settings and API keys in provider JSON."
+                }));
+                ui.add_space(24.0);
+                if supports_builder {
+                    if kit::secondary_button(ui, "Edit in Builder", 250.0).clicked() {
+                        open_builder = true;
+                    }
+                    ui.add_space(8.0);
+                }
+                if kit::secondary_button(ui, "Edit as JSON", 250.0).clicked() {
+                    open_json = true;
+                }
+                ui.add_space(8.0);
+                if kit::danger_button(ui, "Delete Provider", 250.0).clicked() {
+                    delete_clicked = true;
+                }
+            });
+        });
+
+        if open_builder {
+            self.open_provider_builder(Some(path.clone()));
+        }
+        if open_json {
+            self.open_provider_json_editor(path.clone());
+        }
+        if delete_clicked {
+            self.delete_provider_file(path);
+        }
     }
 
     pub(super) fn delete_provider_file(&mut self, path: PathBuf) {
@@ -367,7 +676,7 @@ impl LatentSlateApp {
             Ok(()) => {
                 let status = format!("Deleted provider {}", path_label(&path));
                 self.editor.status = status;
-                self.selected_provider_file = None;
+                self.selected_provider = None;
                 self.refresh_provider_files();
             }
             Err(err) => {
@@ -445,22 +754,13 @@ impl LatentSlateApp {
 
     pub(super) fn refresh_provider_files(&mut self) {
         self.editor.refresh_providers();
-        if let Some(selected) = &self.selected_provider_file {
-            if !self
-                .editor
-                .provider_files
-                .iter()
-                .any(|path| path == selected)
-            {
-                self.selected_provider_file = None;
-            }
-        }
+        self.ensure_provider_modal_selection();
     }
 
     pub(super) fn save_provider_template(&mut self, entry: ProviderEntry) {
         match crate::core::provider_store::save_local_provider_entry(&entry) {
             Ok(path) => {
-                self.selected_provider_file = Some(path.clone());
+                self.select_provider_modal_item(ProviderModalSelection::LocalFile(path.clone()));
                 self.refresh_provider_files();
                 self.editor.status = format!("Created provider {}", path_label(&path));
             }
@@ -503,7 +803,7 @@ impl LatentSlateApp {
 
         self.provider_json_text = pretty;
         self.provider_json_error = None;
-        self.selected_provider_file = Some(path.to_path_buf());
+        self.selected_provider = Some(ProviderModalSelection::LocalFile(path.to_path_buf()));
         self.refresh_provider_files();
         self.provider_json_editor_path = None;
         self.editor.status = format!("Saved provider {}", path_label(path));
@@ -1375,69 +1675,13 @@ impl LatentSlateApp {
 
         self.provider_builder.source_path = Some(save.provider_path.clone());
         self.provider_builder.error = None;
-        self.selected_provider_file = Some(save.provider_path.clone());
+        self.selected_provider = Some(ProviderModalSelection::LocalFile(
+            save.provider_path.clone(),
+        ));
         self.refresh_provider_files();
         self.provider_builder_open = false;
         self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
     }
-}
-
-fn engine_provider_tool_row(ui: &mut Ui, provider: &ProviderEntry) {
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 38.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(5), kit::PANEL_SUNKEN);
-    ui.painter().rect_stroke(
-        rect,
-        egui::CornerRadius::same(5),
-        Stroke::new(1.0, kit::BORDER_SOFT),
-        egui::StrokeKind::Inside,
-    );
-
-    let content = rect.shrink2(Vec2::new(7.0, 4.0));
-    let source_size = provider_source_badge_size();
-    let source_rect = Rect::from_min_size(
-        Pos2::new(
-            content.right() - source_size.x,
-            content.center().y - source_size.y * 0.5,
-        ),
-        source_size,
-    );
-    paint_provider_source_badge(ui, source_rect, provider);
-    let state = provider_engine_state(provider).unwrap_or(EngineProviderState::Unavailable);
-    let state_w = engine_state_badge_width(state);
-    let state_rect = Rect::from_min_size(
-        Pos2::new(source_rect.left() - 5.0 - state_w, content.center().y - 9.0),
-        Vec2::new(state_w, 18.0),
-    );
-    paint_engine_state_badge(ui, state_rect, state);
-    let text_w = (state_rect.left() - content.left() - 6.0).max(24.0);
-    paint_truncated_row_text_top(
-        ui,
-        Pos2::new(content.left(), content.top()),
-        kit::value(&provider.name),
-        11.5,
-        text_w,
-        if provider_is_available_for_generation(provider) {
-            kit::TEXT
-        } else {
-            kit::TEXT_MUTED
-        },
-    );
-    let detail = format!(
-        "{}  ·  {}",
-        provider.resolved_workflow_kind().label(),
-        provider_output_type_label(provider.output_type)
-    );
-    paint_truncated_row_text_bottom(
-        ui,
-        Pos2::new(content.left(), content.bottom()),
-        kit::caption(detail),
-        10.5,
-        text_w,
-        kit::TEXT_MUTED,
-    );
-    response.on_hover_text(provider_identity_tooltip(provider));
 }
 
 fn provider_engine_state_summary(

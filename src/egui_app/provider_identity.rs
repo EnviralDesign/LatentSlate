@@ -91,6 +91,16 @@ impl EngineProviderState {
             Self::NotDiscovered | Self::Disabled => kit::TEXT_MUTED,
         }
     }
+
+    pub(super) fn catalog_label(self) -> &'static str {
+        match self {
+            Self::Live => "Ready",
+            Self::CachedOffline => "Offline",
+            Self::Unavailable => "Blocked",
+            Self::NotDiscovered => "Missing",
+            Self::Disabled => "Disabled",
+        }
+    }
 }
 
 pub(super) fn provider_source_kind(connection: &ProviderConnection) -> ProviderSourceKind {
@@ -241,10 +251,6 @@ pub(super) fn paint_provider_source_badge(ui: &Ui, rect: Rect, provider: &Provid
     paint_source_badge(ui, rect, source, color);
 }
 
-pub(super) fn paint_provider_source_kind_badge(ui: &Ui, rect: Rect, source: ProviderSourceKind) {
-    paint_source_badge(ui, rect, source, source.color());
-}
-
 fn paint_source_badge(ui: &Ui, rect: Rect, source: ProviderSourceKind, color: Color32) {
     ui.painter().rect_filled(
         rect,
@@ -272,21 +278,22 @@ pub(super) fn provider_source_badge(ui: &mut Ui, provider: &ProviderEntry) -> eg
     response.on_hover_text(provider_identity_tooltip(provider))
 }
 
-pub(super) fn provider_source_kind_badge(
-    ui: &mut Ui,
-    source: ProviderSourceKind,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(provider_source_badge_size(), Sense::hover());
-    paint_provider_source_kind_badge(ui, rect, source);
-    response.on_hover_text(source.label())
-}
-
 pub(super) fn engine_state_badge_width(state: EngineProviderState) -> f32 {
     match state {
         EngineProviderState::Live => 44.0,
         EngineProviderState::CachedOffline => 94.0,
         EngineProviderState::Unavailable => 82.0,
         EngineProviderState::NotDiscovered => 98.0,
+        EngineProviderState::Disabled => 64.0,
+    }
+}
+
+pub(super) fn catalog_status_badge_width(state: EngineProviderState) -> f32 {
+    match state {
+        EngineProviderState::Live => 0.0,
+        EngineProviderState::CachedOffline => 56.0,
+        EngineProviderState::Unavailable => 60.0,
+        EngineProviderState::NotDiscovered => 62.0,
         EngineProviderState::Disabled => 64.0,
     }
 }
@@ -331,24 +338,19 @@ pub(super) fn provider_combo_field<R>(
     let automation_label = selected_provider
         .map(|provider| provider.name.clone())
         .unwrap_or_else(|| placeholder.to_string());
-    let badge_and_gap = selected_provider
-        .map(|_| SOURCE_BADGE_W + 8.0)
-        .unwrap_or(0.0);
-    let response = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            if let Some(provider) = selected_provider {
-                provider_source_badge(ui, provider);
-            }
-            kit::combo_field(
-                ui,
-                id_salt,
-                automation_label,
-                (width - badge_and_gap).max(80.0),
-                add_contents,
-            )
-        })
-        .inner;
+    let response = if let Some(provider) = selected_provider {
+        kit::combo_field_with_leading(
+            ui,
+            id_salt,
+            automation_label,
+            width,
+            SOURCE_BADGE_W,
+            |ui, rect| paint_provider_source_badge(ui, rect, provider),
+            add_contents,
+        )
+    } else {
+        kit::combo_field(ui, id_salt, automation_label, width, add_contents)
+    };
     if let Some(provider) = selected_provider {
         response.on_hover_text(provider_identity_tooltip(provider))
     } else {
