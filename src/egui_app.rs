@@ -45,13 +45,14 @@ use crate::editor::{
 };
 use crate::providers::ProviderProgress;
 use crate::state::{
-    asset_display_name, delete_generative_version_files, generation_record_source_inputs,
-    input_value_as_bool, input_value_as_f64, input_value_as_i64, input_value_as_string,
-    parse_version_index, Asset, AssetKind, Clip, ClipBridgeLink, ClipImageMode, ClipTimeMode,
-    ClipTransform, GenerationJob, GenerationJobStatus, GenerationRecord, GenerationSeedAdvance,
-    GenerativeConfig, InputRole, InputValue, Project, ProjectSettings, ProviderConnection,
-    ProviderEntry, ProviderInputField, ProviderInputType, ProviderOutputType, ProviderWorkflowKind,
-    SeedStrategy, SourceFrameReference, TrackType, DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
+    asset_display_name, default_new_generative_video_timing, delete_generative_version_files,
+    generation_record_source_inputs, input_value_as_bool, input_value_as_f64, input_value_as_i64,
+    input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipBridgeLink,
+    ClipImageMode, ClipTimeMode, ClipTransform, GenerationJob, GenerationJobStatus,
+    GenerationRecord, GenerationSeedAdvance, GenerativeConfig, InputRole, InputValue, Project,
+    ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
+    ProviderOutputType, ProviderWorkflowKind, SeedStrategy, SourceFrameReference, TrackType,
+    DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES,
 };
 use crate::ui_kit as kit;
 use egui_extras::{Size, StripBuilder};
@@ -297,6 +298,7 @@ pub struct LatentSlateApp {
     project_description_editor: Option<ProjectDescriptionEditorState>,
     gen_video_fps: f64,
     gen_video_frames: u32,
+    gen_video_modal_was_open: bool,
     selected_provider: Option<ProviderModalSelection>,
     engine_connection_draft: Option<EngineConnectionDraft>,
     engine_catalog_search: String,
@@ -522,6 +524,8 @@ impl LatentSlateApp {
         let agent_api_enabled = crate::core::automation::is_active();
         let agent_api_port = crate::core::automation::current_port()
             .unwrap_or_else(crate::core::automation::default_port);
+        let (gen_video_fps, gen_video_frames) =
+            default_new_generative_video_timing(editor.project.settings.fps);
         Self {
             project_settings: editor.project.settings.clone(),
             project_description_editor: None,
@@ -578,8 +582,9 @@ impl LatentSlateApp {
             last_tick: now,
             new_project_name: "My New Project".to_string(),
             new_project_parent: default_projects_dir(),
-            gen_video_fps: default_generative_video_fps(),
-            gen_video_frames: default_generative_video_frames(),
+            gen_video_fps,
+            gen_video_frames,
+            gen_video_modal_was_open: false,
             selected_provider: None,
             engine_connection_draft: None,
             engine_catalog_search: String::new(),

@@ -22,10 +22,12 @@ use crate::core::provider_store::{
 use crate::core::thumbnailer::Thumbnailer;
 use crate::core::timeline_bridge::{provider_is_timeline_bridge, resolve_timeline_bridge_clip};
 use crate::state::{
-    next_generative_index, Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole,
-    InputValue, Project, ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout,
-    ProviderConnection, ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
-    DEFAULT_GENERATIVE_VIDEO_FPS, DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
+    generative_video_frames_for_duration, next_generative_index, normalize_generative_video_fps,
+    Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole, InputValue, Project,
+    ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout, ProviderConnection,
+    ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
+    DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS, DEFAULT_GENERATIVE_VIDEO_FPS,
+    DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
 #[derive(Clone, Debug)]
@@ -872,9 +874,9 @@ impl EditorState {
         std::fs::create_dir_all(project_root.join(&folder))
             .map_err(|err| format!("Failed to create generated video folder: {err}"))?;
         let fps = if fps.is_finite() && fps > 0.0 {
-            fps
+            fps.clamp(1.0, 240.0)
         } else {
-            DEFAULT_GENERATIVE_VIDEO_FPS
+            normalize_generative_video_fps(self.project.settings.fps)
         };
         let frame_count = frame_count.max(1);
         let mut asset =
@@ -1337,16 +1339,22 @@ impl EditorState {
             } => {
                 let result = match output_type {
                     ProviderOutputType::Image => self.create_generative_image(),
-                    ProviderOutputType::Video => self.create_generative_video(
-                        fps.unwrap_or(DEFAULT_GENERATIVE_VIDEO_FPS),
-                        frame_count.unwrap_or_else(|| {
-                            let fps = fps.unwrap_or(DEFAULT_GENERATIVE_VIDEO_FPS).max(1.0);
-                            duration_seconds
-                                .map(|duration| (duration.max(1.0 / fps) * fps).round() as u32)
-                                .unwrap_or(DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT)
-                                .max(1)
-                        }),
-                    ),
+                    ProviderOutputType::Video => {
+                        let fps = fps
+                            .filter(|value| value.is_finite() && *value > 0.0)
+                            .map(normalize_generative_video_fps)
+                            .unwrap_or_else(|| {
+                                normalize_generative_video_fps(self.project.settings.fps)
+                            });
+                        let frames = frame_count.filter(|count| *count > 0).unwrap_or_else(|| {
+                            generative_video_frames_for_duration(
+                                fps,
+                                duration_seconds
+                                    .unwrap_or(DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS),
+                            )
+                        });
+                        self.create_generative_video(fps, frames)
+                    }
                     ProviderOutputType::Audio => self.create_generative_audio(),
                 };
                 match result {
@@ -3737,6 +3745,37 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.http_status, 409);
+    }
+
+    #[test]
+    fn create_generative_asset_defaults_to_project_fps_and_five_seconds() {
+        let dir = std::env::temp_dir().join(format!("ls-gen-video-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut editor = EditorState::new();
+        editor.project = Project::new("timing-defaults");
+        editor.project.project_path = Some(dir.clone());
+        editor.project.settings.fps = 30.0;
+
+        let response = editor.apply_automation_command(&AutomationCommand::CreateGenerativeAsset {
+            output_type: ProviderOutputType::Video,
+            name: None,
+            fps: None,
+            duration_seconds: None,
+            frame_count: None,
+        });
+        assert!(response.ok, "{response:?}");
+        let asset = editor.project.assets.last().expect("created asset");
+        match &asset.kind {
+            AssetKind::GenerativeVideo {
+                fps, frame_count, ..
+            } => {
+                assert_eq!(*fps, 30.0);
+                assert_eq!(*frame_count, 150);
+            }
+            other => panic!("expected generative video, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

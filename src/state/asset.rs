@@ -227,8 +227,14 @@ impl Asset {
     }
 }
 
+/// Serde fallback for older generative videos that omitted fps. New assets use
+/// the current project fps instead of this Wan 2.2-era value.
 pub const DEFAULT_GENERATIVE_VIDEO_FPS: f64 = 16.0;
+/// Serde fallback for older generative videos that omitted frame_count.
 pub const DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT: u32 = 81;
+/// Default duration when creating a new generative video.
+pub const DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS: f64 = 5.0;
+const FALLBACK_PROJECT_FPS: f64 = 30.0;
 
 fn default_generative_video_fps() -> f64 {
     DEFAULT_GENERATIVE_VIDEO_FPS
@@ -236,6 +242,32 @@ fn default_generative_video_fps() -> f64 {
 
 fn default_generative_video_frame_count() -> u32 {
     DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT
+}
+
+pub fn normalize_generative_video_fps(fps: f64) -> f64 {
+    if fps.is_finite() && fps > 0.0 {
+        fps.clamp(1.0, 240.0)
+    } else {
+        FALLBACK_PROJECT_FPS
+    }
+}
+
+pub fn generative_video_frames_for_duration(fps: f64, duration_seconds: f64) -> u32 {
+    let fps = normalize_generative_video_fps(fps);
+    let duration = if duration_seconds.is_finite() {
+        duration_seconds.max(1.0 / fps)
+    } else {
+        DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS
+    };
+    (duration * fps).round().clamp(1.0, 1_000_000.0) as u32
+}
+
+pub fn default_new_generative_video_timing(project_fps: f64) -> (f64, u32) {
+    let fps = normalize_generative_video_fps(project_fps);
+    (
+        fps,
+        generative_video_frames_for_duration(fps, DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS),
+    )
 }
 
 pub fn generative_video_duration_seconds(fps: f64, frame_count: u32) -> Option<f64> {
@@ -284,5 +316,51 @@ mod tests {
         let parsed: Asset = serde_json::from_str(&json).unwrap();
         assert_eq!(asset.id, parsed.id);
         assert_eq!(asset.name, parsed.name);
+    }
+
+    #[test]
+    fn new_generative_video_timing_uses_project_fps_and_five_seconds() {
+        let (fps, frames) = default_new_generative_video_timing(30.0);
+        assert_eq!(fps, 30.0);
+        assert_eq!(frames, 150);
+        assert_eq!(generative_video_duration_seconds(fps, frames), Some(5.0));
+
+        let (fps, frames) = default_new_generative_video_timing(24.0);
+        assert_eq!(fps, 24.0);
+        assert_eq!(frames, 120);
+
+        let (fps, frames) = default_new_generative_video_timing(16.0);
+        assert_eq!(fps, 16.0);
+        assert_eq!(frames, 80);
+    }
+
+    #[test]
+    fn new_generative_video_timing_falls_back_for_invalid_fps() {
+        let (fps, frames) = default_new_generative_video_timing(0.0);
+        assert_eq!(fps, 30.0);
+        assert_eq!(frames, 150);
+    }
+
+    #[test]
+    fn missing_generative_video_timing_deserializes_to_legacy_defaults() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "old",
+            "kind": {
+                "type": "GenerativeVideo",
+                "folder": "generated/video/x",
+                "active_version": null
+            }
+        }"#;
+        let asset: Asset = serde_json::from_str(json).unwrap();
+        match asset.kind {
+            AssetKind::GenerativeVideo {
+                fps, frame_count, ..
+            } => {
+                assert_eq!(fps, DEFAULT_GENERATIVE_VIDEO_FPS);
+                assert_eq!(frame_count, DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT);
+            }
+            other => panic!("expected generative video, got {other:?}"),
+        }
     }
 }

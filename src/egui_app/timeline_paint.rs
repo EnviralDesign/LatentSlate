@@ -154,7 +154,10 @@ pub(super) fn paint_dashed_timeline_button(
     painter.rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.0_f32, color.gamma_multiply(if hovered { 0.8 } else { 0.45 })),
+        Stroke::new(
+            1.0_f32,
+            color.gamma_multiply(if hovered { 0.8 } else { 0.45 }),
+        ),
         egui::StrokeKind::Inside,
     );
     painter.text(

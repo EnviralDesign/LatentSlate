@@ -37,6 +37,21 @@
       "respond_to_restart_all": true,
       "log_to_disk": false,
       "log_rotation_count": 10
+    },
+    {
+      "id": "f7a18bea-8249-447c-a249-6b1edc87ce2c",
+      "name": "LatentSlate Engine — Quick Tunnel",
+      "command": "\"C:\\Program Files (x86)\\cloudflared\\cloudflared.exe\" tunnel --no-autoupdate --url http://127.0.0.1:8765",
+      "working_directory": "C:\\repos\\LatentSlate-Engine",
+      "process_type": "Process",
+      "auto_start": false,
+      "startup_delay_seconds": 0,
+      "auto_restart": false,
+      "respond_to_start_all": false,
+      "respond_to_stop_all": true,
+      "respond_to_restart_all": false,
+      "log_to_disk": true,
+      "log_rotation_count": 3
     }
   ]
 }

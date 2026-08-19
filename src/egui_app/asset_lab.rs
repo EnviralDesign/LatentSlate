@@ -1143,7 +1143,12 @@ fn paint_asset_lab_node_icon(
         }
         AssetLabNodeIcon::Trash => {
             let body = Rect::from_center_size(center + Vec2::new(0.0, 3.0), Vec2::new(10.0, 11.0));
-            painter.rect_stroke(body, 1.5, Stroke::new(1.5_f32, color), egui::StrokeKind::Inside);
+            painter.rect_stroke(
+                body,
+                1.5,
+                Stroke::new(1.5_f32, color),
+                egui::StrokeKind::Inside,
+            );
             painter.line_segment(
                 [
                     center + Vec2::new(-7.0, -5.0),
@@ -2620,7 +2625,10 @@ impl LatentSlateApp {
                         painter.rect_stroke(
                             label_rect,
                             kit::field_radius(),
-                            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(82, 220, 136, 140)),
+                            Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgba_unmultiplied(82, 220, 136, 140),
+                            ),
                             egui::StrokeKind::Inside,
                         );
                         painter.text(

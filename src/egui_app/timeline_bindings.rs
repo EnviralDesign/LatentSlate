@@ -362,7 +362,11 @@ fn elbow_segments(source: Pos2, target: Pos2) -> Vec<Pos2> {
 fn paint_lock_mark(painter: &egui::Painter, center: Pos2, color: Color32) {
     let body = Rect::from_center_size(center + Vec2::new(0.0, 1.5), Vec2::new(7.0, 5.5));
     painter.rect_filled(body, 1.0, color);
-    painter.circle_stroke(center + Vec2::new(0.0, -2.2), 2.4, Stroke::new(1.3_f32, color));
+    painter.circle_stroke(
+        center + Vec2::new(0.0, -2.2),
+        2.4,
+        Stroke::new(1.3_f32, color),
+    );
 }
 
 fn paint_binding_segment(painter: &egui::Painter, a: Pos2, b: Pos2, color: Color32, dashed: bool) {

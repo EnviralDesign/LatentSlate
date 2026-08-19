@@ -6,7 +6,10 @@ use eframe::egui::{
 };
 use uuid::Uuid;
 
-use crate::state::{ProjectProviderScope, ProjectSettings, ProviderEntry, ProviderOutputType};
+use crate::state::{
+    default_new_generative_video_timing, ProjectProviderScope, ProjectSettings, ProviderEntry,
+    ProviderOutputType,
+};
 use crate::ui_kit as kit;
 
 use super::{
@@ -410,6 +413,12 @@ impl LatentSlateApp {
         } else if cancel_clicked || close_clicked || outside_clicked || !open {
             self.project_description_editor = None;
         }
+    }
+
+    pub(super) fn seed_new_generative_video_defaults(&mut self) {
+        let (fps, frames) = default_new_generative_video_timing(self.editor.project.settings.fps);
+        self.gen_video_fps = fps;
+        self.gen_video_frames = frames;
     }
 
     pub(super) fn generative_video_modal(&mut self, ctx: &Context) {

@@ -63,7 +63,10 @@ pub(super) fn paint_queue_panel_shell(ui: &mut Ui, rect: Rect, attention: bool) 
         ui.painter().rect_stroke(
             rect.expand(1.0),
             radius,
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(244, 127, 45, alpha),
+            ),
             egui::StrokeKind::Inside,
         );
     }

@@ -1577,7 +1577,10 @@ impl LatentSlateApp {
                 painter.rect_stroke(
                     label_rect,
                     4.0,
-                    Stroke::new(1.0_f32, color.gamma_multiply(if selected { 1.0 } else { 0.72 })),
+                    Stroke::new(
+                        1.0_f32,
+                        color.gamma_multiply(if selected { 1.0 } else { 0.72 }),
+                    ),
                     egui::StrokeKind::Inside,
                 );
                 let text_painter = painter.with_clip_rect(label_rect.shrink2(Vec2::new(6.0, 1.0)));

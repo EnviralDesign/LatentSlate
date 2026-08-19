@@ -370,10 +370,15 @@ Generative asset creation:
 
 ```json
 { "type": "create_generative_asset", "output_type": "image", "name": "Concept still" }
+{ "type": "create_generative_asset", "output_type": "video" }
 { "type": "create_generative_asset", "output_type": "video", "fps": 16.0, "frame_count": 81 }
 { "type": "create_generative_asset", "output_type": "video", "fps": 24.0, "duration_seconds": 10.0 }
 { "type": "create_generative_asset", "output_type": "audio" }
 ```
+
+When `fps` is omitted, new video assets use the current project settings fps. When both
+`frame_count` and `duration_seconds` are omitted, duration defaults to 5 seconds and
+frame count is derived from fps.
 
 Generative video timing is stored as target `duration_seconds`, `fps`, and
 derived `frame_count`. For hollow generative videos with a single timeline clip,

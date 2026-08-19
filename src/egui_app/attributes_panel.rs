@@ -1,4 +1,8 @@
 use super::*;
+use crate::state::{
+    default_new_generative_video_timing, normalize_generative_video_fps,
+    DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS,
+};
 
 impl LatentSlateApp {
     pub(super) fn right_panel(&mut self, root: &mut Ui) {
@@ -554,10 +558,12 @@ impl LatentSlateApp {
             return;
         }
 
-        let asset_id = match self.editor.create_generative_video(
-            default_generative_video_fps(),
-            default_generative_video_frames(),
-        ) {
+        let (default_fps, default_frames) =
+            default_new_generative_video_timing(self.editor.project.settings.fps);
+        let asset_id = match self
+            .editor
+            .create_generative_video(default_fps, default_frames)
+        {
             Ok(asset_id) => asset_id,
             Err(err) => {
                 self.editor.status = err;
@@ -595,10 +601,10 @@ impl LatentSlateApp {
             )
         } else {
             (
-                default_generative_video_fps(),
-                default_generative_video_frames(),
+                default_fps,
+                default_frames,
                 left_clip.end_time(),
-                default_generative_video_frames() as f64 / default_generative_video_fps(),
+                default_frames as f64 / default_fps,
             )
         };
         self.editor
@@ -692,8 +698,11 @@ impl LatentSlateApp {
                 .find(|provider| provider.id == provider_id)
                 .cloned()
         });
-        let (duration, fps, frame_count) =
-            initial_context_video_timing(selected_provider.as_ref(), None);
+        let (duration, fps, frame_count) = initial_context_video_timing(
+            selected_provider.as_ref(),
+            self.editor.project.settings.fps,
+            None,
+        );
         let target_track_id = if reference == SingleI2VReference::VideoLastFrame {
             source_clip.track_id
         } else {
@@ -967,8 +976,11 @@ impl LatentSlateApp {
                 .cloned()
         });
         let duration_hint = (last.anchor_time - first.anchor_time).abs();
-        let (duration, fps, frame_count) =
-            initial_context_video_timing(selected_provider.as_ref(), Some(duration_hint));
+        let (duration, fps, frame_count) = initial_context_video_timing(
+            selected_provider.as_ref(),
+            self.editor.project.settings.fps,
+            Some(duration_hint),
+        );
 
         let asset_id = match self.editor.create_generative_video(fps, frame_count) {
             Ok(asset_id) => asset_id,
@@ -3628,14 +3640,13 @@ fn clamp_provider_duration(duration: f64, bounds: ProviderDurationBounds) -> f64
     duration
 }
 
-const DEFAULT_CONTEXT_VIDEO_DURATION_SECONDS: f64 = 5.0;
-
 fn initial_context_video_timing(
     provider: Option<&ProviderEntry>,
+    project_fps: f64,
     duration_hint: Option<f64>,
 ) -> (f64, f64, u32) {
     let fps = provider_numeric_default(provider, InputRole::Fps)
-        .unwrap_or_else(default_generative_video_fps)
+        .unwrap_or_else(|| normalize_generative_video_fps(project_fps))
         .clamp(1.0, 240.0);
     let bounds = provider_duration_bounds(provider);
     let duration_default = provider_numeric_default(provider, InputRole::DurationSeconds);
@@ -3659,7 +3670,7 @@ fn initial_context_video_timing(
         return (duration, fps, frame_count);
     }
 
-    let duration = clamp_provider_duration(DEFAULT_CONTEXT_VIDEO_DURATION_SECONDS, bounds);
+    let duration = clamp_provider_duration(DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS, bounds);
     let frame_count = frames_from_seconds(duration, fps)
         .round()
         .clamp(1.0, 1_000_000.0) as u32;

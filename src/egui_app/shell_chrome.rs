@@ -254,7 +254,13 @@ impl LatentSlateApp {
             self.project_settings_modal(ctx);
         }
         if self.editor.overlays.generative_video {
+            if !self.gen_video_modal_was_open {
+                self.seed_new_generative_video_defaults();
+            }
+            self.gen_video_modal_was_open = true;
             self.generative_video_modal(ctx);
+        } else {
+            self.gen_video_modal_was_open = false;
         }
         if self.editor.overlays.export_video {
             self.export_video_modal(ctx);

@@ -1837,7 +1837,10 @@ pub fn queue_toggle_button(
         ui.painter().rect_stroke(
             rect.expand(1.0),
             CornerRadius::same(12),
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(244, 127, 45, alpha),
+            ),
             StrokeKind::Inside,
         );
     }
