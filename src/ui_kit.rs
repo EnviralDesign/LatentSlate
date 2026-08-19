@@ -125,16 +125,16 @@ pub fn configure_style(ctx: &Context) {
     visuals.text_edit_bg_color = Some(FIELD_BG);
     visuals.hyperlink_color = PRIMARY_HOVER;
     visuals.selection.bg_fill = Color32::from_rgb(24, 94, 61);
-    visuals.selection.stroke = Stroke::new(1.0, BORDER_FOCUS);
+    visuals.selection.stroke = Stroke::new(1.0_f32, BORDER_FOCUS);
     visuals.widgets.noninteractive.bg_fill = PANEL;
     visuals.widgets.inactive.bg_fill = FIELD_BG;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER_SOFT);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_SOFT);
     visuals.widgets.hovered.bg_fill = FIELD_BG_HOVER;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BORDER);
     visuals.widgets.active.bg_fill = FIELD_BG_ACTIVE;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, BORDER_FOCUS);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, BORDER_FOCUS);
     visuals.widgets.open.bg_fill = PANEL_RAISED;
-    visuals.window_stroke = Stroke::new(1.0, BORDER);
+    visuals.window_stroke = Stroke::new(1.0_f32, BORDER);
     visuals.window_corner_radius = CornerRadius::same(RADIUS);
     visuals.menu_corner_radius = CornerRadius::same(RADIUS);
     ctx.set_visuals(visuals);
@@ -234,7 +234,7 @@ pub enum PanelEdge {
 }
 
 pub fn paint_panel_edge(ui: &Ui, rect: Rect, edge: PanelEdge) {
-    let stroke = Stroke::new(1.0, BORDER);
+    let stroke = Stroke::new(1.0_f32, BORDER);
     let painter = ui.painter();
     match edge {
         PanelEdge::Top => {
@@ -255,7 +255,7 @@ pub fn paint_panel_edge(ui: &Ui, rect: Rect, edge: PanelEdge) {
 pub fn modal_frame() -> Frame {
     Frame::new()
         .fill(PANEL_RAISED)
-        .stroke(Stroke::new(1.0, MODAL_STROKE))
+        .stroke(Stroke::new(1.0_f32, MODAL_STROKE))
         .corner_radius(CornerRadius::same(MODAL_RADIUS))
         .inner_margin(Margin::same(0))
         .shadow(MODAL_SHADOW)
@@ -264,7 +264,7 @@ pub fn modal_frame() -> Frame {
 pub fn card_frame() -> Frame {
     Frame::new()
         .fill(Color32::from_rgb(20, 21, 24))
-        .stroke(Stroke::new(1.0, BORDER_SOFT))
+        .stroke(Stroke::new(1.0_f32, BORDER_SOFT))
         .corner_radius(CornerRadius::same(RADIUS))
         .inner_margin(Margin::same(SECTION_PAD))
 }
@@ -297,7 +297,7 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(RADIUS),
-        Stroke::new(1.0, BORDER_SOFT),
+        Stroke::new(1.0_f32, BORDER_SOFT),
         StrokeKind::Inside,
     );
 
@@ -1088,7 +1088,7 @@ fn remember_dialog_dir(ui: &Ui, memory_id: egui::Id, options: BrowsePathOptions<
 pub fn sunken_frame() -> Frame {
     Frame::new()
         .fill(FIELD_BG)
-        .stroke(Stroke::new(1.0, BORDER_SOFT))
+        .stroke(Stroke::new(1.0_f32, BORDER_SOFT))
         .corner_radius(CornerRadius::same(5))
         .inner_margin(Margin::same(8))
 }
@@ -1291,11 +1291,11 @@ pub fn multiline_text_field(
     });
     crate::core::automation::apply_pending_text(&mut response, value);
     let stroke = if response.has_focus() {
-        Stroke::new(1.0, BORDER_FOCUS)
+        Stroke::new(1.0_f32, BORDER_FOCUS)
     } else if response.hovered() {
-        Stroke::new(1.0, BORDER)
+        Stroke::new(1.0_f32, BORDER)
     } else {
-        Stroke::new(1.0, BORDER_SOFT)
+        Stroke::new(1.0_f32, BORDER_SOFT)
     };
     ui.painter()
         .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
@@ -1357,11 +1357,11 @@ pub fn code_editor_field(ui: &mut Ui, value: &mut String, id_salt: impl Hash) ->
     };
     crate::core::automation::apply_pending_text(&mut response, value);
     let stroke = if response.has_focus() {
-        Stroke::new(1.0, BORDER_FOCUS)
+        Stroke::new(1.0_f32, BORDER_FOCUS)
     } else if response.hovered() {
-        Stroke::new(1.0, BORDER)
+        Stroke::new(1.0_f32, BORDER)
     } else {
-        Stroke::new(1.0, BORDER_SOFT)
+        Stroke::new(1.0_f32, BORDER_SOFT)
     };
     ui.painter()
         .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
@@ -1378,11 +1378,11 @@ pub fn color_field(ui: &mut Ui, color: &mut Color32, width: f32) -> Response {
     let popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
     let rounding = field_radius();
     let stroke = if response.has_focus() || popup_open {
-        Stroke::new(1.0, BORDER_FOCUS)
+        Stroke::new(1.0_f32, BORDER_FOCUS)
     } else if response.hovered() {
-        Stroke::new(1.0, BORDER)
+        Stroke::new(1.0_f32, BORDER)
     } else {
-        Stroke::new(1.0, BORDER_SOFT)
+        Stroke::new(1.0_f32, BORDER_SOFT)
     };
 
     ui.painter().rect_filled(rect, rounding, FIELD_BG);
@@ -1454,11 +1454,11 @@ fn field_text_frame() -> Frame {
 
 fn field_stroke(output: &egui::text_edit::TextEditOutput) -> Stroke {
     if output.response.has_focus() {
-        Stroke::new(1.0, BORDER_FOCUS)
+        Stroke::new(1.0_f32, BORDER_FOCUS)
     } else if output.response.hovered() {
-        Stroke::new(1.0, BORDER)
+        Stroke::new(1.0_f32, BORDER)
     } else {
-        Stroke::new(1.0, BORDER_SOFT)
+        Stroke::new(1.0_f32, BORDER_SOFT)
     }
 }
 
@@ -1837,7 +1837,7 @@ pub fn queue_toggle_button(
         ui.painter().rect_stroke(
             rect.expand(1.0),
             CornerRadius::same(12),
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
             StrokeKind::Inside,
         );
     }
@@ -1858,7 +1858,7 @@ pub fn queue_toggle_button(
         ui.painter().rect_stroke(
             badge_rect,
             CornerRadius::same(8),
-            Stroke::new(1.0, APP_BG),
+            Stroke::new(1.0_f32, APP_BG),
             StrokeKind::Inside,
         );
         ui.painter().text(
@@ -1880,7 +1880,7 @@ pub fn queue_toggle_button(
         ui.painter().circle_stroke(
             badge_rect.center(),
             badge_rect.width() * 0.5,
-            Stroke::new(1.0, APP_BG),
+            Stroke::new(1.0_f32, APP_BG),
         );
         ui.painter().text(
             badge_rect.center(),
@@ -2004,7 +2004,7 @@ pub fn popover_button(ui: &mut Ui, label: &str, width: f32, enabled: bool) -> Re
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(POPOVER_BUTTON_RADIUS),
-        Stroke::new(1.0, stroke),
+        Stroke::new(1.0_f32, stroke),
         StrokeKind::Inside,
     );
     ui.painter().text(
@@ -2205,7 +2205,7 @@ pub fn close_button(ui: &mut Ui) -> Response {
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(CLOSE_BUTTON_RADIUS),
-            Stroke::new(1.0, stroke),
+            Stroke::new(1.0_f32, stroke),
             StrokeKind::Inside,
         );
     }
@@ -2332,27 +2332,27 @@ pub fn configure_field_widget_style(ui: &mut Ui, min_width: f32) {
     ui.style_mut().drag_value_text_style = egui::TextStyle::Body;
     let visuals = ui.visuals_mut();
     visuals.text_edit_bg_color = Some(FIELD_BG);
-    visuals.selection.stroke = Stroke::new(1.0, BORDER_FOCUS);
+    visuals.selection.stroke = Stroke::new(1.0_f32, BORDER_FOCUS);
     visuals.override_text_color = Some(TEXT);
     visuals.widgets.inactive.bg_fill = FIELD_BG;
     visuals.widgets.inactive.weak_bg_fill = FIELD_BG;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER_SOFT);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_SOFT);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT);
     visuals.widgets.inactive.corner_radius = field_radius();
     visuals.widgets.hovered.bg_fill = FIELD_BG;
     visuals.widgets.hovered.weak_bg_fill = FIELD_BG;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, BORDER);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT);
     visuals.widgets.hovered.corner_radius = field_radius();
     visuals.widgets.active.bg_fill = FIELD_BG;
     visuals.widgets.active.weak_bg_fill = FIELD_BG;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, BORDER_FOCUS);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, BORDER_FOCUS);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT);
     visuals.widgets.active.corner_radius = field_radius();
     visuals.widgets.open.bg_fill = FIELD_BG;
     visuals.widgets.open.weak_bg_fill = FIELD_BG;
-    visuals.widgets.open.bg_stroke = Stroke::new(1.0, BORDER_FOCUS);
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, TEXT);
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, BORDER_FOCUS);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, TEXT);
     visuals.widgets.open.corner_radius = field_radius();
 }
 
@@ -2438,7 +2438,7 @@ fn paint_button_background(ui: &Ui, rect: Rect, response: &Response, skin: Butto
         ui.painter().rect_stroke(
             rect,
             CornerRadius::same(skin.radius),
-            Stroke::new(1.0, stroke),
+            Stroke::new(1.0_f32, stroke),
             StrokeKind::Inside,
         );
     }
@@ -2507,7 +2507,7 @@ pub fn collapsed_rail_button(ui: &mut Ui, icon: &str) -> Response {
             button_rect,
             CornerRadius::same(4),
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if response.has_focus() {
                     BORDER_FOCUS
                 } else {
@@ -2573,7 +2573,7 @@ pub fn draw_accent_row_with_status(
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(5),
-        Stroke::new(1.0, stroke_color),
+        Stroke::new(1.0_f32, stroke_color),
         StrokeKind::Inside,
     );
     if let Some(color) = status_accent {
@@ -2581,7 +2581,7 @@ pub fn draw_accent_row_with_status(
         ui.painter().rect_stroke(
             inner,
             CornerRadius::same(4),
-            Stroke::new(1.0, color.gamma_multiply(0.38)),
+            Stroke::new(1.0_f32, color.gamma_multiply(0.38)),
             StrokeKind::Inside,
         );
     }

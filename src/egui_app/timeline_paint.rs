@@ -130,7 +130,7 @@ pub(super) fn paint_clip_waveform(
         let px = rect.left() + x as f32;
         clip_painter.line_segment(
             [Pos2::new(px, y1), Pos2::new(px, y2)],
-            Stroke::new(1.0, Color32::from_gray(158)),
+            Stroke::new(1.0_f32, Color32::from_gray(158)),
         );
     }
 }
@@ -154,7 +154,7 @@ pub(super) fn paint_dashed_timeline_button(
     painter.rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.0, color.gamma_multiply(if hovered { 0.8 } else { 0.45 })),
+        Stroke::new(1.0_f32, color.gamma_multiply(if hovered { 0.8 } else { 0.45 })),
         egui::StrokeKind::Inside,
     );
     painter.text(

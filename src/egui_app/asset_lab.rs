@@ -1072,7 +1072,7 @@ fn paint_asset_lab_node_preview(
     painter.rect_stroke(
         rect,
         kit::field_radius(),
-        Stroke::new(1.0, kit::BORDER_SOFT),
+        Stroke::new(1.0_f32, kit::BORDER_SOFT),
         egui::StrokeKind::Inside,
     );
 
@@ -1087,7 +1087,7 @@ fn paint_asset_lab_node_preview(
         painter.rect_stroke(
             rect,
             kit::field_radius(),
-            Stroke::new(1.0, accent.gamma_multiply(0.68)),
+            Stroke::new(1.0_f32, accent.gamma_multiply(0.68)),
             egui::StrokeKind::Inside,
         );
     } else {
@@ -1130,41 +1130,41 @@ fn paint_asset_lab_node_icon(
             painter.circle_filled(center + Vec2::new(0.0, -5.0), 3.2, color);
             painter.line_segment(
                 [center + Vec2::new(0.0, -2.0), center + Vec2::new(0.0, 7.0)],
-                Stroke::new(1.7, color),
+                Stroke::new(1.7_f32, color),
             );
             painter.line_segment(
                 [center + Vec2::new(-4.0, 0.0), center + Vec2::new(4.0, 0.0)],
-                Stroke::new(1.5, color),
+                Stroke::new(1.5_f32, color),
             );
             painter.line_segment(
                 [center + Vec2::new(0.0, 7.0), center + Vec2::new(-3.0, 11.0)],
-                Stroke::new(1.5, color.gamma_multiply(0.85)),
+                Stroke::new(1.5_f32, color.gamma_multiply(0.85)),
             );
         }
         AssetLabNodeIcon::Trash => {
             let body = Rect::from_center_size(center + Vec2::new(0.0, 3.0), Vec2::new(10.0, 11.0));
-            painter.rect_stroke(body, 1.5, Stroke::new(1.5, color), egui::StrokeKind::Inside);
+            painter.rect_stroke(body, 1.5, Stroke::new(1.5_f32, color), egui::StrokeKind::Inside);
             painter.line_segment(
                 [
                     center + Vec2::new(-7.0, -5.0),
                     center + Vec2::new(7.0, -5.0),
                 ],
-                Stroke::new(1.6, color),
+                Stroke::new(1.6_f32, color),
             );
             painter.line_segment(
                 [
                     center + Vec2::new(-3.0, -8.0),
                     center + Vec2::new(3.0, -8.0),
                 ],
-                Stroke::new(1.5, color),
+                Stroke::new(1.5_f32, color),
             );
             painter.line_segment(
                 [center + Vec2::new(-2.5, 0.0), center + Vec2::new(-2.5, 8.0)],
-                Stroke::new(1.0, color.gamma_multiply(0.85)),
+                Stroke::new(1.0_f32, color.gamma_multiply(0.85)),
             );
             painter.line_segment(
                 [center + Vec2::new(2.5, 0.0), center + Vec2::new(2.5, 8.0)],
-                Stroke::new(1.0, color.gamma_multiply(0.85)),
+                Stroke::new(1.0_f32, color.gamma_multiply(0.85)),
             );
         }
     }
@@ -1222,7 +1222,7 @@ fn asset_lab_node_icon_button(
     ui.painter().rect_stroke(
         rect,
         kit::field_radius(),
-        Stroke::new(1.0, stroke),
+        Stroke::new(1.0_f32, stroke),
         egui::StrokeKind::Inside,
     );
     paint_asset_lab_node_icon(ui.painter(), rect, icon, icon_color);
@@ -1263,7 +1263,7 @@ fn asset_lab_node_text_button(
     ui.painter().rect_stroke(
         rect,
         kit::field_radius(),
-        Stroke::new(1.0, stroke),
+        Stroke::new(1.0_f32, stroke),
         egui::StrokeKind::Inside,
     );
     let galley = egui::WidgetText::from(RichText::new(label).color(text_color).size(11.0))
@@ -1338,7 +1338,7 @@ pub(super) fn asset_lab_preview(
     painter.rect_stroke(
         rect,
         kit::field_radius(),
-        Stroke::new(1.0, kit::BORDER_SOFT),
+        Stroke::new(1.0_f32, kit::BORDER_SOFT),
         egui::StrokeKind::Inside,
     );
 
@@ -2016,7 +2016,7 @@ impl LatentSlateApp {
         painter.rect_stroke(
             canvas_rect,
             kit::field_radius(),
-            Stroke::new(1.0, kit::BORDER_SOFT),
+            Stroke::new(1.0_f32, kit::BORDER_SOFT),
             egui::StrokeKind::Inside,
         );
 
@@ -2429,7 +2429,7 @@ impl LatentSlateApp {
                 node_rect,
                 kit::field_radius(),
                 Stroke::new(
-                    1.1,
+                    1.1_f32,
                     if active_output {
                         kit::PRIMARY
                     } else if selected {
@@ -2517,7 +2517,7 @@ impl LatentSlateApp {
                         Pos2::new(preview_rect.left() + 8.0, scrub_y),
                         Pos2::new(preview_rect.right() - 8.0, scrub_y),
                     ],
-                    Stroke::new(1.0, kit::BORDER_SOFT),
+                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
                 );
                 let scrub_x = egui::lerp(
                     (preview_rect.left() + 8.0)..=(preview_rect.right() - 8.0),
@@ -2528,7 +2528,7 @@ impl LatentSlateApp {
                         Pos2::new(scrub_x, preview_rect.top() + 7.0),
                         Pos2::new(scrub_x, preview_rect.bottom() - 5.0),
                     ],
-                    Stroke::new(1.4, kit::MARKER),
+                    Stroke::new(1.4_f32, kit::MARKER),
                 );
             }
 
@@ -2604,7 +2604,7 @@ impl LatentSlateApp {
                     painter.circle_stroke(
                         port,
                         port_radius + 1.2,
-                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(7, 13, 10, 190)),
+                        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(7, 13, 10, 190)),
                     );
 
                     if selected && zoom >= 0.86 {
@@ -2620,7 +2620,7 @@ impl LatentSlateApp {
                         painter.rect_stroke(
                             label_rect,
                             kit::field_radius(),
-                            Stroke::new(1.0, Color32::from_rgba_unmultiplied(82, 220, 136, 140)),
+                            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(82, 220, 136, 140)),
                             egui::StrokeKind::Inside,
                         );
                         painter.text(
@@ -3011,7 +3011,7 @@ impl LatentSlateApp {
 
         egui::Frame::new()
             .fill(kit::PANEL_SUNKEN)
-            .stroke(Stroke::new(1.0, kit::BORDER_SOFT))
+            .stroke(Stroke::new(1.0_f32, kit::BORDER_SOFT))
             .corner_radius(kit::field_radius())
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
@@ -3786,7 +3786,7 @@ impl LatentSlateApp {
         painter.rect_stroke(
             rect,
             kit::field_radius(),
-            Stroke::new(1.0, kit::BORDER_SOFT),
+            Stroke::new(1.0_f32, kit::BORDER_SOFT),
             egui::StrokeKind::Inside,
         );
 
@@ -3801,7 +3801,7 @@ impl LatentSlateApp {
                         Pos2::new(x, inner.top() + 12.0),
                         Pos2::new(x, inner.bottom() - 6.0),
                     ],
-                    Stroke::new(1.0, kit::BORDER_SOFT),
+                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
                 );
                 painter.text(
                     Pos2::new(x + 3.0, inner.top()),
@@ -3817,7 +3817,7 @@ impl LatentSlateApp {
             let x = inner.left() + inner.width() * (current / duration).clamp(0.0, 1.0) as f32;
             painter.line_segment(
                 [Pos2::new(x, inner.top()), Pos2::new(x, inner.bottom())],
-                Stroke::new(2.0, kit::PLAYHEAD),
+                Stroke::new(2.0_f32, kit::PLAYHEAD),
             );
             painter.circle_filled(Pos2::new(x, inner.top()), 4.0, kit::PLAYHEAD);
         } else {

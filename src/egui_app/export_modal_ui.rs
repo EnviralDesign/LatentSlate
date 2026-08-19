@@ -340,7 +340,7 @@ impl LatentSlateApp {
         ui.painter().rect_stroke(
             rect,
             kit::field_radius(),
-            Stroke::new(1.0, kit::BORDER_SOFT),
+            Stroke::new(1.0_f32, kit::BORDER_SOFT),
             egui::StrokeKind::Inside,
         );
         let Some(texture) = &self.export_preview_texture else {

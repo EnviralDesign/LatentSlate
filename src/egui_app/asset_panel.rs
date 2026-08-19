@@ -109,7 +109,7 @@ pub(super) fn paint_asset_thumbnail(
     ui.painter().rect_stroke(
         rect,
         kit::field_radius(),
-        Stroke::new(1.0, kit::BORDER_SOFT),
+        Stroke::new(1.0_f32, kit::BORDER_SOFT),
         egui::StrokeKind::Inside,
     );
 
@@ -128,7 +128,7 @@ pub(super) fn paint_asset_thumbnail(
         ui.painter().rect_stroke(
             rect,
             kit::field_radius(),
-            Stroke::new(1.0, accent.gamma_multiply(0.7)),
+            Stroke::new(1.0_f32, accent.gamma_multiply(0.7)),
             egui::StrokeKind::Inside,
         );
         return;

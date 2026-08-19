@@ -125,7 +125,7 @@ impl LatentSlateApp {
                 painter.circle_stroke(
                     target_anchor,
                     4.5,
-                    Stroke::new(1.5, color.gamma_multiply(0.7)),
+                    Stroke::new(1.5_f32, color.gamma_multiply(0.7)),
                 );
                 if !plan.is_ok() {
                     painter.circle_filled(target_anchor, 3.0, kit::DANGER);
@@ -362,11 +362,11 @@ fn elbow_segments(source: Pos2, target: Pos2) -> Vec<Pos2> {
 fn paint_lock_mark(painter: &egui::Painter, center: Pos2, color: Color32) {
     let body = Rect::from_center_size(center + Vec2::new(0.0, 1.5), Vec2::new(7.0, 5.5));
     painter.rect_filled(body, 1.0, color);
-    painter.circle_stroke(center + Vec2::new(0.0, -2.2), 2.4, Stroke::new(1.3, color));
+    painter.circle_stroke(center + Vec2::new(0.0, -2.2), 2.4, Stroke::new(1.3_f32, color));
 }
 
 fn paint_binding_segment(painter: &egui::Painter, a: Pos2, b: Pos2, color: Color32, dashed: bool) {
-    let stroke = Stroke::new(2.0, color);
+    let stroke = Stroke::new(2.0_f32, color);
     if !dashed {
         painter.line_segment([a, b], stroke);
         return;
@@ -422,7 +422,7 @@ fn paint_binding_tooltip(painter: &egui::Painter, origin: Pos2, text: &str, clip
     painter.rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.0, kit::BORDER),
+        Stroke::new(1.0_f32, kit::BORDER),
         egui::StrokeKind::Inside,
     );
     painter.galley(rect.min + Vec2::new(7.0, 5.0), galley, kit::TEXT);

@@ -252,7 +252,7 @@ impl LatentSlateApp {
                 Pos2::new(rects.tracks.left(), outer.top()),
                 Pos2::new(rects.tracks.left(), outer.bottom()),
             ],
-            Stroke::new(1.0, kit::BORDER),
+            Stroke::new(1.0_f32, kit::BORDER),
         );
 
         let tracks = self.editor.project.tracks.clone();
@@ -476,7 +476,7 @@ impl LatentSlateApp {
                 track_painter.rect_stroke(
                     row_rect.shrink(1.0),
                     3.0,
-                    Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.85)),
+                    Stroke::new(1.0_f32, kit::BORDER_FOCUS.gamma_multiply(0.85)),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -485,14 +485,14 @@ impl LatentSlateApp {
                     Pos2::new(outer.left(), row_rect.bottom()),
                     Pos2::new(rects.tracks.left(), row_rect.bottom()),
                 ],
-                Stroke::new(1.0, kit::BORDER_SOFT),
+                Stroke::new(1.0_f32, kit::BORDER_SOFT),
             );
             track_painter.line_segment(
                 [
                     Pos2::new(rects.tracks.left(), row_rect.bottom()),
                     Pos2::new(rects.tracks.right(), row_rect.bottom()),
                 ],
-                Stroke::new(1.0, kit::BORDER_SOFT),
+                Stroke::new(1.0_f32, kit::BORDER_SOFT),
             );
             label_painter.rect_filled(
                 Rect::from_min_size(
@@ -625,7 +625,7 @@ impl LatentSlateApp {
                     Pos2::new(x, rects.ruler.top()),
                     Pos2::new(x, rects.add_row.top()),
                 ],
-                Stroke::new(1.0, Color32::from_rgb(229, 187, 47)),
+                Stroke::new(1.0_f32, Color32::from_rgb(229, 187, 47)),
             );
         }
         self.paint_timeline_scrollbar(ui, &painter, rects, content_w, viewport_w);
@@ -1038,7 +1038,7 @@ impl LatentSlateApp {
         let color = Color32::from_rgba_unmultiplied(55, 205, 128, 150);
         painter.line_segment(
             [Pos2::new(x0, y), Pos2::new(x1, y)],
-            Stroke::new(2.0, color),
+            Stroke::new(2.0_f32, color),
         );
         painter.circle_filled(Pos2::new(rects.tracks.left(), y), 3.0, color);
     }
@@ -1301,7 +1301,7 @@ impl LatentSlateApp {
                             Pos2::new(x, rect.bottom() - 4.0),
                             Pos2::new(x, rect.bottom()),
                         ],
-                        Stroke::new(1.0, kit::BORDER_SOFT),
+                        Stroke::new(1.0_f32, kit::BORDER_SOFT),
                     );
                 }
             }
@@ -1324,7 +1324,7 @@ impl LatentSlateApp {
                     Pos2::new(x, rect.bottom() - 10.0),
                     Pos2::new(x, rect.bottom()),
                 ],
-                Stroke::new(1.0, Color32::from_rgb(52, 55, 62)),
+                Stroke::new(1.0_f32, Color32::from_rgb(52, 55, 62)),
             );
             painter.text(
                 Pos2::new(x + 4.0, rect.top() + 4.0),
@@ -1350,7 +1350,7 @@ impl LatentSlateApp {
         let major_step = nice_timeline_step(target_seconds);
         let first_tick = (visible_start / major_step).floor() as i32 - 1;
         let last_tick = (visible_end / major_step).ceil() as i32 + 1;
-        let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(86, 92, 104, 42));
+        let stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(86, 92, 104, 42));
 
         for tick in first_tick..=last_tick {
             if tick < 0 {
@@ -1437,7 +1437,7 @@ impl LatentSlateApp {
         painter.rect_stroke(
             rect,
             4.0,
-            Stroke::new(if selected { 2.0 } else { 1.0 }, selection_stroke),
+            Stroke::new(if selected { 2.0_f32 } else { 1.0_f32 }, selection_stroke),
             egui::StrokeKind::Inside,
         );
         if bridge_active {
@@ -1449,7 +1449,7 @@ impl LatentSlateApp {
             painter.rect_stroke(
                 rect.shrink(1.5),
                 4.0,
-                Stroke::new(1.5, bridge_color),
+                Stroke::new(1.5_f32, bridge_color),
                 egui::StrokeKind::Inside,
             );
         }
@@ -1490,7 +1490,7 @@ impl LatentSlateApp {
                 Pos2::new(anchor_x, rect.top() + 2.0),
                 Pos2::new(anchor_x, rect.bottom() - 2.0),
             ],
-            Stroke::new(if selected { 2.0 } else { 1.35 }, color),
+            Stroke::new(if selected { 2.0_f32 } else { 1.35_f32 }, color),
         );
         let head = [
             Pos2::new(anchor_x - 4.5, rect.top() + 1.0),
@@ -1525,7 +1525,7 @@ impl LatentSlateApp {
         painter.rect_stroke(
             thumb_frame,
             4.0,
-            Stroke::new(if selected { 1.5 } else { 1.0 }, color),
+            Stroke::new(if selected { 1.5_f32 } else { 1.0_f32 }, color),
             egui::StrokeKind::Inside,
         );
 
@@ -1544,7 +1544,7 @@ impl LatentSlateApp {
             painter.rect_stroke(
                 thumb_rect,
                 3.0,
-                Stroke::new(1.0, color.gamma_multiply(0.75)),
+                Stroke::new(1.0_f32, color.gamma_multiply(0.75)),
                 egui::StrokeKind::Inside,
             );
         } else {
@@ -1577,7 +1577,7 @@ impl LatentSlateApp {
                 painter.rect_stroke(
                     label_rect,
                     4.0,
-                    Stroke::new(1.0, color.gamma_multiply(if selected { 1.0 } else { 0.72 })),
+                    Stroke::new(1.0_f32, color.gamma_multiply(if selected { 1.0 } else { 0.72 })),
                     egui::StrokeKind::Inside,
                 );
                 let text_painter = painter.with_clip_rect(label_rect.shrink2(Vec2::new(6.0, 1.0)));
@@ -1615,7 +1615,7 @@ impl LatentSlateApp {
                 Pos2::new(x, row_rect.top() + 4.0),
                 Pos2::new(x, row_rect.bottom() - 4.0),
             ],
-            Stroke::new(if selected { 2.0 } else { 1.25 }, marker_color),
+            Stroke::new(if selected { 2.0_f32 } else { 1.25_f32 }, marker_color),
         );
         let points = [
             Pos2::new(x - 4.5, row_rect.bottom() - 1.0),
@@ -1641,7 +1641,7 @@ impl LatentSlateApp {
                 label_rect,
                 5.0,
                 Stroke::new(
-                    if selected { 2.0 } else { 1.0 },
+                    if selected { 2.0_f32 } else { 1.0_f32 },
                     if selected {
                         kit::BORDER_FOCUS
                     } else {
@@ -1680,7 +1680,7 @@ impl LatentSlateApp {
                 Pos2::new(x, rects.ruler.top()),
                 Pos2::new(x, rects.add_row.top()),
             ],
-            Stroke::new(1.5, kit::PLAYHEAD),
+            Stroke::new(1.5_f32, kit::PLAYHEAD),
         );
         let head = [
             Pos2::new(x - 6.0, rects.ruler.top()),
@@ -1706,7 +1706,7 @@ impl LatentSlateApp {
                 Pos2::new(rects.outer.left(), rects.add_row.top()),
                 Pos2::new(rects.outer.right(), rects.add_row.top()),
             ],
-            Stroke::new(1.0, kit::BORDER_SOFT),
+            Stroke::new(1.0_f32, kit::BORDER_SOFT),
         );
         let button_y = rects.add_row.center().y - 12.0;
         let video_rect = Rect::from_min_size(

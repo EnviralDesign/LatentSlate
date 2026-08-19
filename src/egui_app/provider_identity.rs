@@ -260,7 +260,7 @@ fn paint_source_badge(ui: &Ui, rect: Rect, source: ProviderSourceKind, color: Co
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(4),
-        Stroke::new(1.0, color.gamma_multiply(0.58)),
+        Stroke::new(1.0_f32, color.gamma_multiply(0.58)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -308,7 +308,7 @@ pub(super) fn paint_engine_state_badge(ui: &Ui, rect: Rect, state: EngineProvide
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(4),
-        Stroke::new(1.0, color.gamma_multiply(0.54)),
+        Stroke::new(1.0_f32, color.gamma_multiply(0.54)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -513,7 +513,7 @@ fn paint_compact_badge(ui: &Ui, rect: Rect, label: &str, color: Color32) {
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(4),
-        Stroke::new(1.0, color.gamma_multiply(0.48)),
+        Stroke::new(1.0_f32, color.gamma_multiply(0.48)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(

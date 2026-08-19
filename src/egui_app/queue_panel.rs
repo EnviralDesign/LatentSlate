@@ -52,7 +52,7 @@ pub(super) fn paint_queue_panel_shell(ui: &mut Ui, rect: Rect, attention: bool) 
     ui.painter().rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, kit::MODAL_STROKE),
+        Stroke::new(1.0_f32, kit::MODAL_STROKE),
         egui::StrokeKind::Inside,
     );
 
@@ -63,7 +63,7 @@ pub(super) fn paint_queue_panel_shell(ui: &mut Ui, rect: Rect, attention: bool) 
         ui.painter().rect_stroke(
             rect.expand(1.0),
             radius,
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(244, 127, 45, alpha)),
             egui::StrokeKind::Inside,
         );
     }
@@ -159,7 +159,7 @@ fn queue_empty_state(ui: &mut Ui) {
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(8),
-        Stroke::new(1.0, kit::BORDER_SOFT),
+        Stroke::new(1.0_f32, kit::BORDER_SOFT),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -180,7 +180,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     ui.painter().rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, kit::BORDER_SOFT),
+        Stroke::new(1.0_f32, kit::BORDER_SOFT),
         egui::StrokeKind::Inside,
     );
 
@@ -285,7 +285,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
         ui.painter().rect_stroke(
             cancel_rect,
             egui::CornerRadius::same(5),
-            Stroke::new(1.0, kit::DANGER.gamma_multiply(0.75)),
+            Stroke::new(1.0_f32, kit::DANGER.gamma_multiply(0.75)),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
@@ -363,7 +363,7 @@ fn paint_queue_status_pill(ui: &mut Ui, rect: Rect, label: &str, color: Color32)
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(9),
-        Stroke::new(1.0, color),
+        Stroke::new(1.0_f32, color),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(

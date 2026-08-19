@@ -564,7 +564,7 @@ fn recent_project_row(ui: &mut Ui, name: &str, folder: &Path) -> RecentProjectRo
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(kit::STANDALONE_BUTTON_RADIUS),
-        Stroke::new(1.0, stroke),
+        Stroke::new(1.0_f32, stroke),
         StrokeKind::Inside,
     );
 
@@ -605,7 +605,7 @@ fn recent_project_row(ui: &mut Ui, name: &str, folder: &Path) -> RecentProjectRo
         ui.painter().rect_stroke(
             delete_rect,
             egui::CornerRadius::same(kit::STANDALONE_BUTTON_RADIUS),
-            Stroke::new(1.0, delete_stroke),
+            Stroke::new(1.0_f32, delete_stroke),
             StrokeKind::Inside,
         );
         ui.painter().text(

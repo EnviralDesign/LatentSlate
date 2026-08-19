@@ -1506,7 +1506,7 @@ fn paint_compact_status_badge(ui: &Ui, rect: Rect, label: &str, color: Color32) 
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(4),
-        egui::Stroke::new(1.0, color.gamma_multiply(0.54)),
+        egui::Stroke::new(1.0_f32, color.gamma_multiply(0.54)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
@@ -1921,7 +1921,7 @@ pub(super) fn provider_builder_input_summary_row(
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(5),
-        egui::Stroke::new(1.0, stroke_color),
+        egui::Stroke::new(1.0_f32, stroke_color),
         egui::StrokeKind::Inside,
     );
     ui.painter().rect_filled(
@@ -1952,7 +1952,7 @@ pub(super) fn provider_builder_input_summary_row(
     ui.painter().rect_stroke(
         role_rect,
         egui::CornerRadius::same(5),
-        egui::Stroke::new(1.0, role_stroke),
+        egui::Stroke::new(1.0_f32, role_stroke),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(

@@ -11,7 +11,7 @@ impl LatentSlateApp {
                 ui.painter().rect_filled(header_rect, 0.0, kit::CHROME);
                 ui.painter().line_segment(
                     [header_rect.left_bottom(), header_rect.right_bottom()],
-                    Stroke::new(1.0, kit::BORDER),
+                    Stroke::new(1.0_f32, kit::BORDER),
                 );
                 let header_inner = header_rect.shrink2(Vec2::new(14.0, 0.0));
                 let title_rect = Rect::from_min_max(
@@ -203,7 +203,7 @@ impl LatentSlateApp {
                 ui.painter().rect_stroke(
                     stats_rect,
                     6.0,
-                    Stroke::new(1.0, kit::BORDER_SOFT),
+                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
                     egui::StrokeKind::Inside,
                 );
                 ui.painter().text(
@@ -464,7 +464,7 @@ impl LatentSlateApp {
                         geometry.screen_corners[index],
                         geometry.screen_corners[(index + 1) % 4],
                     ],
-                    Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.42)),
+                    Stroke::new(1.0_f32, kit::BORDER_FOCUS.gamma_multiply(0.42)),
                 );
             }
             geometries.push(geometry);
@@ -485,7 +485,7 @@ impl LatentSlateApp {
         for guide in self.preview_snap_guides.iter() {
             painter.line_segment(
                 [guide.start, guide.end],
-                Stroke::new(1.0, Color32::from_rgb(229, 187, 47)),
+                Stroke::new(1.0_f32, Color32::from_rgb(229, 187, 47)),
             );
         }
 
@@ -510,7 +510,7 @@ impl LatentSlateApp {
 
         self.apply_preview_transform_drag(ui, canvas_rect, layers, objects, &selected);
 
-        let stroke = Stroke::new(1.0, kit::BORDER_FOCUS);
+        let stroke = Stroke::new(1.0_f32, kit::BORDER_FOCUS);
         for index in 0..4 {
             painter.line_segment(
                 [
@@ -563,7 +563,7 @@ impl LatentSlateApp {
                 handle_rect,
                 2.0,
                 Stroke::new(
-                    1.0,
+                    1.0_f32,
                     if response.hovered() {
                         kit::TEXT
                     } else {
@@ -592,7 +592,7 @@ impl LatentSlateApp {
         let rotate_point = preview_rotate_handle_point(&selected);
         painter.line_segment(
             [selected.screen_center, rotate_point],
-            Stroke::new(1.0, kit::BORDER_FOCUS.gamma_multiply(0.65)),
+            Stroke::new(1.0_f32, kit::BORDER_FOCUS.gamma_multiply(0.65)),
         );
         let rotate_rect =
             Rect::from_center_size(rotate_point, Vec2::splat(PREVIEW_HANDLE_SIZE + 2.0));
@@ -610,7 +610,7 @@ impl LatentSlateApp {
             rotate_point,
             (PREVIEW_HANDLE_SIZE + 1.0) * 0.5,
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if rotate_response.hovered() {
                     kit::TEXT
                 } else {
