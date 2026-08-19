@@ -27,8 +27,7 @@ use crate::core::export::{
 };
 use crate::core::generation::{
     asset_source_available_for_provider_input, compatible_asset_for_provider_input,
-    displayed_dimension_input_value, engine_image_to_image_source_mode_active,
-    engine_image_to_image_source_mode_descriptor, migrate_legacy_size_input, next_version_label,
+    displayed_dimension_input_value, migrate_legacy_size_input, next_version_label,
     random_seed_i64, resolve_provider_inputs, resolve_seed_field, semantic_reference_slot,
     update_seed_inputs,
 };
@@ -1559,13 +1558,10 @@ fn provider_input_drag_i64(
     width: f32,
 ) -> bool {
     provider_input_field_label(ui, label, input);
-    let rect = inspector_numeric_rect(ui, width);
-    inspector_numeric_field(ui, rect, |ui, width| {
-        ui.add_sized(
-            [width, INSPECTOR_NUMERIC_H],
-            egui::DragValue::new(value).speed(speed),
-        )
-    })
+    let step = speed.round().max(1.0) as i64;
+    let min = input.ui.as_ref().and_then(|ui| ui.min).map(|value| value.round() as i64);
+    let max = input.ui.as_ref().and_then(|ui| ui.max).map(|value| value.round() as i64);
+    kit::integer_step_drag(ui, value, width, step, min, max)
 }
 
 fn provider_input_labeled_combo_field<R>(

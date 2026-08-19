@@ -13,8 +13,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::state::{
-    InputRole, InputUi, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
-    ProviderOutputType, ProviderWorkflowKind,
+    CanvasContract, InputRole, InputUi, ProviderConnection, ProviderEntry, ProviderInputField,
+    ProviderInputType, ProviderOutputType, ProviderWorkflowKind,
 };
 
 use super::{ProviderExecutionError, ProviderOutput, ProviderProgress};
@@ -354,6 +354,24 @@ fn tool_to_provider(
         });
     }
 
+    let inputs = tool
+        .inputs
+        .iter()
+        .map(convert_input)
+        .collect::<Result<Vec<_>, _>>()?;
+    let canvas = tool.canvas.clone().or_else(|| {
+        let width = inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::Width));
+        let height = inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::Height));
+        crate::core::canvas::canvas_from_dimension_ui(
+            width.and_then(|input| input.ui.as_ref()),
+            height.and_then(|input| input.ui.as_ref()),
+        )
+    });
+
     Ok(ProviderEntry {
         id: tool.id,
         name: tool.name.clone(),
@@ -361,11 +379,8 @@ fn tool_to_provider(
         output_type: parse_output_type(&tool.output.r#type)?,
         workflow_kind: parse_workflow_kind(&tool.workflow_kind)?,
         timeline_bridge: None,
-        inputs: tool
-            .inputs
-            .iter()
-            .map(convert_input)
-            .collect::<Result<Vec<_>, _>>()?,
+        inputs,
+        canvas,
         connection: ProviderConnection::LatentSlateEngine {
             base_url: settings.base_url.clone(),
             api_key: settings.api_key.clone(),
@@ -1084,6 +1099,8 @@ struct EngineTool {
     output: EngineOutput,
     #[serde(default)]
     inputs: Vec<EngineInput>,
+    #[serde(default)]
+    canvas: Option<CanvasContract>,
     #[serde(default = "default_true")]
     available: bool,
     #[serde(default)]
@@ -1617,10 +1634,11 @@ mod tests {
                     { "key": "prompt", "label": "Prompt", "type": "text", "required": true },
                     { "key": "start_image", "label": "First Frame", "type": "image", "required": true, "role": "start_image" },
                     { "key": "end_image", "label": "Last Frame", "type": "image", "required": false, "role": "end_image" },
-                    { "key": "width", "label": "Width", "type": "integer", "required": true, "default": 960, "role": "width" },
-                    { "key": "height", "label": "Height", "type": "integer", "required": true, "default": 544, "role": "height" },
+                    { "key": "width", "label": "Width", "type": "integer", "required": true, "default": 960, "role": "width", "ui": { "min": 64, "step": 32 } },
+                    { "key": "height", "label": "Height", "type": "integer", "required": true, "default": 544, "role": "height", "ui": { "min": 64, "step": 32 } },
                     { "key": "steps", "label": "Steps", "type": "integer", "required": true, "default": 20 }
                 ],
+                "canvas": { "alignment": 32, "min_side": 64, "max_pixels": 1032192, "max_aspect": 4.0 },
                 "available": true
             }]
         }))
@@ -1639,6 +1657,16 @@ mod tests {
         assert_eq!(provider.inputs[3].default, Some(json!(960)));
         assert_eq!(provider.inputs[4].role, Some(InputRole::Height));
         assert_eq!(provider.inputs[4].default, Some(json!(544)));
+        assert_eq!(
+            provider.canvas,
+            Some(CanvasContract {
+                alignment: 32,
+                min_side: 64,
+                max_side: None,
+                max_pixels: Some(1_032_192),
+                max_aspect: Some(4.0),
+            })
+        );
         assert!(matches!(
             provider.inputs[5].input_type,
             ProviderInputType::Integer

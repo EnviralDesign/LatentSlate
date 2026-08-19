@@ -2610,6 +2610,250 @@ pub fn draw_accent_row_with_status(
     )
 }
 
+pub fn integer_step_drag(
+    ui: &mut Ui,
+    value: &mut i64,
+    width: f32,
+    step: i64,
+    min: Option<i64>,
+    max: Option<i64>,
+) -> bool {
+    let step = step.max(1);
+    let before = *value;
+    let lo = min.unwrap_or(i64::MIN / 4);
+    let hi = max.unwrap_or(i64::MAX / 4);
+    let mut display = *value;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(0.0), FIELD_H), Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.set_min_size(rect.size());
+    child.shrink_clip_rect(rect);
+    configure_field_widget_style(&mut child, rect.width());
+    let response = child.add_sized(
+        [rect.width(), FIELD_H],
+        egui::DragValue::new(&mut display)
+            .speed(step as f64)
+            .range(lo as f64..=hi as f64)
+            .max_decimals(0),
+    );
+    if response.lost_focus() || response.dragged() || response.drag_stopped() {
+        let origin = min.unwrap_or(0);
+        *value = crate::core::canvas::snap_to_step(display, origin, step).clamp(lo, hi);
+    } else if response.changed() {
+        *value = display;
+    }
+    *value != before
+}
+
+pub fn canvas_picker(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    canvas: &crate::state::CanvasContract,
+    width: &mut i64,
+    height: &mut i64,
+) -> bool {
+    use crate::core::canvas::{
+        canvas_is_valid, canvas_readout, fit_preset, matching_aspect_preset, megapixels,
+        scale_to_megapixels, validate_canvas, ASPECT_PRESETS,
+    };
+
+    let mut changed = false;
+    let custom_id = ui.id().with(("canvas_custom_aspect", egui::Id::new(&id_salt)));
+    let mut custom_aspect = ui.ctx().data(|data| data.get_temp::<bool>(custom_id)).unwrap_or(false);
+    let current_w = (*width).max(1) as u32;
+    let current_h = (*height).max(1) as u32;
+    let matched = matching_aspect_preset(current_w, current_h);
+    if matched.is_some() {
+        custom_aspect = false;
+    }
+    let selected_label = if custom_aspect {
+        "Custom"
+    } else {
+        matched.map(|preset| preset.label).unwrap_or("Custom")
+    };
+    let lock_aspect = if custom_aspect {
+        None
+    } else {
+        matched.map(|preset| preset.ratio())
+    };
+
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+        field_label(ui, "Canvas");
+        ui.label(caption(canvas_readout(canvas, current_w, current_h)));
+        if !canvas_is_valid(canvas, *width, *height) {
+            if let Err(message) = validate_canvas(canvas, *width, *height) {
+                ui.label(
+                    RichText::new(message)
+                        .color(MARKER)
+                        .size(11.0),
+                );
+            }
+        }
+        ui.add_space(FORM_ROW_GAP);
+        field_grid_row(ui, &[1.0, 1.0], |ui, index| match index {
+            0 => {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                    field_label(ui, "Aspect");
+                    let mut next_label = selected_label.to_string();
+                    combo_field(
+                        ui,
+                        ("canvas_aspect", egui::Id::new(&id_salt)),
+                        selected_label,
+                        ui.available_width(),
+                        |ui| {
+                            for preset in ASPECT_PRESETS {
+                                if ui
+                                    .selectable_label(selected_label == preset.label, preset.label)
+                                    .clicked()
+                                {
+                                    next_label = preset.label.to_string();
+                                }
+                            }
+                            if ui
+                                .selectable_label(selected_label == "Custom", "Custom")
+                                .clicked()
+                            {
+                                next_label = "Custom".to_string();
+                            }
+                        },
+                    );
+                    if next_label == "Custom" && selected_label != "Custom" {
+                        custom_aspect = true;
+                    } else if next_label != "Custom" && next_label != selected_label {
+                        custom_aspect = false;
+                        if let Some(preset) = ASPECT_PRESETS
+                            .iter()
+                            .find(|preset| preset.label == next_label)
+                        {
+                            let (next_w, next_h) = fit_preset(
+                                canvas,
+                                *preset,
+                                current_w as u64 * current_h as u64,
+                            );
+                            *width = next_w as i64;
+                            *height = next_h as i64;
+                            changed = true;
+                        }
+                    }
+                });
+            }
+            _ => {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                    field_label(ui, "Megapixels");
+                    let mut mp = megapixels(current_w, current_h);
+                    let min_mp = (canvas.min_side.max(1) as f64).powi(2) / 1_000_000.0;
+                    let max_mp = canvas
+                        .max_pixels
+                        .map(|pixels| pixels as f64 / 1_000_000.0)
+                        .unwrap_or(16.0)
+                        .max(min_mp);
+                    let (rect, _) =
+                        ui.allocate_exact_size(Vec2::new(ui.available_width(), FIELD_H), Sense::hover());
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(Layout::left_to_right(Align::Center)),
+                    );
+                    child.set_min_size(rect.size());
+                    child.shrink_clip_rect(rect);
+                    configure_field_widget_style(&mut child, rect.width());
+                    let response = child.add_sized(
+                        [rect.width(), FIELD_H],
+                        egui::DragValue::new(&mut mp)
+                            .speed(0.05)
+                            .range(min_mp..=max_mp)
+                            .max_decimals(2)
+                            .suffix(" MP"),
+                    );
+                    if response.changed() {
+                        let (next_w, next_h) = if let Some(preset) = matched.filter(|_| !custom_aspect)
+                        {
+                            fit_preset(canvas, preset, (mp * 1_000_000.0).round() as u64)
+                        } else {
+                            scale_to_megapixels(canvas, current_w, current_h, mp)
+                        };
+                        *width = next_w as i64;
+                        *height = next_h as i64;
+                        changed = true;
+                    }
+                });
+            }
+        });
+        ui.add_space(FORM_ROW_GAP);
+        field_grid_row(ui, &[1.0, 1.0], |ui, index| {
+            let alignment = canvas.alignment.max(1) as i64;
+            let min_side = canvas.min_side.max(1) as i64;
+            let max_side = canvas.max_side.map(|value| value as i64);
+            match index {
+                0 => {
+                    let mut next = *width;
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                        field_label(ui, "Width");
+                        if integer_step_drag(
+                            ui,
+                            &mut next,
+                            ui.available_width(),
+                            alignment,
+                            Some(min_side),
+                            max_side,
+                        ) {
+                            let (next_w, next_h) = crate::core::canvas::adjust_width(
+                                canvas,
+                                next,
+                                current_h,
+                                lock_aspect,
+                            );
+                            *width = next_w as i64;
+                            *height = next_h as i64;
+                            changed = true;
+                            if lock_aspect.is_none() {
+                                custom_aspect = true;
+                            }
+                        }
+                    });
+                }
+                _ => {
+                    let mut next = *height;
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                        field_label(ui, "Height");
+                        if integer_step_drag(
+                            ui,
+                            &mut next,
+                            ui.available_width(),
+                            alignment,
+                            Some(min_side),
+                            max_side,
+                        ) {
+                            let (next_w, next_h) = crate::core::canvas::adjust_height(
+                                canvas,
+                                current_w,
+                                next,
+                                lock_aspect,
+                            );
+                            *width = next_w as i64;
+                            *height = next_h as i64;
+                            changed = true;
+                            if lock_aspect.is_none() {
+                                custom_aspect = true;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    });
+    ui.ctx().data_mut(|data| data.insert_temp(custom_id, custom_aspect));
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

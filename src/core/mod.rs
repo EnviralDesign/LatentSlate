@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod automation;
+pub mod canvas;
 pub mod comfyui_workflow;
 pub mod export;
 pub mod ffmpeg_runtime;

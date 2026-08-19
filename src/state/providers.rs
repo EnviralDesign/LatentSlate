@@ -104,6 +104,22 @@ impl Default for TimelineBridgeSettings {
 
 pub const DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES: u32 = 80;
 
+/// Exact public pixel grid for a width/height pair.
+///
+/// Catalog clients snap editors to this contract. The engine never rewrites a
+/// requested canvas: off-grid or over-budget geometry is rejected at submit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasContract {
+    pub alignment: u32,
+    pub min_side: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_side: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pixels: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_aspect: Option<f64>,
+}
+
 /// Input types supported by provider schemas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -217,6 +233,9 @@ pub struct ProviderEntry {
     pub timeline_bridge: Option<TimelineBridgeSettings>,
     #[serde(default)]
     pub inputs: Vec<ProviderInputField>,
+    /// Exact width/height grid published by LatentSlate Engine, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<CanvasContract>,
     pub connection: ProviderConnection,
 }
 
@@ -234,6 +253,7 @@ impl ProviderEntry {
             workflow_kind: ProviderWorkflowKind::Auto,
             timeline_bridge: None,
             inputs: Vec::new(),
+            canvas: None,
             connection,
         }
     }

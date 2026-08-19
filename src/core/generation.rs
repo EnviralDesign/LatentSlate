@@ -10,6 +10,9 @@ use std::process::Command;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::core::canvas::{
+    canvas_from_provider, nearest_legal_canvas, validate_canvas,
+};
 use crate::core::media_binding::{
     input_value_from_plan, lookup_media_binding, materialize_plan, resolve_media_binding,
     MediaResolveContext,
@@ -30,6 +33,7 @@ pub struct ResolvedInputs {
     pub snapshot: HashMap<String, InputValue>,
     pub missing_required: Vec<String>,
     pub media_errors: Vec<String>,
+    pub input_errors: Vec<String>,
     pub media_bindings_snapshot: HashMap<String, MediaBindingSpec>,
     pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
 }
@@ -47,21 +51,14 @@ pub fn resolve_provider_inputs(
     let mut reconciled_config = config.clone();
     migrate_legacy_size_input(&mut reconciled_config, provider);
     let config = &reconciled_config;
-    let source_bound = image_to_image_source_bound(project, context_clip_id, provider, config);
-    let engine_source_bound =
-        engine_image_to_image_source_mode_descriptor(provider) && source_bound;
-    let engine_source_mode =
-        engine_image_to_image_source_mode_active(project, context_clip_id, provider, config);
-    let partial_engine_dimensions = engine_source_bound
-        && has_any_explicit_dimension(provider, config)
-        && !has_explicit_dimension_pair(provider, config);
-    let source_dimensions = (!engine_source_bound && has_missing_dimension(provider, config))
+    let source_dimensions = has_missing_dimension(provider, config)
         .then(|| image_to_image_source_dimensions(project, context_clip_id, provider, config))
         .flatten();
     let mut values = HashMap::new();
     let mut snapshot = HashMap::new();
     let mut missing_required = Vec::new();
     let mut media_errors = Vec::new();
+    let mut input_errors = Vec::new();
     let mut media_bindings_snapshot = HashMap::new();
     let mut resolved_media_inputs = HashMap::new();
     let mut materialized_by_key: HashMap<String, PathBuf> = HashMap::new();
@@ -173,17 +170,15 @@ pub fn resolve_provider_inputs(
                 );
             }
             _ => {
-                let omit_dimension = is_dimension_input(input)
-                    && (engine_source_mode
-                        || (partial_engine_dimensions
-                            && literal_input_value(config, &input.name).is_none()));
-                let mut value = (!omit_dimension)
-                    .then(|| {
-                        effective_dimension_input_value(project, config, input, source_dimensions)
-                            .or_else(|| literal_input_value(config, &input.name))
-                            .or_else(|| input.default.clone())
-                    })
-                    .flatten();
+                let mut value = effective_dimension_input_value(
+                    project,
+                    config,
+                    provider,
+                    input,
+                    source_dimensions,
+                )
+                .or_else(|| literal_input_value(config, &input.name))
+                .or_else(|| input.default.clone());
                 if value.is_none()
                     && matches!(
                         input.input_type,
@@ -203,11 +198,52 @@ pub fn resolve_provider_inputs(
         }
     }
 
+    if let Some(canvas) = canvas_from_provider(provider) {
+        if let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider) {
+            let width = values.get(&width_input.name).and_then(json_dimension);
+            let height = values.get(&height_input.name).and_then(json_dimension);
+            if let (Some(width), Some(height)) = (width, height) {
+                if let Err(message) = validate_canvas(&canvas, width, height) {
+                    if has_any_explicit_dimension(provider, config) {
+                        input_errors.push(message);
+                    } else {
+                        let (width, height) = nearest_legal_canvas(
+                            &canvas,
+                            width.max(0) as u32,
+                            height.max(0) as u32,
+                        );
+                        values.insert(
+                            width_input.name.clone(),
+                            Value::Number(width.into()),
+                        );
+                        values.insert(
+                            height_input.name.clone(),
+                            Value::Number(height.into()),
+                        );
+                        snapshot.insert(
+                            width_input.name.clone(),
+                            InputValue::Literal {
+                                value: Value::Number(width.into()),
+                            },
+                        );
+                        snapshot.insert(
+                            height_input.name.clone(),
+                            InputValue::Literal {
+                                value: Value::Number(height.into()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     ResolvedInputs {
         values,
         snapshot,
         missing_required,
         media_errors,
+        input_errors,
         media_bindings_snapshot,
         resolved_media_inputs,
     }
@@ -223,6 +259,10 @@ pub fn migrate_legacy_size_input(config: &mut GenerativeConfig, provider: &Provi
     {
         let legacy_size = literal_input_value(config, "size");
         if let Some((width, height)) = legacy_size.as_ref().and_then(parse_legacy_size) {
+            let (width, height) = match canvas_from_provider(provider) {
+                Some(canvas) => nearest_legal_canvas(&canvas, width, height),
+                None => (width, height),
+            };
             for (role, value) in [(InputRole::Width, width), (InputRole::Height, height)] {
                 if let Some(input) = provider
                     .inputs
@@ -294,12 +334,15 @@ fn h3_integer_steps_input(provider: &ProviderEntry) -> Option<&ProviderInputFiel
     })
 }
 
-/// Returns the effective width or height for a provider field without forcing
-/// the engine's alignment or budget constraints into the editor.  The engine
-/// remains the authority for those model-specific decisions.
+/// Returns the effective width or height for a provider field.
+///
+/// Explicit stored values are returned unchanged so off-grid literals fail
+/// early at generate time. Project and source fallbacks snap onto the catalog
+/// canvas when one is published.
 pub fn effective_dimension_input_value(
     project: &Project,
     config: &GenerativeConfig,
+    provider: &ProviderEntry,
     input: &ProviderInputField,
     source_dimensions: Option<(u32, u32)>,
 ) -> Option<Value> {
@@ -319,16 +362,17 @@ pub fn effective_dimension_input_value(
         return Some(dimension_value(role, width, height));
     }
 
-    if let Some((width, height)) = source_dimensions {
-        return Some(dimension_value(role, width, height));
-    }
-
-    let project_dimension = match role {
-        InputRole::Width => project.settings.width,
-        InputRole::Height => project.settings.height,
-        _ => unreachable!("dimension role was checked above"),
+    let raw = source_dimensions
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .or_else(|| {
+            (project.settings.width > 0 && project.settings.height > 0)
+                .then_some((project.settings.width, project.settings.height))
+        })?;
+    let (width, height) = match canvas_from_provider(provider) {
+        Some(canvas) => nearest_legal_canvas(&canvas, raw.0, raw.1),
+        None => raw,
     };
-    (project_dimension > 0).then(|| Value::Number(project_dimension.into()))
+    Some(dimension_value(role, width, height))
 }
 
 /// Returns a cheap display value for a width/height control. It intentionally
@@ -336,9 +380,10 @@ pub fn effective_dimension_input_value(
 pub fn displayed_dimension_input_value(
     project: &Project,
     config: &GenerativeConfig,
+    provider: &ProviderEntry,
     input: &ProviderInputField,
 ) -> Option<Value> {
-    effective_dimension_input_value(project, config, input, None)
+    effective_dimension_input_value(project, config, provider, input, None)
 }
 
 fn provider_uses_granular_dimensions(provider: &ProviderEntry) -> bool {
@@ -351,25 +396,10 @@ fn provider_uses_granular_dimensions(provider: &ProviderEntry) -> bool {
     })
 }
 
-fn is_dimension_input(input: &ProviderInputField) -> bool {
-    matches!(input.role, Some(InputRole::Width | InputRole::Height))
-}
-
-fn has_explicit_dimension_pair(provider: &ProviderEntry, config: &GenerativeConfig) -> bool {
-    [InputRole::Width, InputRole::Height]
-        .into_iter()
-        .all(|role| {
-            provider
-                .inputs
-                .iter()
-                .find(|input| input.role == Some(role))
-                .is_some_and(|input| literal_input_value(config, &input.name).is_some())
-        })
-}
-
 fn has_any_explicit_dimension(provider: &ProviderEntry, config: &GenerativeConfig) -> bool {
     provider.inputs.iter().any(|input| {
-        is_dimension_input(input) && literal_input_value(config, &input.name).is_some()
+        matches!(input.role, Some(InputRole::Width | InputRole::Height))
+            && literal_input_value(config, &input.name).is_some()
     })
 }
 
@@ -380,36 +410,10 @@ fn has_missing_dimension(provider: &ProviderEntry, config: &GenerativeConfig) ->
     })
 }
 
-/// Whether the catalog declares optional source-mode dimensions for this
-/// Engine image-to-image tool.
-pub fn engine_image_to_image_source_mode_descriptor(provider: &ProviderEntry) -> bool {
-    matches!(
-        &provider.connection,
-        crate::state::ProviderConnection::LatentSlateEngine { .. }
-    ) && provider.workflow_kind == crate::state::ProviderWorkflowKind::ImageToImage
-        && [InputRole::Width, InputRole::Height]
-            .into_iter()
-            .all(|role| {
-                provider
-                    .inputs
-                    .iter()
-                    .find(|input| input.role == Some(role))
-                    .is_some_and(|input| !input.required && input.default.is_none())
-            })
-}
-
-/// True when an Engine image-to-image descriptor advertises source-mode
-/// dimensions: its optional width/height pair is absent so Engine derives the
-/// aligned dimensions from the source.
-pub fn engine_image_to_image_source_mode_active(
-    project: &Project,
-    context_clip_id: Option<Uuid>,
-    provider: &ProviderEntry,
-    config: &GenerativeConfig,
-) -> bool {
-    engine_image_to_image_source_mode_descriptor(provider)
-        && image_to_image_source_bound(project, context_clip_id, provider, config)
-        && !has_any_explicit_dimension(provider, config)
+fn json_dimension(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
 }
 
 fn parse_legacy_size(value: &Value) -> Option<(u32, u32)> {
@@ -1268,7 +1272,9 @@ fn is_seed_compatible_type(input: &ProviderInputField) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ProviderConnection, ProviderOutputType, ProviderWorkflowKind};
+    use crate::state::{
+        CanvasContract, ProviderConnection, ProviderOutputType, ProviderWorkflowKind,
+    };
     use serde_json::json;
 
     fn dimension_input(name: &str, role: InputRole, default: u32) -> ProviderInputField {
@@ -1298,6 +1304,22 @@ mod tests {
             dimension_input("width", InputRole::Width, 512),
             dimension_input("height", InputRole::Height, 512),
         ];
+        provider
+    }
+
+    fn ltx_dev_canvas() -> CanvasContract {
+        CanvasContract {
+            alignment: 64,
+            min_side: 64,
+            max_side: None,
+            max_pixels: Some(942_080),
+            max_aspect: None,
+        }
+    }
+
+    fn ltx_dev_provider() -> ProviderEntry {
+        let mut provider = dimensions_provider();
+        provider.canvas = Some(ltx_dev_canvas());
         provider
     }
 
@@ -1485,7 +1507,51 @@ mod tests {
     }
 
     #[test]
-    fn source_mode_omits_dimensions_but_keeps_a_partial_pair() {
+    fn project_fallback_snaps_to_the_catalog_canvas() {
+        let provider = ltx_dev_provider();
+        let mut project = Project::new("ltx");
+        project.settings.width = 960;
+        project.settings.height = 540;
+
+        let resolved = resolve_provider_inputs(
+            &project,
+            None,
+            None,
+            &provider,
+            &GenerativeConfig::default(),
+        );
+        assert_eq!(resolved.values.get("width"), Some(&json!(1024)));
+        assert_eq!(resolved.values.get("height"), Some(&json!(576)));
+        assert!(resolved.input_errors.is_empty());
+    }
+
+    #[test]
+    fn explicit_off_grid_canvas_fails_closed_instead_of_rewriting() {
+        let provider = ltx_dev_provider();
+        let mut project = Project::new("ltx");
+        project.settings.width = 1024;
+        project.settings.height = 576;
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "width".to_string(),
+            InputValue::Literal { value: json!(960) },
+        );
+        config.inputs.insert(
+            "height".to_string(),
+            InputValue::Literal { value: json!(540) },
+        );
+
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert_eq!(resolved.values.get("width"), Some(&json!(960)));
+        assert_eq!(resolved.values.get("height"), Some(&json!(540)));
+        assert!(resolved
+            .input_errors
+            .iter()
+            .any(|error| error.contains("divisible by 64") && error.contains("960x540")));
+    }
+
+    #[test]
+    fn source_mode_fills_dimensions_from_the_project_instead_of_omitting_them() {
         let provider = source_mode_image_to_image_provider();
         let (project, source) = test_project_with_source("source.png", false);
         let mut config = GenerativeConfig::default();
@@ -1499,10 +1565,10 @@ mod tests {
             },
         );
 
-        let source_mode = resolve_provider_inputs(&project, None, None, &provider, &config);
-        assert!(source_mode.values.contains_key("source_image"));
-        assert!(!source_mode.values.contains_key("width"));
-        assert!(!source_mode.values.contains_key("height"));
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert!(resolved.values.contains_key("source_image"));
+        assert_eq!(resolved.values.get("width"), Some(&json!(1280)));
+        assert_eq!(resolved.values.get("height"), Some(&json!(720)));
 
         config.inputs.insert(
             "width".to_string(),
@@ -1510,7 +1576,7 @@ mod tests {
         );
         let partial = resolve_provider_inputs(&project, None, None, &provider, &config);
         assert_eq!(partial.values.get("width"), Some(&json!(777)));
-        assert!(!partial.values.contains_key("height"));
+        assert_eq!(partial.values.get("height"), Some(&json!(720)));
 
         let _ = std::fs::remove_dir_all(project.project_path.expect("test root"));
     }
@@ -1531,9 +1597,6 @@ mod tests {
         );
 
         assert!(image_to_image_source_bound(
-            &project, None, &provider, &config
-        ));
-        assert!(engine_image_to_image_source_mode_active(
             &project, None, &provider, &config
         ));
 

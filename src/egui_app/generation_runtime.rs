@@ -523,6 +523,9 @@ impl LatentSlateApp {
         if !resolved.media_errors.is_empty() {
             return Err(resolved.media_errors.join("\n"));
         }
+        if !resolved.input_errors.is_empty() {
+            return Err(resolved.input_errors.join("\n"));
+        }
         if !resolved.missing_required.is_empty() {
             return Err(missing_provider_inputs_message(
                 &provider,

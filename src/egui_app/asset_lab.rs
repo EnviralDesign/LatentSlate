@@ -132,6 +132,10 @@ pub(super) enum AssetLabAction {
         input_name: String,
         value: InputValue,
     },
+    UpdateNodeInputs {
+        node_id: Uuid,
+        values: Vec<(String, InputValue)>,
+    },
     UpdateNodeMediaBinding {
         node_id: Uuid,
         input_name: String,
@@ -2941,11 +2945,31 @@ impl LatentSlateApp {
                         kit::field_label(ui, "Parameters");
                         ui.add_space(kit::FORM_ROW_GAP);
                         let mut any_scalar = false;
+                        let dimension_names = crate::core::canvas::dimension_pair(provider)
+                            .map(|(width, height)| (width.name.clone(), height.name.clone()));
                         for input in provider
                             .inputs
                             .iter()
                             .filter(|input| !asset_lab_input_is_media_link(asset, input))
                         {
+                            if let Some((width_name, height_name)) = dimension_names.as_ref() {
+                                if input.name == *height_name {
+                                    continue;
+                                }
+                                if input.name == *width_name {
+                                    if any_scalar {
+                                        ui.add_space(kit::FORM_ROW_GAP);
+                                    }
+                                    any_scalar = true;
+                                    self.asset_lab_canvas_field(
+                                        ui,
+                                        &display_node,
+                                        provider,
+                                        action,
+                                    );
+                                    continue;
+                                }
+                            }
                             if any_scalar {
                                 ui.add_space(kit::FORM_ROW_GAP);
                             }
@@ -3115,6 +3139,83 @@ impl LatentSlateApp {
                     );
                 }
             });
+    }
+
+    pub(super) fn asset_lab_canvas_field(
+        &mut self,
+        ui: &mut Ui,
+        node: &AssetLabNode,
+        provider: &ProviderEntry,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider) else {
+            return;
+        };
+        let canvas = crate::core::canvas::canvas_from_provider(provider)
+            .or_else(|| {
+                crate::core::canvas::canvas_from_dimension_ui(
+                    width_input.ui.as_ref(),
+                    height_input.ui.as_ref(),
+                )
+            })
+            .unwrap_or(crate::state::CanvasContract {
+                alignment: 1,
+                min_side: 1,
+                max_side: None,
+                max_pixels: None,
+                max_aspect: None,
+            });
+        let stored_width = node.inputs.get(&width_input.name).and_then(|value| match value {
+            InputValue::Literal { value } => input_value_as_i64(value),
+            _ => None,
+        });
+        let stored_height = node.inputs.get(&height_input.name).and_then(|value| match value {
+            InputValue::Literal { value } => input_value_as_i64(value),
+            _ => None,
+        });
+        let fallback = if stored_width.is_none() || stored_height.is_none() {
+            crate::core::canvas::nearest_legal_canvas(
+                &canvas,
+                self.editor.project.settings.width.max(1),
+                self.editor.project.settings.height.max(1),
+            )
+        } else {
+            (
+                stored_width.unwrap_or(0).max(1) as u32,
+                stored_height.unwrap_or(0).max(1) as u32,
+            )
+        };
+        let mut width = stored_width.unwrap_or(fallback.0 as i64);
+        let mut height = stored_height.unwrap_or(fallback.1 as i64);
+        if stored_width.is_none() && stored_height.is_none() {
+            width = fallback.0 as i64;
+            height = fallback.1 as i64;
+        }
+        if kit::canvas_picker(
+            ui,
+            ("asset_lab_canvas", node.id),
+            &canvas,
+            &mut width,
+            &mut height,
+        ) {
+            *action = Some(AssetLabAction::UpdateNodeInputs {
+                node_id: node.id,
+                values: vec![
+                    (
+                        width_input.name.clone(),
+                        InputValue::Literal {
+                            value: serde_json::Value::Number(width.into()),
+                        },
+                    ),
+                    (
+                        height_input.name.clone(),
+                        InputValue::Literal {
+                            value: serde_json::Value::Number(height.into()),
+                        },
+                    ),
+                ],
+            });
+        }
     }
 
     pub(super) fn asset_lab_node_input_field(
@@ -3914,6 +4015,11 @@ impl LatentSlateApp {
                 value,
             } => {
                 self.update_asset_lab_node_input(asset_id, node_id, input_name, Some(value));
+            }
+            AssetLabAction::UpdateNodeInputs { node_id, values } => {
+                for (input_name, value) in values {
+                    self.update_asset_lab_node_input(asset_id, node_id, input_name, Some(value));
+                }
             }
             AssetLabAction::UpdateNodeMediaBinding {
                 node_id,

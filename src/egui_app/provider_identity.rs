@@ -538,6 +538,7 @@ mod provider_identity_tests {
             workflow_kind: ProviderWorkflowKind::TextToVideo,
             timeline_bridge: None,
             inputs: Vec::new(),
+            canvas: None,
             connection: ProviderConnection::LatentSlateEngine {
                 base_url: "http://127.0.0.1:8765".to_string(),
                 api_key: None,

@@ -1124,9 +1124,6 @@ impl LatentSlateApp {
         else {
             return;
         };
-        if engine_image_to_image_source_mode_descriptor(provider) {
-            return;
-        }
         let Some(source_asset) = self.editor.project.find_asset(source_asset_id) else {
             return;
         };
@@ -1137,6 +1134,10 @@ impl LatentSlateApp {
         };
         let Some((width, height)) = crate::core::media::probe_media_dimensions(&source_path) else {
             return;
+        };
+        let (width, height) = match crate::core::canvas::canvas_from_provider(provider) {
+            Some(canvas) => crate::core::canvas::nearest_legal_canvas(&canvas, width, height),
+            None => (width, height),
         };
         let to_number = |value: u32| serde_json::Value::Number(value.into());
 
@@ -2739,50 +2740,12 @@ impl LatentSlateApp {
                 ui.label(kit::caption("No inputs defined."));
                 return;
             }
-            let engine_source_mode = engine_image_to_image_source_mode_active(
-                &self.editor.project,
-                context_clip_id,
-                &provider,
-                config_snapshot,
-            );
-            if engine_source_mode {
-                ui.label(kit::caption(
-                    "Dimensions inherit from the source. Engine applies EXIF transpose and floor-to-16 alignment.",
-                ));
-                ui.add_space(kit::FORM_ROW_GAP);
-                if kit::field_button(ui, "Override with project dimensions", ui.available_width())
-                    .clicked()
-                {
-                    for input in provider.inputs.iter().filter(|input| {
-                        matches!(input.role, Some(InputRole::Width | InputRole::Height))
-                    }) {
-                        let value = match input.role {
-                            Some(InputRole::Width) => self.editor.project.settings.width,
-                            Some(InputRole::Height) => self.editor.project.settings.height,
-                            _ => continue,
-                        };
-                        updates.push((
-                            input.name.clone(),
-                            InputValue::Literal {
-                                value: serde_json::Value::Number(value.into()),
-                            },
-                        ));
-                    }
-                }
-                ui.add_space(kit::FORM_ROW_GAP);
-            }
-
             let mut media_inputs = Vec::new();
             let mut other_inputs = Vec::new();
             for input in provider.inputs.iter() {
                 if is_timing_role(input.role)
                     && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
                         && input.role == Some(InputRole::Fps))
-                {
-                    continue;
-                }
-                if engine_source_mode
-                    && matches!(input.role, Some(InputRole::Width | InputRole::Height))
                 {
                     continue;
                 }
@@ -2793,8 +2756,94 @@ impl LatentSlateApp {
                 }
             }
 
+            let dimension_names = crate::core::canvas::dimension_pair(&provider)
+                .map(|(width, height)| (width.name.clone(), height.name.clone()));
+            let canvas = crate::core::canvas::canvas_from_provider(&provider).or_else(|| {
+                crate::core::canvas::dimension_pair(&provider).and_then(|(width, height)| {
+                    crate::core::canvas::canvas_from_dimension_ui(
+                        width.ui.as_ref(),
+                        height.ui.as_ref(),
+                    )
+                })
+            });
+
             let mut visible_index = 0usize;
             for input in media_inputs.into_iter().chain(other_inputs) {
+                if let Some((width_name, height_name)) = dimension_names.as_ref() {
+                    if input.name == *height_name {
+                        continue;
+                    }
+                    if input.name == *width_name {
+                        if visible_index > 0 {
+                            ui.add_space(kit::FORM_ROW_GAP);
+                        }
+                        visible_index += 1;
+                        let Some(width_input) = provider
+                            .inputs
+                            .iter()
+                            .find(|item| item.name == *width_name)
+                        else {
+                            continue;
+                        };
+                        let Some(height_input) = provider
+                            .inputs
+                            .iter()
+                            .find(|item| item.name == *height_name)
+                        else {
+                            continue;
+                        };
+                        let mut width = displayed_dimension_input_value(
+                            &self.editor.project,
+                            config_snapshot,
+                            &provider,
+                            width_input,
+                        )
+                        .or_else(|| literal_config_input(config_snapshot, &width_input.name))
+                        .or_else(|| width_input.default.clone())
+                        .as_ref()
+                        .and_then(input_value_as_i64)
+                        .unwrap_or(0);
+                        let mut height = displayed_dimension_input_value(
+                            &self.editor.project,
+                            config_snapshot,
+                            &provider,
+                            height_input,
+                        )
+                        .or_else(|| literal_config_input(config_snapshot, &height_input.name))
+                        .or_else(|| height_input.default.clone())
+                        .as_ref()
+                        .and_then(input_value_as_i64)
+                        .unwrap_or(0);
+                        let canvas = canvas.clone().unwrap_or(crate::state::CanvasContract {
+                            alignment: 1,
+                            min_side: 1,
+                            max_side: None,
+                            max_pixels: None,
+                            max_aspect: None,
+                        });
+                        if kit::canvas_picker(
+                            ui,
+                            ("provider_canvas", asset_id, &width_input.name),
+                            &canvas,
+                            &mut width,
+                            &mut height,
+                        ) {
+                            updates.push((
+                                width_input.name.clone(),
+                                InputValue::Literal {
+                                    value: serde_json::Value::Number(width.into()),
+                                },
+                            ));
+                            updates.push((
+                                height_input.name.clone(),
+                                InputValue::Literal {
+                                    value: serde_json::Value::Number(height.into()),
+                                },
+                            ));
+                        }
+                        continue;
+                    }
+                }
                 if visible_index > 0 {
                     ui.add_space(kit::FORM_ROW_GAP);
                 }
@@ -2804,10 +2853,14 @@ impl LatentSlateApp {
                 } else {
                     input.label.clone()
                 };
-                let current_value =
-                    displayed_dimension_input_value(&self.editor.project, config_snapshot, input)
-                        .or_else(|| literal_config_input(config_snapshot, &input.name))
-                        .or_else(|| input.default.clone());
+                let current_value = displayed_dimension_input_value(
+                    &self.editor.project,
+                    config_snapshot,
+                    &provider,
+                    input,
+                )
+                .or_else(|| literal_config_input(config_snapshot, &input.name))
+                .or_else(|| input.default.clone());
                 match &input.input_type {
                     ProviderInputType::Text => {
                         let mut value = current_value
