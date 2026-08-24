@@ -437,12 +437,50 @@ pub fn field_grid_row_with_height(
 }
 
 pub fn scroll_body(ui: &mut Ui, add_body: impl FnOnce(&mut Ui)) {
+    scroll_body_with_scroll_bar_visibility(
+        ui,
+        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+        add_body,
+    );
+}
+
+/// Adds a clipped vertical scroll body with a persistent drag handle.
+///
+/// Persistent bars are useful for compact lists whose overflow should be immediately
+/// discoverable, rather than only becoming apparent after the user tries to scroll.
+pub fn scroll_body_with_persistent_scroll_bar(ui: &mut Ui, add_body: impl FnOnce(&mut Ui)) {
+    scroll_body_with_scroll_bar_visibility(
+        ui,
+        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+        add_body,
+    );
+}
+
+fn scroll_body_with_scroll_bar_visibility(
+    ui: &mut Ui,
+    scroll_bar_visibility: egui::scroll_area::ScrollBarVisibility,
+    add_body: impl FnOnce(&mut Ui),
+) {
     let id_salt = ui.next_auto_id();
     ui.skip_ahead_auto_ids(1);
-    clipped_scroll_body(ui, id_salt, add_body);
+    clipped_scroll_body_with_scroll_bar_visibility(ui, id_salt, scroll_bar_visibility, add_body);
 }
 
 pub fn clipped_scroll_body(ui: &mut Ui, id_salt: impl Hash, add_body: impl FnOnce(&mut Ui)) {
+    clipped_scroll_body_with_scroll_bar_visibility(
+        ui,
+        id_salt,
+        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+        add_body,
+    );
+}
+
+fn clipped_scroll_body_with_scroll_bar_visibility(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    scroll_bar_visibility: egui::scroll_area::ScrollBarVisibility,
+    add_body: impl FnOnce(&mut Ui),
+) {
     let available_rect = ui.available_rect_before_wrap();
     let (viewport_rect, _) = ui.allocate_exact_size(available_rect.size(), Sense::hover());
     let clip_rect = ui.clip_rect().intersect(viewport_rect);
@@ -464,6 +502,7 @@ pub fn clipped_scroll_body(ui: &mut Ui, id_salt: impl Hash, add_body: impl FnOnc
         .max_width(viewport_width)
         .max_height(viewport_height)
         .scroll_bar_rect(clip_rect)
+        .scroll_bar_visibility(scroll_bar_visibility)
         .auto_shrink([false, false])
         .show_viewport(&mut viewport_ui, |ui, _viewport| {
             let content_width = ui.max_rect().width().min(viewport_width).max(0.0);

@@ -126,7 +126,7 @@ impl LatentSlateApp {
                             kit::SECONDARY_BUTTON_H,
                             |ui| {
                                 ui.add_space(kit::FORM_ROW_GAP);
-                                kit::scroll_body(ui, |ui| {
+                                kit::scroll_body_with_persistent_scroll_bar(ui, |ui| {
                                     ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
                                     if recent.is_empty() {
                                         kit::empty_state(
