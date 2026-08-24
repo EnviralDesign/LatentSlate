@@ -806,6 +806,12 @@ underlying data and core version actions:
 { "type": "generate_asset_lab_node", "asset_id": "uuid", "node_id": "uuid" }
 ```
 
+`delete_asset_lab_node` is deliberately leaf-only. It returns an error while a
+downstream step references the node through lineage, a generation input, or a
+locked media input, or while that node has a staged variant or active generation
+job. Delete dependent steps from the tail first. Generated output files are
+retained and are not silently reassigned to another step.
+
 This is enough for agents to read lineage, select versions, and trigger a node.
 More visual graph layout controls can wait.
 

@@ -5,10 +5,10 @@ use crate::state::{asset_display_name, Asset, Clip, ClipImageMode, Track};
 use crate::ui_kit as kit;
 
 use super::{
-    TIMELINE_ADD_ROW_H, TIMELINE_CLIP_H, TIMELINE_CLIP_Y_PAD, TIMELINE_HANDLE_W,
-    TIMELINE_KEYFRAME_HIT_W, TIMELINE_LABEL_W, TIMELINE_MARKER_HIT_W, TIMELINE_MARKER_LABEL_H,
-    TIMELINE_MARKER_LABEL_W, TIMELINE_MAX_PX_PER_FRAME, TIMELINE_MIN_CLIP_W,
-    TIMELINE_MIN_ZOOM_FLOOR, TIMELINE_RULER_H, TIMELINE_SCROLLBAR_H, TIMELINE_TRACK_H,
+    TIMELINE_CLIP_H, TIMELINE_CLIP_Y_PAD, TIMELINE_HANDLE_W, TIMELINE_KEYFRAME_HIT_W,
+    TIMELINE_LABEL_W, TIMELINE_MARKER_HIT_W, TIMELINE_MARKER_LABEL_H, TIMELINE_MARKER_LABEL_W,
+    TIMELINE_MAX_PX_PER_FRAME, TIMELINE_MIN_CLIP_W, TIMELINE_MIN_ZOOM_FLOOR, TIMELINE_RULER_H,
+    TIMELINE_SCROLLBAR_H, TIMELINE_TRACK_H,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -26,10 +26,8 @@ pub(super) enum TimelineHit {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TimelineRects {
     pub(super) outer: Rect,
-    pub(super) label: Rect,
     pub(super) ruler: Rect,
     pub(super) tracks: Rect,
-    pub(super) add_row: Rect,
     pub(super) scrollbar: Rect,
     pub(super) track_scroll_y: f32,
 }
@@ -52,31 +50,21 @@ pub(super) fn timeline_rects(outer: Rect, track_scroll_y: f32) -> TimelineRects 
         Pos2::new(outer.left() + TIMELINE_LABEL_W, outer.top()),
         Pos2::new(outer.right(), outer.top() + TIMELINE_RULER_H),
     );
-    let add_row = Rect::from_min_max(
-        Pos2::new(outer.left(), outer.bottom() - TIMELINE_ADD_ROW_H),
+    let scrollbar = Rect::from_min_max(
+        Pos2::new(
+            outer.left() + TIMELINE_LABEL_W,
+            outer.bottom() - TIMELINE_SCROLLBAR_H,
+        ),
         outer.right_bottom(),
     );
     let tracks = Rect::from_min_max(
         Pos2::new(outer.left() + TIMELINE_LABEL_W, ruler.bottom()),
-        Pos2::new(outer.right(), add_row.top()),
-    );
-    let label = Rect::from_min_max(
-        outer.left_top(),
-        Pos2::new(outer.left() + TIMELINE_LABEL_W, add_row.top()),
-    );
-    let scrollbar = Rect::from_min_max(
-        Pos2::new(
-            outer.left() + TIMELINE_LABEL_W,
-            add_row.bottom() - TIMELINE_SCROLLBAR_H,
-        ),
-        Pos2::new(outer.right(), add_row.bottom()),
+        Pos2::new(outer.right(), scrollbar.top()),
     );
     TimelineRects {
         outer,
-        label,
         ruler,
         tracks,
-        add_row,
         scrollbar,
         track_scroll_y,
     }
@@ -266,19 +254,127 @@ pub(super) fn next_timeline_coarse_zoom(
 }
 
 pub(super) fn nice_timeline_step(target_seconds: f64) -> f64 {
-    const STEPS: &[f64] = &[0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0];
+    const STEPS: &[f64] = &[
+        0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0,
+        600.0, 900.0, 1_800.0, 3_600.0,
+    ];
+    let target_seconds = target_seconds.max(0.000_001);
+    // Keep near-identical timebases on the same visual scale. In particular,
+    // 23.976 and 24 fps land on opposite sides of an exact 0.5 s boundary at
+    // maximum frame zoom without this small tolerance.
+    let tolerated_target = target_seconds * 0.998;
     STEPS
         .iter()
         .copied()
-        .find(|step| *step >= target_seconds)
-        .unwrap_or(*STEPS.last().unwrap())
+        .find(|step| *step >= tolerated_target)
+        .unwrap_or_else(|| {
+            let exponent = tolerated_target.log10().floor();
+            let decade = 10_f64.powf(exponent);
+            [1.0, 2.0, 5.0, 10.0]
+                .into_iter()
+                .map(|mantissa| mantissa * decade)
+                .find(|step| *step >= tolerated_target)
+                .unwrap_or(10.0 * decade)
+        })
 }
 
-pub(super) fn timeline_ruler_label(seconds: f64) -> String {
-    let total_seconds = seconds.round().max(0.0) as u64;
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{minutes}:{seconds:02}")
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TimelineRulerScale {
+    pub(super) major_step_seconds: f64,
+    pub(super) minor_step_seconds: f64,
+    pub(super) micro_step_seconds: f64,
+    pub(super) minor_opacity: f32,
+    pub(super) micro_opacity: f32,
+    pub(super) frame_opacity: f32,
+    pub(super) frame_group: i64,
+}
+
+pub(super) fn timeline_ruler_scale(zoom: f32, fps: f32) -> TimelineRulerScale {
+    let zoom = zoom.max(TIMELINE_MIN_ZOOM_FLOOR);
+    let fps = fps.max(1.0);
+    let major_step_seconds = nice_timeline_step(96.0 / zoom as f64);
+    let (minor_step_seconds, micro_step_seconds) = timeline_time_subdivisions(major_step_seconds);
+    let pixels_per_frame = zoom / fps;
+    let frame_opacity = smooth_timeline_disclosure(pixels_per_frame, 2.5, 6.5);
+    let minor_opacity = smooth_timeline_disclosure(minor_step_seconds as f32 * zoom, 7.0, 22.0);
+    let micro_opacity = smooth_timeline_disclosure(micro_step_seconds as f32 * zoom, 9.0, 26.0)
+        * (1.0 - frame_opacity * 0.72);
+    let frame_group = [2_i64, 3, 5, 10, 15, 30, 60]
+        .into_iter()
+        .find(|group| *group as f32 * pixels_per_frame >= 18.0)
+        .unwrap_or(60);
+
+    TimelineRulerScale {
+        major_step_seconds,
+        minor_step_seconds,
+        micro_step_seconds,
+        minor_opacity,
+        micro_opacity,
+        frame_opacity,
+        frame_group,
+    }
+}
+
+fn timeline_time_subdivisions(major_step: f64) -> (f64, f64) {
+    if major_step >= 300.0 {
+        (60.0, 30.0)
+    } else if major_step >= 120.0 {
+        (30.0, 10.0)
+    } else if major_step >= 60.0 {
+        (10.0, 5.0)
+    } else if major_step >= 15.0 {
+        (5.0, 1.0)
+    } else if major_step >= 10.0 {
+        (2.0, 1.0)
+    } else if major_step >= 5.0 {
+        (1.0, 0.5)
+    } else if major_step >= 2.0 {
+        (0.5, 0.25)
+    } else if major_step >= 1.0 {
+        (0.5, 0.25)
+    } else if major_step >= 0.5 {
+        (0.1, 0.05)
+    } else if major_step >= 0.25 {
+        (0.05, 0.025)
+    } else if major_step >= 0.1 {
+        (0.02, 0.01)
+    } else {
+        (
+            (major_step / 5.0).max(0.000_001),
+            (major_step / 10.0).max(0.000_001),
+        )
+    }
+}
+
+fn smooth_timeline_disclosure(value: f32, start: f32, end: f32) -> f32 {
+    let t = ((value - start) / (end - start).max(f32::EPSILON)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+pub(super) fn timeline_ruler_label(seconds: f64, major_step_seconds: f64) -> String {
+    let precision: usize = if major_step_seconds >= 1.0 {
+        0
+    } else if major_step_seconds >= 0.1
+        && ((major_step_seconds * 10.0).round() - major_step_seconds * 10.0).abs() < 0.000_001
+    {
+        1
+    } else if major_step_seconds >= 0.01 {
+        2
+    } else {
+        3
+    };
+    let factor = 10_u64.pow(precision as u32);
+    let total_units = (seconds.max(0.0) * factor as f64).round() as u64;
+    let units_per_minute = 60 * factor;
+    let minutes = total_units / units_per_minute;
+    let seconds_units = total_units % units_per_minute;
+    let whole_seconds = seconds_units / factor;
+    if precision == 0 {
+        format!("{minutes}:{whole_seconds:02}")
+    } else {
+        let fraction = seconds_units % factor;
+        format!("{minutes}:{whole_seconds:02}.{fraction:0precision$}")
+    }
 }
 
 pub(super) fn timeline_hit(
@@ -291,7 +387,7 @@ pub(super) fn timeline_hit(
     if rects.ruler.contains(pos) {
         return TimelineHit::Ruler;
     }
-    if pos.x < rects.tracks.left() && pos.y >= rects.tracks.top() && pos.y < rects.add_row.top() {
+    if pos.x < rects.tracks.left() && pos.y >= rects.tracks.top() && pos.y < rects.tracks.bottom() {
         let row = ((pos.y - rects.tracks.top() + rects.track_scroll_y) / TIMELINE_TRACK_H)
             .floor()
             .max(0.0) as usize;
@@ -323,7 +419,7 @@ pub(super) fn timeline_hit(
             return TimelineHit::Marker(geom.marker_id);
         }
     }
-    if rects.tracks.contains(pos) {
+    if rects.tracks.contains(pos) && timeline_track_row_at_pos(pos, rects, tracks).is_some() {
         TimelineHit::EmptyTrack
     } else {
         TimelineHit::Empty
@@ -335,7 +431,7 @@ pub(super) fn timeline_track_row_at_pos<'a>(
     rects: TimelineRects,
     tracks: &'a [Track],
 ) -> Option<&'a Track> {
-    if pos.y < rects.tracks.top() || pos.y >= rects.add_row.top() {
+    if pos.y < rects.tracks.top() || pos.y >= rects.tracks.bottom() {
         return None;
     }
     let row = ((pos.y - rects.tracks.top() + rects.track_scroll_y) / TIMELINE_TRACK_H)

@@ -188,17 +188,23 @@ impl LatentSlateApp {
         let duration = self.editor.project.duration().max(10.0);
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
         let track_count = self.editor.project.tracks.len().max(1) as f32;
-        let min_h = TIMELINE_RULER_H + TIMELINE_TRACK_H + TIMELINE_ADD_ROW_H;
+        let min_h = TIMELINE_RULER_H + TIMELINE_TRACK_H + TIMELINE_SCROLLBAR_H;
         let total_h = available.y.max(min_h);
         let (outer, response) =
             ui.allocate_exact_size(Vec2::new(available.x, total_h), Sense::click_and_drag());
         let track_content_h = track_count * TIMELINE_TRACK_H;
-        let max_scroll_y =
-            (track_content_h - (total_h - TIMELINE_RULER_H - TIMELINE_ADD_ROW_H).max(1.0)).max(0.0);
+        let max_scroll_y = (track_content_h
+            - (total_h - TIMELINE_RULER_H - TIMELINE_SCROLLBAR_H).max(1.0))
+        .max(0.0);
         self.clamp_timeline_vertical_scroll(max_scroll_y);
         let rects = timeline_rects(outer, self.editor.layout.timeline_scroll_y);
+        let track_stack_bottom = (rects.tracks.top()
+            + self.editor.project.tracks.len() as f32 * TIMELINE_TRACK_H
+            - rects.track_scroll_y)
+            .clamp(rects.tracks.top(), rects.tracks.bottom());
         let viewport_w = rects.tracks.width().max(1.0);
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
+        self.preserve_timeline_visible_range_on_resize(viewport_w, fit_zoom, max_zoom);
         self.editor.layout.timeline_zoom =
             self.editor.layout.timeline_zoom.clamp(fit_zoom, max_zoom);
         self.handle_timeline_keyboard(ui, duration, viewport_w);
@@ -234,26 +240,39 @@ impl LatentSlateApp {
         let painter = ui.painter_at(outer);
         let overlay_clip = Rect::from_min_max(
             rects.ruler.left_top(),
-            Pos2::new(rects.outer.right(), rects.add_row.top()),
+            Pos2::new(rects.outer.right(), track_stack_bottom),
         );
         let overlay_painter = painter.with_clip_rect(overlay_clip);
         let ruler_painter = painter.with_clip_rect(rects.ruler);
         let track_painter = painter.with_clip_rect(rects.tracks);
+        let track_stack_painter = painter.with_clip_rect(Rect::from_min_max(
+            rects.tracks.left_top(),
+            Pos2::new(rects.tracks.right(), track_stack_bottom),
+        ));
         let label_viewport = Rect::from_min_max(
             Pos2::new(outer.left(), rects.tracks.top()),
             Pos2::new(rects.tracks.left(), rects.tracks.bottom()),
         );
         let label_painter = painter.with_clip_rect(label_viewport);
-        painter.rect_filled(outer, 0.0, Color32::from_rgb(12, 13, 15));
-        painter.rect_filled(rects.label, 0.0, kit::PANEL);
-        painter.rect_filled(rects.ruler, 0.0, kit::CHROME);
-        painter.line_segment(
-            [
-                Pos2::new(rects.tracks.left(), outer.top()),
-                Pos2::new(rects.tracks.left(), outer.bottom()),
-            ],
-            Stroke::new(1.0_f32, kit::BORDER),
+        painter.rect_filled(outer, 0.0, kit::PANEL_SUNKEN);
+        painter.rect_filled(
+            Rect::from_min_max(
+                outer.left_top(),
+                Pos2::new(rects.tracks.left(), rects.ruler.bottom()),
+            ),
+            0.0,
+            kit::PANEL,
         );
+        painter.rect_filled(rects.ruler, 0.0, kit::CHROME);
+        if track_stack_bottom > rects.tracks.top() {
+            painter.line_segment(
+                [
+                    Pos2::new(rects.tracks.left(), outer.top()),
+                    Pos2::new(rects.tracks.left(), track_stack_bottom),
+                ],
+                Stroke::new(1.0_f32, kit::BORDER),
+            );
+        }
 
         let tracks = self.editor.project.tracks.clone();
         let clips = self.editor.project.clips.clone();
@@ -480,20 +499,22 @@ impl LatentSlateApp {
                     egui::StrokeKind::Inside,
                 );
             }
-            label_painter.line_segment(
-                [
-                    Pos2::new(outer.left(), row_rect.bottom()),
-                    Pos2::new(rects.tracks.left(), row_rect.bottom()),
-                ],
-                Stroke::new(1.0_f32, kit::BORDER_SOFT),
-            );
-            track_painter.line_segment(
-                [
-                    Pos2::new(rects.tracks.left(), row_rect.bottom()),
-                    Pos2::new(rects.tracks.right(), row_rect.bottom()),
-                ],
-                Stroke::new(1.0_f32, kit::BORDER_SOFT),
-            );
+            if row + 1 < tracks.len() {
+                label_painter.line_segment(
+                    [
+                        Pos2::new(outer.left(), row_rect.bottom()),
+                        Pos2::new(rects.tracks.left(), row_rect.bottom()),
+                    ],
+                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
+                );
+                track_painter.line_segment(
+                    [
+                        Pos2::new(rects.tracks.left(), row_rect.bottom()),
+                        Pos2::new(rects.tracks.right(), row_rect.bottom()),
+                    ],
+                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
+                );
+            }
             label_painter.rect_filled(
                 Rect::from_min_size(
                     Pos2::new(label_rect.left() + 12.0, row_rect.center().y - 8.0),
@@ -606,8 +627,7 @@ impl LatentSlateApp {
             }
         }
 
-        self.paint_add_track_row(ui, &painter, rects);
-        self.paint_timeline_grid_overlay(&track_painter, rects, duration, zoom);
+        self.paint_timeline_grid_overlay(&track_stack_painter, rects, duration, zoom);
         if let Some(insertion_index) = self.track_reorder_insertion_index() {
             self.paint_track_reorder_indicator(&painter, rects, insertion_index);
         }
@@ -623,7 +643,7 @@ impl LatentSlateApp {
             overlay_painter.line_segment(
                 [
                     Pos2::new(x, rects.ruler.top()),
-                    Pos2::new(x, rects.add_row.top()),
+                    Pos2::new(x, rects.tracks.bottom()),
                 ],
                 Stroke::new(1.0_f32, Color32::from_rgb(229, 187, 47)),
             );
@@ -919,6 +939,50 @@ impl LatentSlateApp {
             duration,
             zoom,
         );
+        self.timeline_viewport_observation = Some(TimelineViewportObservation {
+            project_session_revision: self.editor.project_session_revision,
+            width: viewport_w,
+            zoom: self.editor.layout.timeline_zoom,
+            scroll_x: self.editor.layout.timeline_scroll_x,
+        });
+    }
+
+    fn preserve_timeline_visible_range_on_resize(
+        &mut self,
+        viewport_w: f32,
+        fit_zoom: f32,
+        max_zoom: f32,
+    ) {
+        let Some(previous) = self.timeline_viewport_observation else {
+            return;
+        };
+        let current_zoom = self.editor.layout.timeline_zoom;
+        let current_scroll_x = self.editor.layout.timeline_scroll_x;
+        let width_changed = (viewport_w - previous.width).abs() > 0.01;
+        let zoom_unchanged =
+            (current_zoom - previous.zoom).abs() <= 0.0001_f32.max(previous.zoom.abs() * 0.000001);
+        let scroll_unchanged = (current_scroll_x - previous.scroll_x).abs() <= 0.01;
+        let valid_observation = previous.width > 0.0
+            && previous.project_session_revision == self.editor.project_session_revision
+            && previous.width.is_finite()
+            && previous.zoom > 0.0
+            && previous.zoom.is_finite()
+            && previous.scroll_x.is_finite();
+
+        if !valid_observation
+            || !width_changed
+            || !zoom_unchanged
+            || !scroll_unchanged
+            || self.timeline_drag.is_some()
+        {
+            return;
+        }
+
+        let width_ratio = viewport_w / previous.width;
+        let next_zoom = (previous.zoom * width_ratio).clamp(fit_zoom, max_zoom);
+        let visible_start = previous.scroll_x / previous.zoom;
+        self.editor.layout.timeline_zoom = next_zoom;
+        self.editor.layout.timeline_scroll_x = visible_start * next_zoom;
     }
 
     pub(super) fn drop_asset_on_timeline(
@@ -1279,33 +1343,72 @@ impl LatentSlateApp {
         let scroll_x = self.editor.layout.timeline_scroll_x;
         let visible_start = (scroll_x / zoom).max(0.0) as f64;
         let visible_end = ((scroll_x + rect.width()) / zoom).min(duration as f32) as f64;
-        let target_seconds = (90.0 / zoom.max(0.1)).max(0.5) as f64;
-        let major_step = nice_timeline_step(target_seconds);
+        let scale = timeline_ruler_scale(zoom, fps);
+        let major_step = scale.major_step_seconds;
         let first_tick = (visible_start / major_step).floor() as i32 - 1;
         let last_tick = (visible_end / major_step).ceil() as i32 + 1;
 
-        if zoom >= 240.0 {
+        if scale.frame_opacity > 0.001 {
             let fps = fps.max(1.0);
             let first_frame = (visible_start * fps as f64).floor() as i64 - 1;
             let last_frame = (visible_end * fps as f64).ceil() as i64 + 1;
-            let fps_i = fps.round().max(1.0) as i64;
             for frame in first_frame..=last_frame {
-                if frame < 0 || frame % fps_i == 0 {
+                if frame < 0 {
                     continue;
                 }
                 let t = frame as f64 / fps as f64;
                 let x = time_to_timeline_x(t, rect.left(), zoom, scroll_x);
                 if rect.x_range().contains(x) {
+                    let group_tick = frame % scale.frame_group == 0;
+                    let opacity = if group_tick {
+                        72.0 * scale.frame_opacity
+                    } else {
+                        38.0 * scale.frame_opacity
+                    };
+                    let height = if group_tick { 5.0 } else { 3.0 };
                     painter.line_segment(
                         [
-                            Pos2::new(x, rect.bottom() - 4.0),
+                            Pos2::new(x, rect.bottom() - height),
                             Pos2::new(x, rect.bottom()),
                         ],
-                        Stroke::new(1.0_f32, kit::BORDER_SOFT),
+                        Stroke::new(
+                            1.0_f32,
+                            Color32::from_rgba_unmultiplied(
+                                102,
+                                108,
+                                119,
+                                opacity.round().clamp(0.0, 255.0) as u8,
+                            ),
+                        ),
                     );
                 }
             }
         }
+
+        self.paint_timeline_ruler_tick_layer(
+            painter,
+            rect,
+            duration,
+            zoom,
+            visible_start,
+            visible_end,
+            scale.micro_step_seconds,
+            Some(scale.minor_step_seconds),
+            4.0,
+            54.0 * scale.micro_opacity,
+        );
+        self.paint_timeline_ruler_tick_layer(
+            painter,
+            rect,
+            duration,
+            zoom,
+            visible_start,
+            visible_end,
+            scale.minor_step_seconds,
+            Some(major_step),
+            7.0,
+            82.0 * scale.minor_opacity,
+        );
 
         for tick in first_tick..=last_tick {
             if tick < 0 {
@@ -1329,9 +1432,59 @@ impl LatentSlateApp {
             painter.text(
                 Pos2::new(x + 4.0, rect.top() + 4.0),
                 egui::Align2::LEFT_TOP,
-                timeline_ruler_label(t),
+                timeline_ruler_label(t, major_step),
                 FontId::monospace(9.0),
                 kit::TEXT_DIM,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_timeline_ruler_tick_layer(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        duration: f64,
+        zoom: f32,
+        visible_start: f64,
+        visible_end: f64,
+        step: f64,
+        skip_step: Option<f64>,
+        height: f32,
+        opacity: f32,
+    ) {
+        if step <= 0.0 || opacity < 1.0 {
+            return;
+        }
+        let scroll_x = self.editor.layout.timeline_scroll_x;
+        let first_tick = (visible_start / step).floor() as i64 - 1;
+        let last_tick = (visible_end / step).ceil() as i64 + 1;
+        let color =
+            Color32::from_rgba_unmultiplied(92, 98, 109, opacity.round().clamp(0.0, 255.0) as u8);
+        for tick in first_tick..=last_tick {
+            if tick < 0 {
+                continue;
+            }
+            let t = tick as f64 * step;
+            if t > duration {
+                continue;
+            }
+            if skip_step.is_some_and(|skip| {
+                let ratio = t / skip;
+                (ratio - ratio.round()).abs() < 0.000_001
+            }) {
+                continue;
+            }
+            let x = time_to_timeline_x(t, rect.left(), zoom, scroll_x);
+            if !rect.x_range().contains(x) {
+                continue;
+            }
+            painter.line_segment(
+                [
+                    Pos2::new(x, rect.bottom() - height),
+                    Pos2::new(x, rect.bottom()),
+                ],
+                Stroke::new(1.0_f32, color),
             );
         }
     }
@@ -1346,8 +1499,9 @@ impl LatentSlateApp {
         let scroll_x = self.editor.layout.timeline_scroll_x;
         let visible_start = (scroll_x / zoom).max(0.0) as f64;
         let visible_end = ((scroll_x + rects.tracks.width()) / zoom).min(duration as f32) as f64;
-        let target_seconds = (90.0 / zoom.max(0.1)).max(0.5) as f64;
-        let major_step = nice_timeline_step(target_seconds);
+        let major_step =
+            timeline_ruler_scale(zoom, self.editor.project.settings.fps.max(1.0) as f32)
+                .major_step_seconds;
         let first_tick = (visible_start / major_step).floor() as i32 - 1;
         let last_tick = (visible_end / major_step).ceil() as i32 + 1;
         let stroke = Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(86, 92, 104, 42));
@@ -1681,7 +1835,7 @@ impl LatentSlateApp {
         painter.line_segment(
             [
                 Pos2::new(x, rects.ruler.top()),
-                Pos2::new(x, rects.add_row.top()),
+                Pos2::new(x, rects.tracks.bottom()),
             ],
             Stroke::new(1.5_f32, kit::PLAYHEAD),
         );
@@ -1695,81 +1849,6 @@ impl LatentSlateApp {
             kit::PLAYHEAD,
             Stroke::NONE,
         ));
-    }
-
-    pub(super) fn paint_add_track_row(
-        &mut self,
-        ui: &mut Ui,
-        painter: &egui::Painter,
-        rects: TimelineRects,
-    ) {
-        painter.rect_filled(rects.add_row, 0.0, kit::PANEL);
-        painter.line_segment(
-            [
-                Pos2::new(rects.outer.left(), rects.add_row.top()),
-                Pos2::new(rects.outer.right(), rects.add_row.top()),
-            ],
-            Stroke::new(1.0_f32, kit::BORDER_SOFT),
-        );
-        let button_y = rects.add_row.center().y - 12.0;
-        let video_rect = Rect::from_min_size(
-            Pos2::new(rects.add_row.left() + 12.0, button_y),
-            Vec2::new(56.0, 24.0),
-        );
-        let audio_rect = Rect::from_min_size(
-            Pos2::new(video_rect.right() + 6.0, button_y),
-            Vec2::new(56.0, 24.0),
-        );
-        let marker_rect = Rect::from_min_size(
-            Pos2::new(audio_rect.right() + 6.0, button_y),
-            Vec2::new(66.0, 24.0),
-        );
-        let video_resp = ui.interact(
-            video_rect,
-            ui.id().with("timeline-add-video"),
-            Sense::click(),
-        );
-        let audio_resp = ui.interact(
-            audio_rect,
-            ui.id().with("timeline-add-audio"),
-            Sense::click(),
-        );
-        let marker_resp = ui.interact(
-            marker_rect,
-            ui.id().with("timeline-add-marker"),
-            Sense::click(),
-        );
-        let input_frozen = ui.ctx().any_popup_open();
-        if !input_frozen && video_resp.clicked() {
-            self.add_timeline_track_at_index(TrackType::Video, self.editor.project.tracks.len());
-        }
-        if !input_frozen && audio_resp.clicked() {
-            self.add_timeline_track_at_index(TrackType::Audio, self.editor.project.tracks.len());
-        }
-        if !input_frozen && marker_resp.clicked() {
-            self.add_timeline_track_at_index(TrackType::Marker, self.editor.project.tracks.len());
-        }
-        paint_dashed_timeline_button(
-            painter,
-            video_rect,
-            "+ Video",
-            kit::VIDEO,
-            !input_frozen && video_resp.hovered(),
-        );
-        paint_dashed_timeline_button(
-            painter,
-            audio_rect,
-            "+ Audio",
-            kit::AUDIO,
-            !input_frozen && audio_resp.hovered(),
-        );
-        paint_dashed_timeline_button(
-            painter,
-            marker_rect,
-            "+ Marker",
-            kit::MARKER,
-            !input_frozen && marker_resp.hovered(),
-        );
     }
 
     pub(super) fn paint_timeline_scrollbar(

@@ -831,6 +831,42 @@ fn build_async_client(timeout: Duration) -> Result<Client, ProviderExecutionErro
     })
 }
 
+/// Unloads every Engine runtime wrapper and clears its bounded caches.
+pub async fn release_resources(base_url: &str, api_key: Option<&str>) -> Result<Value, String> {
+    let client = build_async_client(Duration::from_secs(10)).map_err(provider_error_message)?;
+    let response = send_with_auth(client.delete(endpoint(base_url, "/v1/runtime")), api_key)
+        .send()
+        .await
+        .map_err(|err| {
+            provider_error_message(offline("LatentSlate Engine resource release", err))
+        })?;
+    let status = response.status();
+    let text = response.text().await.map_err(|err| {
+        format!("LatentSlate Engine resource release response read failed: {err}")
+    })?;
+    if !status.is_success() {
+        let payload = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+        let detail = payload
+            .get("detail")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                payload
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+            })
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| text.trim());
+        return Err(if detail.is_empty() {
+            format!("LatentSlate Engine resource release failed ({status})")
+        } else {
+            format!("LatentSlate Engine resource release failed ({status}): {detail}")
+        });
+    }
+    serde_json::from_str(&text)
+        .map_err(|err| format!("LatentSlate Engine resource release returned invalid JSON: {err}"))
+}
+
 fn send_with_auth(
     request: reqwest::RequestBuilder,
     api_key: Option<&str>,

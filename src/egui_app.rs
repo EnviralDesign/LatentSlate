@@ -96,7 +96,6 @@ const TIMELINE_LABEL_W: f32 = 140.0;
 const TIMELINE_HEADER_H: f32 = 32.0;
 const TIMELINE_RULER_H: f32 = 24.0;
 const TIMELINE_TRACK_H: f32 = 44.0;
-const TIMELINE_ADD_ROW_H: f32 = 42.0;
 const TIMELINE_CLIP_H: f32 = 38.0;
 const TIMELINE_CLIP_Y_PAD: f32 = 3.0;
 const TIMELINE_KEYFRAME_HIT_W: f32 = 40.0;
@@ -279,6 +278,7 @@ pub struct LatentSlateApp {
     timeline_snap_preview: Option<f64>,
     timeline_scrub_was_playing: bool,
     timeline_last_scrub_audio_time: Option<f64>,
+    timeline_viewport_observation: Option<TimelineViewportObservation>,
     clip_spacing_seconds: f64,
     clip_spacing_frames: i64,
     clip_spacing_set_duration: bool,
@@ -321,6 +321,11 @@ pub struct LatentSlateApp {
     generation_events_rx: mpsc::Receiver<GenerationEvent>,
     generation_active: Option<Uuid>,
     generation_cancel_tokens: HashMap<Uuid, Arc<AtomicBool>>,
+    provider_resource_release_tx: mpsc::Sender<crate::providers::ProviderResourceReleaseReport>,
+    provider_resource_release_rx: mpsc::Receiver<crate::providers::ProviderResourceReleaseReport>,
+    provider_resource_release_in_flight: bool,
+    pending_provider_resource_release_automation:
+        Option<crate::core::automation::AutomationEnvelope>,
     export_modal: ExportModalState,
     export_events_tx: mpsc::Sender<VideoExportEvent>,
     export_events_rx: mpsc::Receiver<VideoExportEvent>,
@@ -446,6 +451,14 @@ struct TimelineClipMoveData {
     duration: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TimelineViewportObservation {
+    project_session_revision: u64,
+    width: f32,
+    zoom: f32,
+    scroll_x: f32,
+}
+
 #[derive(Clone, Debug)]
 enum TimelineDrag {
     Playhead,
@@ -516,6 +529,7 @@ impl LatentSlateApp {
             }
         };
         let (generation_events_tx, generation_events_rx) = mpsc::channel();
+        let (provider_resource_release_tx, provider_resource_release_rx) = mpsc::channel();
         let (export_events_tx, export_events_rx) = mpsc::channel();
         let (preview_render_tx, preview_render_rx) = mpsc::channel();
         let export_modal = ExportModalState::for_project(&editor.project);
@@ -566,6 +580,7 @@ impl LatentSlateApp {
             timeline_snap_preview: None,
             timeline_scrub_was_playing: false,
             timeline_last_scrub_audio_time: None,
+            timeline_viewport_observation: None,
             clip_spacing_seconds: default_generative_video_frames() as f64
                 / default_generative_video_fps(),
             clip_spacing_frames: default_generative_video_frames() as i64,
@@ -607,6 +622,10 @@ impl LatentSlateApp {
             generation_events_rx,
             generation_active: None,
             generation_cancel_tokens: HashMap::new(),
+            provider_resource_release_tx,
+            provider_resource_release_rx,
+            provider_resource_release_in_flight: false,
+            pending_provider_resource_release_automation: None,
             export_modal,
             export_events_tx,
             export_events_rx,
@@ -1559,8 +1578,16 @@ fn provider_input_drag_i64(
 ) -> bool {
     provider_input_field_label(ui, label, input);
     let step = speed.round().max(1.0) as i64;
-    let min = input.ui.as_ref().and_then(|ui| ui.min).map(|value| value.round() as i64);
-    let max = input.ui.as_ref().and_then(|ui| ui.max).map(|value| value.round() as i64);
+    let min = input
+        .ui
+        .as_ref()
+        .and_then(|ui| ui.min)
+        .map(|value| value.round() as i64);
+    let max = input
+        .ui
+        .as_ref()
+        .and_then(|ui| ui.max)
+        .map(|value| value.round() as i64);
     kit::integer_step_drag(ui, value, width, step, min, max)
 }
 
@@ -1632,11 +1659,12 @@ fn inspector_card(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) 
 
 fn inspector_meta_row(ui: &mut Ui, label: &str, value: impl Into<String>) {
     let value = value.into();
-    ui.horizontal(|ui| {
+    kit::bounded_horizontal_row(ui, 18.0, |ui, row_width| {
         ui.spacing_mut().item_spacing.x = kit::FORM_ROW_GAP;
+        let value_width = (row_width - 62.0 - ui.spacing().item_spacing.x).max(0.0);
         ui.add_sized([62.0, 18.0], egui::Label::new(kit::caption(label)));
         ui.add_sized(
-            [ui.available_width(), 18.0],
+            [value_width, 18.0],
             egui::Label::new(kit::body(value)).truncate(),
         );
     });

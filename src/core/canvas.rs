@@ -85,7 +85,10 @@ pub fn canvas_from_provider(provider: &ProviderEntry) -> Option<CanvasContract> 
     canvas_from_dimension_ui(width.ui.as_ref(), height.ui.as_ref())
 }
 
-pub fn canvas_from_dimension_ui(width: Option<&InputUi>, height: Option<&InputUi>) -> Option<CanvasContract> {
+pub fn canvas_from_dimension_ui(
+    width: Option<&InputUi>,
+    height: Option<&InputUi>,
+) -> Option<CanvasContract> {
     let width = width?;
     let height = height?;
     let alignment = width
@@ -121,7 +124,8 @@ pub fn snap_to_step(value: i64, origin: i64, step: i64) -> i64 {
     origin.saturating_add(n.saturating_mul(step))
 }
 
-pub fn snap_integer_to_input(value: i64, ui: Option<&InputUi>) -> i64 {
+#[cfg(test)]
+fn snap_integer_to_input(value: i64, ui: Option<&InputUi>) -> i64 {
     let Some(ui) = ui else {
         return value;
     };
@@ -131,10 +135,7 @@ pub fn snap_integer_to_input(value: i64, ui: Option<&InputUi>) -> i64 {
         .map(|step| step.round() as i64)
         .unwrap_or(1)
         .max(1);
-    let origin = ui
-        .min
-        .map(|min| min.round() as i64)
-        .unwrap_or(0);
+    let origin = ui.min.map(|min| min.round() as i64).unwrap_or(0);
     let snapped = snap_to_step(value, origin, step);
     let min = ui.min.map(|min| min.round() as i64).unwrap_or(snapped);
     let max = ui.max.map(|max| max.round() as i64).unwrap_or(snapped);
@@ -238,8 +239,8 @@ pub fn fit_canvas(canvas: &CanvasContract, aspect: f64, target_pixels: u64) -> (
             let pixels = width as u64 * height as u64;
             let current_aspect = width as f64 / height.max(1) as f64;
             let aspect_err = ((current_aspect - aspect) / aspect).abs();
-            let pixel_err = ((pixels as f64 - target_pixels as f64).abs())
-                / target_pixels.max(1) as f64;
+            let pixel_err =
+                ((pixels as f64 - target_pixels as f64).abs()) / target_pixels.max(1) as f64;
             let score = aspect_err * 4.0 + pixel_err;
             if score < best_score {
                 best_score = score;
@@ -271,44 +272,108 @@ pub fn nearest_legal_canvas(canvas: &CanvasContract, width: u32, height: u32) ->
     fit_canvas(canvas, width as f64 / height as f64, pixels)
 }
 
-pub fn snap_side(canvas: &CanvasContract, value: i64) -> u32 {
-    let alignment = canvas.alignment.max(1) as i64;
-    let min_side = canvas.min_side.max(1) as i64;
-    let max_side = canvas.max_side.map(|value| value as i64).unwrap_or(i64::MAX);
-    let snapped = snap_to_step(value, 0, alignment).max(min_side);
-    snapped.min(max_side).max(min_side) as u32
-}
-
-pub fn adjust_width(canvas: &CanvasContract, width: i64, height: u32, lock_aspect: Option<f64>) -> (u32, u32) {
-    let width = snap_side(canvas, width);
-    if let Some(aspect) = lock_aspect.filter(|value| *value > 0.0) {
-        return fit_canvas(canvas, aspect, width as u64 * ((width as f64 / aspect).round() as u64).max(1));
+/// Fits a legal canvas whose pixel area is at least the requested size when
+/// the provider contract permits it.
+///
+/// The boolean is `false` when hard provider limits force the returned canvas
+/// below the requested pixel area.
+pub fn fit_canvas_at_least(
+    canvas: &CanvasContract,
+    target_width: u32,
+    target_height: u32,
+) -> ((u32, u32), bool) {
+    let target_width = target_width.max(1);
+    let target_height = target_height.max(1);
+    let target_pixels = target_width as u64 * target_height as u64;
+    if canvas_is_valid(canvas, target_width as i64, target_height as i64) {
+        return ((target_width, target_height), true);
     }
-    clamp_pair(canvas, width, snap_side(canvas, height as i64))
-}
 
-pub fn adjust_height(canvas: &CanvasContract, width: u32, height: i64, lock_aspect: Option<f64>) -> (u32, u32) {
-    let height = snap_side(canvas, height);
-    if let Some(aspect) = lock_aspect.filter(|value| *value > 0.0) {
-        return fit_canvas(
-            canvas,
-            aspect,
-            height as u64 * ((height as f64 * aspect).round() as u64).max(1),
-        );
-    }
-    clamp_pair(canvas, snap_side(canvas, width as i64), height)
-}
+    let alignment = canvas.alignment.max(1);
+    let min_side = round_up(canvas.min_side.max(1), alignment);
+    let max_side = canvas
+        .max_side
+        .unwrap_or(4096)
+        .min(
+            canvas
+                .max_pixels
+                .map(|pixels| (pixels / min_side.max(1) as u64).max(min_side as u64) as u32)
+                .unwrap_or(4096),
+        )
+        .max(min_side);
+    let max_side = (max_side / alignment) * alignment;
+    let target_aspect = target_width as f64 / target_height as f64;
+    let mut best_meeting: Option<(f64, u64, u32, u32)> = None;
+    let mut best_fallback: Option<(u64, f64, u32, u32)> = None;
 
-pub fn scale_to_megapixels(canvas: &CanvasContract, width: u32, height: u32, megapixels: f64) -> (u32, u32) {
-    let target = (megapixels.max(0.01) * 1_000_000.0).round() as u64;
-    if let Some(preset) = matching_aspect_preset(width, height) {
-        return fit_preset(canvas, preset, target);
+    let mut width = min_side;
+    while width <= max_side {
+        let max_height_for_width = canvas
+            .max_pixels
+            .map(|pixels| (pixels / width.max(1) as u64).min(max_side as u64) as u32)
+            .unwrap_or(max_side);
+        let max_height_for_width = (max_height_for_width / alignment) * alignment;
+        let required_height = target_pixels.div_ceil(width as u64).min(u32::MAX as u64) as u32;
+        let ideal_height = (width as f64 / target_aspect).round().max(1.0) as u32;
+        let candidates = [
+            round_up(required_height.max(min_side), alignment),
+            round_up(target_height.max(min_side), alignment),
+            snap_positive(ideal_height as i64, alignment) as u32,
+            max_height_for_width,
+        ];
+
+        for height in candidates {
+            if height < min_side
+                || height > max_side
+                || !canvas_is_valid(canvas, width as i64, height as i64)
+            {
+                continue;
+            }
+            let pixels = width as u64 * height as u64;
+            let aspect = width as f64 / height as f64;
+            let aspect_error = ((aspect - target_aspect) / target_aspect).abs();
+
+            if pixels >= target_pixels {
+                let width_error = (width as f64 / target_width as f64 - 1.0).abs();
+                let height_error = (height as f64 / target_height as f64 - 1.0).abs();
+                let overshoot = (pixels - target_pixels) as f64 / target_pixels as f64;
+                let score = width_error + height_error + aspect_error * 0.5 + overshoot * 0.25;
+                let should_replace =
+                    best_meeting
+                        .as_ref()
+                        .is_none_or(|(best_score, best_pixels, _, _)| {
+                            score < *best_score || (score == *best_score && pixels < *best_pixels)
+                        });
+                if should_replace {
+                    best_meeting = Some((score, pixels, width, height));
+                }
+            }
+
+            let should_replace_fallback =
+                best_fallback
+                    .as_ref()
+                    .is_none_or(|(best_pixels, best_aspect_error, _, _)| {
+                        pixels > *best_pixels
+                            || (pixels == *best_pixels && aspect_error < *best_aspect_error)
+                    });
+            if should_replace_fallback {
+                best_fallback = Some((pixels, aspect_error, width, height));
+            }
+        }
+
+        width = width.saturating_add(alignment);
+        if width < alignment {
+            break;
+        }
     }
-    fit_canvas(
-        canvas,
-        width.max(1) as f64 / height.max(1) as f64,
-        target,
-    )
+
+    if let Some((_, _, width, height)) = best_meeting {
+        ((width, height), true)
+    } else if let Some((_, _, width, height)) = best_fallback {
+        ((width, height), false)
+    } else {
+        ((min_side, min_side), false)
+    }
 }
 
 fn fit_exact_ratio(
@@ -354,16 +419,12 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
     left.max(1)
 }
 
-fn clamp_pair(canvas: &CanvasContract, width: u32, height: u32) -> (u32, u32) {
-    if canvas_is_valid(canvas, width as i64, height as i64) {
-        return (width, height);
-    }
-    nearest_legal_canvas(canvas, width, height)
-}
-
 fn round_up(value: u32, alignment: u32) -> u32 {
     let alignment = alignment.max(1);
-    value.div_ceil(alignment) * alignment
+    value
+        .saturating_add(alignment - 1)
+        .div_euclid(alignment)
+        .saturating_mul(alignment)
 }
 
 fn snap_positive(value: i64, alignment: u32) -> i64 {
@@ -375,8 +436,11 @@ pub fn megapixels(width: u32, height: u32) -> f64 {
 }
 
 pub fn canvas_readout(canvas: &CanvasContract, width: u32, height: u32) -> String {
+    let aspect = matching_aspect_preset(width, height)
+        .map(|preset| preset.label.to_string())
+        .unwrap_or_else(|| format!("{:.3}:1", width as f64 / height.max(1) as f64));
     format!(
-        "{width} × {height} · {:.2} MP · /{} grid",
+        "{width} × {height} · {:.2} MP · {aspect} · {} px grid",
         megapixels(width, height),
         canvas.alignment.max(1)
     )
@@ -439,7 +503,13 @@ mod tests {
 
     #[test]
     fn sixteen_by_nine_is_detected_exactly() {
-        assert_eq!(matching_aspect_preset(960, 540).map(|preset| preset.label), Some("16:9"));
-        assert_eq!(matching_aspect_preset(960, 544).map(|preset| preset.label), None);
+        assert_eq!(
+            matching_aspect_preset(960, 540).map(|preset| preset.label),
+            Some("16:9")
+        );
+        assert_eq!(
+            matching_aspect_preset(960, 544).map(|preset| preset.label),
+            None
+        );
     }
 }

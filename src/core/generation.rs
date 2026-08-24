@@ -3,16 +3,14 @@
 // rebuilds the generation/attributes surface. Do not delete this without also
 // replacing provider execution and seed handling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::core::canvas::{
-    canvas_from_provider, nearest_legal_canvas, validate_canvas,
-};
+use crate::core::canvas::{canvas_from_provider, nearest_legal_canvas, validate_canvas};
 use crate::core::media_binding::{
     input_value_from_plan, lookup_media_binding, materialize_plan, resolve_media_binding,
     MediaResolveContext,
@@ -36,6 +34,62 @@ pub struct ResolvedInputs {
     pub input_errors: Vec<String>,
     pub media_bindings_snapshot: HashMap<String, MediaBindingSpec>,
     pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
+}
+
+/// Returns every Asset Lab step that depends on `node_id`, either through
+/// lineage, an explicit generation reference, or a locked media binding. The
+/// graph order is preserved and each dependent step is returned at most once.
+pub fn asset_lab_node_dependents(
+    project: &Project,
+    config: &GenerativeConfig,
+    asset_id: Uuid,
+    node_id: Uuid,
+) -> Option<Vec<Uuid>> {
+    let node = config
+        .lab_graph
+        .nodes
+        .iter()
+        .find(|candidate| candidate.id == node_id)?;
+    let mut output_versions: HashSet<&str> = config
+        .versions
+        .iter()
+        .filter(|record| record.lab_node_id == Some(node_id))
+        .map(|record| record.version.as_str())
+        .collect();
+    if let Some(version) = node.output_version.as_deref() {
+        output_versions.insert(version);
+    }
+
+    Some(
+        config
+            .lab_graph
+            .nodes
+            .iter()
+            .filter(|candidate| candidate.id != node_id)
+            .filter(|candidate| {
+                candidate.parent_node_id == Some(node_id)
+                    || candidate.inputs.values().any(|value| {
+                        matches!(
+                            value,
+                            InputValue::GenerationRef {
+                                asset_id: reference_asset_id,
+                                version,
+                                ..
+                            } if *reference_asset_id == asset_id
+                                && output_versions.contains(version.as_str())
+                        )
+                    })
+                    || candidate.media_bindings.values().any(|spec| {
+                        output_versions.iter().any(|version| {
+                            crate::core::media_binding::spec_references_locked_version(
+                                spec, project, asset_id, version,
+                            )
+                        })
+                    })
+            })
+            .map(|candidate| candidate.id)
+            .collect(),
+    )
 }
 
 pub fn resolve_provider_inputs(
@@ -212,14 +266,8 @@ pub fn resolve_provider_inputs(
                             width.max(0) as u32,
                             height.max(0) as u32,
                         );
-                        values.insert(
-                            width_input.name.clone(),
-                            Value::Number(width.into()),
-                        );
-                        values.insert(
-                            height_input.name.clone(),
-                            Value::Number(height.into()),
-                        );
+                        values.insert(width_input.name.clone(), Value::Number(width.into()));
+                        values.insert(height_input.name.clone(), Value::Number(height.into()));
                         snapshot.insert(
                             width_input.name.clone(),
                             InputValue::Literal {

@@ -82,6 +82,7 @@ Other useful paths:
 - Keep UI rendering in `src/egui_app.rs` until a split is clearly needed
 - Keep reusable editor operations in `src/editor.rs` so automation and UI actions share the same path
 - Keep the opt-in loopback automation surface Rust-native. UI-level automation should register and invoke real egui widget responses through shared kit helpers instead of external screenshot/click scripts or hidden duplicate UI logic.
+- Do not calculate remainder widths with `ui.available_width()` from inside `ui.horizontal(...)` or another left-to-right/right-to-left layout. egui deliberately leaves the horizontal main axis unbounded, which can make repeated rows progressively widen a scroll body. Capture the bounded parent width first or use `kit::bounded_horizontal_row` and its finite `row_width` argument.
 - Prefer native egui widgets and custom painting over hidden parallel UI logic
 - State management goes in `src/state/`
 - Core logic (non-UI) goes in `src/core/`

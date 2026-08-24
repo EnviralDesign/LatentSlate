@@ -506,6 +506,12 @@ impl LatentSlateApp {
         folder_path: PathBuf,
         asset_label: String,
     ) -> Result<String, String> {
+        if self.provider_resource_release_in_flight {
+            return Err(
+                "Wait for provider resource release to finish before starting generation."
+                    .to_string(),
+            );
+        }
         if !self.editor.provider_in_project_scope(provider.id) {
             return Err("Provider is outside this project's provider scope.".to_string());
         }

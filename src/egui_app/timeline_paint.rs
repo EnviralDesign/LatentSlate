@@ -1,10 +1,8 @@
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Stroke};
-
-use crate::core::audio::cache::PeakCache;
-use crate::state::Clip;
-use crate::ui_kit as kit;
+use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
 
 use super::TimelineThumbTile;
+use crate::core::audio::cache::PeakCache;
+use crate::state::Clip;
 
 pub(super) fn paint_clip_thumbnail_strip(
     painter: &egui::Painter,
@@ -133,38 +131,4 @@ pub(super) fn paint_clip_waveform(
             Stroke::new(1.0_f32, Color32::from_gray(158)),
         );
     }
-}
-
-pub(super) fn paint_dashed_timeline_button(
-    painter: &egui::Painter,
-    rect: Rect,
-    label: &str,
-    color: Color32,
-    hovered: bool,
-) {
-    painter.rect_filled(
-        rect,
-        4.0,
-        if hovered {
-            color.gamma_multiply(0.16)
-        } else {
-            Color32::TRANSPARENT
-        },
-    );
-    painter.rect_stroke(
-        rect,
-        4.0,
-        Stroke::new(
-            1.0_f32,
-            color.gamma_multiply(if hovered { 0.8 } else { 0.45 }),
-        ),
-        egui::StrokeKind::Inside,
-    );
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        FontId::proportional(10.5),
-        if hovered { color } else { kit::TEXT_DIM },
-    );
 }

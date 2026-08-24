@@ -43,6 +43,8 @@ pub(super) struct AssetLabState {
     pub(super) graph_zoom: f32,
     pub(super) graph_pan_drag: Option<(Vec2, Pos2)>,
     pub(super) pending_graph_focus_node_id: Option<Uuid>,
+    pub(super) inspector_focus_id: Option<egui::Id>,
+    pub(super) inspector_focus_node_id: Option<Uuid>,
     pub(super) draft_source_node_id: Option<Uuid>,
     pub(super) draft_base_version: Option<String>,
     pub(super) draft_provider_id: Option<Uuid>,
@@ -66,6 +68,8 @@ impl Default for AssetLabState {
             graph_zoom: 1.0,
             graph_pan_drag: None,
             pending_graph_focus_node_id: None,
+            inspector_focus_id: None,
+            inspector_focus_node_id: None,
             draft_source_node_id: None,
             draft_base_version: None,
             draft_provider_id: None,
@@ -864,6 +868,33 @@ fn asset_lab_media_ref_links(
     links
 }
 
+fn asset_lab_delete_dependency_message(
+    project: &Project,
+    config: &GenerativeConfig,
+    asset_id: Uuid,
+    node_id: Uuid,
+) -> Option<String> {
+    let dependent_count =
+        crate::core::generation::asset_lab_node_dependents(project, config, asset_id, node_id)?
+            .len();
+    if dependent_count == 0 {
+        return None;
+    }
+    let noun = if dependent_count == 1 {
+        "downstream step depends"
+    } else {
+        "downstream steps depend"
+    };
+    let next = if dependent_count == 1 {
+        "Delete that step first."
+    } else {
+        "Delete those steps first."
+    };
+    Some(format!(
+        "Cannot delete this step: {dependent_count} {noun} on it. {next}"
+    ))
+}
+
 fn asset_lab_input_port(node_rect: Rect, index: usize, count: usize, zoom: f32) -> Pos2 {
     let spacing = (24.0 * zoom).clamp(12.0, 34.0);
     let side = if index % 2 == 0 { -1.0 } else { 1.0 };
@@ -1064,6 +1095,24 @@ fn asset_lab_fit_texture_rect(bounds: Rect, size: Vec2) -> Rect {
     Rect::from_center_size(bounds.center(), size * scale.max(0.01))
 }
 
+fn paint_asset_lab_truncated_text(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    pos: Pos2,
+    text: RichText,
+    font_size: f32,
+    max_width: f32,
+    fallback_color: Color32,
+) {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        max_width.max(1.0),
+        FontId::proportional(font_size),
+    );
+    painter.galley(pos, galley, fallback_color);
+}
+
 fn paint_asset_lab_node_preview(
     painter: &egui::Painter,
     rect: Rect,
@@ -1071,7 +1120,9 @@ fn paint_asset_lab_node_preview(
     preview: Option<(TextureId, Vec2)>,
     accent: Color32,
     label: &str,
+    zoom: f32,
 ) {
+    let painter = painter.with_clip_rect(rect);
     painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
     painter.rect_stroke(
         rect,
@@ -1104,9 +1155,10 @@ fn paint_asset_lab_node_preview(
         );
     }
 
+    let label_h = (22.0 * zoom.sqrt()).clamp(12.0, 22.0).min(rect.height());
     let label_rect = Rect::from_min_size(
-        rect.left_bottom() - Vec2::new(0.0, 22.0),
-        Vec2::new(rect.width(), 22.0),
+        rect.left_bottom() - Vec2::new(0.0, label_h),
+        Vec2::new(rect.width(), label_h),
     );
     painter.rect_filled(
         label_rect,
@@ -1114,10 +1166,10 @@ fn paint_asset_lab_node_preview(
         Color32::from_rgba_unmultiplied(8, 10, 12, 170),
     );
     painter.text(
-        label_rect.left_center() + Vec2::new(8.0, 0.0),
+        label_rect.left_center() + Vec2::new((8.0 * zoom).clamp(3.0, 8.0), 0.0),
         egui::Align2::LEFT_CENTER,
         label,
-        FontId::proportional(11.0),
+        FontId::proportional((11.0 * zoom.sqrt()).clamp(8.0, 11.0)),
         kit::TEXT,
     );
 }
@@ -1197,6 +1249,8 @@ fn asset_lab_node_icon_button(
     let response = ui.interact(rect, id, sense).on_hover_text(tooltip);
     let fill = if active {
         kit::PRIMARY.gamma_multiply(0.55)
+    } else if !enabled {
+        Color32::from_rgb(23, 25, 29)
     } else if danger {
         Color32::from_rgb(75, 24, 28)
     } else {
@@ -1209,6 +1263,8 @@ fn asset_lab_node_icon_button(
     };
     let stroke = if active {
         kit::PRIMARY
+    } else if !enabled {
+        kit::BORDER_SOFT
     } else if danger {
         kit::DANGER
     } else {
@@ -1654,6 +1710,8 @@ impl LatentSlateApp {
             graph_zoom: 1.0,
             graph_pan_drag: None,
             pending_graph_focus_node_id: None,
+            inspector_focus_id: None,
+            inspector_focus_node_id: None,
             draft_source_node_id: None,
             draft_base_version: None,
             draft_provider_id: None,
@@ -1713,6 +1771,28 @@ impl LatentSlateApp {
         let mut open = true;
         let mut close_clicked = false;
         let mut action: Option<AssetLabAction> = None;
+        let focused_node_id = config_snapshot
+            .as_ref()
+            .and_then(|config| config.lab_graph.selected_node_id)
+            .filter(|node_id| {
+                config_snapshot.as_ref().is_some_and(|config| {
+                    config
+                        .lab_graph
+                        .nodes
+                        .iter()
+                        .any(|node| node.id == *node_id)
+                })
+            });
+        let inspector_has_keyboard_focus = self
+            .asset_lab
+            .inspector_focus_id
+            .is_some_and(|focus_id| ctx.memory(|memory| memory.focused()) == Some(focus_id))
+            && focused_node_id.is_some()
+            && self.asset_lab.inspector_focus_node_id == focused_node_id
+            && ctx.input(|input| input.focused && !input.pointer.any_pressed())
+            && !ctx.any_popup_open();
+        let generate_shortcut_requested = inspector_has_keyboard_focus
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
         let outside_clicked = kit::dismissible_modal_scrim(ctx, "asset_lab", true);
         let size = modal_size(ctx, ASSET_LAB_MODAL_SIZE, [660.0, 460.0]);
         let subtitle = if asset.is_generative() {
@@ -1753,6 +1833,7 @@ impl LatentSlateApp {
                         ui,
                         &asset,
                         config_snapshot.as_ref(),
+                        generate_shortcut_requested,
                         &mut action,
                     );
                 });
@@ -1770,6 +1851,7 @@ impl LatentSlateApp {
         ui: &mut Ui,
         asset: &Asset,
         config: Option<&GenerativeConfig>,
+        generate_shortcut_requested: bool,
         action: &mut Option<AssetLabAction>,
     ) {
         if !asset.is_generative() {
@@ -1803,10 +1885,14 @@ impl LatentSlateApp {
             .cloned()
             .collect();
 
+        let available_width = ui.available_width();
+        let inspector_width = (available_width * 0.34)
+            .clamp(340.0, 460.0)
+            .min((available_width - 420.0).max(300.0));
         StripBuilder::new(ui)
             .clip(true)
-            .size(Size::remainder().at_least(540.0))
-            .size(Size::exact(460.0))
+            .size(Size::remainder().at_least(320.0))
+            .size(Size::exact(inspector_width))
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
                     self.asset_lab_flow_column(
@@ -1831,6 +1917,7 @@ impl LatentSlateApp {
                         active_version.as_deref(),
                         pending_delete.as_deref(),
                         &compatible_providers,
+                        generate_shortcut_requested,
                         action,
                     );
                 });
@@ -2344,10 +2431,16 @@ impl LatentSlateApp {
                     && self.asset_lab.draft_source_node_id == Some(ghost.parent_node_id)
                     && self.asset_lab.draft_provider_id.is_some()
                     && !pending_job;
-                let button_size = Vec2::new((ghost_rect.width() - 28.0).clamp(104.0, 148.0), 34.0);
-                let button_rect =
-                    Rect::from_min_size(ghost_rect.left_top() + Vec2::new(14.0, 14.0), button_size);
-                ghost_generate_overlay = Some((button_rect, ghost.parent_node_id, can_generate));
+                if zoom >= 0.72 {
+                    let button_size =
+                        Vec2::new((ghost_rect.width() - 28.0).clamp(104.0, 148.0), 34.0);
+                    let button_rect = Rect::from_min_size(
+                        ghost_rect.left_top() + Vec2::new(14.0, 14.0),
+                        button_size,
+                    );
+                    ghost_generate_overlay =
+                        Some((button_rect, ghost.parent_node_id, can_generate));
+                }
             }
         }
 
@@ -2456,7 +2549,11 @@ impl LatentSlateApp {
             );
 
             let inner = node_rect.shrink(10.0 * zoom);
-            let preview_h = (node_rect.height() * 0.58).clamp(56.0, 118.0 * zoom.max(0.72));
+            let preview_h = if zoom < 0.64 {
+                inner.height()
+            } else {
+                (node_rect.height() * 0.58).min((inner.height() - 54.0).max(24.0))
+            };
             let preview_rect =
                 Rect::from_min_size(inner.left_top(), Vec2::new(inner.width(), preview_h));
             let preview_response = ui.interact(
@@ -2518,6 +2615,7 @@ impl LatentSlateApp {
                 preview,
                 asset_accent(asset),
                 &output_label,
+                zoom,
             );
             if asset.is_video() && output_path.is_some() {
                 let scrub_y = preview_rect.bottom() - 4.0;
@@ -2544,6 +2642,11 @@ impl LatentSlateApp {
             if zoom >= 0.64 {
                 let text_top = preview_rect.bottom() + 8.0;
                 let text_left = inner.left();
+                let text_width = if selected && zoom >= 0.86 {
+                    (inner.width() - 70.0).max(24.0)
+                } else {
+                    inner.width()
+                };
                 painter.text(
                     Pos2::new(text_left, text_top),
                     egui::Align2::LEFT_TOP,
@@ -2551,25 +2654,29 @@ impl LatentSlateApp {
                     FontId::proportional(12.5),
                     kit::TEXT,
                 );
-                painter.text(
+                paint_asset_lab_truncated_text(
+                    ui,
+                    &painter,
                     Pos2::new(text_left, text_top + 20.0),
-                    egui::Align2::LEFT_TOP,
-                    node_label,
-                    FontId::proportional(11.0),
+                    kit::caption(node_label),
+                    11.0,
+                    text_width,
                     kit::TEXT_MUTED,
                 );
-                painter.text(
+                paint_asset_lab_truncated_text(
+                    ui,
+                    &painter,
                     Pos2::new(text_left, text_top + 39.0),
-                    egui::Align2::LEFT_TOP,
-                    format!(
+                    kit::caption(format!(
                         "{} media refs | {} inputs",
                         node.inputs
                             .values()
                             .filter(|value| matches!(value, InputValue::GenerationRef { .. }))
                             .count(),
                         node.inputs.len()
-                    ),
-                    FontId::proportional(10.5),
+                    )),
+                    10.5,
+                    text_width,
                     kit::TEXT_DIM,
                 );
             }
@@ -2646,7 +2753,7 @@ impl LatentSlateApp {
                 }
             }
 
-            if selected {
+            if selected && zoom >= 0.86 {
                 let icon_size = Vec2::splat(26.0);
                 let action_top = inner.bottom() - icon_size.y - 6.0;
                 let action_right = inner.right() - 6.0;
@@ -2713,17 +2820,24 @@ impl LatentSlateApp {
                         });
                     }
                 }
+                let delete_blocked = config.and_then(|config| {
+                    self.asset_lab_node_delete_block_reason(config, asset.id, node.id)
+                });
+                let delete_enabled = delete_blocked.is_none();
                 if asset_lab_node_icon_button(
                     ui,
                     trash_rect,
                     ui.id().with(("asset_lab_node_delete", node.id)),
                     AssetLabNodeIcon::Trash,
-                    true,
+                    delete_enabled,
                     false,
                     true,
-                    "Delete step",
+                    delete_blocked
+                        .as_deref()
+                        .unwrap_or("Delete this leaf step. Generated outputs will be kept."),
                 )
                 .clicked()
+                    && delete_enabled
                 {
                     node_or_sidecar_clicked = true;
                     *action = Some(AssetLabAction::DeleteNode(node.id));
@@ -2769,9 +2883,12 @@ impl LatentSlateApp {
         _active_version: Option<&str>,
         _pending_delete: Option<&str>,
         compatible_providers: &[ProviderEntry],
+        generate_shortcut_requested: bool,
         action: &mut Option<AssetLabAction>,
     ) {
-        kit::card_frame().show(ui, |ui| {
+        let focus_before = ui.memory(|memory| memory.focused());
+        let tracked_focus_before = self.asset_lab.inspector_focus_id == focus_before;
+        let card = kit::card_frame().show(ui, |ui| {
             kit::field_label(ui, "Inspector");
             ui.add_space(kit::FORM_ROW_GAP);
 
@@ -2817,43 +2934,43 @@ impl LatentSlateApp {
                 .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id));
 
             let staged_or_ungenerated = draft_active || display_node.output_version.is_none();
-            if staged_or_ungenerated {
-                let pending_job_status = self
-                    .editor
-                    .generation_queue
-                    .iter()
-                    .rev()
-                    .find(|job| {
-                        job.lab_node_id == Some(display_node.id)
-                            && matches!(
-                                job.status,
-                                GenerationJobStatus::Queued
-                                    | GenerationJobStatus::Running
-                                    | GenerationJobStatus::Canceling
-                            )
-                    })
-                    .map(|job| job.status);
-                self.asset_lab_run_header(
-                    ui,
-                    asset,
-                    &display_node,
-                    selected_provider.as_ref(),
-                    pending_job_status,
-                    action,
-                );
-                ui.add_space(kit::ACTION_GAP);
-            }
+            let pending_job_status = self
+                .editor
+                .generation_queue
+                .iter()
+                .rev()
+                .find(|job| {
+                    job.lab_node_id == Some(display_node.id)
+                        && matches!(
+                            job.status,
+                            GenerationJobStatus::Queued
+                                | GenerationJobStatus::Running
+                                | GenerationJobStatus::Canceling
+                        )
+                })
+                .map(|job| job.status);
+            self.asset_lab_run_header(
+                ui,
+                asset,
+                &display_node,
+                selected_provider.as_ref(),
+                staged_or_ungenerated,
+                pending_job_status,
+                generate_shortcut_requested,
+                action,
+            );
+            ui.add_space(kit::ACTION_GAP);
 
-            let scroll_height = ui.available_height().max(160.0);
+            let scroll_height = ui.available_height().max(120.0);
             egui::ScrollArea::vertical()
                 .id_salt(("asset_lab_inspector", asset.id, node.id))
                 .max_height(scroll_height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        kit::field_label(ui, "Settings");
+                        kit::field_label(ui, "Generation");
                         if draft_active {
-                            kit::media_pill(ui, "Ungenerated Variant", kit::MARKER);
+                            kit::media_pill(ui, "Variant Ready", kit::MARKER);
                         } else if baseline_record.is_some() {
                             kit::media_pill(ui, "Matches Output", kit::PRIMARY);
                         } else if display_node.output_version.is_some() {
@@ -2914,83 +3031,174 @@ impl LatentSlateApp {
                         );
                     }
 
-                    ui.add_space(kit::ACTION_GAP);
                     if let Some(provider) = selected_provider.as_ref() {
-                        kit::field_label(ui, "Media Wiring");
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        let mut any_media = false;
-                        for input in provider
+                        let dimension_names = crate::core::canvas::dimension_pair(provider)
+                            .map(|(width, height)| (width.name.clone(), height.name.clone()));
+                        let timing_inputs: Vec<&ProviderInputField> = provider
                             .inputs
                             .iter()
-                            .filter(|input| asset_lab_input_is_media_link(asset, input))
-                        {
-                            if any_media {
-                                ui.add_space(kit::FORM_ROW_GAP);
+                            .filter(|input| super::attributes_panel::is_timing_role(input.role))
+                            .collect();
+                        let is_dimension = |input: &&ProviderInputField| {
+                            dimension_names
+                                .as_ref()
+                                .is_some_and(|(width_name, height_name)| {
+                                    input.name == *width_name || input.name == *height_name
+                                })
+                        };
+                        let standard_inputs: Vec<&ProviderInputField> = provider
+                            .inputs
+                            .iter()
+                            .filter(|input| {
+                                !is_dimension(input)
+                                    && !super::attributes_panel::is_timing_role(input.role)
+                                    && !super::attributes_panel::provider_input_is_advanced(input)
+                            })
+                            .collect();
+                        let advanced_inputs: Vec<&ProviderInputField> = provider
+                            .inputs
+                            .iter()
+                            .filter(|input| {
+                                !is_dimension(input)
+                                    && !super::attributes_panel::is_timing_role(input.role)
+                                    && super::attributes_panel::provider_input_is_advanced(input)
+                            })
+                            .collect();
+
+                        if dimension_names.is_some() || !timing_inputs.is_empty() {
+                            ui.add_space(kit::ACTION_GAP);
+                            ui.separator();
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            kit::field_label(ui, "Output");
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            if dimension_names.is_some() {
+                                self.asset_lab_canvas_field(ui, &display_node, provider, action);
                             }
-                            any_media = true;
-                            self.asset_lab_node_media_input_field(
-                                ui,
-                                asset,
-                                &display_node,
-                                input,
-                                versions,
-                                action,
-                            );
-                        }
-                        if !any_media {
-                            ui.label(kit::caption("This provider has no media wiring."));
+                            if !timing_inputs.is_empty() {
+                                if dimension_names.is_some() {
+                                    ui.add_space(kit::ACTION_GAP);
+                                    ui.separator();
+                                    ui.add_space(kit::FORM_ROW_GAP);
+                                    ui.label(kit::caption("Timing"));
+                                    ui.add_space(kit::FORM_ROW_GAP);
+                                }
+                                self.asset_lab_node_input_list(
+                                    ui,
+                                    asset,
+                                    &display_node,
+                                    versions,
+                                    &timing_inputs,
+                                    action,
+                                );
+                            }
                         }
 
                         ui.add_space(kit::ACTION_GAP);
-                        kit::field_label(ui, "Parameters");
+                        ui.separator();
                         ui.add_space(kit::FORM_ROW_GAP);
-                        let mut any_scalar = false;
-                        let dimension_names = crate::core::canvas::dimension_pair(provider)
-                            .map(|(width, height)| (width.name.clone(), height.name.clone()));
-                        for input in provider
-                            .inputs
-                            .iter()
-                            .filter(|input| !asset_lab_input_is_media_link(asset, input))
-                        {
-                            if let Some((width_name, height_name)) = dimension_names.as_ref() {
-                                if input.name == *height_name {
-                                    continue;
-                                }
-                                if input.name == *width_name {
-                                    if any_scalar {
-                                        ui.add_space(kit::FORM_ROW_GAP);
-                                    }
-                                    any_scalar = true;
-                                    self.asset_lab_canvas_field(
-                                        ui,
-                                        &display_node,
-                                        provider,
-                                        action,
-                                    );
-                                    continue;
-                                }
-                            }
-                            if any_scalar {
-                                ui.add_space(kit::FORM_ROW_GAP);
-                            }
-                            any_scalar = true;
-                            self.asset_lab_node_input_field(
+                        kit::field_label(ui, "Inputs");
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        if standard_inputs.is_empty() {
+                            ui.label(kit::caption("No additional inputs for this provider."));
+                        } else {
+                            self.asset_lab_node_input_list(
                                 ui,
                                 asset,
                                 &display_node,
-                                input,
                                 versions,
+                                &standard_inputs,
                                 action,
                             );
                         }
-                        if !any_scalar {
-                            ui.label(kit::caption("This provider has no scalar parameters."));
+
+                        if !advanced_inputs.is_empty() {
+                            ui.add_space(kit::ACTION_GAP);
+                            ui.separator();
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            egui::CollapsingHeader::new(
+                                RichText::new("Advanced").color(kit::TEXT_MUTED).size(11.0),
+                            )
+                            .id_salt(("asset_lab_inputs_advanced", asset.id, node.id))
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                self.asset_lab_node_input_list(
+                                    ui,
+                                    asset,
+                                    &display_node,
+                                    versions,
+                                    &advanced_inputs,
+                                    action,
+                                );
+                            });
                         }
                     } else {
-                        ui.label(kit::caption("Choose a provider before wiring inputs."));
+                        ui.add_space(kit::ACTION_GAP);
+                        ui.label(kit::caption(
+                            "Choose a provider to configure output and inputs.",
+                        ));
                     }
                 });
         });
+
+        let focus_after = ui.memory(|memory| memory.focused());
+        let focus_after_inside = focus_after.filter(|focus_id| {
+            ui.ctx().read_response(*focus_id).is_some_and(|response| {
+                card.response.rect.contains(response.interact_rect.center())
+            })
+        });
+        let pointer_press = ui.input(|input| input.pointer.any_pressed());
+        let pointer = ui.ctx().pointer_interact_pos();
+        if pointer_press {
+            self.asset_lab.inspector_focus_id = pointer
+                .filter(|pointer| card.response.rect.contains(*pointer))
+                .and(focus_after_inside);
+            self.asset_lab.inspector_focus_node_id =
+                self.asset_lab.inspector_focus_id.and(selected_node_id);
+        } else if self.asset_lab.inspector_focus_node_id != selected_node_id {
+            self.asset_lab.inspector_focus_id = None;
+            self.asset_lab.inspector_focus_node_id = None;
+        } else if tracked_focus_before && ui.input(|input| input.key_pressed(egui::Key::Tab)) {
+            self.asset_lab.inspector_focus_id = focus_after_inside;
+            self.asset_lab.inspector_focus_node_id =
+                self.asset_lab.inspector_focus_id.and(selected_node_id);
+        } else if self.asset_lab.inspector_focus_id != focus_after {
+            self.asset_lab.inspector_focus_id = None;
+            self.asset_lab.inspector_focus_node_id = None;
+        }
+    }
+
+    fn asset_lab_node_input_list(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        node: &AssetLabNode,
+        versions: &[GenerationRecord],
+        inputs: &[&ProviderInputField],
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let mut current_group: Option<&str> = None;
+        for (index, input) in inputs.iter().copied().enumerate() {
+            let group = input
+                .ui
+                .as_ref()
+                .and_then(|presentation| presentation.group.as_deref())
+                .map(str::trim)
+                .filter(|group| !group.is_empty());
+            if group != current_group {
+                if index > 0 {
+                    ui.add_space(kit::ACTION_GAP);
+                }
+                if let Some(group) = group {
+                    ui.label(kit::caption(group));
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
+                current_group = group;
+            } else if index > 0 {
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
+            self.asset_lab_node_input_field(ui, asset, node, input, versions, action);
+        }
     }
 
     fn asset_lab_run_batch(&self, provider: Option<&ProviderEntry>) -> BatchSettings {
@@ -3016,7 +3224,9 @@ impl LatentSlateApp {
         asset: &Asset,
         node: &AssetLabNode,
         provider: Option<&ProviderEntry>,
+        variant_ready: bool,
         pending_job_status: Option<GenerationJobStatus>,
+        generate_shortcut_requested: bool,
         action: &mut Option<AssetLabAction>,
     ) {
         let seed_field = provider.and_then(resolve_seed_field);
@@ -3026,7 +3236,8 @@ impl LatentSlateApp {
             self.asset_lab.run_batch_count,
             self.asset_lab_run_batch(provider).seed_strategy,
         );
-        let can_generate = asset.is_generative()
+        let can_generate = variant_ready
+            && asset.is_generative()
             && provider.is_some()
             && !provider
                 .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
@@ -3037,9 +3248,15 @@ impl LatentSlateApp {
                 GenerationJobStatus::Queued => "Queued",
                 GenerationJobStatus::Running => "Running",
                 GenerationJobStatus::Canceling => "Canceling",
-                _ => "Generate",
+                _ => "Generate Variant",
             })
-            .unwrap_or("Generate");
+            .unwrap_or("Generate Variant");
+        if generate_shortcut_requested && can_generate && action.is_none() {
+            *action = Some(AssetLabAction::GenerateNode {
+                node_id: node.id,
+                batch: self.asset_lab_run_batch(provider),
+            });
+        }
 
         egui::Frame::new()
             .fill(kit::PANEL_SUNKEN)
@@ -3051,7 +3268,19 @@ impl LatentSlateApp {
                     ui.label(kit::section_label("Run"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_enabled_ui(can_generate, |ui| {
-                            if kit::primary_button(ui, generate_label, 104.0).clicked() {
+                            let tooltip = if can_generate {
+                                "Generate this variant. Ctrl+Enter works while editing Inspector."
+                            } else if pending_job_status.is_some() {
+                                "This step already has generation work in progress."
+                            } else if !variant_ready {
+                                "Change a setting to stage a variant for generation."
+                            } else {
+                                "Choose an available in-scope provider before generating."
+                            };
+                            if kit::primary_button(ui, generate_label, 126.0)
+                                .on_hover_text(tooltip)
+                                .clicked()
+                            {
                                 *action = Some(AssetLabAction::GenerateNode {
                                     node_id: node.id,
                                     batch: self.asset_lab_run_batch(provider),
@@ -3126,18 +3355,21 @@ impl LatentSlateApp {
                 }
 
                 ui.add_space(kit::FIELD_LABEL_GAP);
-                ui.add(egui::Label::new(kit::caption(seed_preview)).truncate());
-
-                if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
-                    ui.add_space(kit::FIELD_LABEL_GAP);
-                    ui.label(
-                        RichText::new(
-                            "No seed role detected; multiple attempts will reuse identical inputs.",
-                        )
-                        .color(kit::MARKER)
-                        .size(11.0),
-                    );
-                }
+                let seed_summary = if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
+                    "No seed role detected; attempts will reuse identical inputs.".to_string()
+                } else {
+                    seed_preview
+                };
+                let seed_color = if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
+                    kit::MARKER
+                } else {
+                    kit::TEXT_MUTED
+                };
+                ui.add(
+                    egui::Label::new(RichText::new(&seed_summary).color(seed_color).size(11.0))
+                        .truncate(),
+                )
+                .on_hover_text(seed_summary);
             });
     }
 
@@ -3148,7 +3380,8 @@ impl LatentSlateApp {
         provider: &ProviderEntry,
         action: &mut Option<AssetLabAction>,
     ) {
-        let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider) else {
+        let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider)
+        else {
             return;
         };
         let canvas = crate::core::canvas::canvas_from_provider(provider)
@@ -3165,14 +3398,20 @@ impl LatentSlateApp {
                 max_pixels: None,
                 max_aspect: None,
             });
-        let stored_width = node.inputs.get(&width_input.name).and_then(|value| match value {
-            InputValue::Literal { value } => input_value_as_i64(value),
-            _ => None,
-        });
-        let stored_height = node.inputs.get(&height_input.name).and_then(|value| match value {
-            InputValue::Literal { value } => input_value_as_i64(value),
-            _ => None,
-        });
+        let stored_width = node
+            .inputs
+            .get(&width_input.name)
+            .and_then(|value| match value {
+                InputValue::Literal { value } => input_value_as_i64(value),
+                _ => None,
+            });
+        let stored_height = node
+            .inputs
+            .get(&height_input.name)
+            .and_then(|value| match value {
+                InputValue::Literal { value } => input_value_as_i64(value),
+                _ => None,
+            });
         let fallback = if stored_width.is_none() || stored_height.is_none() {
             crate::core::canvas::nearest_legal_canvas(
                 &canvas,
@@ -3195,6 +3434,11 @@ impl LatentSlateApp {
             ui,
             ("asset_lab_canvas", node.id),
             &canvas,
+            Some(kit::CanvasSizeReference::new(
+                "Project",
+                self.editor.project.settings.width,
+                self.editor.project.settings.height,
+            )),
             &mut width,
             &mut height,
         ) {
@@ -4963,9 +5207,6 @@ impl LatentSlateApp {
         asset_id: Uuid,
         node_id: Uuid,
     ) -> Result<(), String> {
-        if self.asset_lab.draft_source_node_id == Some(node_id) {
-            self.asset_lab.clear_draft();
-        }
         let Some(config_snapshot) = self.editor.project.generative_config(asset_id).cloned() else {
             let message = "Asset does not support Asset Lab steps.".to_string();
             self.editor.status = message.clone();
@@ -4982,34 +5223,67 @@ impl LatentSlateApp {
             self.editor.status = message.clone();
             return Err(message);
         };
+        if let Some(message) =
+            self.asset_lab_node_delete_block_reason(&config_snapshot, asset_id, node_id)
+        {
+            self.editor.status = message.clone();
+            return Err(message);
+        }
+
+        let next_selected_node_id = parent_node_id
+            .filter(|parent_id| {
+                config_snapshot
+                    .lab_graph
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == *parent_id)
+            })
+            .or_else(|| {
+                config_snapshot
+                    .lab_graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id != node_id && node.parent_node_id.is_none())
+                    .map(|node| node.id)
+            })
+            .or_else(|| {
+                config_snapshot
+                    .lab_graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id != node_id)
+                    .map(|node| node.id)
+            });
+        let next_selected_version = next_selected_node_id.and_then(|next_node_id| {
+            config_snapshot
+                .lab_graph
+                .nodes
+                .iter()
+                .find(|node| node.id == next_node_id)
+                .and_then(|node| node.output_version.clone())
+                .or_else(|| {
+                    config_snapshot
+                        .versions
+                        .iter()
+                        .rev()
+                        .find(|record| record.lab_node_id == Some(next_node_id))
+                        .map(|record| record.version.clone())
+                })
+        });
         let updated = self
             .editor
             .project
             .update_generative_config(asset_id, |config| {
                 config.lab_graph.nodes.retain(|node| node.id != node_id);
-                for child in config
-                    .lab_graph
-                    .nodes
-                    .iter_mut()
-                    .filter(|node| node.parent_node_id == Some(node_id))
-                {
-                    child.parent_node_id = parent_node_id;
-                }
                 for record in config
                     .versions
                     .iter_mut()
                     .filter(|record| record.lab_node_id == Some(node_id))
                 {
-                    record.lab_node_id = parent_node_id;
+                    record.lab_node_id = None;
                 }
                 if config.lab_graph.selected_node_id == Some(node_id) {
-                    config.lab_graph.selected_node_id = config
-                        .lab_graph
-                        .nodes
-                        .iter()
-                        .find(|node| node.parent_node_id.is_none())
-                        .map(|node| node.id)
-                        .or_else(|| config.lab_graph.nodes.first().map(|node| node.id));
+                    config.lab_graph.selected_node_id = next_selected_node_id;
                 }
                 config.normalize_lab_graph_lineage();
             });
@@ -5018,7 +5292,43 @@ impl LatentSlateApp {
             self.editor.status = message.clone();
             return Err(message);
         }
-        self.save_asset_lab_config_result(asset_id, "Deleted step. Outputs were kept.")
+        if self.asset_lab.asset_id == Some(asset_id)
+            && config_snapshot.lab_graph.selected_node_id == Some(node_id)
+        {
+            self.asset_lab.selected_version = next_selected_version;
+        }
+        self.save_asset_lab_config_result(asset_id, "Deleted leaf step. Outputs were kept.")
+    }
+
+    fn asset_lab_node_delete_block_reason(
+        &self,
+        config: &GenerativeConfig,
+        asset_id: Uuid,
+        node_id: Uuid,
+    ) -> Option<String> {
+        if self.editor.generation_queue.iter().any(|job| {
+            job.asset_id == asset_id
+                && job.lab_node_id == Some(node_id)
+                && matches!(
+                    job.status,
+                    GenerationJobStatus::Queued
+                        | GenerationJobStatus::Running
+                        | GenerationJobStatus::Canceling
+                )
+        }) {
+            return Some(
+                "Cannot delete this step while its generation is queued or running.".to_string(),
+            );
+        }
+        if self.asset_lab.asset_id == Some(asset_id)
+            && self.asset_lab.draft_source_node_id == Some(node_id)
+        {
+            return Some(
+                "Cannot delete this step while it has a staged variant. Generate it, or select another step to discard it, first."
+                    .to_string(),
+            );
+        }
+        asset_lab_delete_dependency_message(&self.editor.project, config, asset_id, node_id)
     }
 
     pub(super) fn save_asset_lab_config(&mut self, asset_id: Uuid, status: &str) {

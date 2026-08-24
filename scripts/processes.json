@@ -24,6 +24,21 @@
       "log_rotation_count": 10
     },
     {
+      "id": "07be04a3-bbf9-4c5b-90be-e97b4421f2b6",
+      "name": "Build Lateslate",
+      "command": "cargo build --release",
+      "working_directory": "C:\\repos\\nla-ai-videocreator-rust",
+      "process_type": "Process",
+      "auto_start": false,
+      "startup_delay_seconds": 0,
+      "auto_restart": false,
+      "respond_to_start_all": true,
+      "respond_to_stop_all": true,
+      "respond_to_restart_all": true,
+      "log_to_disk": false,
+      "log_rotation_count": 10
+    },
+    {
       "id": "b13c4969-3a45-4586-b294-067cf2ea1772",
       "name": "Latentslate Engine",
       "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\repos\\LatentSlate-Engine\\scripts\\engine.ps1 serve --host 127.0.0.1 --port 8765",

@@ -132,6 +132,7 @@ pub struct EditorState {
     pub status: String,
     pub preview_dirty: bool,
     pub project_dirty: bool,
+    pub(crate) project_session_revision: u64,
     project_saved_fingerprint: Option<String>,
 }
 
@@ -163,6 +164,7 @@ impl EditorState {
             status: "Ready".to_string(),
             preview_dirty: true,
             project_dirty: false,
+            project_session_revision: 0,
             project_saved_fingerprint: None,
         }
     }
@@ -359,6 +361,7 @@ impl EditorState {
     }
 
     pub fn close_project_to_startup(&mut self, status: impl Into<String>) {
+        self.project_session_revision = self.project_session_revision.wrapping_add(1);
         let scratch = crate::core::paths::app_cache_root().join("scratch");
         self.project = Project::default();
         self.selection.clear();
@@ -386,6 +389,7 @@ impl EditorState {
     }
 
     fn set_project(&mut self, project: Project, project_root: PathBuf, preview_limits: (u32, u32)) {
+        self.project_session_revision = self.project_session_revision.wrapping_add(1);
         self.layout
             .apply_workspace_layout(&project.workspace_layout);
         self.thumbnailer = Arc::new(Thumbnailer::new(project_root.clone()));
@@ -1073,6 +1077,7 @@ impl EditorState {
             | AutomationCommand::GetExportStatus
             | AutomationCommand::CancelExport
             | AutomationCommand::TestProvider { .. }
+            | AutomationCommand::ReleaseProviderResources
             | AutomationCommand::SetActiveGenerationVersion { .. }
             | AutomationCommand::DuplicateGenerationVersion { .. }
             | AutomationCommand::DeleteGenerationVersion { .. }

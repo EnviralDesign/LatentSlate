@@ -19,6 +19,8 @@ pub const PANEL_SUNKEN: Color32 = Color32::from_rgb(10, 11, 13);
 pub const FIELD_BG: Color32 = Color32::from_rgb(14, 16, 19);
 pub const FIELD_BG_HOVER: Color32 = Color32::from_rgb(18, 20, 24);
 pub const FIELD_BG_ACTIVE: Color32 = Color32::from_rgb(20, 24, 26);
+pub const DROPDOWN_ROW_HOVER: Color32 = Color32::from_rgb(32, 35, 40);
+pub const DROPDOWN_ROW_ACTIVE: Color32 = Color32::from_rgb(25, 39, 32);
 pub const BORDER: Color32 = Color32::from_rgb(43, 45, 51);
 pub const BORDER_SOFT: Color32 = Color32::from_rgb(31, 33, 38);
 pub const BORDER_FOCUS: Color32 = Color32::from_rgb(39, 190, 111);
@@ -340,6 +342,31 @@ pub fn body_with_footer(
         });
 }
 
+/// Allocates a fixed, full-width horizontal row and isolates it from child overflow.
+///
+/// An egui left-to-right `Ui` intentionally reports an unbounded
+/// `available_width()`. Use the finite `row_width` passed to `add_contents` for
+/// remainder-width calculations; querying `available_width()` from `row_ui`
+/// can make repeated rows progressively widen their parent scroll area.
+pub fn bounded_horizontal_row<R>(
+    ui: &mut Ui,
+    height: f32,
+    add_contents: impl FnOnce(&mut Ui, f32) -> R,
+) -> R {
+    let row_width = ui.available_width().max(0.0);
+    let row_height = height.max(0.0);
+    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_width, row_height), Sense::hover());
+    let clip_rect = ui.clip_rect().intersect(row_rect);
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(row_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    row_ui.set_min_size(row_rect.size());
+    row_ui.shrink_clip_rect(clip_rect);
+    add_contents(&mut row_ui, row_width)
+}
+
 pub fn equal_width_action_row(
     ui: &mut Ui,
     count: usize,
@@ -495,6 +522,9 @@ fn clipped_scroll_body_with_scroll_bar_visibility(
     viewport_ui.shrink_clip_rect(clip_rect);
     viewport_ui.set_width(viewport_width);
     viewport_ui.set_height(viewport_height);
+    if scroll_bar_visibility == egui::scroll_area::ScrollBarVisibility::AlwaysVisible {
+        viewport_ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+    }
     viewport_ui.spacing_mut().scroll.fade.strength = 0.0;
 
     egui::ScrollArea::vertical()
@@ -824,24 +854,67 @@ pub fn combo_field_with_leading<R>(
     }
 
     let combo_salt = egui::Id::new(("combo_field", id_salt));
-    // `ComboBox::from_id_salt` hashes its input into an `Id` before resolving
-    // the persistent widget ID inside its child UI. Mirror that extra hash so
-    // automation opens the popup owned by the rendered combo box.
+    // Keep the same nested hash used by egui's ComboBox so existing automation
+    // identities remain stable while the shared field owns the popup geometry.
     let combo_button_id = child.make_persistent_id(egui::Id::new(combo_salt));
-    if crate::core::automation::consume_pending_click_for_egui_id(response.id)
-        || crate::core::automation::consume_pending_click_for_egui_id(combo_button_id)
-    {
-        egui::Popup::open_id(child.ctx(), combo_button_id.with("popup"));
-    }
-    let inner = egui::ComboBox::from_id_salt(combo_salt)
-        .selected_text(
-            RichText::new(selected_text.clone())
-                .color(TEXT)
-                .size(FIELD_TEXT_SIZE),
-        )
+    let popup_id = combo_button_id.with("popup");
+    let raw_combo_response = child
+        .interact(rect, combo_button_id, Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let combo_response = crate::core::automation::instrument_response(
+        raw_combo_response,
+        "combo",
+        Some(selected_text.clone()),
+        true,
+        false,
+    );
+    let was_open = egui::Popup::is_id_open(child.ctx(), popup_id);
+    let will_be_open = if combo_response.clicked() {
+        !was_open
+    } else {
+        was_open
+    };
+
+    paint_combo_field(
+        &child,
+        &combo_response,
+        rect,
+        &selected_text,
+        leading_width,
+        will_be_open,
+    );
+
+    // A stock ComboBox popup uses a justified layout backed by a persistent
+    // Area. After a panel contracts, that Area can retain its previous outer
+    // width even when the rows have already shrunk. The shared field uses a
+    // non-justified popup layout and pins its body to the current trigger width
+    // on every frame, so the frame and its contents grow and contract together.
+    let mut popup_style = child.style().as_ref().clone();
+    configure_combo_popup_style(&mut popup_style);
+    let popup_chrome_width = egui::Frame::popup(&popup_style).total_margin().sum().x;
+    let popup_content_width = (rect.width() - popup_chrome_width).max(0.0);
+    egui::Popup::menu(&combo_response)
+        .id(popup_id)
         .width(rect.width())
-        .truncate()
-        .show_ui(&mut child, add_contents);
+        .layout(Layout::top_down(Align::Min))
+        .style(configure_combo_popup_style)
+        .show(|ui| {
+            ui.set_width(popup_content_width);
+            egui::ScrollArea::vertical()
+                .max_height(ui.spacing().combo_height)
+                .show(ui, |ui| {
+                    ui.set_width(popup_content_width);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    // Keep the popup shell on the explicitly pinned width above,
+                    // but justify its option layer so ordinary selectable rows
+                    // own the full horizontal hit target instead of only their
+                    // text galley. Custom rows (such as provider choices) already
+                    // allocate the available width and remain compatible.
+                    ui.with_layout(Layout::top_down_justified(Align::Min), add_contents)
+                        .inner
+                })
+                .inner
+        });
 
     if leading_width > 0.0 {
         let leading_rect = Rect::from_center_size(
@@ -851,19 +924,74 @@ pub fn combo_field_with_leading<R>(
         add_leading(ui, leading_rect);
     }
 
-    let real_clicked = inner.response.clicked();
-    let combo_response = crate::core::automation::instrument_response(
-        inner.response,
-        "combo",
-        Some(selected_text),
-        true,
-        false,
-    );
-    if combo_response.clicked() && !real_clicked {
-        egui::Popup::open_id(child.ctx(), combo_button_id.with("popup"));
-        child.ctx().request_repaint();
-    }
     response.union(combo_response)
+}
+
+fn configure_combo_popup_style(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    style.spacing.button_padding = Vec2::new(8.0, 4.0);
+    style.visuals.widgets.hovered.bg_fill = DROPDOWN_ROW_HOVER;
+    style.visuals.widgets.hovered.weak_bg_fill = DROPDOWN_ROW_HOVER;
+    style.visuals.widgets.active.bg_fill = DROPDOWN_ROW_ACTIVE;
+    style.visuals.widgets.active.weak_bg_fill = DROPDOWN_ROW_ACTIVE;
+}
+
+fn paint_combo_field(
+    ui: &Ui,
+    response: &Response,
+    rect: Rect,
+    selected_text: &str,
+    leading_width: f32,
+    open: bool,
+) {
+    let visuals = if open {
+        &ui.visuals().widgets.open
+    } else {
+        ui.style().interact(response)
+    };
+    ui.painter().rect(
+        rect,
+        field_radius(),
+        visuals.weak_bg_fill,
+        visuals.bg_stroke,
+        StrokeKind::Inside,
+    );
+
+    let arrow_size = 8.0;
+    let arrow_center = Pos2::new(rect.right() - 13.0, rect.center().y);
+    let arrow_rect = Rect::from_center_size(arrow_center, Vec2::new(arrow_size, arrow_size * 0.55));
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            arrow_rect.left_top(),
+            arrow_rect.right_top(),
+            arrow_rect.center_bottom(),
+        ],
+        visuals.fg_stroke.color,
+        Stroke::NONE,
+    ));
+
+    let text_left = rect.left()
+        + 10.0
+        + if leading_width > 0.0 {
+            leading_width + 6.0
+        } else {
+            0.0
+        };
+    let text_right = arrow_rect.left() - 8.0;
+    let text_width = (text_right - text_left).max(0.0);
+    let text = egui::WidgetText::from(
+        RichText::new(selected_text)
+            .color(TEXT)
+            .size(FIELD_TEXT_SIZE),
+    );
+    let galley = text.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        text_width,
+        egui::TextStyle::Button,
+    );
+    let text_pos = Pos2::new(text_left, rect.center().y - galley.size().y * 0.5);
+    ui.painter().galley(text_pos, galley, visuals.text_color());
 }
 
 pub fn labeled_combo_field<R>(
@@ -1134,41 +1262,36 @@ pub fn sunken_frame() -> Frame {
 
 pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> Response {
     let value = value.into();
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Center)),
-    );
-    child.set_min_size(rect.size());
-    child.shrink_clip_rect(rect);
-    configure_field_widget_style(&mut child, rect.width());
-
-    let field_id = child.next_auto_id();
-    child.skip_ahead_auto_ids(1);
-
-    ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
-    let mut value_view = value.as_str();
-    let mut output = egui::TextEdit::singleline(&mut value_view)
-        .id(field_id)
-        .desired_width(rect.width())
-        .min_size(rect.size())
-        .horizontal_align(FIELD_TEXT_ALIGN)
-        .vertical_align(Align::Center)
-        .text_color(TEXT)
-        .font(FontId::proportional(FIELD_TEXT_SIZE))
-        .frame(field_text_frame())
-        .show(&mut child);
-    select_all_on_focus(&mut output, &value);
-
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(rect, field_radius(), PANEL_SUNKEN);
     ui.painter().rect_stroke(
         rect,
         field_radius(),
-        field_stroke(&output),
+        Stroke::new(1.0_f32, BORDER_SOFT.gamma_multiply(0.65)),
         StrokeKind::Inside,
     );
+
+    let content_rect = rect.shrink2(Vec2::new(8.0, 0.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.set_min_size(content_rect.size());
+    child.shrink_clip_rect(content_rect);
+    let label_response = child.add_sized(
+        content_rect.size(),
+        egui::Label::new(
+            RichText::new(&value)
+                .color(TEXT_MUTED)
+                .size(FIELD_TEXT_SIZE),
+        )
+        .halign(FIELD_TEXT_ALIGN)
+        .selectable(true)
+        .truncate(),
+    );
     crate::core::automation::instrument_response(
-        output.response.response.on_hover_text(value.clone()),
+        response.union(label_response).on_hover_text(value.clone()),
         "readonly_field",
         Some(value),
         false,
@@ -1975,6 +2098,40 @@ pub fn api_toggle_button(ui: &mut Ui, enabled: bool, active: bool) -> Response {
     )
 }
 
+/// Renders the global provider resource-release action.
+pub fn resource_dump_button(ui: &mut Ui, busy: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(top_bar_text_button_width("DUMP"), TOP_BAR_BUTTON_H),
+        Sense::click(),
+    );
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let skin = subtle_button_skin(busy, TOP_BAR_BUTTON_TEXT_SIZE, TOP_BAR_BUTTON_RADIUS);
+    paint_button_background(ui, rect, &response, skin);
+
+    let text_color = if busy {
+        MARKER
+    } else if response.hovered() || response.is_pointer_button_down_on() {
+        TEXT
+    } else {
+        TEXT_MUTED
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "DUMP",
+        FontId::proportional(10.0),
+        text_color,
+    );
+
+    crate::core::automation::instrument_response(
+        response,
+        "resource_dump_button",
+        Some("DUMP".to_string()),
+        true,
+        false,
+    )
+}
+
 pub fn top_bar_menu_button<R>(
     ui: &mut Ui,
     label: &str,
@@ -2687,150 +2844,421 @@ pub fn integer_step_drag(
     *value != before
 }
 
+/// A named pixel-size source that the canvas picker can match at common scales.
+#[derive(Debug, Clone, Copy)]
+pub struct CanvasSizeReference<'a> {
+    /// User-facing source name, such as `Project` or `Source image`.
+    pub label: &'a str,
+    /// Reference width in pixels.
+    pub width: u32,
+    /// Reference height in pixels.
+    pub height: u32,
+}
+
+impl<'a> CanvasSizeReference<'a> {
+    /// Creates a reference size, normalizing zero-length sides to one pixel.
+    pub fn new(label: &'a str, width: u32, height: u32) -> Self {
+        Self {
+            label,
+            width: width.max(1),
+            height: height.max(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CanvasSizingMode {
+    AspectAndMegapixels,
+    ExactDimensions,
+    ReferenceScale,
+}
+
+#[derive(Debug, Clone)]
+struct CanvasPickerState {
+    mode: CanvasSizingMode,
+    aspect: crate::core::canvas::AspectPreset,
+    target_megapixels: f64,
+    reference_scale: f64,
+    last_output: (i64, i64),
+}
+
+impl CanvasPickerState {
+    fn from_output(width: i64, height: i64) -> Self {
+        use crate::core::canvas::{matching_aspect_preset, megapixels, ASPECT_PRESETS};
+
+        let width_u32 = width.max(1) as u32;
+        let height_u32 = height.max(1) as u32;
+        let matched = matching_aspect_preset(width_u32, height_u32);
+        let actual_aspect = width_u32 as f64 / height_u32.max(1) as f64;
+        let aspect = matched.unwrap_or_else(|| {
+            ASPECT_PRESETS
+                .iter()
+                .copied()
+                .min_by(|left, right| {
+                    (left.ratio() - actual_aspect)
+                        .abs()
+                        .total_cmp(&(right.ratio() - actual_aspect).abs())
+                })
+                .unwrap_or(ASPECT_PRESETS[0])
+        });
+        Self {
+            mode: if matched.is_some() {
+                CanvasSizingMode::AspectAndMegapixels
+            } else {
+                CanvasSizingMode::ExactDimensions
+            },
+            aspect,
+            target_megapixels: megapixels(width_u32, height_u32),
+            reference_scale: 1.0,
+            last_output: (width, height),
+        }
+    }
+}
+
+const CANVAS_SCALE_PRESETS: [(f64, &str); 5] = [
+    (0.25, "¼×"),
+    (0.5, "½×"),
+    (1.0, "1×"),
+    (2.0, "2×"),
+    (4.0, "4×"),
+];
+
+fn canvas_mode_label(mode: CanvasSizingMode, reference: Option<CanvasSizeReference<'_>>) -> String {
+    match mode {
+        CanvasSizingMode::AspectAndMegapixels => "Aspect + MP".to_string(),
+        CanvasSizingMode::ExactDimensions => "Exact dimensions".to_string(),
+        CanvasSizingMode::ReferenceScale => reference
+            .map(|reference| format!("{} scale", reference.label))
+            .unwrap_or_else(|| "Reference scale".to_string()),
+    }
+}
+
+fn scaled_reference_size(reference: CanvasSizeReference<'_>, scale: f64) -> (u32, u32) {
+    let scale = scale.max(0.01);
+    (
+        (reference.width as f64 * scale)
+            .round()
+            .clamp(1.0, u32::MAX as f64) as u32,
+        (reference.height as f64 * scale)
+            .round()
+            .clamp(1.0, u32::MAX as f64) as u32,
+    )
+}
+
+fn resolve_canvas_intent(
+    state: &CanvasPickerState,
+    canvas: &crate::state::CanvasContract,
+    reference: Option<CanvasSizeReference<'_>>,
+) -> Option<(u32, u32)> {
+    use crate::core::canvas::{fit_canvas, fit_canvas_at_least};
+
+    match state.mode {
+        CanvasSizingMode::AspectAndMegapixels => Some(fit_canvas(
+            canvas,
+            state.aspect.ratio(),
+            (state.target_megapixels.max(0.01) * 1_000_000.0).round() as u64,
+        )),
+        CanvasSizingMode::ExactDimensions => None,
+        CanvasSizingMode::ReferenceScale => reference.map(|reference| {
+            let (target_width, target_height) =
+                scaled_reference_size(reference, state.reference_scale);
+            fit_canvas_at_least(canvas, target_width, target_height).0
+        }),
+    }
+}
+
+fn reference_scale_is_supported(
+    canvas: &crate::state::CanvasContract,
+    reference: CanvasSizeReference<'_>,
+    scale: f64,
+) -> bool {
+    let (target_width, target_height) = scaled_reference_size(reference, scale);
+    crate::core::canvas::fit_canvas_at_least(canvas, target_width, target_height).1
+}
+
+fn nearest_supported_reference_scale(
+    canvas: &crate::state::CanvasContract,
+    reference: CanvasSizeReference<'_>,
+    preferred: f64,
+) -> f64 {
+    CANVAS_SCALE_PRESETS
+        .iter()
+        .map(|(scale, _)| *scale)
+        .filter(|scale| reference_scale_is_supported(canvas, reference, *scale))
+        .min_by(|left, right| {
+            (left / preferred.max(0.01))
+                .ln()
+                .abs()
+                .total_cmp(&(right / preferred.max(0.01)).ln().abs())
+        })
+        .unwrap_or(preferred)
+}
+
+fn canvas_megapixels_drag(ui: &mut Ui, value: &mut f64, min: f64, max: f64) -> bool {
+    let before = *value;
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), FIELD_H), Sense::hover());
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.set_min_size(rect.size());
+    child.shrink_clip_rect(rect);
+    configure_field_widget_style(&mut child, rect.width());
+    child.add_sized(
+        [rect.width(), FIELD_H],
+        egui::DragValue::new(value)
+            .speed(0.01)
+            .range(min..=max)
+            .max_decimals(2)
+            .suffix(" MP"),
+    );
+    (*value - before).abs() > f64::EPSILON
+}
+
 pub fn canvas_picker(
     ui: &mut Ui,
     id_salt: impl Hash,
     canvas: &crate::state::CanvasContract,
+    reference: Option<CanvasSizeReference<'_>>,
     width: &mut i64,
     height: &mut i64,
 ) -> bool {
     use crate::core::canvas::{
-        canvas_is_valid, canvas_readout, fit_preset, matching_aspect_preset, megapixels,
-        scale_to_megapixels, validate_canvas, ASPECT_PRESETS,
+        canvas_is_valid, canvas_readout, megapixels, nearest_legal_canvas, validate_canvas,
+        ASPECT_PRESETS,
     };
 
     let mut changed = false;
-    let custom_id = ui.id().with(("canvas_custom_aspect", egui::Id::new(&id_salt)));
-    let mut custom_aspect = ui.ctx().data(|data| data.get_temp::<bool>(custom_id)).unwrap_or(false);
+    let control_salt = egui::Id::new(id_salt);
+    let state_id = ui.id().with(("canvas_picker_state", control_salt));
+    let current_output = (*width, *height);
+    let mut state = ui
+        .ctx()
+        .data(|data| data.get_temp::<CanvasPickerState>(state_id))
+        .unwrap_or_else(|| CanvasPickerState::from_output(*width, *height));
+    if state.last_output != current_output {
+        state = CanvasPickerState::from_output(*width, *height);
+    }
+    if state.mode == CanvasSizingMode::ReferenceScale {
+        if let Some(reference) = reference {
+            let supported_scale =
+                nearest_supported_reference_scale(canvas, reference, state.reference_scale);
+            if (supported_scale - state.reference_scale).abs() > f64::EPSILON {
+                state.reference_scale = supported_scale;
+                if let Some((next_width, next_height)) =
+                    resolve_canvas_intent(&state, canvas, Some(reference))
+                {
+                    *width = next_width as i64;
+                    *height = next_height as i64;
+                    changed = true;
+                }
+            }
+        }
+    }
     let current_w = (*width).max(1) as u32;
     let current_h = (*height).max(1) as u32;
-    let matched = matching_aspect_preset(current_w, current_h);
-    if matched.is_some() {
-        custom_aspect = false;
+    let is_valid = canvas_is_valid(canvas, *width, *height);
+    let actual_megapixels = megapixels(current_w, current_h);
+    let actual_aspect = current_w as f64 / current_h.max(1) as f64;
+    let mut adjusted_message = None;
+    let mut reference_adjusted = false;
+    match state.mode {
+        CanvasSizingMode::AspectAndMegapixels if is_valid => {
+            let target_aspect = state.aspect.ratio();
+            let aspect_delta = (actual_aspect / target_aspect - 1.0) * 100.0;
+            let area_delta = (actual_megapixels / state.target_megapixels.max(0.01) - 1.0) * 100.0;
+            if aspect_delta.abs() >= 0.5 || area_delta.abs() >= 5.0 {
+                adjusted_message = Some(format!(
+                    "Target {} · {:.2} MP; nearest supported output (aspect {aspect_delta:+.1}% · area {area_delta:+.1}%).",
+                    state.aspect.label, state.target_megapixels
+                ));
+            }
+        }
+        CanvasSizingMode::ReferenceScale if is_valid => {
+            if let Some(reference) = reference {
+                let (target_width, target_height) =
+                    scaled_reference_size(reference, state.reference_scale);
+                reference_adjusted = (current_w, current_h) != (target_width, target_height);
+            }
+        }
+        _ => {}
     }
-    let selected_label = if custom_aspect {
-        "Custom"
-    } else {
-        matched.map(|preset| preset.label).unwrap_or("Custom")
-    };
-    let lock_aspect = if custom_aspect {
-        None
-    } else {
-        matched.map(|preset| preset.ratio())
-    };
 
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
         field_label(ui, "Canvas");
-        ui.label(caption(canvas_readout(canvas, current_w, current_h)));
-        if !canvas_is_valid(canvas, *width, *height) {
-            if let Err(message) = validate_canvas(canvas, *width, *height) {
-                ui.label(
-                    RichText::new(message)
-                        .color(MARKER)
-                        .size(11.0),
-                );
-            }
+        let output_prefix = if is_valid { "Output" } else { "Requested" };
+        let output_color = if !is_valid {
+            DANGER
+        } else if adjusted_message.is_some() || reference_adjusted {
+            MARKER
+        } else {
+            TEXT_MUTED
+        };
+        ui.label(
+            RichText::new(format!(
+                "{output_prefix} {}",
+                canvas_readout(canvas, current_w, current_h)
+            ))
+            .color(output_color)
+            .size(11.0),
+        );
+        if let Some(message) = adjusted_message.as_deref() {
+            ui.label(RichText::new(message).color(MARKER).size(11.0));
         }
-        ui.add_space(FORM_ROW_GAP);
-        field_grid_row(ui, &[1.0, 1.0], |ui, index| match index {
-            0 => {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
-                    field_label(ui, "Aspect");
-                    let mut next_label = selected_label.to_string();
-                    combo_field(
-                        ui,
-                        ("canvas_aspect", egui::Id::new(&id_salt)),
-                        selected_label,
-                        ui.available_width(),
-                        |ui| {
-                            for preset in ASPECT_PRESETS {
-                                if ui
-                                    .selectable_label(selected_label == preset.label, preset.label)
-                                    .clicked()
-                                {
-                                    next_label = preset.label.to_string();
-                                }
-                            }
-                            if ui
-                                .selectable_label(selected_label == "Custom", "Custom")
-                                .clicked()
-                            {
-                                next_label = "Custom".to_string();
-                            }
-                        },
+        if !is_valid {
+            if let Err(message) = validate_canvas(canvas, *width, *height) {
+                ui.label(RichText::new(message).color(DANGER).size(11.0));
+                let nearest = nearest_legal_canvas(canvas, current_w, current_h);
+                bounded_horizontal_row(ui, FIELD_H, |ui, row_width| {
+                    let button_width = 92.0_f32.min(row_width);
+                    let label_width =
+                        (row_width - button_width - ui.spacing().item_spacing.x).max(0.0);
+                    ui.add_sized(
+                        [label_width, FIELD_H],
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "Nearest supported: {} × {}",
+                                nearest.0, nearest.1
+                            ))
+                            .color(TEXT_MUTED)
+                            .size(11.0),
+                        )
+                        .truncate(),
                     );
-                    if next_label == "Custom" && selected_label != "Custom" {
-                        custom_aspect = true;
-                    } else if next_label != "Custom" && next_label != selected_label {
-                        custom_aspect = false;
-                        if let Some(preset) = ASPECT_PRESETS
-                            .iter()
-                            .find(|preset| preset.label == next_label)
-                        {
-                            let (next_w, next_h) = fit_preset(
-                                canvas,
-                                *preset,
-                                current_w as u64 * current_h as u64,
-                            );
-                            *width = next_w as i64;
-                            *height = next_h as i64;
-                            changed = true;
-                        }
-                    }
-                });
-            }
-            _ => {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
-                    field_label(ui, "Megapixels");
-                    let mut mp = megapixels(current_w, current_h);
-                    let min_mp = (canvas.min_side.max(1) as f64).powi(2) / 1_000_000.0;
-                    let max_mp = canvas
-                        .max_pixels
-                        .map(|pixels| pixels as f64 / 1_000_000.0)
-                        .unwrap_or(16.0)
-                        .max(min_mp);
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::new(ui.available_width(), FIELD_H), Sense::hover());
-                    let mut child = ui.new_child(
-                        egui::UiBuilder::new()
-                            .max_rect(rect)
-                            .layout(Layout::left_to_right(Align::Center)),
-                    );
-                    child.set_min_size(rect.size());
-                    child.shrink_clip_rect(rect);
-                    configure_field_widget_style(&mut child, rect.width());
-                    let response = child.add_sized(
-                        [rect.width(), FIELD_H],
-                        egui::DragValue::new(&mut mp)
-                            .speed(0.05)
-                            .range(min_mp..=max_mp)
-                            .max_decimals(2)
-                            .suffix(" MP"),
-                    );
-                    if response.changed() {
-                        let (next_w, next_h) = if let Some(preset) = matched.filter(|_| !custom_aspect)
-                        {
-                            fit_preset(canvas, preset, (mp * 1_000_000.0).round() as u64)
-                        } else {
-                            scale_to_megapixels(canvas, current_w, current_h, mp)
-                        };
-                        *width = next_w as i64;
-                        *height = next_h as i64;
+                    if field_button(ui, "Use nearest", button_width).clicked() {
+                        *width = nearest.0 as i64;
+                        *height = nearest.1 as i64;
                         changed = true;
                     }
                 });
             }
+        }
+        ui.add_space(FORM_ROW_GAP);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+            field_label(ui, "Size by");
+            let mut next_mode = state.mode;
+            combo_field(
+                ui,
+                ("canvas_mode", control_salt),
+                canvas_mode_label(state.mode, reference),
+                ui.available_width(),
+                |ui| {
+                    for candidate in [
+                        CanvasSizingMode::AspectAndMegapixels,
+                        CanvasSizingMode::ExactDimensions,
+                    ] {
+                        if ui
+                            .selectable_label(
+                                state.mode == candidate,
+                                canvas_mode_label(candidate, reference),
+                            )
+                            .clicked()
+                        {
+                            next_mode = candidate;
+                        }
+                    }
+                    if reference.is_some()
+                        && ui
+                            .selectable_label(
+                                state.mode == CanvasSizingMode::ReferenceScale,
+                                canvas_mode_label(CanvasSizingMode::ReferenceScale, reference),
+                            )
+                            .clicked()
+                    {
+                        next_mode = CanvasSizingMode::ReferenceScale;
+                    }
+                },
+            );
+            if next_mode != state.mode {
+                state.mode = next_mode;
+                if state.mode == CanvasSizingMode::ReferenceScale {
+                    if let Some(reference) = reference {
+                        state.reference_scale = nearest_supported_reference_scale(
+                            canvas,
+                            reference,
+                            state.reference_scale,
+                        );
+                    }
+                }
+                if let Some((next_width, next_height)) =
+                    resolve_canvas_intent(&state, canvas, reference)
+                {
+                    *width = next_width as i64;
+                    *height = next_height as i64;
+                    changed = true;
+                }
+            }
         });
         ui.add_space(FORM_ROW_GAP);
         field_grid_row(ui, &[1.0, 1.0], |ui, index| {
-            let alignment = canvas.alignment.max(1) as i64;
             let min_side = canvas.min_side.max(1) as i64;
             let max_side = canvas.max_side.map(|value| value as i64);
-            match index {
-                0 => {
+            match (state.mode, index) {
+                (CanvasSizingMode::AspectAndMegapixels, 0) => {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                        field_label(ui, "Aspect");
+                        let mut next_aspect = state.aspect;
+                        combo_field(
+                            ui,
+                            ("canvas_aspect", control_salt),
+                            state.aspect.label,
+                            ui.available_width(),
+                            |ui| {
+                                for preset in ASPECT_PRESETS {
+                                    if ui
+                                        .selectable_label(state.aspect == preset, preset.label)
+                                        .clicked()
+                                    {
+                                        next_aspect = preset;
+                                    }
+                                }
+                            },
+                        );
+                        if next_aspect != state.aspect {
+                            state.aspect = next_aspect;
+                            if let Some((next_width, next_height)) =
+                                resolve_canvas_intent(&state, canvas, reference)
+                            {
+                                *width = next_width as i64;
+                                *height = next_height as i64;
+                                changed = true;
+                            }
+                        }
+                    });
+                }
+                (CanvasSizingMode::AspectAndMegapixels, _) => {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                        field_label(ui, "Target MP");
+                        let min_megapixels = (canvas.min_side.max(1) as f64).powi(2) / 1_000_000.0;
+                        let max_megapixels = canvas
+                            .max_pixels
+                            .map(|pixels| pixels as f64 / 1_000_000.0)
+                            .unwrap_or(16.0)
+                            .max(min_megapixels)
+                            .max(state.target_megapixels);
+                        if canvas_megapixels_drag(
+                            ui,
+                            &mut state.target_megapixels,
+                            min_megapixels,
+                            max_megapixels,
+                        ) {
+                            if let Some((next_width, next_height)) =
+                                resolve_canvas_intent(&state, canvas, reference)
+                            {
+                                *width = next_width as i64;
+                                *height = next_height as i64;
+                                changed = true;
+                            }
+                        }
+                    });
+                }
+                (CanvasSizingMode::ExactDimensions, 0) => {
                     let mut next = *width;
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
@@ -2839,26 +3267,16 @@ pub fn canvas_picker(
                             ui,
                             &mut next,
                             ui.available_width(),
-                            alignment,
+                            1,
                             Some(min_side),
                             max_side,
                         ) {
-                            let (next_w, next_h) = crate::core::canvas::adjust_width(
-                                canvas,
-                                next,
-                                current_h,
-                                lock_aspect,
-                            );
-                            *width = next_w as i64;
-                            *height = next_h as i64;
+                            *width = next;
                             changed = true;
-                            if lock_aspect.is_none() {
-                                custom_aspect = true;
-                            }
                         }
                     });
                 }
-                _ => {
+                (CanvasSizingMode::ExactDimensions, _) => {
                     let mut next = *height;
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
@@ -2867,21 +3285,74 @@ pub fn canvas_picker(
                             ui,
                             &mut next,
                             ui.available_width(),
-                            alignment,
+                            1,
                             Some(min_side),
                             max_side,
                         ) {
-                            let (next_w, next_h) = crate::core::canvas::adjust_height(
-                                canvas,
-                                current_w,
-                                next,
-                                lock_aspect,
-                            );
-                            *width = next_w as i64;
-                            *height = next_h as i64;
+                            *height = next;
                             changed = true;
-                            if lock_aspect.is_none() {
-                                custom_aspect = true;
+                        }
+                    });
+                }
+                (CanvasSizingMode::ReferenceScale, 0) => {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                        let label = reference.map(|value| value.label).unwrap_or("Reference");
+                        field_label(ui, label);
+                        let value = reference
+                            .map(|reference| format!("{} × {}", reference.width, reference.height))
+                            .unwrap_or_else(|| "Unavailable".to_string());
+                        readonly_value_box(ui, value, Vec2::new(ui.available_width(), FIELD_H));
+                    });
+                }
+                (CanvasSizingMode::ReferenceScale, _) => {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                        field_label(ui, "Scale");
+                        let selected_label = CANVAS_SCALE_PRESETS
+                            .iter()
+                            .find(|(scale, _)| {
+                                (*scale - state.reference_scale).abs() < f64::EPSILON
+                            })
+                            .map(|(_, label)| *label)
+                            .unwrap_or("Custom");
+                        let mut next_scale = state.reference_scale;
+                        combo_field(
+                            ui,
+                            ("canvas_reference_scale", control_salt),
+                            selected_label,
+                            ui.available_width(),
+                            |ui| {
+                                for (scale, label) in CANVAS_SCALE_PRESETS {
+                                    let supported = reference.is_some_and(|reference| {
+                                        reference_scale_is_supported(canvas, reference, scale)
+                                    });
+                                    let response = ui
+                                        .add_enabled_ui(supported, |ui| {
+                                            ui.selectable_label(
+                                                (state.reference_scale - scale).abs()
+                                                    < f64::EPSILON,
+                                                label,
+                                            )
+                                        })
+                                        .inner
+                                        .on_disabled_hover_text(
+                                            "This scale exceeds the provider's canvas limits.",
+                                        );
+                                    if response.clicked() {
+                                        next_scale = scale;
+                                    }
+                                }
+                            },
+                        );
+                        if (next_scale - state.reference_scale).abs() > f64::EPSILON {
+                            state.reference_scale = next_scale;
+                            if let Some((next_width, next_height)) =
+                                resolve_canvas_intent(&state, canvas, reference)
+                            {
+                                *width = next_width as i64;
+                                *height = next_height as i64;
+                                changed = true;
                             }
                         }
                     });
@@ -2889,7 +3360,8 @@ pub fn canvas_picker(
             }
         });
     });
-    ui.ctx().data_mut(|data| data.insert_temp(custom_id, custom_aspect));
+    state.last_output = (*width, *height);
+    ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
     changed
 }
 

@@ -207,7 +207,12 @@ impl LatentSlateApp {
                             self.editor.overlays.queue,
                             attention,
                             has_failed_jobs,
-                        );
+                        )
+                        .on_hover_text(if self.editor.overlays.queue {
+                            "Close generation queue."
+                        } else {
+                            "Open generation queue."
+                        });
                         self.queue_button_rect = Some(queue_response.rect);
                         if queue_response.clicked() {
                             self.editor.overlays.queue = !self.editor.overlays.queue;
@@ -220,13 +225,51 @@ impl LatentSlateApp {
                             ui,
                             crate::core::automation::is_active(),
                             self.editor.overlays.agent_api,
-                        );
+                        )
+                        .on_hover_text(if self.editor.overlays.agent_api {
+                            "Close Agent API controls."
+                        } else {
+                            "Open Agent API controls."
+                        });
                         self.agent_api_button_rect = Some(api_response.rect);
                         if api_response.clicked() {
                             self.editor.overlays.agent_api = !self.editor.overlays.agent_api;
                             if self.editor.overlays.agent_api {
                                 self.editor.overlays.queue = false;
                             }
+                        }
+
+                        let release_target_count =
+                            crate::providers::provider_resource_release_target_count(
+                                &self.editor.provider_entries,
+                            );
+                        let release_enabled = release_target_count > 0
+                            && !self.provider_resource_release_in_flight
+                            && active_count == 0;
+                        let dump_response = ui
+                            .add_enabled_ui(release_enabled, |ui| {
+                                kit::resource_dump_button(
+                                    ui,
+                                    self.provider_resource_release_in_flight,
+                                )
+                            })
+                            .inner;
+                        let dump_response = if self.provider_resource_release_in_flight {
+                            dump_response.on_hover_text("Releasing cached provider RAM and VRAM…")
+                        } else if release_target_count == 0 {
+                            dump_response
+                                .on_hover_text("No configured providers support resource release.")
+                        } else if active_count > 0 {
+                            dump_response.on_hover_text(
+                                "Wait for the local generation queue to become idle.",
+                            )
+                        } else {
+                            dump_response.on_hover_text(
+                                "Unload cached models and release provider RAM/VRAM.",
+                            )
+                        };
+                        if dump_response.clicked() {
+                            self.start_provider_resource_release(ui.ctx());
                         }
                     });
                 });
@@ -236,6 +279,60 @@ impl LatentSlateApp {
 
     pub(super) fn project_panel_id(&self, name: &'static str) -> egui::Id {
         egui::Id::new((name, self.editor.project.project_path.clone()))
+    }
+
+    pub(super) fn start_provider_resource_release(&mut self, ctx: &Context) {
+        if self.provider_resource_release_in_flight {
+            self.editor.status = "Provider resource release is already running.".to_string();
+            return;
+        }
+        let active_jobs = self.editor.generation_queue.iter().any(|job| {
+            matches!(
+                job.status,
+                GenerationJobStatus::Queued
+                    | GenerationJobStatus::Running
+                    | GenerationJobStatus::Canceling
+            )
+        });
+        if active_jobs {
+            self.editor.status =
+                "Wait for the local generation queue to become idle before releasing resources."
+                    .to_string();
+            return;
+        }
+        let target_count =
+            crate::providers::provider_resource_release_target_count(&self.editor.provider_entries);
+        if target_count == 0 {
+            self.editor.status = "No configured providers support resource release.".to_string();
+            return;
+        }
+        let Some(runtime) = self.generation_runtime.as_ref() else {
+            self.editor.status = "Provider runtime is unavailable.".to_string();
+            return;
+        };
+        let providers = self.editor.provider_entries.clone();
+        let tx = self.provider_resource_release_tx.clone();
+        let ctx = ctx.clone();
+        self.provider_resource_release_in_flight = true;
+        self.editor.status = format!(
+            "Releasing cached resources on {target_count} provider backend{}…",
+            if target_count == 1 { "" } else { "s" }
+        );
+        runtime.spawn(async move {
+            let report = crate::providers::release_provider_resources(&providers).await;
+            let _ = tx.send(report);
+            ctx.request_repaint();
+        });
+    }
+
+    pub(super) fn service_provider_resource_release(&mut self) {
+        while let Ok(report) = self.provider_resource_release_rx.try_recv() {
+            self.provider_resource_release_in_flight = false;
+            self.editor.status = report.status_message();
+            if let Some(envelope) = self.pending_provider_resource_release_automation.take() {
+                envelope.respond(Self::provider_resource_release_automation_response(&report));
+            }
+        }
     }
 
     pub(super) fn modals(&mut self, ctx: &Context) {
@@ -477,6 +574,7 @@ impl eframe::App for LatentSlateApp {
         crate::core::automation::begin_ui_frame();
         self.tick_playback(&ctx);
         self.service_generation_queue(&ctx);
+        self.service_provider_resource_release();
         self.service_export_events(&ctx);
         self.update_preview_texture(&ctx);
         self.service_preview_idle_prefetch(&ctx);

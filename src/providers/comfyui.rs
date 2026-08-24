@@ -137,6 +137,39 @@ pub async fn check_health(base_url: &str) -> Result<(), String> {
     }
 }
 
+/// Unloads cached models and asks ComfyUI to release cached host/device memory.
+pub async fn release_resources(base_url: &str) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| format!("Failed to build HTTP client: {err}"))?;
+    let url = format!("{}/free", base_url.trim().trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({
+            "unload_models": true,
+            "free_memory": true,
+        }))
+        .send()
+        .await
+        .map_err(|err| format!("ComfyUI resource release failed: {err}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|err| format!("Failed to read ComfyUI resource release response: {err}"))?;
+    if !status.is_success() {
+        let detail = text.trim();
+        return Err(if detail.is_empty() {
+            format!("ComfyUI resource release failed ({status})")
+        } else {
+            format!("ComfyUI resource release failed ({status}): {detail}")
+        });
+    }
+    Ok(serde_json::from_str(&text)
+        .unwrap_or_else(|_| serde_json::json!({ "http_status": status.as_u16() })))
+}
+
 /// Fetches ComfyUI's live node/input schema for the configured provider endpoint.
 pub async fn fetch_object_info(base_url: &str) -> Result<Value, String> {
     let client = reqwest::Client::builder()

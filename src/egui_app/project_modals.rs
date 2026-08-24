@@ -798,16 +798,24 @@ fn provider_scope_fields(ui: &mut Ui, settings: &mut ProjectSettings, providers:
 }
 
 fn provider_scope_row(ui: &mut Ui, provider: &ProviderEntry, enabled: &mut bool) {
-    ui.horizontal(|ui| {
-        let _ = automation_checkbox(ui, enabled, "");
+    kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, row_width| {
+        let checkbox = automation_checkbox(ui, enabled, "");
+        let gap = ui.spacing().item_spacing.x;
         let output_w = 58.0;
         let source_w = provider_source_badge_size().x;
         let state_w = provider_engine_state(provider)
             .map(engine_state_badge_width)
             .unwrap_or(0.0);
         let badge_count = if state_w > 0.0 { 3.0 } else { 2.0 };
-        let gaps = kit::FIELD_COMPOUND_GAP * badge_count;
-        let name_w = (ui.available_width() - output_w - source_w - state_w - gaps).max(72.0);
+        let trailing_gaps = gap * badge_count;
+        let name_w = (row_width
+            - checkbox.rect.width()
+            - gap
+            - output_w
+            - source_w
+            - state_w
+            - trailing_gaps)
+            .max(0.0);
         let name_color = if provider_is_available_for_generation(provider) {
             kit::TEXT
         } else {
@@ -895,6 +903,5 @@ pub(super) fn recent_projects(parent: &Path) -> Vec<PathBuf> {
         .flat_map(|read_dir| read_dir.filter_map(Result::ok))
         .map(|entry| entry.path())
         .filter(|path| path.join("project.json").exists())
-        .take(8)
         .collect()
 }

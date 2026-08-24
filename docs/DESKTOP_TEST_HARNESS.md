@@ -116,6 +116,7 @@ Current command types include:
 - `list_providers`
 - `refresh_providers`
 - `test_provider`
+- `release_provider_resources`
 - `get_credential_status`
 - `set_credential`
 - `create_generative_asset`

@@ -357,6 +357,8 @@ pub enum AutomationCommand {
         #[serde(default = "default_true")]
         live: bool,
     },
+    /// Unload cached models and release RAM/VRAM on every capable provider backend.
+    ReleaseProviderResources,
     /// Get a generative asset config.
     GetGenerativeConfig { asset_id: Uuid },
     /// Patch a generative asset config.
@@ -2087,7 +2089,7 @@ pub fn build_agent_bootstrap(
             .to_string(),
         "- Assets: import_asset, rename_asset, duplicate_asset, delete_assets, extract_still_to_asset"
             .to_string(),
-        "- Providers: list_providers, create_provider, update_provider, test_provider; cloud API keys live in provider JSON connection.api_key"
+        "- Providers: list_providers, create_provider, update_provider, test_provider, release_provider_resources; cloud API keys live in provider JSON connection.api_key"
             .to_string(),
         "- Generation: create_generative_asset, set_generative_config, start_generation, wait_for_generation endpoint, cancel_job"
             .to_string(),
@@ -2429,6 +2431,7 @@ fn agent_command_names() -> Vec<&'static str> {
         "update_provider",
         "delete_provider",
         "test_provider",
+        "release_provider_resources",
         "get_generative_config",
         "set_generative_config",
         "replace_generative_config",
@@ -2518,7 +2521,8 @@ fn agent_command_schema_json() -> Value {
             { "type": "create_provider", "fields": { "provider": "ProviderEntry" } },
             { "type": "update_provider", "fields": { "provider_id": "uuid", "provider": "ProviderEntry" } },
             { "type": "delete_provider", "fields": { "provider_id": "uuid" } },
-            { "type": "test_provider", "fields": { "provider_id": "uuid", "live?": "bool" } }
+            { "type": "test_provider", "fields": { "provider_id": "uuid", "live?": "bool" } },
+            { "type": "release_provider_resources", "fields": {} }
         ],
         "generation": [
             { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "duration_seconds?": "f64", "frame_count?": "u32" } },
@@ -2536,7 +2540,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "get_asset_lab_graph", "fields": { "asset_id": "uuid" } },
             { "type": "add_asset_lab_node", "fields": { "asset_id": "uuid", "provider_id?": "uuid", "parent_node_id?": "uuid", "inputs?": "map" } },
             { "type": "set_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid", "patch": "AssetLabNodePatch" } },
-            { "type": "delete_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid" } },
+            { "type": "delete_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid; leaf steps only; fails while downstream steps, a staged variant, or active generation jobs depend on the node" } },
             { "type": "generate_asset_lab_node", "fields": { "asset_id": "uuid", "node_id": "uuid", "batch?": "BatchSettings; count + seed_strategy for repeated attempts" } }
         ],
         "export_and_diagnostics": [

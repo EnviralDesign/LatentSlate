@@ -4,6 +4,9 @@ use crate::state::{
     DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS,
 };
 
+const ATTRIBUTES_PANEL_MIN_WIDTH: f32 = 200.0;
+const ATTRIBUTES_PANEL_MAX_WIDTH: f32 = 550.0;
+
 impl LatentSlateApp {
     pub(super) fn right_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.right_collapsed {
@@ -22,12 +25,16 @@ impl LatentSlateApp {
         let response = egui::Panel::right(self.project_panel_id("attributes"))
             .resizable(true)
             .default_size(self.editor.layout.right_width)
-            .size_range(200.0..=440.0)
+            .size_range(ATTRIBUTES_PANEL_MIN_WIDTH..=ATTRIBUTES_PANEL_MAX_WIDTH)
             .frame(kit::dock_frame())
             .show_inside(root, |ui| {
                 kit::fixed_panel_body(ui, |ui| self.attributes_panel(ui));
             });
-        self.editor.layout.right_width = response.response.rect.width().clamp(200.0, 440.0);
+        self.editor.layout.right_width = response
+            .response
+            .rect
+            .width()
+            .clamp(ATTRIBUTES_PANEL_MIN_WIDTH, ATTRIBUTES_PANEL_MAX_WIDTH);
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Left);
     }
 
@@ -52,6 +59,25 @@ impl LatentSlateApp {
         } else {
             None
         };
+        let header_can_generate = !self.provider_resource_release_in_flight
+            && header_generate_target
+                .as_ref()
+                .is_some_and(|(asset_id, _)| {
+                    self.editor
+                        .project
+                        .generative_config(*asset_id)
+                        .and_then(|config| config.provider_id)
+                        .and_then(|provider_id| {
+                            self.editor
+                                .provider_entries
+                                .iter()
+                                .find(|provider| provider.id == provider_id)
+                        })
+                        .is_some_and(|provider| {
+                            self.editor.provider_in_project_scope(provider.id)
+                                && provider_is_available_for_generation(provider)
+                        })
+                });
 
         let mut header_generate_clicked = false;
         ui.horizontal(|ui| {
@@ -62,10 +88,13 @@ impl LatentSlateApp {
                     self.editor.layout.right_collapsed = true;
                 }
                 if header_generate_target.is_some() {
-                    if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H).clicked()
-                    {
-                        header_generate_clicked = true;
-                    }
+                    ui.add_enabled_ui(header_can_generate, |ui| {
+                        if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H)
+                            .clicked()
+                        {
+                            header_generate_clicked = true;
+                        }
+                    });
                 }
             });
         });
@@ -2014,9 +2043,8 @@ impl LatentSlateApp {
         let mut next_batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT) as i64;
         let mut next_seed_strategy = batch.seed_strategy;
         let mut open_asset_lab = false;
-        let mut generate_clicked = false;
 
-        inspector_card(ui, "Generative", |ui| {
+        inspector_card(ui, "Generation", |ui| {
             kit::field_label(ui, "Version");
             let row_w = ui.available_width();
             let (row_rect, _) =
@@ -2125,62 +2153,22 @@ impl LatentSlateApp {
             }
 
             ui.add_space(kit::ACTION_GAP);
-            let generate_w = ui.available_width();
-            let can_generate = selected_provider.as_ref().is_some_and(|provider| {
-                self.editor.provider_in_project_scope(provider.id)
-                    && provider_is_available_for_generation(provider)
-            });
-            ui.add_enabled_ui(can_generate, |ui| {
-                if kit::primary_button(ui, "Generate", generate_w).clicked() {
-                    generate_clicked = true;
-                }
-            });
-            if let Some(status) = self.generation_status_for_asset(asset_id) {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(kit::caption(status));
-            }
-        });
-
-        ui.add_space(kit::FORM_ROW_GAP);
-        self.media_binding_context_picker(ui, asset_id, context_clip_id);
-        let input_updates = self.provider_inputs_card(
-            ui,
-            asset_id,
-            context_clip_id,
-            selected_provider.clone(),
-            &config_snapshot,
-        );
-
-        if output_type == ProviderOutputType::Video
-            && selected_provider.as_ref().is_none_or(|provider| {
-                !crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
-            })
-        {
+            kit::field_label(ui, "Variations");
             ui.add_space(kit::FORM_ROW_GAP);
-            self.generative_video_timing_card(
-                ui,
-                asset_id,
-                context_clip_id,
-                selected_provider.as_ref(),
-            );
-        }
-
-        ui.add_space(kit::FORM_ROW_GAP);
-        inspector_card(ui, "Batch", |ui| {
             if inspector_drag_i64(
                 ui,
-                "Count",
+                "Output count",
                 &mut next_batch_count,
                 1.0,
                 ui.available_width(),
             ) {
                 next_batch_count = next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64);
             }
-            ui.add_space(kit::FORM_ROW_GAP);
-            let mut draw_strategy = |ui: &mut Ui| {
+            if next_batch_count > 1 {
+                ui.add_space(kit::FORM_ROW_GAP);
                 kit::labeled_combo_field(
                     ui,
-                    "Seed Strategy",
+                    "Seed behavior",
                     ("seed_strategy", asset_id),
                     seed_strategy_label(next_seed_strategy),
                     |ui| {
@@ -2204,13 +2192,37 @@ impl LatentSlateApp {
                         );
                     },
                 );
-            };
-            draw_strategy(ui);
-            if let Some(hint) = batch_hint {
+                if let Some(hint) = batch_hint.as_deref() {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    ui.label(RichText::new(hint).color(kit::MARKER).size(11.0));
+                }
+            }
+
+            if let Some(status) = self.generation_status_for_asset(asset_id) {
                 ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(RichText::new(hint).color(kit::MARKER).size(11.0));
+                ui.label(kit::caption(status));
             }
         });
+
+        ui.add_space(kit::FORM_ROW_GAP);
+        let mut input_updates = self.provider_output_card(
+            ui,
+            asset_id,
+            context_clip_id,
+            output_type,
+            selected_provider.clone(),
+            &config_snapshot,
+        );
+        if self.should_show_provider_output_card(output_type, selected_provider.as_ref()) {
+            ui.add_space(kit::FORM_ROW_GAP);
+        }
+        input_updates.extend(self.provider_inputs_card(
+            ui,
+            asset_id,
+            context_clip_id,
+            selected_provider.clone(),
+            &config_snapshot,
+        ));
 
         let mut config_dirty = false;
         let mut preview_dirty = false;
@@ -2340,13 +2352,140 @@ impl LatentSlateApp {
             });
             self.open_asset_lab_at_time(asset_id, local_time);
         }
-
-        if generate_clicked {
-            self.start_generative_generation(asset_id, context_clip_id);
-        }
     }
 
-    fn generative_video_timing_card(
+    fn should_show_provider_output_card(
+        &self,
+        output_type: ProviderOutputType,
+        selected_provider: Option<&ProviderEntry>,
+    ) -> bool {
+        let has_canvas = selected_provider
+            .and_then(crate::core::canvas::dimension_pair)
+            .is_some();
+        let has_timing = output_type == ProviderOutputType::Video
+            && selected_provider.is_none_or(|provider| {
+                !crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
+            });
+        has_canvas || has_timing
+    }
+
+    fn provider_output_card(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        output_type: ProviderOutputType,
+        selected_provider: Option<ProviderEntry>,
+        config_snapshot: &GenerativeConfig,
+    ) -> Vec<(String, InputValue)> {
+        let mut updates = Vec::new();
+        if !self.should_show_provider_output_card(output_type, selected_provider.as_ref()) {
+            return updates;
+        }
+
+        inspector_card(ui, "Output", |ui| {
+            let drew_canvas = selected_provider.as_ref().is_some_and(|provider| {
+                self.provider_canvas_controls(ui, asset_id, provider, config_snapshot, &mut updates)
+            });
+            let draw_timing = output_type == ProviderOutputType::Video
+                && selected_provider.as_ref().is_none_or(|provider| {
+                    !crate::core::timeline_bridge::provider_is_timeline_bridge(provider)
+                });
+            if draw_timing {
+                if drew_canvas {
+                    ui.add_space(kit::ACTION_GAP);
+                    ui.separator();
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
+                kit::field_label(ui, "Timing");
+                ui.add_space(kit::FORM_ROW_GAP);
+                self.generative_video_timing_controls(
+                    ui,
+                    asset_id,
+                    context_clip_id,
+                    selected_provider.as_ref(),
+                );
+            }
+        });
+        updates
+    }
+
+    fn provider_canvas_controls(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        provider: &ProviderEntry,
+        config_snapshot: &GenerativeConfig,
+        updates: &mut Vec<(String, InputValue)>,
+    ) -> bool {
+        let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider)
+        else {
+            return false;
+        };
+        let canvas = crate::core::canvas::canvas_from_provider(provider).or_else(|| {
+            crate::core::canvas::canvas_from_dimension_ui(
+                width_input.ui.as_ref(),
+                height_input.ui.as_ref(),
+            )
+        });
+        let mut width = displayed_dimension_input_value(
+            &self.editor.project,
+            config_snapshot,
+            provider,
+            width_input,
+        )
+        .or_else(|| literal_config_input(config_snapshot, &width_input.name))
+        .or_else(|| width_input.default.clone())
+        .as_ref()
+        .and_then(input_value_as_i64)
+        .unwrap_or(0);
+        let mut height = displayed_dimension_input_value(
+            &self.editor.project,
+            config_snapshot,
+            provider,
+            height_input,
+        )
+        .or_else(|| literal_config_input(config_snapshot, &height_input.name))
+        .or_else(|| height_input.default.clone())
+        .as_ref()
+        .and_then(input_value_as_i64)
+        .unwrap_or(0);
+        let canvas = canvas.unwrap_or(crate::state::CanvasContract {
+            alignment: 1,
+            min_side: 1,
+            max_side: None,
+            max_pixels: None,
+            max_aspect: None,
+        });
+        if kit::canvas_picker(
+            ui,
+            ("provider_canvas", asset_id, &width_input.name),
+            &canvas,
+            Some(kit::CanvasSizeReference::new(
+                "Project",
+                self.editor.project.settings.width,
+                self.editor.project.settings.height,
+            )),
+            &mut width,
+            &mut height,
+        ) {
+            updates.push((
+                width_input.name.clone(),
+                InputValue::Literal {
+                    value: serde_json::Value::Number(width.into()),
+                },
+            ));
+            updates.push((
+                height_input.name.clone(),
+                InputValue::Literal {
+                    value: serde_json::Value::Number(height.into()),
+                },
+            ));
+        }
+        true
+    }
+
+    fn generative_video_timing_controls(
         &mut self,
         ui: &mut Ui,
         asset_id: Uuid,
@@ -2366,29 +2505,27 @@ impl LatentSlateApp {
         let mut fps_changed = false;
         let mut frames_changed = false;
 
-        inspector_card(ui, "Target Timing", |ui| {
-            duration_changed |= inspector_drag_f64(
-                ui,
-                "Seconds",
-                &mut next_duration,
-                0.05,
-                ui.available_width(),
-            );
+        duration_changed |= inspector_drag_f64(
+            ui,
+            "Seconds",
+            &mut next_duration,
+            0.05,
+            ui.available_width(),
+        );
+        ui.add_space(kit::FORM_ROW_GAP);
+        fps_changed |= inspector_drag_f64(ui, "FPS", &mut next_fps, 1.0, ui.available_width());
+        ui.add_space(kit::FORM_ROW_GAP);
+        frames_changed |= inspector_drag_i64(
+            ui,
+            "Frames",
+            &mut next_frame_count,
+            1.0,
+            ui.available_width(),
+        );
+        if bounds.min.is_some() || bounds.max.is_some() {
             ui.add_space(kit::FORM_ROW_GAP);
-            fps_changed |= inspector_drag_f64(ui, "FPS", &mut next_fps, 1.0, ui.available_width());
-            ui.add_space(kit::FORM_ROW_GAP);
-            frames_changed |= inspector_drag_i64(
-                ui,
-                "Frames",
-                &mut next_frame_count,
-                1.0,
-                ui.available_width(),
-            );
-            if bounds.min.is_some() || bounds.max.is_some() {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(kit::caption(provider_duration_bounds_label(bounds)));
-            }
-        });
+            ui.label(kit::caption(provider_duration_bounds_label(bounds)));
+        }
 
         if !(duration_changed || fps_changed || frames_changed) {
             return;
@@ -2731,7 +2868,7 @@ impl LatentSlateApp {
         config_snapshot: &GenerativeConfig,
     ) -> Vec<(String, InputValue)> {
         let mut updates = Vec::new();
-        inspector_card(ui, "Provider Inputs", |ui| {
+        inspector_card(ui, "Inputs", |ui| {
             let Some(provider) = selected_provider else {
                 ui.label(kit::caption("Select a provider to configure inputs."));
                 return;
@@ -2740,242 +2877,49 @@ impl LatentSlateApp {
                 ui.label(kit::caption("No inputs defined."));
                 return;
             }
-            let mut media_inputs = Vec::new();
-            let mut other_inputs = Vec::new();
-            for input in provider.inputs.iter() {
-                if is_timing_role(input.role)
-                    && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
-                        && input.role == Some(InputRole::Fps))
-                {
-                    continue;
-                }
-                if crate::core::media_binding::bound_media_type_for_input(input).is_some() {
-                    media_inputs.push(input);
-                } else {
-                    other_inputs.push(input);
-                }
-            }
-
             let dimension_names = crate::core::canvas::dimension_pair(&provider)
                 .map(|(width, height)| (width.name.clone(), height.name.clone()));
-            let canvas = crate::core::canvas::canvas_from_provider(&provider).or_else(|| {
-                crate::core::canvas::dimension_pair(&provider).and_then(|(width, height)| {
-                    crate::core::canvas::canvas_from_dimension_ui(
-                        width.ui.as_ref(),
-                        height.ui.as_ref(),
-                    )
+            let visible_inputs: Vec<&ProviderInputField> = provider
+                .inputs
+                .iter()
+                .filter(|input| {
+                    let is_dimension =
+                        dimension_names
+                            .as_ref()
+                            .is_some_and(|(width_name, height_name)| {
+                                input.name == *width_name || input.name == *height_name
+                            });
+                    let is_hidden_timing = is_timing_role(input.role)
+                        && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
+                            && input.role == Some(InputRole::Fps));
+                    !is_dimension && !is_hidden_timing
                 })
-            });
+                .collect();
+            let standard_inputs: Vec<&ProviderInputField> = visible_inputs
+                .iter()
+                .copied()
+                .filter(|input| !provider_input_is_advanced(input))
+                .collect();
+            let advanced_inputs: Vec<&ProviderInputField> = visible_inputs
+                .iter()
+                .copied()
+                .filter(|input| provider_input_is_advanced(input))
+                .collect();
 
-            let mut visible_index = 0usize;
-            for input in media_inputs.into_iter().chain(other_inputs) {
-                if let Some((width_name, height_name)) = dimension_names.as_ref() {
-                    if input.name == *height_name {
-                        continue;
-                    }
-                    if input.name == *width_name {
-                        if visible_index > 0 {
-                            ui.add_space(kit::FORM_ROW_GAP);
-                        }
-                        visible_index += 1;
-                        let Some(width_input) = provider
-                            .inputs
-                            .iter()
-                            .find(|item| item.name == *width_name)
-                        else {
-                            continue;
-                        };
-                        let Some(height_input) = provider
-                            .inputs
-                            .iter()
-                            .find(|item| item.name == *height_name)
-                        else {
-                            continue;
-                        };
-                        let mut width = displayed_dimension_input_value(
-                            &self.editor.project,
-                            config_snapshot,
-                            &provider,
-                            width_input,
-                        )
-                        .or_else(|| literal_config_input(config_snapshot, &width_input.name))
-                        .or_else(|| width_input.default.clone())
-                        .as_ref()
-                        .and_then(input_value_as_i64)
-                        .unwrap_or(0);
-                        let mut height = displayed_dimension_input_value(
-                            &self.editor.project,
-                            config_snapshot,
-                            &provider,
-                            height_input,
-                        )
-                        .or_else(|| literal_config_input(config_snapshot, &height_input.name))
-                        .or_else(|| height_input.default.clone())
-                        .as_ref()
-                        .and_then(input_value_as_i64)
-                        .unwrap_or(0);
-                        let canvas = canvas.clone().unwrap_or(crate::state::CanvasContract {
-                            alignment: 1,
-                            min_side: 1,
-                            max_side: None,
-                            max_pixels: None,
-                            max_aspect: None,
-                        });
-                        if kit::canvas_picker(
-                            ui,
-                            ("provider_canvas", asset_id, &width_input.name),
-                            &canvas,
-                            &mut width,
-                            &mut height,
-                        ) {
-                            updates.push((
-                                width_input.name.clone(),
-                                InputValue::Literal {
-                                    value: serde_json::Value::Number(width.into()),
-                                },
-                            ));
-                            updates.push((
-                                height_input.name.clone(),
-                                InputValue::Literal {
-                                    value: serde_json::Value::Number(height.into()),
-                                },
-                            ));
-                        }
-                        continue;
-                    }
-                }
-                if visible_index > 0 {
-                    ui.add_space(kit::FORM_ROW_GAP);
-                }
-                visible_index += 1;
-                let label = if input.required {
-                    format!("{} *", input.label)
-                } else {
-                    input.label.clone()
-                };
-                let current_value = displayed_dimension_input_value(
-                    &self.editor.project,
-                    config_snapshot,
-                    &provider,
-                    input,
-                )
-                .or_else(|| literal_config_input(config_snapshot, &input.name))
-                .or_else(|| input.default.clone());
-                match &input.input_type {
-                    ProviderInputType::Text => {
-                        let mut value = current_value
-                            .as_ref()
-                            .and_then(input_value_as_string)
-                            .unwrap_or_default();
-                        let multiline = input.ui.as_ref().map(|ui| ui.multiline).unwrap_or(false);
-                        let changed = if multiline {
-                            provider_input_multiline_text_field(
-                                ui,
-                                &label,
-                                input,
-                                &mut value,
-                                kit::MultilineTextFieldOptions::rows(3),
-                            )
-                        } else {
-                            provider_input_text_field(ui, &label, input, &mut value)
-                        };
-                        if changed {
-                            updates.push((
-                                input.name.clone(),
-                                InputValue::Literal {
-                                    value: serde_json::Value::String(value),
-                                },
-                            ));
-                        }
-                    }
-                    ProviderInputType::Number => {
-                        let mut value = current_value
-                            .as_ref()
-                            .and_then(input_value_as_f64)
-                            .unwrap_or(0.0);
-                        let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(0.1);
-                        let width = ui.available_width();
-                        if provider_input_drag_f64(ui, &label, input, &mut value, step, width) {
-                            if let Some(number) = serde_json::Number::from_f64(value) {
-                                updates.push((
-                                    input.name.clone(),
-                                    InputValue::Literal {
-                                        value: serde_json::Value::Number(number),
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                    ProviderInputType::Integer => {
-                        let mut value = current_value
-                            .as_ref()
-                            .and_then(input_value_as_i64)
-                            .unwrap_or(0);
-                        let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
-                        let width = ui.available_width();
-                        if provider_input_drag_i64(ui, &label, input, &mut value, step, width) {
-                            updates.push((
-                                input.name.clone(),
-                                InputValue::Literal {
-                                    value: serde_json::Value::Number(value.into()),
-                                },
-                            ));
-                        }
-                    }
-                    ProviderInputType::Boolean => {
-                        let mut value = current_value
-                            .as_ref()
-                            .and_then(input_value_as_bool)
-                            .unwrap_or(false);
-                        if provider_input_bool_field(ui, &label, input, &mut value) {
-                            updates.push((
-                                input.name.clone(),
-                                InputValue::Literal {
-                                    value: serde_json::Value::Bool(value),
-                                },
-                            ));
-                        }
-                    }
-                    ProviderInputType::Enum { options } => {
-                        let mut value = current_value
-                            .as_ref()
-                            .and_then(input_value_as_string)
-                            .or_else(|| options.first().cloned())
-                            .unwrap_or_default();
-                        let before = value.clone();
-                        provider_input_labeled_combo_field(
-                            ui,
-                            &label,
-                            input,
-                            ("provider_input_enum", asset_id, &input.name),
-                            empty_dash(&value).to_string(),
-                            |ui| {
-                                for option in options {
-                                    automation_selectable_value(
-                                        ui,
-                                        &mut value,
-                                        option.clone(),
-                                        option,
-                                    );
-                                }
-                            },
-                        );
-                        if value != before {
-                            updates.push((
-                                input.name.clone(),
-                                InputValue::Literal {
-                                    value: serde_json::Value::String(value),
-                                },
-                            ));
-                        }
-                    }
-                    ProviderInputType::Image
-                    | ProviderInputType::Video
-                    | ProviderInputType::Audio => {
-                        self.media_binding_field(ui, asset_id, context_clip_id, &provider, input);
-                    }
-                }
+            self.media_binding_context_picker(ui, asset_id, context_clip_id);
+            if standard_inputs.is_empty() && advanced_inputs.is_empty() {
+                ui.label(kit::caption("No additional inputs for this provider."));
+                return;
             }
+            self.provider_input_controls(
+                ui,
+                asset_id,
+                context_clip_id,
+                &provider,
+                config_snapshot,
+                &standard_inputs,
+                &mut updates,
+            );
             self.media_binding_bulk_actions(
                 ui,
                 asset_id,
@@ -2983,8 +2927,201 @@ impl LatentSlateApp {
                 &provider,
                 config_snapshot,
             );
+
+            if !advanced_inputs.is_empty() {
+                if !standard_inputs.is_empty() {
+                    ui.add_space(kit::ACTION_GAP);
+                    ui.separator();
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
+                egui::CollapsingHeader::new(
+                    RichText::new("Advanced").color(kit::TEXT_MUTED).size(11.0),
+                )
+                .id_salt(("provider_inputs_advanced", asset_id, provider.id))
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    self.provider_input_controls(
+                        ui,
+                        asset_id,
+                        context_clip_id,
+                        &provider,
+                        config_snapshot,
+                        &advanced_inputs,
+                        &mut updates,
+                    );
+                });
+            }
         });
         updates
+    }
+
+    fn provider_input_controls(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        provider: &ProviderEntry,
+        config_snapshot: &GenerativeConfig,
+        inputs: &[&ProviderInputField],
+        updates: &mut Vec<(String, InputValue)>,
+    ) {
+        let mut visible_index = 0usize;
+        let mut current_group: Option<&str> = None;
+        for input in inputs.iter().copied() {
+            let group = input
+                .ui
+                .as_ref()
+                .and_then(|presentation| presentation.group.as_deref())
+                .map(str::trim)
+                .filter(|group| !group.is_empty());
+            if group != current_group {
+                if visible_index > 0 {
+                    ui.add_space(kit::ACTION_GAP);
+                }
+                if let Some(group) = group {
+                    ui.label(kit::caption(group));
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
+                current_group = group;
+            } else if visible_index > 0 {
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
+            visible_index += 1;
+
+            let label = if input.required {
+                format!("{} *", input.label)
+            } else {
+                input.label.clone()
+            };
+            let current_value = displayed_dimension_input_value(
+                &self.editor.project,
+                config_snapshot,
+                provider,
+                input,
+            )
+            .or_else(|| literal_config_input(config_snapshot, &input.name))
+            .or_else(|| input.default.clone());
+            match &input.input_type {
+                ProviderInputType::Text => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_string)
+                        .unwrap_or_default();
+                    let multiline = input
+                        .ui
+                        .as_ref()
+                        .map(|presentation| presentation.multiline)
+                        .unwrap_or(false);
+                    let changed = if multiline {
+                        provider_input_multiline_text_field(
+                            ui,
+                            &label,
+                            input,
+                            &mut value,
+                            kit::MultilineTextFieldOptions::rows(3),
+                        )
+                    } else {
+                        provider_input_text_field(ui, &label, input, &mut value)
+                    };
+                    if changed {
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::String(value),
+                            },
+                        ));
+                    }
+                }
+                ProviderInputType::Number => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_f64)
+                        .unwrap_or(0.0);
+                    let step = input
+                        .ui
+                        .as_ref()
+                        .and_then(|presentation| presentation.step)
+                        .unwrap_or(0.1);
+                    let width = ui.available_width();
+                    if provider_input_drag_f64(ui, &label, input, &mut value, step, width) {
+                        if let Some(number) = serde_json::Number::from_f64(value) {
+                            updates.push((
+                                input.name.clone(),
+                                InputValue::Literal {
+                                    value: serde_json::Value::Number(number),
+                                },
+                            ));
+                        }
+                    }
+                }
+                ProviderInputType::Integer => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_i64)
+                        .unwrap_or(0);
+                    let step = input
+                        .ui
+                        .as_ref()
+                        .and_then(|presentation| presentation.step)
+                        .unwrap_or(1.0);
+                    let width = ui.available_width();
+                    if provider_input_drag_i64(ui, &label, input, &mut value, step, width) {
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::Number(value.into()),
+                            },
+                        ));
+                    }
+                }
+                ProviderInputType::Boolean => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_bool)
+                        .unwrap_or(false);
+                    if provider_input_bool_field(ui, &label, input, &mut value) {
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::Bool(value),
+                            },
+                        ));
+                    }
+                }
+                ProviderInputType::Enum { options } => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_string)
+                        .or_else(|| options.first().cloned())
+                        .unwrap_or_default();
+                    let before = value.clone();
+                    provider_input_labeled_combo_field(
+                        ui,
+                        &label,
+                        input,
+                        ("provider_input_enum", asset_id, &input.name),
+                        empty_dash(&value).to_string(),
+                        |ui| {
+                            for option in options {
+                                automation_selectable_value(ui, &mut value, option.clone(), option);
+                            }
+                        },
+                    );
+                    if value != before {
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::String(value),
+                            },
+                        ));
+                    }
+                }
+                ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
+                    self.media_binding_field(ui, asset_id, context_clip_id, provider, input);
+                }
+            }
+        }
     }
 
     pub(super) fn provider_asset_input_field(
@@ -3806,11 +3943,19 @@ fn provider_timing_role_value(
     }
 }
 
-fn is_timing_role(role: Option<InputRole>) -> bool {
+pub(super) fn is_timing_role(role: Option<InputRole>) -> bool {
     matches!(
         role,
         Some(InputRole::DurationSeconds | InputRole::Fps | InputRole::FrameCount)
     )
+}
+
+pub(super) fn provider_input_is_advanced(input: &ProviderInputField) -> bool {
+    input
+        .ui
+        .as_ref()
+        .is_some_and(|presentation| presentation.advanced)
+        || input.role == Some(InputRole::Seed)
 }
 
 fn clamp_provider_input_number(value: f64, input: &ProviderInputField) -> f64 {

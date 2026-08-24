@@ -200,6 +200,9 @@ impl LatentSlateApp {
                     let response = self.test_agent_provider(provider_id, live);
                     envelope.respond(response);
                 }
+                crate::core::automation::AutomationCommand::ReleaseProviderResources => {
+                    self.queue_agent_provider_resource_release(ctx, envelope);
+                }
                 crate::core::automation::AutomationCommand::SetActiveGenerationVersion {
                     asset_id,
                     version,
@@ -661,6 +664,70 @@ impl LatentSlateApp {
                 self.editor.status = format!("Provider test failed: {err}");
                 crate::core::automation::AutomationResponse::error(err)
             }
+        }
+    }
+
+    pub(super) fn queue_agent_provider_resource_release(
+        &mut self,
+        ctx: &Context,
+        envelope: crate::core::automation::AutomationEnvelope,
+    ) {
+        if self.provider_resource_release_in_flight {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                "Provider resource release is already running.",
+            ));
+            return;
+        }
+        let active_jobs = self.editor.generation_queue.iter().any(|job| {
+            matches!(
+                job.status,
+                GenerationJobStatus::Queued
+                    | GenerationJobStatus::Running
+                    | GenerationJobStatus::Canceling
+            )
+        });
+        if active_jobs {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                "Wait for the local generation queue to become idle before releasing resources.",
+            ));
+            return;
+        }
+        let target_count =
+            crate::providers::provider_resource_release_target_count(&self.editor.provider_entries);
+        if target_count == 0 {
+            let report = crate::providers::ProviderResourceReleaseReport {
+                attempted: 0,
+                released: 0,
+                failed: 0,
+                unsupported_providers: self.editor.provider_entries.len(),
+                targets: Vec::new(),
+            };
+            self.editor.status = report.status_message();
+            envelope.respond(Self::provider_resource_release_automation_response(&report));
+            return;
+        }
+        if self.generation_runtime.is_none() {
+            envelope.respond(crate::core::automation::AutomationResponse::with_status(
+                "Provider runtime is unavailable.",
+                500,
+            ));
+            return;
+        }
+        self.pending_provider_resource_release_automation = Some(envelope);
+        self.start_provider_resource_release(ctx);
+    }
+
+    pub(super) fn provider_resource_release_automation_response(
+        report: &crate::providers::ProviderResourceReleaseReport,
+    ) -> crate::core::automation::AutomationResponse {
+        let message = report.status_message();
+        let payload = serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({}));
+        if report.failed == 0 {
+            crate::core::automation::AutomationResponse::ok(payload)
+        } else if report.released > 0 {
+            crate::core::automation::AutomationResponse::with_status_data(message, 207, payload)
+        } else {
+            crate::core::automation::AutomationResponse::with_status_data(message, 502, payload)
         }
     }
 

@@ -22,6 +22,25 @@ providers, while the Engine publishes its own tool catalog.
 | Custom HTTP | Not implemented | Data model exists; runtime returns a planned/not-implemented error. |
 | fal.ai / Replicate / Veo | Not implemented | Future adapter work. |
 
+## Releasing Provider Resources
+
+The top-right `DUMP` action asks every configured backend that supports resource
+release to unload cached models and free RAM/VRAM. Shared backends are deduplicated,
+so multiple provider entries pointing to one ComfyUI or LatentSlate Engine instance
+produce one request to that instance. Unsupported cloud providers are left alone,
+and failures are reported per backend without hiding successful releases elsewhere.
+
+Current adapters use these native contracts:
+
+- ComfyUI: `POST /free` with `unload_models` and `free_memory` enabled.
+- LatentSlate Engine: authenticated `DELETE /v1/runtime`, which requires an idle
+  Engine and leaves the service process running.
+
+The same operation is available through `POST /agent/v1/command` with
+`{"type":"release_provider_resources"}` and through the global UI registry as the
+`DUMP` resource action. LatentSlate disables the UI action while its local
+generation queue is active.
+
 ## LatentSlate Engine Setup
 
 LatentSlate treats each Engine as a backend in **AI Providers**. Add one or more
@@ -246,6 +265,13 @@ Engine image and video tools use integer `width` and `height` roles rather than 
 single size preset. New generation requests default to the project canvas size;
 an explicit config (including continuation dimensions) wins, and image-to-image
 uses a bound source image's dimensions when no explicit dimensions are present.
+The shared canvas picker keeps the submitted width/height pair as the resolved
+output while offering `Aspect + MP`, `Exact dimensions`, and `Project scale`
+input modes. Its output readout reports the effective resolution, megapixels,
+aspect, and provider pixel grid so grid-adjusted results are never presented as
+the literal requested target. `Project scale` rounds up to a legal output that
+meets the scaled project's pixel area; scale choices beyond the provider's hard
+canvas limits are disabled.
 An Engine image-to-image descriptor with an optional, default-free width/height
 pair uses source mode: with a bound source and no explicit pair, LatentSlate
 omits both fields so Engine can apply source-mode EXIF transpose and its

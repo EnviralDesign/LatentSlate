@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use futures_util::future::join_all;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -46,6 +48,224 @@ pub enum ProviderExecutionError {
     Offline(String),
     Error(String),
     Canceled(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderResourceReleaseTargetResult {
+    pub kind: String,
+    pub base_url: String,
+    pub provider_ids: Vec<uuid::Uuid>,
+    pub provider_names: Vec<String>,
+    pub ok: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderResourceReleaseReport {
+    pub attempted: usize,
+    pub released: usize,
+    pub failed: usize,
+    pub unsupported_providers: usize,
+    pub targets: Vec<ProviderResourceReleaseTargetResult>,
+}
+
+impl ProviderResourceReleaseReport {
+    pub fn status_message(&self) -> String {
+        if self.attempted == 0 {
+            return "No configured providers support resource release.".to_string();
+        }
+        if self.failed == 0 {
+            return format!(
+                "Released cached provider resources for {} backend{}.",
+                self.released,
+                if self.released == 1 { "" } else { "s" }
+            );
+        }
+        let first_failure = self
+            .targets
+            .iter()
+            .find(|target| !target.ok)
+            .map(|target| target.message.as_str())
+            .unwrap_or("Unknown provider error.");
+        if self.released == 0 {
+            format!(
+                "Provider resource release failed for {} backend{}: {}",
+                self.failed,
+                if self.failed == 1 { "" } else { "s" },
+                first_failure
+            )
+        } else {
+            format!(
+                "Released resources for {} of {} backends; {} failed: {}",
+                self.released, self.attempted, self.failed, first_failure
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ProviderResourceReleaseConnection {
+    ComfyUi {
+        base_url: String,
+    },
+    LatentSlateEngine {
+        base_url: String,
+        api_key: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct ProviderResourceReleaseTarget {
+    kind: &'static str,
+    base_url: String,
+    provider_ids: Vec<uuid::Uuid>,
+    provider_names: Vec<String>,
+    connection: ProviderResourceReleaseConnection,
+    configuration_error: Option<String>,
+}
+
+pub fn provider_resource_release_target_count(providers: &[ProviderEntry]) -> usize {
+    provider_resource_release_targets(providers).0.len()
+}
+
+pub async fn release_provider_resources(
+    providers: &[ProviderEntry],
+) -> ProviderResourceReleaseReport {
+    let (targets, unsupported_providers) = provider_resource_release_targets(providers);
+    let attempted = targets.len();
+    let targets = join_all(targets.into_iter().map(release_provider_resource_target)).await;
+    let released = targets.iter().filter(|target| target.ok).count();
+    ProviderResourceReleaseReport {
+        attempted,
+        released,
+        failed: attempted.saturating_sub(released),
+        unsupported_providers,
+        targets,
+    }
+}
+
+fn provider_resource_release_targets(
+    providers: &[ProviderEntry],
+) -> (Vec<ProviderResourceReleaseTarget>, usize) {
+    let mut targets = BTreeMap::<String, ProviderResourceReleaseTarget>::new();
+    let mut unsupported_providers = 0;
+    for provider in providers {
+        let (key, kind, base_url, connection) = match &provider.connection {
+            ProviderConnection::ComfyUi { base_url, .. } => {
+                let base_url = base_url.trim().trim_end_matches('/').to_string();
+                (
+                    provider_resource_release_target_key("comfy_ui", &base_url),
+                    "comfy_ui",
+                    base_url.clone(),
+                    ProviderResourceReleaseConnection::ComfyUi { base_url },
+                )
+            }
+            ProviderConnection::LatentSlateEngine {
+                base_url, api_key, ..
+            } => {
+                let base_url = latentslate_engine::normalize_engine_base_url(base_url);
+                (
+                    provider_resource_release_target_key("latentslate_engine", &base_url),
+                    "latentslate_engine",
+                    base_url.clone(),
+                    ProviderResourceReleaseConnection::LatentSlateEngine {
+                        base_url,
+                        api_key: api_key.clone(),
+                    },
+                )
+            }
+            _ => {
+                unsupported_providers += 1;
+                continue;
+            }
+        };
+        let target = targets
+            .entry(key)
+            .or_insert_with(|| ProviderResourceReleaseTarget {
+                kind,
+                base_url,
+                provider_ids: Vec::new(),
+                provider_names: Vec::new(),
+                connection,
+                configuration_error: None,
+            });
+        if let (
+            ProviderResourceReleaseConnection::LatentSlateEngine {
+                api_key: target_key,
+                ..
+            },
+            ProviderConnection::LatentSlateEngine { api_key, .. },
+        ) = (&mut target.connection, &provider.connection)
+        {
+            let existing_key = target_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let incoming_key = api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            match (existing_key, incoming_key) {
+                (None, Some(_)) => *target_key = api_key.clone(),
+                (Some(existing), Some(incoming)) if existing != incoming => {
+                    target.configuration_error = Some(format!(
+                        "Conflicting credentials are configured for LatentSlate Engine backend {}.",
+                        target.base_url
+                    ));
+                }
+                _ => {}
+            }
+        }
+        target.provider_ids.push(provider.id);
+        target.provider_names.push(provider.name.clone());
+    }
+    (targets.into_values().collect(), unsupported_providers)
+}
+
+fn provider_resource_release_target_key(kind: &str, base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let canonical = reqwest::Url::parse(trimmed)
+        .map(|url| url.to_string().trim_end_matches('/').to_string())
+        .unwrap_or_else(|_| trimmed.to_string());
+    format!("{kind}:{canonical}")
+}
+
+async fn release_provider_resource_target(
+    target: ProviderResourceReleaseTarget,
+) -> ProviderResourceReleaseTargetResult {
+    let result = match target.configuration_error.as_ref() {
+        Some(message) => Err(message.clone()),
+        None => match &target.connection {
+            ProviderResourceReleaseConnection::ComfyUi { base_url } => {
+                comfyui::release_resources(base_url).await
+            }
+            ProviderResourceReleaseConnection::LatentSlateEngine { base_url, api_key } => {
+                latentslate_engine::release_resources(base_url, api_key.as_deref()).await
+            }
+        },
+    };
+    match result {
+        Ok(response) => ProviderResourceReleaseTargetResult {
+            kind: target.kind.to_string(),
+            base_url: target.base_url,
+            provider_ids: target.provider_ids,
+            provider_names: target.provider_names,
+            ok: true,
+            message: "Cached models and memory released.".to_string(),
+            response: Some(response),
+        },
+        Err(message) => ProviderResourceReleaseTargetResult {
+            kind: target.kind.to_string(),
+            base_url: target.base_url,
+            provider_ids: target.provider_ids,
+            provider_names: target.provider_names,
+            ok: false,
+            message,
+            response: None,
+        },
+    }
 }
 
 pub async fn test_provider_connection(

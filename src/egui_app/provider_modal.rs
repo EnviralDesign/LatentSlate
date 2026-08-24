@@ -415,10 +415,10 @@ impl LatentSlateApp {
         ui.add_space(kit::FORM_ROW_GAP);
         kit::field_label(ui, "Search");
         ui.add_space(kit::FIELD_LABEL_GAP);
-        ui.horizontal(|ui| {
+        kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, row_width| {
             ui.spacing_mut().item_spacing.x = kit::FIELD_COMPOUND_GAP;
             let checkbox_w = 124.0;
-            let field_w = (ui.available_width() - checkbox_w - kit::FIELD_COMPOUND_GAP).max(80.0);
+            let field_w = (row_width - checkbox_w - kit::FIELD_COMPOUND_GAP).max(0.0);
             kit::singleline_text_field(ui, &mut self.engine_catalog_search, field_w);
             automation_checkbox(ui, &mut self.engine_available_only, "Available only");
         });
@@ -553,9 +553,9 @@ impl LatentSlateApp {
 
         let selected_label = provider_template_label(self.provider_template_kind);
         let mut selected_kind = self.provider_template_kind;
-        ui.horizontal(|ui| {
+        kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, row_width| {
             let button_w = kit::FIELD_H;
-            let combo_w = (ui.available_width() - kit::FIELD_COMPOUND_GAP - button_w).max(80.0);
+            let combo_w = (row_width - kit::FIELD_COMPOUND_GAP - button_w).max(0.0);
             kit::combo_field(
                 ui,
                 "provider_template_kind",
@@ -1143,13 +1143,15 @@ impl LatentSlateApp {
                 ui.add_space(kit::FORM_ROW_GAP);
                 kit::labeled_text_field(ui, "Base URL", &mut self.provider_builder.base_url);
                 ui.add_space(kit::FORM_ROW_GAP);
-                ui.horizontal(|ui| {
+                kit::bounded_horizontal_row(ui, kit::SECONDARY_BUTTON_H, |ui, row_width| {
                     if kit::secondary_button(ui, "Refresh Schema", 130.0).clicked() {
                         self.refresh_provider_builder_schema();
                     }
                     if let Some(status) = &self.provider_builder.schema_status {
+                        let status_width =
+                            (row_width - 130.0 - ui.spacing().item_spacing.x).max(0.0);
                         ui.add_sized(
-                            [(ui.available_width()).max(40.0), 18.0],
+                            [status_width, 18.0],
                             egui::Label::new(kit::caption(status)).truncate(),
                         );
                     } else {
@@ -1289,9 +1291,11 @@ impl LatentSlateApp {
                         for input_key in node.inputs.iter() {
                             let already_exposed =
                                 self.provider_builder.input_exposed(&node.id, input_key);
-                            ui.horizontal(|ui| {
+                            kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, row_width| {
+                                let label_width =
+                                    (row_width - 68.0 - ui.spacing().item_spacing.x).max(0.0);
                                 ui.add_sized(
-                                    [(ui.available_width() - 76.0).max(60.0), 18.0],
+                                    [label_width, 18.0],
                                     egui::Label::new(kit::body(input_key)).truncate(),
                                 );
                                 let label = if already_exposed { "Exposed" } else { "Expose" };

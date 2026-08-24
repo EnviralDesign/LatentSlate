@@ -185,6 +185,8 @@ pub(super) struct ProviderBuilderInput {
     pub(super) enum_options: String,
     pub(super) tag: String,
     pub(super) multiline: bool,
+    pub(super) ui_group: String,
+    pub(super) advanced: bool,
     pub(super) ui_min: Option<f64>,
     pub(super) ui_max: Option<f64>,
     pub(super) ui_step: Option<f64>,
@@ -1202,6 +1204,8 @@ impl ProviderBuilderInput {
             enum_options,
             tag: String::new(),
             multiline,
+            ui_group: String::new(),
+            advanced: false,
             ui_min: schema.and_then(|schema| schema.min),
             ui_max: schema.and_then(|schema| schema.max),
             ui_step: schema.and_then(|schema| schema.step),
@@ -1228,6 +1232,8 @@ impl ProviderBuilderInput {
             role: input.role,
             tag: String::new(),
             multiline: ui_meta.is_some_and(|ui| ui.multiline),
+            ui_group: ui_meta.and_then(|ui| ui.group.clone()).unwrap_or_default(),
+            advanced: ui_meta.is_some_and(|ui| ui.advanced),
             ui_min: ui_meta.and_then(|ui| ui.min),
             ui_max: ui_meta.and_then(|ui| ui.max),
             ui_step: ui_meta.and_then(|ui| ui.step),
@@ -1246,6 +1252,12 @@ impl ProviderBuilderInput {
         let ui_max = input.ui.as_ref().and_then(|ui| ui.max);
         let ui_step = input.ui.as_ref().and_then(|ui| ui.step);
         let multiline = input.ui.as_ref().is_some_and(|ui| ui.multiline);
+        let ui_group = input
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.group.clone())
+            .unwrap_or_default();
+        let advanced = input.ui.as_ref().is_some_and(|ui| ui.advanced);
         Self {
             name: input.name,
             label: input.label,
@@ -1257,6 +1269,8 @@ impl ProviderBuilderInput {
             role: input.role,
             tag: input.bind.selector.tag.unwrap_or_default(),
             multiline,
+            ui_group,
+            advanced,
             ui_min,
             ui_max,
             ui_step,
@@ -1275,6 +1289,12 @@ impl ProviderBuilderInput {
         let ui_max = input.ui.as_ref().and_then(|ui| ui.max);
         let ui_step = input.ui.as_ref().and_then(|ui| ui.step);
         let multiline = input.ui.as_ref().is_some_and(|ui| ui.multiline);
+        let ui_group = input
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.group.clone())
+            .unwrap_or_default();
+        let advanced = input.ui.as_ref().is_some_and(|ui| ui.advanced);
         Self {
             name: input.name,
             label: input.label,
@@ -1286,6 +1306,8 @@ impl ProviderBuilderInput {
             role: input.role,
             tag: String::new(),
             multiline,
+            ui_group,
+            advanced,
             ui_min,
             ui_max,
             ui_step,
@@ -2037,6 +2059,10 @@ pub(super) fn provider_builder_input_inspector_editor(
     ui.add_space(kit::FORM_ROW_GAP);
     provider_input_role_field(ui, "Role", &input.name, &mut input.role);
     ui.add_space(kit::FORM_ROW_GAP);
+    kit::labeled_text_field(ui, "Group", &mut input.ui_group);
+    ui.add_space(kit::FORM_ROW_GAP);
+    automation_checkbox(ui, &mut input.advanced, "Advanced control");
+    ui.add_space(kit::FORM_ROW_GAP);
     if input.input_type_key == "enum" {
         kit::field_label(ui, "Enum Options");
         ui.add_space(kit::FIELD_LABEL_GAP);
@@ -2072,7 +2098,7 @@ pub(super) fn provider_builder_input_action_row(
     input: &ProviderBuilderInput,
     action: &mut Option<ProviderInputAction>,
 ) {
-    ui.horizontal(|ui| {
+    kit::bounded_horizontal_row(ui, kit::SECONDARY_BUTTON_H, |ui, row_width| {
         let gap = ui.spacing().item_spacing.x;
         let buttons_w = 42.0 + 52.0 + 66.0 + gap * 3.0;
         let binding_label = if input.required {
@@ -2091,7 +2117,7 @@ pub(super) fn provider_builder_input_action_row(
             )
         };
         ui.add_sized(
-            [(ui.available_width() - buttons_w).max(0.0), 18.0],
+            [(row_width - buttons_w).max(0.0), 18.0],
             egui::Label::new(kit::caption(binding_label)).truncate(),
         );
         if kit::field_button(ui, "Up", 42.0).clicked() && index > 0 {
@@ -2357,13 +2383,12 @@ pub(super) fn provider_input_type_field(ui: &mut Ui, label: &str, value: &mut St
         ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
         kit::field_label(ui, label);
         let width = ui.available_width();
-        kit::configure_field_widget_style(ui, width);
-        let combo_id = ui.next_auto_id();
-        ui.skip_ahead_auto_ids(1);
-        egui::ComboBox::from_id_salt(combo_id)
-            .width(width)
-            .selected_text(provider_input_type_label(value))
-            .show_ui(ui, |ui| {
+        kit::combo_field(
+            ui,
+            ("provider_input_type", label),
+            provider_input_type_label(value),
+            width,
+            |ui| {
                 for (key, label) in [
                     ("text", "Text"),
                     ("number", "Number"),
@@ -2376,7 +2401,8 @@ pub(super) fn provider_input_type_field(ui: &mut Ui, label: &str, value: &mut St
                 ] {
                     automation_selectable_value(ui, value, key.to_string(), label);
                 }
-            });
+            },
+        );
     });
 }
 
@@ -2512,6 +2538,8 @@ pub(super) fn optional_trimmed_string(value: &str) -> Option<String> {
 
 pub(super) fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<InputUi> {
     if (input.input_type_key == "text" && input.multiline)
+        || !input.ui_group.trim().is_empty()
+        || input.advanced
         || input.ui_min.is_some()
         || input.ui_max.is_some()
         || input.ui_step.is_some()
@@ -2522,8 +2550,8 @@ pub(super) fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<In
             step: input.ui_step,
             placeholder: None,
             multiline: input.input_type_key == "text" && input.multiline,
-            group: None,
-            advanced: false,
+            group: optional_trimmed_string(&input.ui_group),
+            advanced: input.advanced,
             unit: None,
         })
     } else {

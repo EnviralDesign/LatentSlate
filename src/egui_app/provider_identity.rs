@@ -441,9 +441,9 @@ fn provider_choice_row(
     );
 
     let fill = if selected {
-        kit::FIELD_BG_ACTIVE
+        kit::DROPDOWN_ROW_ACTIVE
     } else if response.hovered() && enabled {
-        kit::PANEL_RAISED
+        kit::DROPDOWN_ROW_HOVER
     } else {
         Color32::TRANSPARENT
     };
