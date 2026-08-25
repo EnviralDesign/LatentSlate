@@ -1681,8 +1681,11 @@ impl LatentSlateApp {
         self.open_asset_lab_at_time(asset_id, None);
     }
 
-    pub(super) fn open_asset_lab_version(&mut self, asset_id: Uuid, version: &str) {
-        self.open_asset_lab_at_time(asset_id, None);
+    pub(super) fn open_asset_lab_version(
+        &mut self,
+        asset_id: Uuid,
+        version: &str,
+    ) -> Result<(), String> {
         let selected_version = self
             .editor
             .project
@@ -1695,9 +1698,9 @@ impl LatentSlateApp {
             })
             .then(|| version.to_string());
         let Some(selected_version) = selected_version else {
-            self.editor.status = format!("Bound output {version} is no longer available");
-            return;
+            return Err(format!("Bound output {version} is no longer available"));
         };
+        self.open_asset_lab_at_time(asset_id, None);
         self.asset_lab.selected_version = Some(selected_version.clone());
         self.asset_lab.pending_graph_focus_node_id = self
             .editor
@@ -1707,6 +1710,7 @@ impl LatentSlateApp {
                 asset_lab_node_id_for_version(Some(config), Some(&selected_version))
             });
         self.asset_lab_preview_texture = None;
+        Ok(())
     }
 
     pub(super) fn open_asset_lab_at_time(

@@ -270,6 +270,7 @@ pub struct LatentSlateApp {
     asset_source_fps_misses: HashSet<Uuid>,
     asset_search: String,
     asset_reveal_override: Option<Uuid>,
+    asset_reveal_scroll_target: Option<Uuid>,
     asset_filter: AssetLibraryFilter,
     asset_sort: AssetLibrarySort,
     asset_grouping: AssetLibraryGrouping,
@@ -636,6 +637,7 @@ impl LatentSlateApp {
             asset_source_fps_misses: HashSet::new(),
             asset_search: String::new(),
             asset_reveal_override: None,
+            asset_reveal_scroll_target: None,
             asset_filter: AssetLibraryFilter::default(),
             asset_sort: AssetLibrarySort::default(),
             asset_grouping: AssetLibraryGrouping::default(),
@@ -727,9 +729,6 @@ impl LatentSlateApp {
         match self.editor.open_project(folder) {
             Ok(_) => {
                 self.project_settings = self.editor.project.settings.clone();
-                self.asset_reveal_override = None;
-                self.timeline_binding_focus = None;
-                self.timeline_binding_navigation_origin = None;
                 self.export_modal = ExportModalState::for_project(&self.editor.project);
                 self.export_preview_texture = None;
                 self.clear_project_runtime_cache();

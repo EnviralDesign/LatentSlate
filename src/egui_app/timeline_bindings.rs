@@ -77,6 +77,7 @@ pub(super) struct TimelineBindingRoute {
     target_continuation: Option<BindingPortalVisual>,
     source_anchor: Option<Pos2>,
     source_rect: Option<Rect>,
+    source_focus_time: Option<f64>,
     source_timeline_range: Option<MediaTimeRange>,
     source_clip_id: Option<uuid::Uuid>,
     segments: Vec<Pos2>,
@@ -275,6 +276,7 @@ impl LatentSlateApp {
                     target_continuation,
                     source_anchor: None,
                     source_rect: None,
+                    source_focus_time: None,
                     source_timeline_range: None,
                     source_clip_id: None,
                     segments: Vec::new(),
@@ -294,6 +296,7 @@ impl LatentSlateApp {
                     target_continuation,
                     source_anchor: None,
                     source_rect: None,
+                    source_focus_time: None,
                     source_timeline_range: None,
                     source_clip_id: None,
                     segments: Vec::new(),
@@ -320,6 +323,7 @@ impl LatentSlateApp {
                     target_continuation,
                     source_anchor: None,
                     source_rect: None,
+                    source_focus_time: None,
                     source_timeline_range: None,
                     source_clip_id: None,
                     segments: Vec::new(),
@@ -342,6 +346,7 @@ impl LatentSlateApp {
                     target_continuation,
                     source_anchor: None,
                     source_rect: None,
+                    source_focus_time: None,
                     source_timeline_range: None,
                     source_clip_id: Some(source_clip_id),
                     segments: Vec::new(),
@@ -376,6 +381,9 @@ impl LatentSlateApp {
                         source_clip.timeline_time_for_source(range.end_seconds, source_duration);
                     MediaTimeRange::new(start.min(end), start.max(end))
                 })
+            });
+            let source_focus_time = source_timeline_frame.or_else(|| {
+                source_timeline_range.map(|range| (range.start_seconds + range.end_seconds) * 0.5)
             });
             let resolved_source_anchor = source_anchor_pos(
                 source_geom.rect,
@@ -420,6 +428,7 @@ impl LatentSlateApp {
                 target_continuation,
                 source_anchor: source_visible.then_some(resolved_source_anchor),
                 source_rect: Some(source_geom.rect),
+                source_focus_time,
                 source_timeline_range,
                 source_clip_id: Some(source_clip_id),
                 segments,
@@ -496,12 +505,19 @@ impl LatentSlateApp {
                     focus.last_seen = now;
                 }
             }
-        } else if self.timeline_binding_focus.as_ref().is_some_and(|focus| {
-            !focus.pinned
-                && now.saturating_duration_since(focus.last_seen)
-                    > TimelineBindingVisualMetrics::FOCUS_LATCH
-        }) {
-            self.timeline_binding_focus = None;
+        } else if let Some(focus) = self
+            .timeline_binding_focus
+            .as_ref()
+            .filter(|focus| !focus.pinned)
+        {
+            let elapsed = now.saturating_duration_since(focus.last_seen);
+            if elapsed >= TimelineBindingVisualMetrics::FOCUS_LATCH {
+                self.timeline_binding_focus = None;
+            } else {
+                ui.ctx().request_repaint_after(
+                    TimelineBindingVisualMetrics::FOCUS_LATCH.saturating_sub(elapsed),
+                );
+            }
         }
         if let Some(index) = hovered_index {
             if ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary)) {
@@ -611,17 +627,33 @@ impl LatentSlateApp {
                             ));
                         }
                         MediaBindingSource::FrozenArtifact { path, origin, .. } => {
-                            let absolute = route
-                                .plan
-                                .source_path_absolute
-                                .clone()
-                                .unwrap_or_else(|| path.clone());
+                            let absolute = route.plan.source_path_absolute.clone().or_else(|| {
+                                if path.is_absolute() {
+                                    Some(path.clone())
+                                } else {
+                                    self.editor
+                                        .project
+                                        .project_path
+                                        .as_ref()
+                                        .map(|root| root.join(path))
+                                }
+                            });
                             let original_clip =
                                 origin.as_ref().and_then(|origin| origin.source_clip_id);
+                            let source_focus_time = origin.as_ref().and_then(|origin| {
+                                original_clip.and_then(|source_clip_id| {
+                                    self.timeline_binding_source_focus_time(
+                                        source_clip_id,
+                                        origin.source_frame_time,
+                                        origin.source_range,
+                                    )
+                                })
+                            });
                             let go_to_original = ui.input(|input| input.modifiers.shift);
                             reveal_frozen = Some((
                                 absolute,
                                 original_clip,
+                                source_focus_time,
                                 go_to_original,
                                 route.target_clip_id,
                                 route.plan.field_name.clone(),
@@ -684,12 +716,13 @@ impl LatentSlateApp {
                             source_clip_id,
                             route.target_clip_id,
                             route.plan.field_name.clone(),
+                            route.source_focus_time,
                         )
                     });
                 }
             }
 
-            if focused {
+            if focused && hovered_index == Some(index) {
                 if let Some(pos) = hover {
                     let text = if route.required_unbound {
                         format!(
@@ -718,11 +751,14 @@ impl LatentSlateApp {
             }
         }
 
-        if let Some((source_clip_id, consumer_clip_id, field_name)) = reveal_source {
+        if let Some((source_clip_id, consumer_clip_id, field_name, source_focus_time)) =
+            reveal_source
+        {
             self.reveal_timeline_binding_source(
                 source_clip_id,
                 consumer_clip_id,
                 field_name,
+                source_focus_time,
                 rects,
                 zoom,
             );
@@ -735,8 +771,14 @@ impl LatentSlateApp {
                 field_name,
             );
         }
-        if let Some((path, original_clip, go_to_original, consumer_clip_id, field_name)) =
-            reveal_frozen
+        if let Some((
+            path,
+            original_clip,
+            source_focus_time,
+            go_to_original,
+            consumer_clip_id,
+            field_name,
+        )) = reveal_frozen
         {
             if go_to_original {
                 if let Some(source_clip_id) = original_clip {
@@ -744,6 +786,7 @@ impl LatentSlateApp {
                         source_clip_id,
                         consumer_clip_id,
                         field_name,
+                        source_focus_time,
                         rects,
                         zoom,
                     );
@@ -751,10 +794,19 @@ impl LatentSlateApp {
                     self.editor.status =
                         "This frozen input has no recorded original timeline clip.".to_string();
                 }
-            } else if let Err(err) = super::reveal_path_in_file_manager(&path) {
-                self.editor.status = err;
+            } else if let Some(path) = path {
+                if !path.exists() {
+                    self.editor.status =
+                        format!("Frozen input file is missing: {}", path.display());
+                } else if let Err(err) = super::reveal_path_in_file_manager(&path) {
+                    self.editor.status = err;
+                } else {
+                    self.editor.status = "Revealed frozen input in File Explorer".to_string();
+                }
             } else {
-                self.editor.status = "Revealed frozen input in File Explorer".to_string();
+                self.editor.status =
+                    "The project folder is unavailable, so this frozen input cannot be revealed."
+                        .to_string();
             }
         }
         if let Some((origin, text)) = hover_text {
@@ -796,6 +848,7 @@ impl LatentSlateApp {
         clip_id: uuid::Uuid,
         consumer_clip_id: uuid::Uuid,
         field_name: String,
+        source_focus_time: Option<f64>,
         rects: TimelineRects,
         zoom: f32,
     ) {
@@ -818,7 +871,10 @@ impl LatentSlateApp {
         else {
             return;
         };
-        let center_time = (clip.start_time + clip.end_time()) * 0.5;
+        let center_time = source_focus_time
+            .filter(|time| time.is_finite())
+            .unwrap_or_else(|| (clip.start_time + clip.end_time()) * 0.5)
+            .clamp(clip.start_time, clip.end_time());
         self.timeline_binding_navigation_origin = Some(super::TimelineBindingNavigationOrigin {
             consumer_clip_id,
             field_name,
@@ -844,6 +900,26 @@ impl LatentSlateApp {
         let Some(origin) = self.timeline_binding_navigation_origin.take() else {
             return;
         };
+        let clip_exists = |clip_id| {
+            self.editor
+                .project
+                .clips
+                .iter()
+                .any(|clip| clip.id == clip_id)
+        };
+        if !clip_exists(origin.consumer_clip_id)
+            || origin
+                .prior_clip_selection
+                .iter()
+                .copied()
+                .any(|clip_id| !clip_exists(clip_id))
+        {
+            self.timeline_binding_focus = None;
+            self.editor.status =
+                "The prior timeline selection changed, so Back to Consumer is no longer available."
+                    .to_string();
+            return;
+        }
         self.editor.layout.timeline_scroll_x = origin.prior_scroll_x.max(0.0);
         self.editor.layout.timeline_scroll_y = origin.prior_scroll_y.max(0.0);
         self.editor.selection.clear();
@@ -867,24 +943,59 @@ impl LatentSlateApp {
             self.editor.status = "The bound project asset no longer exists.".to_string();
             return;
         };
-        self.timeline_binding_navigation_origin = Some(super::TimelineBindingNavigationOrigin {
+        let navigation_origin = super::TimelineBindingNavigationOrigin {
             consumer_clip_id,
             field_name,
             prior_clip_selection: self.editor.selection.clip_ids.clone(),
             prior_scroll_x: self.editor.layout.timeline_scroll_x,
             prior_scroll_y: self.editor.layout.timeline_scroll_y,
-        });
+        };
         if asset.is_generative() {
             if let Some(version) = version {
-                self.open_asset_lab_version(asset_id, version);
-                self.editor.status = format!("Opened bound output {version} in Asset Lab");
+                match self.open_asset_lab_version(asset_id, version) {
+                    Ok(()) => {
+                        self.timeline_binding_navigation_origin = Some(navigation_origin);
+                        self.editor.status = format!("Opened bound output {version} in Asset Lab");
+                    }
+                    Err(err) => self.editor.status = err,
+                }
                 return;
             }
         }
+        self.timeline_binding_navigation_origin = Some(navigation_origin);
         self.editor.layout.left_collapsed = false;
         self.asset_reveal_override = Some(asset_id);
+        self.asset_reveal_scroll_target = Some(asset_id);
         self.editor.selection.select_asset(asset_id);
         self.editor.status = "Revealed bound project asset".to_string();
+    }
+
+    fn timeline_binding_source_focus_time(
+        &self,
+        clip_id: uuid::Uuid,
+        source_frame_time: Option<f64>,
+        source_range: Option<MediaTimeRange>,
+    ) -> Option<f64> {
+        let clip = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)?;
+        let source_duration = self
+            .editor
+            .project
+            .find_asset(clip.asset_id)
+            .and_then(|asset| asset.duration_seconds);
+        source_frame_time
+            .map(|time| clip.timeline_time_for_source(time, source_duration))
+            .or_else(|| {
+                source_range.map(|range| {
+                    let start = clip.timeline_time_for_source(range.start_seconds, source_duration);
+                    let end = clip.timeline_time_for_source(range.end_seconds, source_duration);
+                    (start + end) * 0.5
+                })
+            })
     }
 
     fn clip_media_binding_plans(&self, clip: &Clip) -> Vec<TimelineBindingVisualPlan> {
@@ -1761,29 +1872,51 @@ fn local_source_terminal_visual(
     source: BindingLocalSource,
     viewport: Rect,
 ) -> BindingTerminalVisual {
-    let width = match source {
+    let preferred_width: f32 = match source {
         BindingLocalSource::ProjectAsset => 38.0,
         BindingLocalSource::FrozenArtifact => 46.0,
     };
-    let size = Vec2::new(width, 14.0);
+    let scrollbar_reserve = TimelineBindingVisualMetrics::PORTAL_SCROLLBAR_RESERVE
+        .min((viewport.width() - 4.0).max(0.0));
+    let visible_right = (viewport.right() - scrollbar_reserve).max(viewport.left());
+    let visible_width = (visible_right - viewport.left()).max(0.0);
+    let horizontal_padding = 2.0_f32.min(visible_width * 0.5);
+    let width = preferred_width.min((visible_width - horizontal_padding * 2.0).max(0.0));
+    let height = 14.0_f32.min(viewport.height().max(0.0));
+    let size = Vec2::new(width, height);
     let gap = TimelineBindingVisualMetrics::TERMINAL_GAP;
     let left_center = Pos2::new(target_rect.left() - gap - width * 0.5, target.y);
     let right_center = Pos2::new(target_rect.right() + gap + width * 0.5, target.y);
     let left_rect = Rect::from_center_size(left_center, size);
     let right_rect = Rect::from_center_size(right_center, size);
-    let center =
-        if viewport.contains(left_rect.left_top()) && viewport.contains(left_rect.right_bottom()) {
-            left_center
-        } else if viewport.contains(right_rect.left_top())
-            && viewport.contains(right_rect.right_bottom())
-        {
-            right_center
-        } else {
-            Pos2::new(
-                viewport.left() - gap - width * 0.5,
-                safe_axis_in_rect(target.y, viewport.top(), viewport.bottom(), size.y * 0.5),
-            )
-        };
+    let terminal_viewport = Rect::from_min_max(
+        viewport.left_top(),
+        Pos2::new(visible_right, viewport.bottom()),
+    );
+    let center = if terminal_viewport.contains(left_rect.left_top())
+        && terminal_viewport.contains(left_rect.right_bottom())
+    {
+        left_center
+    } else if terminal_viewport.contains(right_rect.left_top())
+        && terminal_viewport.contains(right_rect.right_bottom())
+    {
+        right_center
+    } else {
+        let on_left_edge = target_rect.center().x >= terminal_viewport.center().x;
+        Pos2::new(
+            if on_left_edge {
+                terminal_viewport.left() + width * 0.5 + horizontal_padding
+            } else {
+                terminal_viewport.right() - width * 0.5 - horizontal_padding
+            },
+            safe_axis_in_rect(
+                target.y,
+                terminal_viewport.top(),
+                terminal_viewport.bottom(),
+                size.y * 0.5,
+            ),
+        )
+    };
     let rect = Rect::from_center_size(center, size);
     let anchor = if center.x < target.x {
         rect.right_center()
@@ -1919,5 +2052,21 @@ mod tests {
         let portal = binding_edge_portal(Pos2::new(100.0, 1.0), Pos2::new(1.0, 1.0), viewport, &[]);
         assert!(portal.icon_rect.center().x.is_finite());
         assert!(portal.icon_rect.center().y.is_finite());
+    }
+
+    #[test]
+    fn local_terminal_fallback_stays_inside_the_painted_viewport() {
+        let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 80.0));
+        let target_rect = Rect::from_min_max(Pos2::new(0.0, 20.0), Pos2::new(100.0, 50.0));
+        let terminal = local_source_terminal_visual(
+            target_rect.center(),
+            target_rect,
+            BindingLocalSource::FrozenArtifact,
+            viewport,
+        );
+
+        assert!(viewport.contains(terminal.rect.left_top()));
+        assert!(viewport.contains(terminal.rect.right_bottom()));
+        assert!(terminal.rect.right() <= 82.0);
     }
 }

@@ -551,6 +551,7 @@ impl LatentSlateApp {
         .changed()
         {
             self.asset_reveal_override = None;
+            self.asset_reveal_scroll_target = None;
         }
         ui.add_space(6.0);
         kit::field_grid_row_with_height(ui, &[1.0, 1.0], kit::FIELD_H, 6.0, |ui, index| {
@@ -572,6 +573,7 @@ impl LatentSlateApp {
                             .clicked()
                             {
                                 self.asset_reveal_override = None;
+                                self.asset_reveal_scroll_target = None;
                                 ui.close();
                             }
                         }
@@ -595,6 +597,7 @@ impl LatentSlateApp {
                             .clicked()
                             {
                                 self.asset_reveal_override = None;
+                                self.asset_reveal_scroll_target = None;
                                 ui.close();
                             }
                         }
@@ -620,6 +623,7 @@ impl LatentSlateApp {
                     .clicked()
                     {
                         self.asset_reveal_override = None;
+                        self.asset_reveal_scroll_target = None;
                         ui.close();
                     }
                 }
@@ -680,10 +684,12 @@ impl LatentSlateApp {
                     );
                     if ui.small_button("Clear").clicked() {
                         self.asset_reveal_override = None;
+                        self.asset_reveal_scroll_target = None;
                     }
                 });
             } else {
                 self.asset_reveal_override = None;
+                self.asset_reveal_scroll_target = None;
             }
         }
         if assets.len() != total_assets || hidden_selected > 0 {
@@ -758,6 +764,10 @@ impl LatentSlateApp {
                     source_dimensions,
                     source_fps,
                 );
+                if self.asset_reveal_scroll_target == Some(asset.id) {
+                    ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                    self.asset_reveal_scroll_target = None;
+                }
                 response.dnd_set_drag_payload(AssetTimelineDragPayload { asset_id: asset.id });
                 if response.clicked() {
                     if multi_select_modifier(ui) {

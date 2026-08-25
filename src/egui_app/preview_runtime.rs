@@ -92,7 +92,11 @@ impl LatentSlateApp {
         self.asset_source_fps.clear();
         self.asset_source_fps_misses.clear();
         self.asset_search.clear();
+        self.asset_reveal_override = None;
+        self.asset_reveal_scroll_target = None;
         self.asset_filter = AssetLibraryFilter::All;
+        self.timeline_binding_focus = None;
+        self.timeline_binding_navigation_origin = None;
         self.timeline_thumbnails.clear();
         self.timeline_thumbnail_misses.clear();
         self.audio_peak_caches.clear();
