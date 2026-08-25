@@ -286,6 +286,33 @@ impl LatentSlateApp {
             .cloned()
             .map(|asset| (asset.id, asset))
             .collect();
+        let track_rows: HashMap<Uuid, usize> = tracks
+            .iter()
+            .enumerate()
+            .map(|(row, track)| (track.id, row))
+            .collect();
+        // Binding visibility must be derived from complete timeline geometry, not
+        // only the rows currently painted. Otherwise a valid vertically offscreen
+        // source is indistinguishable from a missing source clip.
+        let clip_geoms: Vec<TimelineClipGeom> = clips
+            .iter()
+            .filter_map(|clip| {
+                let row = track_rows.get(&clip.track_id).copied()?;
+                let asset = assets_by_id.get(&clip.asset_id);
+                let row_rect = timeline_row_rect(rects, row);
+                Some(TimelineClipGeom {
+                    clip_id: clip.id,
+                    rect: timeline_clip_rect(
+                        clip,
+                        asset,
+                        row_rect,
+                        zoom,
+                        self.editor.layout.timeline_scroll_x,
+                    ),
+                    keyframe: clip_is_keyframe_image(clip, asset),
+                })
+            })
+            .collect();
         let timeline_input_frozen = ui.ctx().any_popup_open();
         let dragged_asset_id = (!timeline_input_frozen)
             .then(|| {
@@ -336,8 +363,8 @@ impl LatentSlateApp {
 
         self.paint_timeline_ruler(&ruler_painter, rects.ruler, duration, zoom, fps);
 
-        let mut clip_geoms = Vec::new();
         let mut marker_geoms = Vec::new();
+        let binding_routes = self.timeline_media_binding_routes(rects, &clip_geoms, zoom);
         for (row, track) in tracks.iter().enumerate() {
             let row_rect = timeline_row_rect(rects, row);
             if row_rect.bottom() < rects.tracks.top() || row_rect.top() > rects.tracks.bottom() {
@@ -544,6 +571,22 @@ impl LatentSlateApp {
                     kit::TEXT_DIM,
                 );
             }
+        }
+
+        self.paint_timeline_grid_overlay(&track_stack_painter, rects, duration, zoom);
+        self.paint_media_binding_underlay(&track_stack_painter, &binding_routes);
+
+        for (row, track) in tracks.iter().enumerate() {
+            let row_rect = timeline_row_rect(rects, row);
+            if row_rect.bottom() < rects.tracks.top() || row_rect.top() > rects.tracks.bottom() {
+                continue;
+            }
+            let track_muted = track.muted && track.track_type != TrackType::Marker;
+            let track_color = if track_muted {
+                track_color(track.track_type).gamma_multiply(0.45)
+            } else {
+                track_color(track.track_type)
+            };
 
             for clip in clips.iter().filter(|clip| clip.track_id == track.id) {
                 let asset = assets_by_id.get(&clip.asset_id);
@@ -555,11 +598,6 @@ impl LatentSlateApp {
                     zoom,
                     self.editor.layout.timeline_scroll_x,
                 );
-                clip_geoms.push(TimelineClipGeom {
-                    clip_id: clip.id,
-                    rect: clip_rect,
-                    keyframe,
-                });
                 let selected = self.editor.selection.clip_ids.contains(&clip.id);
                 let thumbnail_tiles = asset
                     .filter(|asset| asset.is_visual())
@@ -628,12 +666,18 @@ impl LatentSlateApp {
             }
         }
 
-        self.paint_timeline_grid_overlay(&track_stack_painter, rects, duration, zoom);
         if let Some(insertion_index) = self.track_reorder_insertion_index() {
             self.paint_track_reorder_indicator(&painter, rects, insertion_index);
         }
+        let binding_navigation_clicked = self.paint_media_binding_overlay(
+            ui,
+            &overlay_painter,
+            rects,
+            &binding_routes,
+            &clip_geoms,
+            zoom,
+        );
         self.paint_timeline_playhead(&overlay_painter, rects, duration, zoom);
-        self.paint_media_binding_overlay(ui, &overlay_painter, rects, &clip_geoms, zoom);
         if let Some(time) = self.timeline_snap_preview {
             let x = time_to_timeline_x(
                 time,
@@ -929,17 +973,19 @@ impl LatentSlateApp {
         if context_menu_response.is_none() && !response.context_menu_opened() {
             self.timeline_context_menu_pos = None;
         }
-        self.handle_timeline_pointer(
-            ui,
-            &response,
-            rects,
-            &tracks,
-            &clips,
-            &clip_geoms,
-            &marker_geoms,
-            duration,
-            zoom,
-        );
+        if !binding_navigation_clicked {
+            self.handle_timeline_pointer(
+                ui,
+                &response,
+                rects,
+                &tracks,
+                &clips,
+                &clip_geoms,
+                &marker_geoms,
+                duration,
+                zoom,
+            );
+        }
         self.timeline_viewport_observation = Some(TimelineViewportObservation {
             project_session_revision: self.editor.project_session_revision,
             width: viewport_w,

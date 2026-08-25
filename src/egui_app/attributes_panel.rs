@@ -39,6 +39,7 @@ impl LatentSlateApp {
     }
 
     pub(super) fn attributes_panel(&mut self, ui: &mut Ui) {
+        let inspector_rect = ui.clip_rect();
         let header_generate_target = if self.editor.selection.clip_ids.len() == 1 {
             self.editor.selected_clip_id().and_then(|clip_id| {
                 let asset_id = self
@@ -90,6 +91,9 @@ impl LatentSlateApp {
                 if header_generate_target.is_some() {
                     ui.add_enabled_ui(header_can_generate, |ui| {
                         if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H)
+                            .on_hover_text(
+                                "Generate with the current settings. Ctrl+Enter works while editing Attributes.",
+                            )
                             .clicked()
                         {
                             header_generate_clicked = true;
@@ -125,7 +129,24 @@ impl LatentSlateApp {
             }
         });
 
-        if header_generate_clicked {
+        let focused_inside_inspector = ui
+            .ctx()
+            .memory(|memory| memory.focused())
+            .and_then(|focus_id| ui.ctx().read_response(focus_id))
+            .is_some_and(|response| inspector_rect.intersects(response.rect));
+        let generate_shortcut_requested = header_can_generate
+            && header_generate_target.is_some()
+            && focused_inside_inspector
+            && !ui.ctx().any_popup_open()
+            && !self.modal_background_input_blocked()
+            && ui
+                .ctx()
+                .input(|input| input.focused && !input.pointer.any_pressed())
+            && ui
+                .ctx()
+                .input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
+
+        if header_generate_clicked || generate_shortcut_requested {
             if let Some((asset_id, context_clip_id)) = header_generate_target {
                 self.start_generative_generation(asset_id, context_clip_id);
             }

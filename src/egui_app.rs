@@ -268,6 +268,10 @@ pub struct LatentSlateApp {
     asset_source_dimension_misses: HashSet<Uuid>,
     asset_source_fps: HashMap<Uuid, f64>,
     asset_source_fps_misses: HashSet<Uuid>,
+    asset_search: String,
+    asset_filter: AssetLibraryFilter,
+    asset_sort: AssetLibrarySort,
+    asset_grouping: AssetLibraryGrouping,
     timeline_thumbnails: HashMap<TimelineThumbnailKey, AssetThumbnail>,
     timeline_thumbnail_misses: HashSet<TimelineThumbnailKey>,
     audio_peak_caches: HashMap<Uuid, PeakCache>,
@@ -422,6 +426,31 @@ struct ScrubProfileSample {
 struct AssetThumbnail {
     texture: TextureHandle,
     size: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AssetLibraryFilter {
+    #[default]
+    All,
+    Video,
+    Image,
+    Audio,
+    Generative,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AssetLibrarySort {
+    #[default]
+    Name,
+    RecentlyAdded,
+    TimelineUse,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AssetLibraryGrouping {
+    #[default]
+    None,
+    MediaType,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -585,6 +614,10 @@ impl LatentSlateApp {
             asset_source_dimension_misses: HashSet::new(),
             asset_source_fps: HashMap::new(),
             asset_source_fps_misses: HashSet::new(),
+            asset_search: String::new(),
+            asset_filter: AssetLibraryFilter::default(),
+            asset_sort: AssetLibrarySort::default(),
+            asset_grouping: AssetLibraryGrouping::default(),
             timeline_thumbnails: HashMap::new(),
             timeline_thumbnail_misses: HashSet::new(),
             audio_peak_caches: HashMap::new(),

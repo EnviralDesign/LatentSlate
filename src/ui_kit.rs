@@ -1311,7 +1311,12 @@ fn select_all_on_focus(output: &mut egui::text_edit::TextEditOutput, text: &str)
     }
 }
 
-fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_edit::TextEditOutput {
+fn field_text_edit(
+    ui: &mut Ui,
+    value: &mut String,
+    rect: Rect,
+    hint_text: Option<&str>,
+) -> egui::text_edit::TextEditOutput {
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -1326,7 +1331,7 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
     let text_align = editable_field_text_align(&child, field_id);
 
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
-    egui::TextEdit::singleline(value)
+    let mut edit = egui::TextEdit::singleline(value)
         .id(field_id)
         .desired_width(rect.width())
         .min_size(rect.size())
@@ -1334,8 +1339,11 @@ fn field_text_edit(ui: &mut Ui, value: &mut String, rect: Rect) -> egui::text_ed
         .vertical_align(Align::Center)
         .text_color(TEXT)
         .font(FontId::proportional(FIELD_TEXT_SIZE))
-        .frame(field_text_frame())
-        .show(&mut child)
+        .frame(field_text_frame());
+    if let Some(hint_text) = hint_text {
+        edit = edit.hint_text(RichText::new(hint_text).color(TEXT_DIM));
+    }
+    edit.show(&mut child)
 }
 
 pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Response {
@@ -1349,7 +1357,7 @@ fn singleline_text_field_labeled(
     automation_label: Option<String>,
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TEXT_FIELD_H), Sense::hover());
-    let mut output = field_text_edit(ui, value, rect);
+    let mut output = field_text_edit(ui, value, rect, None);
     let selected_text = value.clone();
     select_all_on_focus(&mut output, &selected_text);
     let mut response = output.response.response.clone();
@@ -1364,6 +1372,42 @@ fn singleline_text_field_labeled(
         response,
         "text_field",
         automation_label,
+        true,
+        true,
+    )
+}
+
+/// A compact searchable text field with placeholder copy and a stable
+/// automation label. Pressing Escape while it is focused clears the query.
+pub fn search_field(
+    ui: &mut Ui,
+    value: &mut String,
+    width: f32,
+    hint_text: &str,
+    automation_label: &str,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TEXT_FIELD_H), Sense::hover());
+    let mut output = field_text_edit(ui, value, rect, Some(hint_text));
+    if output.response.response.has_focus()
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
+        value.clear();
+        output.response.response.mark_changed();
+    }
+    let selected_text = value.clone();
+    select_all_on_focus(&mut output, &selected_text);
+    let mut response = output.response.response.clone();
+    crate::core::automation::apply_pending_text(&mut response, value);
+    ui.painter().rect_stroke(
+        rect,
+        field_radius(),
+        field_stroke(&output),
+        StrokeKind::Inside,
+    );
+    crate::core::automation::instrument_response(
+        response,
+        "search_field",
+        Some(automation_label.to_string()),
         true,
         true,
     )

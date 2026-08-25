@@ -305,6 +305,148 @@ pub(super) fn asset_kind_label(kind: &AssetKind) -> &'static str {
         AssetKind::GenerativeAudio { .. } => "Generative Audio",
     }
 }
+
+impl AssetLibraryFilter {
+    const ALL: [Self; 5] = [
+        Self::All,
+        Self::Video,
+        Self::Image,
+        Self::Audio,
+        Self::Generative,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All assets",
+            Self::Video => "Video",
+            Self::Image => "Images",
+            Self::Audio => "Audio",
+            Self::Generative => "Generative",
+        }
+    }
+
+    fn matches(self, asset: &Asset) -> bool {
+        match self {
+            Self::All => true,
+            Self::Video => asset.is_video(),
+            Self::Image => asset.is_image(),
+            Self::Audio => asset.is_audio(),
+            Self::Generative => asset.is_generative(),
+        }
+    }
+}
+
+impl AssetLibrarySort {
+    const ALL: [Self; 3] = [Self::Name, Self::RecentlyAdded, Self::TimelineUse];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::RecentlyAdded => "Recently added",
+            Self::TimelineUse => "Timeline use",
+        }
+    }
+}
+
+impl AssetLibraryGrouping {
+    const ALL: [Self; 2] = [Self::None, Self::MediaType];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "No grouping",
+            Self::MediaType => "Group by media type",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum AssetMediaGroup {
+    Video,
+    Image,
+    Audio,
+}
+
+impl AssetMediaGroup {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Video => "Video",
+            Self::Image => "Images",
+            Self::Audio => "Audio",
+        }
+    }
+
+    fn color(self) -> Color32 {
+        match self {
+            Self::Video => kit::VIDEO,
+            Self::Image => kit::IMAGE,
+            Self::Audio => kit::AUDIO,
+        }
+    }
+}
+
+fn asset_media_group(asset: &Asset) -> AssetMediaGroup {
+    if asset.is_video() {
+        AssetMediaGroup::Video
+    } else if asset.is_image() {
+        AssetMediaGroup::Image
+    } else {
+        AssetMediaGroup::Audio
+    }
+}
+
+fn asset_matches_search(asset: &Asset, normalized_query: &str) -> bool {
+    if normalized_query.is_empty() {
+        return true;
+    }
+    let source = match &asset.kind {
+        AssetKind::Video { path } | AssetKind::Image { path } | AssetKind::Audio { path } => {
+            path.to_string_lossy()
+        }
+        AssetKind::GenerativeVideo { folder, .. }
+        | AssetKind::GenerativeImage { folder, .. }
+        | AssetKind::GenerativeAudio { folder, .. } => folder.to_string_lossy(),
+    };
+    asset_display_name(asset)
+        .to_lowercase()
+        .contains(normalized_query)
+        || asset_kind_label(&asset.kind)
+            .to_lowercase()
+            .contains(normalized_query)
+        || source.to_lowercase().contains(normalized_query)
+}
+
+fn compare_asset_rows(
+    sort: AssetLibrarySort,
+    a_index: usize,
+    a: &Asset,
+    b_index: usize,
+    b: &Asset,
+    timeline_use: &HashMap<Uuid, usize>,
+) -> CmpOrdering {
+    match sort {
+        AssetLibrarySort::Name => asset_natural_cmp(a, b).then_with(|| a_index.cmp(&b_index)),
+        AssetLibrarySort::RecentlyAdded => {
+            b_index.cmp(&a_index).then_with(|| asset_natural_cmp(a, b))
+        }
+        AssetLibrarySort::TimelineUse => timeline_use
+            .get(&b.id)
+            .copied()
+            .unwrap_or_default()
+            .cmp(&timeline_use.get(&a.id).copied().unwrap_or_default())
+            .then_with(|| asset_natural_cmp(a, b))
+            .then_with(|| a_index.cmp(&b_index)),
+    }
+}
+
+fn asset_group_header(ui: &mut Ui, group: AssetMediaGroup, count: usize) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(kit::section_label(group.label()).color(group.color()));
+        ui.label(kit::caption(count.to_string()).color(kit::TEXT_DIM));
+    });
+    ui.add_space(2.0);
+}
+
 impl LatentSlateApp {
     pub(super) fn left_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.left_collapsed {
@@ -398,21 +540,187 @@ impl LatentSlateApp {
         }
 
         ui.add_space(kit::FORM_ROW_GAP);
+        kit::search_field(
+            ui,
+            &mut self.asset_search,
+            ui.available_width(),
+            "Search assets...",
+            "Asset search",
+        )
+        .on_hover_text("Search asset names, media types, and project-relative source paths. Escape clears the query.");
+        ui.add_space(6.0);
+        kit::field_grid_row_with_height(ui, &[1.0, 1.0], kit::FIELD_H, 6.0, |ui, index| {
+            let width = ui.available_width();
+            if index == 0 {
+                kit::combo_field(
+                    ui,
+                    "asset_library_filter",
+                    self.asset_filter.label(),
+                    width,
+                    |ui| {
+                        for option in AssetLibraryFilter::ALL {
+                            if automation_selectable_value(
+                                ui,
+                                &mut self.asset_filter,
+                                option,
+                                option.label(),
+                            )
+                            .clicked()
+                            {
+                                ui.close();
+                            }
+                        }
+                    },
+                )
+                .on_hover_text("Filter the library by media or generative assets.");
+            } else {
+                kit::combo_field(
+                    ui,
+                    "asset_library_sort",
+                    self.asset_sort.label(),
+                    width,
+                    |ui| {
+                        for option in AssetLibrarySort::ALL {
+                            if automation_selectable_value(
+                                ui,
+                                &mut self.asset_sort,
+                                option,
+                                option.label(),
+                            )
+                            .clicked()
+                            {
+                                ui.close();
+                            }
+                        }
+                    },
+                )
+                .on_hover_text("Sort assets by name, insertion order, or timeline usage.");
+            }
+        });
+        ui.add_space(6.0);
+        kit::combo_field(
+            ui,
+            "asset_library_grouping",
+            self.asset_grouping.label(),
+            ui.available_width(),
+            |ui| {
+                for option in AssetLibraryGrouping::ALL {
+                    if automation_selectable_value(
+                        ui,
+                        &mut self.asset_grouping,
+                        option,
+                        option.label(),
+                    )
+                    .clicked()
+                    {
+                        ui.close();
+                    }
+                }
+            },
+        )
+        .on_hover_text("Optionally group the current view into Video, Images, and Audio.");
+
+        let normalized_query = self.asset_search.trim().to_lowercase();
+        let timeline_use: HashMap<Uuid, usize> =
+            self.editor
+                .project
+                .clips
+                .iter()
+                .fold(HashMap::new(), |mut counts, clip| {
+                    *counts.entry(clip.asset_id).or_default() += 1;
+                    counts
+                });
+        let mut assets: Vec<(usize, Asset)> = self
+            .editor
+            .project
+            .assets
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, asset)| {
+                self.asset_filter.matches(asset) && asset_matches_search(asset, &normalized_query)
+            })
+            .collect();
+        assets.sort_by(|(a_index, a), (b_index, b)| {
+            let group_order = if self.asset_grouping == AssetLibraryGrouping::MediaType {
+                asset_media_group(a).cmp(&asset_media_group(b))
+            } else {
+                CmpOrdering::Equal
+            };
+            group_order.then_with(|| {
+                compare_asset_rows(self.asset_sort, *a_index, a, *b_index, b, &timeline_use)
+            })
+        });
+
+        let total_assets = self.editor.project.assets.len();
+        let visible_ids: HashSet<Uuid> = assets.iter().map(|(_, asset)| asset.id).collect();
+        let hidden_selected = self
+            .editor
+            .selection
+            .asset_ids
+            .iter()
+            .filter(|asset_id| !visible_ids.contains(asset_id))
+            .count();
+        if assets.len() != total_assets || hidden_selected > 0 {
+            ui.add_space(4.0);
+            let summary = if hidden_selected > 0 {
+                format!(
+                    "{} of {total_assets} assets · {hidden_selected} selected hidden",
+                    assets.len()
+                )
+            } else {
+                format!("{} of {total_assets} assets", assets.len())
+            };
+            let color = if hidden_selected > 0 {
+                kit::MARKER
+            } else {
+                kit::TEXT_DIM
+            };
+            ui.label(kit::caption(summary).color(color));
+        }
+
         let mut clear_selection = false;
+        let library_is_empty = self.editor.project.assets.is_empty();
+        let visible_assets_empty = assets.is_empty();
         kit::scroll_body(ui, |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-            let mut assets: Vec<(usize, Asset)> = self
-                .editor
-                .project
-                .assets
-                .iter()
-                .cloned()
-                .enumerate()
-                .collect();
-            assets.sort_by(|(a_index, a), (b_index, b)| {
-                asset_natural_cmp(a, b).then_with(|| a_index.cmp(b_index))
-            });
+            if visible_assets_empty {
+                let (title, detail) = if library_is_empty {
+                    (
+                        "No assets yet",
+                        "Import media or create a generative asset to begin.",
+                    )
+                } else {
+                    (
+                        "No matching assets",
+                        "Adjust the search or filter controls above.",
+                    )
+                };
+                kit::empty_state(ui, title, detail);
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
+            let mut current_group = None;
+            let mut group_counts = HashMap::new();
+            if self.asset_grouping == AssetLibraryGrouping::MediaType {
+                for (_, asset) in &assets {
+                    *group_counts.entry(asset_media_group(asset)).or_default() += 1;
+                }
+            }
             for (_, asset) in assets {
+                if self.asset_grouping == AssetLibraryGrouping::MediaType {
+                    let group = asset_media_group(&asset);
+                    if current_group != Some(group) {
+                        if current_group.is_some() {
+                            ui.add_space(4.0);
+                        }
+                        asset_group_header(
+                            ui,
+                            group,
+                            group_counts.get(&group).copied().unwrap_or_default(),
+                        );
+                        current_group = Some(group);
+                    }
+                }
                 let selected = self.editor.selection.asset_ids.contains(&asset.id);
                 let thumbnail = self.asset_thumbnail(ui.ctx(), &asset);
                 let source_dimensions = self.asset_source_dimensions(&asset);
