@@ -14,31 +14,21 @@ impl LatentSlateApp {
                     Stroke::new(1.0_f32, kit::BORDER),
                 );
                 let header_inner = header_rect.shrink2(Vec2::new(14.0, 0.0));
-                let title_rect = Rect::from_min_max(
-                    header_inner.left_top(),
-                    Pos2::new(
-                        (header_inner.left() + 180.0).min(header_inner.right()),
-                        header_inner.bottom(),
-                    ),
-                );
-                let mut title_ui = ui.new_child(
+                let mut controls_ui = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(title_rect)
+                        .max_rect(header_inner)
                         .layout(Layout::left_to_right(Align::Center)),
                 );
-                title_ui.label(kit::section_label("Preview"));
-                let auto_rect = Rect::from_min_size(
-                    Pos2::new(title_rect.right() + 8.0, header_rect.center().y - 11.0),
-                    Vec2::new(44.0, 22.0),
-                );
-                let mut auto_ui = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(auto_rect)
-                        .layout(Layout::left_to_right(Align::Center)),
-                );
-                if kit::timeline_tool_text_button(&mut auto_ui, "Auto", 44.0, self.preview_auto_fit)
-                    .on_hover_text("Auto-fit preview canvas")
-                    .clicked()
+                controls_ui.spacing_mut().item_spacing.x = kit::FORM_ROW_GAP;
+                controls_ui.label(kit::section_label("Preview"));
+                if kit::timeline_tool_text_button(
+                    &mut controls_ui,
+                    "Auto",
+                    44.0,
+                    self.preview_auto_fit,
+                )
+                .on_hover_text("Auto-fit preview canvas")
+                .clicked()
                 {
                     self.preview_auto_fit = !self.preview_auto_fit;
                     if self.preview_auto_fit {
@@ -49,7 +39,12 @@ impl LatentSlateApp {
                 ui.painter().text(
                     header_inner.right_center(),
                     egui::Align2::RIGHT_CENTER,
-                    format!("{} x {}", s.width, s.height),
+                    format!(
+                        "{} x {} @ {}",
+                        s.width,
+                        s.height,
+                        format_preview_frame_rate(s.fps)
+                    ),
                     FontId::monospace(11.0),
                     kit::TEXT_DIM,
                 );
@@ -965,5 +960,16 @@ impl LatentSlateApp {
             .iter()
             .find(|clip| clip.id == clip_id)
             .map(|clip| clip.transform)
+    }
+}
+
+fn format_preview_frame_rate(fps: f64) -> String {
+    if (fps - fps.round()).abs() < 0.0001 {
+        format!("{fps:.0}")
+    } else {
+        format!("{fps:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }

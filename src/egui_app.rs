@@ -131,6 +131,10 @@ const TIMELINE_MARKER_LABEL_W: f32 = 96.0;
 const TIMELINE_MARKER_LABEL_H: f32 = 18.0;
 const TIMELINE_SCRUB_PREVIEW_SECONDS: f64 = 0.03;
 const TIMELINE_WHEEL_ZOOM_SENSITIVITY: f32 = 0.01;
+// Set this to false to restore the original immediate timeline zoom path.
+const TIMELINE_ZOOM_ANIMATION_ENABLED: bool = true;
+const TIMELINE_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(140);
+const TIMELINE_ZOOM_ANIMATION_EASE_OUT_POWER: i32 = 4;
 const TIMELINE_HEADER_PAD_X: f32 = 4.0;
 const TIMELINE_HEADER_LEFT_W: f32 = 286.0;
 const TIMELINE_HEADER_RIGHT_W: f32 = 102.0;
@@ -279,6 +283,7 @@ pub struct LatentSlateApp {
     timeline_scrub_was_playing: bool,
     timeline_last_scrub_audio_time: Option<f64>,
     timeline_viewport_observation: Option<TimelineViewportObservation>,
+    timeline_zoom_animation: Option<TimelineZoomAnimation>,
     clip_spacing_seconds: f64,
     clip_spacing_frames: i64,
     clip_spacing_set_duration: bool,
@@ -459,6 +464,20 @@ struct TimelineViewportObservation {
     scroll_x: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TimelineZoomAnimation {
+    project_session_revision: u64,
+    viewport_w: f32,
+    duration: f64,
+    start_zoom: f32,
+    start_scroll_x: f32,
+    target_zoom: f32,
+    target_scroll_x: f32,
+    last_zoom: f32,
+    last_scroll_x: f32,
+    started_at: Instant,
+}
+
 #[derive(Clone, Debug)]
 enum TimelineDrag {
     Playhead,
@@ -581,6 +600,7 @@ impl LatentSlateApp {
             timeline_scrub_was_playing: false,
             timeline_last_scrub_audio_time: None,
             timeline_viewport_observation: None,
+            timeline_zoom_animation: None,
             clip_spacing_seconds: default_generative_video_frames() as f64
                 / default_generative_video_fps(),
             clip_spacing_frames: default_generative_video_frames() as i64,
@@ -679,8 +699,7 @@ impl LatentSlateApp {
             match crate::core::automation::start(config) {
                 Ok(()) => {
                     self.sync_agent_api_status();
-                    self.editor.status =
-                        format!("Agent API enabled on 127.0.0.1:{}.", self.agent_api_port);
+                    self.editor.status.clear();
                 }
                 Err(err) => {
                     self.agent_api_enabled = crate::core::automation::is_active();
@@ -690,7 +709,7 @@ impl LatentSlateApp {
         } else {
             crate::core::automation::set_active(false);
             self.sync_agent_api_status();
-            self.editor.status = "Agent API disabled.".to_string();
+            self.editor.status.clear();
         }
     }
 

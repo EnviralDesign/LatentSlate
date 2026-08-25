@@ -207,6 +207,7 @@ impl LatentSlateApp {
         self.preserve_timeline_visible_range_on_resize(viewport_w, fit_zoom, max_zoom);
         self.editor.layout.timeline_zoom =
             self.editor.layout.timeline_zoom.clamp(fit_zoom, max_zoom);
+        self.advance_timeline_zoom_animation(ui.ctx(), duration, viewport_w);
         self.handle_timeline_keyboard(ui, duration, viewport_w);
         let zoom = self
             .editor
@@ -978,6 +979,7 @@ impl LatentSlateApp {
             return;
         }
 
+        self.timeline_zoom_animation = None;
         let width_ratio = viewport_w / previous.width;
         let next_zoom = (previous.zoom * width_ratio).clamp(fit_zoom, max_zoom);
         let visible_start = previous.scroll_x / previous.zoom;
@@ -1127,20 +1129,19 @@ impl LatentSlateApp {
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         let next_zoom = zoom.clamp(fit_zoom, max_zoom);
+        let command_zoom = self.timeline_zoom_command_zoom();
+        if (next_zoom - command_zoom).abs() < f32::EPSILON {
+            return;
+        }
         let old_zoom = self
             .editor
             .layout
             .timeline_zoom
             .max(TIMELINE_MIN_ZOOM_FLOOR);
-        if (next_zoom - old_zoom).abs() < f32::EPSILON {
-            return;
-        }
         let current_time = self.editor.current_time as f32;
         let anchor_x = current_time * old_zoom - self.editor.layout.timeline_scroll_x;
-        self.editor.layout.timeline_scroll_x = current_time * next_zoom - anchor_x;
-        self.editor.layout.timeline_zoom = next_zoom;
-        let content_w = (duration as f32 * next_zoom).max(viewport_w);
-        self.clamp_timeline_scroll(content_w, viewport_w);
+        let next_scroll_x = current_time * next_zoom - anchor_x;
+        self.begin_timeline_zoom_transition(next_zoom, next_scroll_x, duration, viewport_w);
     }
 
     pub(super) fn set_timeline_zoom_at_view_x(
@@ -1153,22 +1154,21 @@ impl LatentSlateApp {
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         let next_zoom = zoom.clamp(fit_zoom, max_zoom);
+        let command_zoom = self.timeline_zoom_command_zoom();
+        if (next_zoom - command_zoom).abs() < f32::EPSILON {
+            return;
+        }
         let old_zoom = self
             .editor
             .layout
             .timeline_zoom
             .max(TIMELINE_MIN_ZOOM_FLOOR);
-        if (next_zoom - old_zoom).abs() < f32::EPSILON {
-            return;
-        }
 
         let anchor_x = anchor_x.clamp(0.0, viewport_w.max(0.0));
         let anchor_time = ((self.editor.layout.timeline_scroll_x + anchor_x) / old_zoom)
             .clamp(0.0, duration as f32);
-        self.editor.layout.timeline_scroll_x = anchor_time * next_zoom - anchor_x;
-        self.editor.layout.timeline_zoom = next_zoom;
-        let content_w = (duration as f32 * next_zoom).max(viewport_w);
-        self.clamp_timeline_scroll(content_w, viewport_w);
+        let next_scroll_x = anchor_time * next_zoom - anchor_x;
+        self.begin_timeline_zoom_transition(next_zoom, next_scroll_x, duration, viewport_w);
     }
 
     pub(super) fn set_timeline_zoom_to_next_coarse(
@@ -1180,12 +1180,103 @@ impl LatentSlateApp {
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         let next_zoom = next_timeline_coarse_zoom(
-            self.editor.layout.timeline_zoom,
+            self.timeline_zoom_command_zoom(),
             direction,
             fit_zoom,
             max_zoom,
         );
         self.set_timeline_zoom_anchored(next_zoom, duration, viewport_w);
+    }
+
+    fn timeline_zoom_command_zoom(&self) -> f32 {
+        self.timeline_zoom_animation
+            .map(|animation| animation.target_zoom)
+            .unwrap_or(self.editor.layout.timeline_zoom)
+    }
+
+    fn begin_timeline_zoom_transition(
+        &mut self,
+        target_zoom: f32,
+        target_scroll_x: f32,
+        duration: f64,
+        viewport_w: f32,
+    ) {
+        let target_content_w = (duration as f32 * target_zoom).max(viewport_w);
+        let target_scroll_x = target_scroll_x.clamp(0.0, (target_content_w - viewport_w).max(0.0));
+        let start_zoom = self
+            .editor
+            .layout
+            .timeline_zoom
+            .max(TIMELINE_MIN_ZOOM_FLOOR);
+        let start_scroll_x = self.editor.layout.timeline_scroll_x;
+
+        if !timeline_zoom_animation_allowed() {
+            self.timeline_zoom_animation = None;
+            self.editor.layout.timeline_zoom = target_zoom;
+            self.editor.layout.timeline_scroll_x = target_scroll_x;
+            return;
+        }
+
+        self.timeline_zoom_animation = Some(TimelineZoomAnimation {
+            project_session_revision: self.editor.project_session_revision,
+            viewport_w,
+            duration,
+            start_zoom,
+            start_scroll_x,
+            target_zoom,
+            target_scroll_x,
+            last_zoom: start_zoom,
+            last_scroll_x: start_scroll_x,
+            started_at: Instant::now(),
+        });
+    }
+
+    fn advance_timeline_zoom_animation(
+        &mut self,
+        ctx: &egui::Context,
+        duration: f64,
+        viewport_w: f32,
+    ) {
+        let Some(mut animation) = self.timeline_zoom_animation else {
+            return;
+        };
+        let zoom_overridden = (self.editor.layout.timeline_zoom - animation.last_zoom).abs()
+            > 0.0001_f32.max(animation.last_zoom.abs() * 0.000001);
+        let scroll_overridden =
+            (self.editor.layout.timeline_scroll_x - animation.last_scroll_x).abs() > 0.01;
+        let context_changed = animation.project_session_revision
+            != self.editor.project_session_revision
+            || (animation.viewport_w - viewport_w).abs() > 0.01
+            || (animation.duration - duration).abs() > f64::EPSILON;
+        if zoom_overridden || scroll_overridden || context_changed || self.timeline_drag.is_some() {
+            self.timeline_zoom_animation = None;
+            return;
+        }
+
+        let progress = if TIMELINE_ZOOM_ANIMATION_DURATION.is_zero() {
+            1.0
+        } else {
+            (animation.started_at.elapsed().as_secs_f32()
+                / TIMELINE_ZOOM_ANIMATION_DURATION.as_secs_f32())
+            .clamp(0.0, 1.0)
+        };
+        let eased = 1.0 - (1.0 - progress).powi(TIMELINE_ZOOM_ANIMATION_EASE_OUT_POWER.max(1));
+        let zoom = animation.start_zoom + (animation.target_zoom - animation.start_zoom) * eased;
+        let scroll_x = animation.start_scroll_x
+            + (animation.target_scroll_x - animation.start_scroll_x) * eased;
+        self.editor.layout.timeline_zoom = zoom;
+        self.editor.layout.timeline_scroll_x = scroll_x;
+
+        if progress >= 1.0 {
+            self.editor.layout.timeline_zoom = animation.target_zoom;
+            self.editor.layout.timeline_scroll_x = animation.target_scroll_x;
+            self.timeline_zoom_animation = None;
+        } else {
+            animation.last_zoom = zoom;
+            animation.last_scroll_x = scroll_x;
+            self.timeline_zoom_animation = Some(animation);
+            ctx.request_repaint();
+        }
     }
 
     pub(super) fn clamp_timeline_scroll(&mut self, content_w: f32, viewport_w: f32) {
@@ -1219,9 +1310,11 @@ impl LatentSlateApp {
         let zoom_out = ui.input(|input| input.key_pressed(egui::Key::Minus));
         if zoom_in {
             self.set_timeline_zoom_to_next_coarse(1, duration, viewport_w);
+            ui.ctx().request_repaint();
         }
         if zoom_out {
             self.set_timeline_zoom_to_next_coarse(-1, duration, viewport_w);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -1289,7 +1382,7 @@ impl LatentSlateApp {
                 .clamp(0.5, 2.0);
             let anchor_x = pointer.x - viewport_rect.left();
             self.set_timeline_zoom_at_view_x(
-                self.editor.layout.timeline_zoom * zoom_factor,
+                self.timeline_zoom_command_zoom() * zoom_factor,
                 duration,
                 viewport_w,
                 anchor_x,
@@ -1326,6 +1419,7 @@ impl LatentSlateApp {
             0.0
         };
         if content_delta.abs() > 0.0 {
+            self.timeline_zoom_animation = None;
             self.editor.layout.timeline_scroll_x -= content_delta;
             self.clamp_timeline_scroll(content_w, viewport_w);
             ui.ctx().request_repaint();
@@ -1887,6 +1981,7 @@ impl LatentSlateApp {
             return;
         }
         if (response.dragged() || response.clicked()) && response.interact_pointer_pos().is_some() {
+            self.timeline_zoom_animation = None;
             let pos = response.interact_pointer_pos().unwrap();
             let ratio = ((pos.x - rects.scrollbar.left() - handle_w * 0.5)
                 / (rects.scrollbar.width() - handle_w).max(1.0))
@@ -2556,6 +2651,37 @@ impl LatentSlateApp {
             });
         }
         None
+    }
+}
+
+fn timeline_zoom_animation_allowed() -> bool {
+    if !TIMELINE_ZOOM_ANIMATION_ENABLED {
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
+        };
+
+        let mut client_area_animation_enabled = 1_i32;
+        // Respect Windows' "Animation effects" accessibility preference. If the
+        // preference cannot be read, keep the app's explicitly enabled default.
+        let read_succeeded = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                std::ptr::addr_of_mut!(client_area_animation_enabled).cast(),
+                0,
+            )
+        } != 0;
+        !read_succeeded || client_area_animation_enabled != 0
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        true
     }
 }
 

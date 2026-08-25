@@ -406,17 +406,7 @@ impl LatentSlateApp {
             .frame(kit::chrome_frame())
             .show_inside(root, |ui| {
                 ui.horizontal(|ui| {
-                    let status_text = if self.editor.project.project_path.is_some() {
-                        let suffix = if self.editor.project_dirty { " *" } else { "" };
-                        format!(
-                            "{} ({}{})",
-                            self.editor.status,
-                            self.editor.project_name(),
-                            suffix
-                        )
-                    } else {
-                        self.editor.status.clone()
-                    };
+                    let status_text = self.editor.status.clone();
                     let status_color =
                         status_text_color(&self.editor.status, &self.editor.generation_queue);
                     let mut status_rich = RichText::new(status_text).small().color(status_color);
@@ -424,23 +414,6 @@ impl LatentSlateApp {
                         status_rich = status_rich.strong();
                     }
                     ui.label(status_rich);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("{:.0} fps", self.editor.project.settings.fps))
-                                .small()
-                                .color(kit::TEXT_MUTED),
-                        );
-                        if crate::core::automation::is_active() {
-                            let port = crate::core::automation::current_port()
-                                .unwrap_or_else(crate::core::automation::default_port);
-                            ui.separator();
-                            ui.label(
-                                RichText::new(format!("Agent API :{port}"))
-                                    .small()
-                                    .color(kit::PRIMARY),
-                            );
-                        }
-                    });
                 });
             });
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
