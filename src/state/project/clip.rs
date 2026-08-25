@@ -169,6 +169,33 @@ impl Clip {
         }
     }
 
+    /// Map a source-media time back onto this clip's project timeline span.
+    ///
+    /// This is the inverse of [`Self::source_time_at`] for the supported crop
+    /// and stretch modes. Values outside the usable source span are clamped to
+    /// the clip boundaries so presentation code never has to guess whether a
+    /// source-local timestamp is also a project-global timestamp.
+    pub fn timeline_time_for_source(&self, source_time: f64, source_duration: Option<f64>) -> f64 {
+        let trim = self.trim_in_seconds.max(0.0);
+        let local_time = match self.time_mode {
+            ClipTimeMode::Crop => source_time - trim,
+            ClipTimeMode::Stretch => {
+                let Some(source_duration) = source_duration.filter(|duration| *duration > 0.0)
+                else {
+                    return (self.start_time + source_time - trim)
+                        .clamp(self.start_time, self.end_time());
+                };
+                let available = (source_duration - trim).max(0.0);
+                if self.duration <= f64::EPSILON || available <= f64::EPSILON {
+                    0.0
+                } else {
+                    ((source_time - trim) / available) * self.duration
+                }
+            }
+        };
+        (self.start_time + local_time).clamp(self.start_time, self.end_time())
+    }
+
     /// Check if this clip overlaps with a time range
     #[allow(dead_code)]
     pub fn overlaps(&self, start: f64, end: f64) -> bool {
@@ -178,4 +205,42 @@ impl Clip {
 
 fn default_volume() -> f32 {
     1.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mapped_clip(time_mode: ClipTimeMode) -> Clip {
+        Clip {
+            id: Uuid::new_v4(),
+            asset_id: Uuid::new_v4(),
+            track_id: Uuid::new_v4(),
+            start_time: 30.0,
+            duration: 10.0,
+            trim_in_seconds: 5.0,
+            volume: 1.0,
+            label: None,
+            image_mode: ClipImageMode::Still,
+            time_mode,
+            transform: ClipTransform::default(),
+            bridge: None,
+        }
+    }
+
+    #[test]
+    fn crop_source_time_maps_back_to_project_time() {
+        let clip = mapped_clip(ClipTimeMode::Crop);
+        assert_eq!(clip.timeline_time_for_source(7.0, Some(20.0)), 32.0);
+        assert_eq!(clip.timeline_time_for_source(2.0, Some(20.0)), 30.0);
+        assert_eq!(clip.timeline_time_for_source(99.0, Some(20.0)), 40.0);
+    }
+
+    #[test]
+    fn stretched_source_time_maps_back_to_project_time() {
+        let clip = mapped_clip(ClipTimeMode::Stretch);
+        assert_eq!(clip.timeline_time_for_source(5.0, Some(25.0)), 30.0);
+        assert_eq!(clip.timeline_time_for_source(15.0, Some(25.0)), 35.0);
+        assert_eq!(clip.timeline_time_for_source(25.0, Some(25.0)), 40.0);
+    }
 }

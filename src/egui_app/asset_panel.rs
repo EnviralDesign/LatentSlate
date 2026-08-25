@@ -540,14 +540,18 @@ impl LatentSlateApp {
         }
 
         ui.add_space(kit::FORM_ROW_GAP);
-        kit::search_field(
+        if kit::search_field(
             ui,
             &mut self.asset_search,
             ui.available_width(),
             "Search assets...",
             "Asset search",
         )
-        .on_hover_text("Search asset names, media types, and project-relative source paths. Escape clears the query.");
+        .on_hover_text("Search asset names, media types, and project-relative source paths. Escape clears the query.")
+        .changed()
+        {
+            self.asset_reveal_override = None;
+        }
         ui.add_space(6.0);
         kit::field_grid_row_with_height(ui, &[1.0, 1.0], kit::FIELD_H, 6.0, |ui, index| {
             let width = ui.available_width();
@@ -567,6 +571,7 @@ impl LatentSlateApp {
                             )
                             .clicked()
                             {
+                                self.asset_reveal_override = None;
                                 ui.close();
                             }
                         }
@@ -589,6 +594,7 @@ impl LatentSlateApp {
                             )
                             .clicked()
                             {
+                                self.asset_reveal_override = None;
                                 ui.close();
                             }
                         }
@@ -613,6 +619,7 @@ impl LatentSlateApp {
                     )
                     .clicked()
                     {
+                        self.asset_reveal_override = None;
                         ui.close();
                     }
                 }
@@ -638,7 +645,9 @@ impl LatentSlateApp {
             .cloned()
             .enumerate()
             .filter(|(_, asset)| {
-                self.asset_filter.matches(asset) && asset_matches_search(asset, &normalized_query)
+                self.asset_reveal_override == Some(asset.id)
+                    || (self.asset_filter.matches(asset)
+                        && asset_matches_search(asset, &normalized_query))
             })
             .collect();
         assets.sort_by(|(a_index, a), (b_index, b)| {
@@ -661,6 +670,22 @@ impl LatentSlateApp {
             .iter()
             .filter(|asset_id| !visible_ids.contains(asset_id))
             .count();
+        if let Some(asset_id) = self.asset_reveal_override {
+            if self.editor.project.find_asset(asset_id).is_some() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        kit::caption("Showing bound source outside the current filters")
+                            .color(kit::MARKER),
+                    );
+                    if ui.small_button("Clear").clicked() {
+                        self.asset_reveal_override = None;
+                    }
+                });
+            } else {
+                self.asset_reveal_override = None;
+            }
+        }
         if assets.len() != total_assets || hidden_selected > 0 {
             ui.add_space(4.0);
             let summary = if hidden_selected > 0 {

@@ -1997,10 +1997,11 @@ pub fn resolved_now_summary(project: &Project, plan: &MediaResolvePlan) -> Strin
 
 /// Hover copy for timeline connectors and inspector ranking details.
 pub fn binding_hover_text(project: &Project, plan: &MediaResolvePlan) -> String {
-    let mut lines = vec![
-        plan.field_label.clone(),
-        plan.spec.stability().label().to_string(),
-    ];
+    let mut lines = vec![plan.field_label.clone()];
+    for error in plan.error_messages() {
+        lines.push(error);
+    }
+    lines.push(plan.spec.stability().label().to_string());
     if let Some(asset_id) = plan.source_asset_id {
         if let Some(asset) = project.find_asset(asset_id) {
             let mut line = crate::state::asset_display_name(asset);
@@ -2016,8 +2017,11 @@ pub fn binding_hover_text(project: &Project, plan: &MediaResolvePlan) -> String 
                 .find_track(clip.track_id)
                 .map(|track| track.name.as_str())
                 .unwrap_or("Track");
+            let provenance = matches!(&plan.spec.source, MediaBindingSource::FrozenArtifact { .. })
+                .then_some("Original · ")
+                .unwrap_or_default();
             lines.push(format!(
-                "{track} · {}–{}",
+                "{provenance}{track} · {}–{}",
                 format_timecode(clip.start_time),
                 format_timecode(clip.end_time())
             ));
@@ -2041,8 +2045,10 @@ pub fn binding_hover_text(project: &Project, plan: &MediaResolvePlan) -> String 
             format_timecode(source.end_seconds)
         ));
     }
-    if let Some(explanation) = &plan.ranking_explanation {
-        lines.push(explanation.clone());
+    if plan.errors.is_empty() {
+        if let Some(explanation) = &plan.ranking_explanation {
+            lines.push(explanation.clone());
+        }
     }
     for diagnostic in &plan.diagnostics {
         lines.push(diagnostic.clone());

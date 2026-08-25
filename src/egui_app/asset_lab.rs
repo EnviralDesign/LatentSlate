@@ -1681,6 +1681,34 @@ impl LatentSlateApp {
         self.open_asset_lab_at_time(asset_id, None);
     }
 
+    pub(super) fn open_asset_lab_version(&mut self, asset_id: Uuid, version: &str) {
+        self.open_asset_lab_at_time(asset_id, None);
+        let selected_version = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .is_some_and(|config| {
+                config
+                    .versions
+                    .iter()
+                    .any(|record| record.version == version)
+            })
+            .then(|| version.to_string());
+        let Some(selected_version) = selected_version else {
+            self.editor.status = format!("Bound output {version} is no longer available");
+            return;
+        };
+        self.asset_lab.selected_version = Some(selected_version.clone());
+        self.asset_lab.pending_graph_focus_node_id = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| {
+                asset_lab_node_id_for_version(Some(config), Some(&selected_version))
+            });
+        self.asset_lab_preview_texture = None;
+    }
+
     pub(super) fn open_asset_lab_at_time(
         &mut self,
         asset_id: Uuid,

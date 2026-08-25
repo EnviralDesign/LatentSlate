@@ -78,7 +78,12 @@ pub(super) fn timeline_row_rect(rects: TimelineRects, row: usize) -> Rect {
     )
 }
 
-pub(super) fn timeline_header_left_width(ui: &Ui, collapsed: bool, zoom_label: &str) -> f32 {
+pub(super) fn timeline_header_left_width(
+    ui: &Ui,
+    collapsed: bool,
+    zoom_label: &str,
+    show_binding_return: bool,
+) -> f32 {
     let title_w = measured_text_width(ui, "TIMELINE", FontId::proportional(10.5));
     if collapsed {
         return title_w + 12.0;
@@ -86,6 +91,7 @@ pub(super) fn timeline_header_left_width(ui: &Ui, collapsed: bool, zoom_label: &
 
     title_w
         + 8.0
+        + if show_binding_return { 92.0 } else { 0.0 }
         + kit::TIMELINE_TOOL_ICON_W
         + 4.0
         + measured_text_width(ui, zoom_label, FontId::proportional(11.0)).max(26.0)

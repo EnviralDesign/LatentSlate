@@ -136,7 +136,7 @@ const TIMELINE_ZOOM_ANIMATION_ENABLED: bool = true;
 const TIMELINE_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(140);
 const TIMELINE_ZOOM_ANIMATION_EASE_OUT_POWER: i32 = 4;
 const TIMELINE_HEADER_PAD_X: f32 = 4.0;
-const TIMELINE_HEADER_LEFT_W: f32 = 286.0;
+const TIMELINE_HEADER_LEFT_W: f32 = 390.0;
 const TIMELINE_HEADER_RIGHT_W: f32 = 102.0;
 const TIMELINE_HEADER_CENTER_GAP: f32 = 8.0;
 const TIMELINE_TRANSPORT_BUTTON_COUNT: f32 = 5.0;
@@ -269,6 +269,7 @@ pub struct LatentSlateApp {
     asset_source_fps: HashMap<Uuid, f64>,
     asset_source_fps_misses: HashSet<Uuid>,
     asset_search: String,
+    asset_reveal_override: Option<Uuid>,
     asset_filter: AssetLibraryFilter,
     asset_sort: AssetLibrarySort,
     asset_grouping: AssetLibraryGrouping,
@@ -288,6 +289,8 @@ pub struct LatentSlateApp {
     timeline_last_scrub_audio_time: Option<f64>,
     timeline_viewport_observation: Option<TimelineViewportObservation>,
     timeline_zoom_animation: Option<TimelineZoomAnimation>,
+    timeline_binding_focus: Option<TimelineBindingFocus>,
+    timeline_binding_navigation_origin: Option<TimelineBindingNavigationOrigin>,
     clip_spacing_seconds: f64,
     clip_spacing_frames: i64,
     clip_spacing_set_duration: bool,
@@ -353,6 +356,23 @@ pub struct LatentSlateApp {
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
     generation_context_by_asset: HashMap<Uuid, Uuid>,
+}
+
+#[derive(Clone, Debug)]
+struct TimelineBindingFocus {
+    target_clip_id: Uuid,
+    field_name: String,
+    last_seen: Instant,
+    pinned: bool,
+}
+
+#[derive(Clone, Debug)]
+struct TimelineBindingNavigationOrigin {
+    consumer_clip_id: Uuid,
+    field_name: String,
+    prior_clip_selection: Vec<Uuid>,
+    prior_scroll_x: f32,
+    prior_scroll_y: f32,
 }
 
 struct PendingAutomationUiAction {
@@ -615,6 +635,7 @@ impl LatentSlateApp {
             asset_source_fps: HashMap::new(),
             asset_source_fps_misses: HashSet::new(),
             asset_search: String::new(),
+            asset_reveal_override: None,
             asset_filter: AssetLibraryFilter::default(),
             asset_sort: AssetLibrarySort::default(),
             asset_grouping: AssetLibraryGrouping::default(),
@@ -634,6 +655,8 @@ impl LatentSlateApp {
             timeline_last_scrub_audio_time: None,
             timeline_viewport_observation: None,
             timeline_zoom_animation: None,
+            timeline_binding_focus: None,
+            timeline_binding_navigation_origin: None,
             clip_spacing_seconds: default_generative_video_frames() as f64
                 / default_generative_video_fps(),
             clip_spacing_frames: default_generative_video_frames() as i64,
@@ -704,6 +727,9 @@ impl LatentSlateApp {
         match self.editor.open_project(folder) {
             Ok(_) => {
                 self.project_settings = self.editor.project.settings.clone();
+                self.asset_reveal_override = None;
+                self.timeline_binding_focus = None;
+                self.timeline_binding_navigation_origin = None;
                 self.export_modal = ExportModalState::for_project(&self.editor.project);
                 self.export_preview_texture = None;
                 self.clear_project_runtime_cache();
@@ -1477,6 +1503,27 @@ fn open_path_in_file_manager(path: &Path) -> Result<(), String> {
             .spawn()
             .map_err(|err| format!("Failed to open folder: {err}"))?;
         Ok(())
+    }
+}
+
+fn reveal_path_in_file_manager(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("explorer");
+        if path.is_dir() {
+            command.arg(path);
+        } else {
+            command.arg(format!("/select,{}", path.display()));
+        }
+        command
+            .spawn()
+            .map_err(|err| format!("Failed to reveal path: {err}"))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        open_path_in_file_manager(path.parent().unwrap_or(path))
     }
 }
 

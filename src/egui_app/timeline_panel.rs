@@ -51,9 +51,14 @@ impl LatentSlateApp {
         let right_w = timeline_header_right_width(ui, &timecode_label)
             .min(TIMELINE_HEADER_RIGHT_W)
             .min(inner_rect.width() * 0.35);
-        let left_w = timeline_header_left_width(ui, collapsed, &zoom_label)
-            .min(TIMELINE_HEADER_LEFT_W)
-            .min((inner_rect.width() - right_w - TIMELINE_HEADER_CENTER_GAP * 2.0).max(0.0));
+        let left_w = timeline_header_left_width(
+            ui,
+            collapsed,
+            &zoom_label,
+            self.timeline_binding_navigation_origin.is_some(),
+        )
+        .min(TIMELINE_HEADER_LEFT_W)
+        .min((inner_rect.width() - right_w - TIMELINE_HEADER_CENTER_GAP * 2.0).max(0.0));
         let left_rect = Rect::from_min_max(
             inner_rect.left_top(),
             Pos2::new(inner_rect.left() + left_w, inner_rect.bottom()),
@@ -99,6 +104,15 @@ impl LatentSlateApp {
                 }
                 if kit::timeline_tool_text_button(ui, "Frames", 58.0, frames_active).clicked() {
                     self.set_timeline_zoom_anchored(max_zoom, duration, viewport_w);
+                }
+                if self.timeline_binding_navigation_origin.is_some()
+                    && kit::timeline_tool_text_button(ui, "↩ Consumer", 88.0, false)
+                        .on_hover_text(
+                            "Return to the clip and viewport that revealed this binding source.",
+                        )
+                        .clicked()
+                {
+                    self.return_to_timeline_binding_consumer();
                 }
             }
         });
@@ -666,9 +680,6 @@ impl LatentSlateApp {
             }
         }
 
-        if let Some(insertion_index) = self.track_reorder_insertion_index() {
-            self.paint_track_reorder_indicator(&painter, rects, insertion_index);
-        }
         let binding_navigation_clicked = self.paint_media_binding_overlay(
             ui,
             &overlay_painter,
@@ -677,6 +688,9 @@ impl LatentSlateApp {
             &clip_geoms,
             zoom,
         );
+        if let Some(insertion_index) = self.track_reorder_insertion_index() {
+            self.paint_track_reorder_indicator(&overlay_painter, rects, insertion_index);
+        }
         self.paint_timeline_playhead(&overlay_painter, rects, duration, zoom);
         if let Some(time) = self.timeline_snap_preview {
             let x = time_to_timeline_x(
