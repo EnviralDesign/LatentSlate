@@ -1270,7 +1270,7 @@ impl LatentSlateApp {
             .max(TIMELINE_MIN_ZOOM_FLOOR);
         let start_scroll_x = self.editor.layout.timeline_scroll_x;
 
-        if !timeline_zoom_animation_allowed() {
+        if !TIMELINE_ZOOM_ANIMATION_ENABLED {
             self.timeline_zoom_animation = None;
             self.editor.layout.timeline_zoom = target_zoom;
             self.editor.layout.timeline_scroll_x = target_scroll_x;
@@ -2711,37 +2711,6 @@ impl LatentSlateApp {
             });
         }
         None
-    }
-}
-
-fn timeline_zoom_animation_allowed() -> bool {
-    if !TIMELINE_ZOOM_ANIMATION_ENABLED {
-        return false;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
-        };
-
-        let mut client_area_animation_enabled = 1_i32;
-        // Respect Windows' "Animation effects" accessibility preference. If the
-        // preference cannot be read, keep the app's explicitly enabled default.
-        let read_succeeded = unsafe {
-            SystemParametersInfoW(
-                SPI_GETCLIENTAREAANIMATION,
-                0,
-                std::ptr::addr_of_mut!(client_area_animation_enabled).cast(),
-                0,
-            )
-        } != 0;
-        !read_succeeded || client_area_animation_enabled != 0
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        true
     }
 }
 

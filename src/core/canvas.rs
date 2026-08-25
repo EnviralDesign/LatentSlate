@@ -8,7 +8,7 @@ use crate::state::{
     CanvasContract, InputRole, InputUi, ProviderEntry, ProviderInputField, ProviderInputType,
 };
 
-pub const ASPECT_PRESETS: [AspectPreset; 6] = [
+pub const ASPECT_PRESETS: [AspectPreset; 10] = [
     AspectPreset {
         label: "1:1",
         width: 1,
@@ -35,6 +35,26 @@ pub const ASPECT_PRESETS: [AspectPreset; 6] = [
         height: 4,
     },
     AspectPreset {
+        label: "3:2",
+        width: 3,
+        height: 2,
+    },
+    AspectPreset {
+        label: "2:3",
+        width: 2,
+        height: 3,
+    },
+    AspectPreset {
+        label: "5:4",
+        width: 5,
+        height: 4,
+    },
+    AspectPreset {
+        label: "4:5",
+        width: 4,
+        height: 5,
+    },
+    AspectPreset {
         label: "21:9",
         width: 21,
         height: 9,
@@ -52,6 +72,15 @@ impl AspectPreset {
     pub fn ratio(self) -> f64 {
         self.width as f64 / self.height.max(1) as f64
     }
+}
+
+/// Direction used by provider-grid nudge controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridNudgeDirection {
+    /// Move to the next supported value below the current value.
+    Down,
+    /// Move to the next supported value above the current value.
+    Up,
 }
 
 pub fn dimension_pair<'a>(
@@ -122,6 +151,49 @@ pub fn snap_to_step(value: i64, origin: i64, step: i64) -> i64 {
     let offset = value.saturating_sub(origin);
     let n = ((offset as f64) / (step as f64)).round() as i64;
     origin.saturating_add(n.saturating_mul(step))
+}
+
+/// Returns the next provider-grid value in `direction`, bounded by the canvas limits.
+///
+/// An already aligned value advances by one full grid step. An off-grid value
+/// rounds directionally to the adjacent supported value.
+pub fn nudge_grid_value(
+    value: i64,
+    alignment: u32,
+    min: i64,
+    max: Option<i64>,
+    direction: GridNudgeDirection,
+) -> Option<i64> {
+    let step = alignment.max(1) as i64;
+    let min_grid = ceil_to_step(min, step);
+    let max_grid = floor_to_step(max.unwrap_or(i64::MAX), step);
+    if min_grid > max_grid {
+        return None;
+    }
+
+    let remainder = value.rem_euclid(step);
+    let candidate = match direction {
+        GridNudgeDirection::Down => {
+            let directional = if remainder == 0 {
+                value.checked_sub(step)?
+            } else {
+                value.saturating_sub(remainder)
+            };
+            directional.min(max_grid)
+        }
+        GridNudgeDirection::Up => {
+            let directional = if remainder == 0 {
+                value.checked_add(step)?
+            } else {
+                value.saturating_add(step - remainder)
+            };
+            directional.max(min_grid)
+        }
+    };
+
+    (min_grid..=max_grid)
+        .contains(&candidate)
+        .then_some(candidate)
 }
 
 #[cfg(test)]
@@ -256,6 +328,52 @@ pub fn fit_canvas(canvas: &CanvasContract, aspect: f64, target_pixels: u64) -> (
         best
     } else {
         (min_side, min_side)
+    }
+}
+
+/// Nudges to the adjacent exact-aspect target on the provider's pixel grid.
+///
+/// This enumerates target sizes rather than guaranteed provider outputs. The
+/// ordinary canvas resolver still applies pixel budgets and other provider
+/// limits, allowing the UI to warn when an exact target cannot be produced.
+pub fn nudge_exact_aspect_target(
+    canvas: &CanvasContract,
+    aspect: AspectPreset,
+    target_pixels: u64,
+    max_target_side: u32,
+    direction: GridNudgeDirection,
+) -> Option<(u32, u32)> {
+    let alignment = canvas.alignment.max(1);
+    let gcd = gcd(aspect.width.max(1), aspect.height.max(1));
+    let aspect_width = aspect.width / gcd;
+    let aspect_height = aspect.height / gcd;
+    let width_unit = alignment.checked_mul(aspect_width)?;
+    let height_unit = alignment.checked_mul(aspect_height)?;
+    let min_side = canvas.min_side.max(1);
+    let min_scale = min_side
+        .div_ceil(width_unit.max(1))
+        .max(min_side.div_ceil(height_unit.max(1)))
+        .max(1);
+    let max_scale = max_target_side
+        .checked_div(width_unit.max(1))?
+        .min(max_target_side.checked_div(height_unit.max(1))?);
+    if min_scale > max_scale {
+        return None;
+    }
+
+    match direction {
+        GridNudgeDirection::Down => (min_scale..=max_scale).rev().find_map(|scale| {
+            let width = width_unit.checked_mul(scale)?;
+            let height = height_unit.checked_mul(scale)?;
+            let pixels = width as u64 * height as u64;
+            (pixels < target_pixels).then_some((width, height))
+        }),
+        GridNudgeDirection::Up => (min_scale..=max_scale).find_map(|scale| {
+            let width = width_unit.checked_mul(scale)?;
+            let height = height_unit.checked_mul(scale)?;
+            let pixels = width as u64 * height as u64;
+            (pixels > target_pixels).then_some((width, height))
+        }),
     }
 }
 
@@ -427,6 +545,20 @@ fn round_up(value: u32, alignment: u32) -> u32 {
         .saturating_mul(alignment)
 }
 
+fn floor_to_step(value: i64, step: i64) -> i64 {
+    value.saturating_sub(value.rem_euclid(step.max(1)))
+}
+
+fn ceil_to_step(value: i64, step: i64) -> i64 {
+    let step = step.max(1);
+    let remainder = value.rem_euclid(step);
+    if remainder == 0 {
+        value
+    } else {
+        value.saturating_add(step - remainder)
+    }
+}
+
 fn snap_positive(value: i64, alignment: u32) -> i64 {
     snap_to_step(value.max(0), 0, alignment as i64).max(alignment as i64)
 }
@@ -499,6 +631,61 @@ mod tests {
         };
         assert_eq!(snap_integer_to_input(962, Some(&ui)), 960);
         assert_eq!(snap_integer_to_input(33, Some(&ui)), 64);
+    }
+
+    #[test]
+    fn grid_nudges_round_directionally_and_advance_aligned_values() {
+        assert_eq!(
+            nudge_grid_value(1_001, 64, 64, Some(2_048), GridNudgeDirection::Down),
+            Some(960)
+        );
+        assert_eq!(
+            nudge_grid_value(1_001, 64, 64, Some(2_048), GridNudgeDirection::Up),
+            Some(1_024)
+        );
+        assert_eq!(
+            nudge_grid_value(1_024, 64, 64, Some(2_048), GridNudgeDirection::Up),
+            Some(1_088)
+        );
+        assert_eq!(
+            nudge_grid_value(64, 64, 64, Some(2_048), GridNudgeDirection::Down),
+            None
+        );
+    }
+
+    #[test]
+    fn megapixel_nudge_uses_exact_aspect_grid_targets() {
+        let canvas = ltx_dev();
+        assert_eq!(
+            nudge_exact_aspect_target(
+                &canvas,
+                ASPECT_PRESETS[1],
+                490_000,
+                4_096,
+                GridNudgeDirection::Up,
+            ),
+            Some((1_024, 576))
+        );
+        assert_eq!(
+            nudge_exact_aspect_target(
+                &canvas,
+                ASPECT_PRESETS[1],
+                589_824,
+                4_096,
+                GridNudgeDirection::Up,
+            ),
+            Some((2_048, 1_152))
+        );
+        assert_eq!(
+            nudge_exact_aspect_target(
+                &canvas,
+                ASPECT_PRESETS[1],
+                589_824,
+                4_096,
+                GridNudgeDirection::Down,
+            ),
+            None
+        );
     }
 
     #[test]

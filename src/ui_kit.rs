@@ -3038,10 +3038,9 @@ fn nearest_supported_reference_scale(
         .unwrap_or(preferred)
 }
 
-fn canvas_megapixels_drag(ui: &mut Ui, value: &mut f64, min: f64, max: f64) -> bool {
+fn canvas_megapixels_drag(ui: &mut Ui, value: &mut f64, width: f32, min: f64, max: f64) -> bool {
     let before = *value;
-    let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), FIELD_H), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(0.0), FIELD_H), Sense::hover());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -3061,6 +3060,137 @@ fn canvas_megapixels_drag(ui: &mut Ui, value: &mut f64, min: f64, max: f64) -> b
     (*value - before).abs() > f64::EPSILON
 }
 
+const CANVAS_NUDGE_BUTTON_W: f32 = 26.0;
+const CANVAS_NUDGE_GAP: f32 = 4.0;
+const CANVAS_TARGET_MAX_SIDE: u32 = 4_096;
+
+#[derive(Debug, Default)]
+struct CanvasMegapixelsEdit {
+    changed: bool,
+    snapped_canvas: Option<(u32, u32)>,
+}
+
+fn canvas_megapixels_control(
+    ui: &mut Ui,
+    value: &mut f64,
+    min: f64,
+    max: f64,
+    canvas: &crate::state::CanvasContract,
+    aspect: crate::core::canvas::AspectPreset,
+) -> CanvasMegapixelsEdit {
+    use crate::core::canvas::{megapixels, nudge_exact_aspect_target, GridNudgeDirection};
+
+    let target_pixels = (value.max(0.01) * 1_000_000.0).round() as u64;
+    let previous = nudge_exact_aspect_target(
+        canvas,
+        aspect,
+        target_pixels,
+        CANVAS_TARGET_MAX_SIDE,
+        GridNudgeDirection::Down,
+    );
+    let next = nudge_exact_aspect_target(
+        canvas,
+        aspect,
+        target_pixels,
+        CANVAS_TARGET_MAX_SIDE,
+        GridNudgeDirection::Up,
+    );
+    let mut edit = CanvasMegapixelsEdit::default();
+
+    bounded_horizontal_row(ui, FIELD_H, |ui, row_width| {
+        ui.spacing_mut().item_spacing.x = CANVAS_NUDGE_GAP;
+        let button_width = CANVAS_NUDGE_BUTTON_W.min(row_width * 0.25);
+        let value_width = (row_width - button_width * 2.0 - CANVAS_NUDGE_GAP * 2.0).max(0.0);
+
+        let previous_response = ui
+            .add_enabled_ui(previous.is_some(), |ui| field_button(ui, "−", button_width))
+            .inner
+            .on_hover_text(previous.map_or_else(
+                || "No smaller exact target within the 4K canvas range".to_string(),
+                |(width, height)| format!("Previous exact target: {width} × {height}"),
+            ));
+        if previous_response.clicked() {
+            if let Some((width, height)) = previous {
+                *value = megapixels(width, height);
+                edit.changed = true;
+                edit.snapped_canvas = Some((width, height));
+            }
+        }
+
+        if canvas_megapixels_drag(ui, value, value_width, min, max) {
+            edit.changed = true;
+            edit.snapped_canvas = None;
+        }
+
+        let next_response = ui
+            .add_enabled_ui(next.is_some(), |ui| field_button(ui, "+", button_width))
+            .inner
+            .on_hover_text(next.map_or_else(
+                || "No larger exact target within the 4K canvas range".to_string(),
+                |(width, height)| format!("Next exact target: {width} × {height}"),
+            ));
+        if next_response.clicked() {
+            if let Some((width, height)) = next {
+                *value = megapixels(width, height);
+                edit.changed = true;
+                edit.snapped_canvas = Some((width, height));
+            }
+        }
+    });
+
+    edit
+}
+
+fn canvas_dimension_control(
+    ui: &mut Ui,
+    value: &mut i64,
+    alignment: u32,
+    min: i64,
+    max: Option<i64>,
+) -> bool {
+    use crate::core::canvas::{nudge_grid_value, GridNudgeDirection};
+
+    let previous = nudge_grid_value(*value, alignment, min, max, GridNudgeDirection::Down);
+    let next = nudge_grid_value(*value, alignment, min, max, GridNudgeDirection::Up);
+    let mut changed = false;
+
+    bounded_horizontal_row(ui, FIELD_H, |ui, row_width| {
+        ui.spacing_mut().item_spacing.x = CANVAS_NUDGE_GAP;
+        let button_width = CANVAS_NUDGE_BUTTON_W.min(row_width * 0.25);
+        let value_width = (row_width - button_width * 2.0 - CANVAS_NUDGE_GAP * 2.0).max(0.0);
+
+        let previous_response = ui
+            .add_enabled_ui(previous.is_some(), |ui| field_button(ui, "−", button_width))
+            .inner
+            .on_hover_text(format!("Previous {alignment} px grid value"))
+            .on_disabled_hover_text("Already at the smallest supported value");
+        if previous_response.clicked() {
+            if let Some(previous) = previous {
+                *value = previous;
+                changed = true;
+            }
+        }
+
+        if integer_step_drag(ui, value, value_width, 1, Some(min), max) {
+            changed = true;
+        }
+
+        let next_response = ui
+            .add_enabled_ui(next.is_some(), |ui| field_button(ui, "+", button_width))
+            .inner
+            .on_hover_text(format!("Next {alignment} px grid value"))
+            .on_disabled_hover_text("Already at the largest supported value");
+        if next_response.clicked() {
+            if let Some(next) = next {
+                *value = next;
+                changed = true;
+            }
+        }
+    });
+
+    changed
+}
+
 pub fn canvas_picker(
     ui: &mut Ui,
     id_salt: impl Hash,
@@ -3070,8 +3200,7 @@ pub fn canvas_picker(
     height: &mut i64,
 ) -> bool {
     use crate::core::canvas::{
-        canvas_is_valid, canvas_readout, megapixels, nearest_legal_canvas, validate_canvas,
-        ASPECT_PRESETS,
+        canvas_is_valid, canvas_readout, megapixels, validate_canvas, ASPECT_PRESETS,
     };
 
     let mut changed = false;
@@ -3106,15 +3235,14 @@ pub fn canvas_picker(
     let is_valid = canvas_is_valid(canvas, *width, *height);
     let actual_megapixels = megapixels(current_w, current_h);
     let actual_aspect = current_w as f64 / current_h.max(1) as f64;
-    let mut adjusted_message = None;
-    let mut reference_adjusted = false;
+    let mut status_warning = validate_canvas(canvas, *width, *height).err();
     match state.mode {
         CanvasSizingMode::AspectAndMegapixels if is_valid => {
             let target_aspect = state.aspect.ratio();
             let aspect_delta = (actual_aspect / target_aspect - 1.0) * 100.0;
             let area_delta = (actual_megapixels / state.target_megapixels.max(0.01) - 1.0) * 100.0;
             if aspect_delta.abs() >= 0.5 || area_delta.abs() >= 5.0 {
-                adjusted_message = Some(format!(
+                status_warning = Some(format!(
                     "Target {} · {:.2} MP; nearest supported output (aspect {aspect_delta:+.1}% · area {area_delta:+.1}%).",
                     state.aspect.label, state.target_megapixels
                 ));
@@ -3124,7 +3252,11 @@ pub fn canvas_picker(
             if let Some(reference) = reference {
                 let (target_width, target_height) =
                     scaled_reference_size(reference, state.reference_scale);
-                reference_adjusted = (current_w, current_h) != (target_width, target_height);
+                if (current_w, current_h) != (target_width, target_height) {
+                    status_warning = Some(format!(
+                        "Target {target_width} × {target_height}; nearest supported output is {current_w} × {current_h}."
+                    ));
+                }
             }
         }
         _ => {}
@@ -3134,51 +3266,25 @@ pub fn canvas_picker(
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
         field_label(ui, "Canvas");
         let output_prefix = if is_valid { "Output" } else { "Requested" };
-        let output_color = if !is_valid {
-            DANGER
-        } else if adjusted_message.is_some() || reference_adjusted {
+        let output_color = if status_warning.is_some() {
             MARKER
         } else {
             TEXT_MUTED
         };
-        ui.label(
-            RichText::new(format!(
-                "{output_prefix} {}",
-                canvas_readout(canvas, current_w, current_h)
-            ))
-            .color(output_color)
-            .size(11.0),
+        let status_response = ui.add_sized(
+            [ui.available_width(), 16.0],
+            egui::Label::new(
+                RichText::new(format!(
+                    "{output_prefix} {}",
+                    canvas_readout(canvas, current_w, current_h)
+                ))
+                .color(output_color)
+                .size(11.0),
+            )
+            .truncate(),
         );
-        if let Some(message) = adjusted_message.as_deref() {
-            ui.label(RichText::new(message).color(MARKER).size(11.0));
-        }
-        if !is_valid {
-            if let Err(message) = validate_canvas(canvas, *width, *height) {
-                ui.label(RichText::new(message).color(DANGER).size(11.0));
-                let nearest = nearest_legal_canvas(canvas, current_w, current_h);
-                bounded_horizontal_row(ui, FIELD_H, |ui, row_width| {
-                    let button_width = 92.0_f32.min(row_width);
-                    let label_width =
-                        (row_width - button_width - ui.spacing().item_spacing.x).max(0.0);
-                    ui.add_sized(
-                        [label_width, FIELD_H],
-                        egui::Label::new(
-                            RichText::new(format!(
-                                "Nearest supported: {} × {}",
-                                nearest.0, nearest.1
-                            ))
-                            .color(TEXT_MUTED)
-                            .size(11.0),
-                        )
-                        .truncate(),
-                    );
-                    if field_button(ui, "Use nearest", button_width).clicked() {
-                        *width = nearest.0 as i64;
-                        *height = nearest.1 as i64;
-                        changed = true;
-                    }
-                });
-            }
+        if let Some(message) = status_warning.as_deref() {
+            status_response.on_hover_text(message);
         }
         ui.add_space(FORM_ROW_GAP);
         ui.vertical(|ui| {
@@ -3286,14 +3392,18 @@ pub fn canvas_picker(
                             .unwrap_or(16.0)
                             .max(min_megapixels)
                             .max(state.target_megapixels);
-                        if canvas_megapixels_drag(
+                        let edit = canvas_megapixels_control(
                             ui,
                             &mut state.target_megapixels,
                             min_megapixels,
                             max_megapixels,
-                        ) {
-                            if let Some((next_width, next_height)) =
-                                resolve_canvas_intent(&state, canvas, reference)
+                            canvas,
+                            state.aspect,
+                        );
+                        if edit.changed {
+                            if let Some((next_width, next_height)) = edit
+                                .snapped_canvas
+                                .or_else(|| resolve_canvas_intent(&state, canvas, reference))
                             {
                                 *width = next_width as i64;
                                 *height = next_height as i64;
@@ -3307,12 +3417,11 @@ pub fn canvas_picker(
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
                         field_label(ui, "Width");
-                        if integer_step_drag(
+                        if canvas_dimension_control(
                             ui,
                             &mut next,
-                            ui.available_width(),
-                            1,
-                            Some(min_side),
+                            canvas.alignment,
+                            min_side,
                             max_side,
                         ) {
                             *width = next;
@@ -3325,12 +3434,11 @@ pub fn canvas_picker(
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
                         field_label(ui, "Height");
-                        if integer_step_drag(
+                        if canvas_dimension_control(
                             ui,
                             &mut next,
-                            ui.available_width(),
-                            1,
-                            Some(min_side),
+                            canvas.alignment,
+                            min_side,
                             max_side,
                         ) {
                             *height = next;

@@ -475,9 +475,6 @@ impl LatentSlateApp {
         clip_geoms: &[TimelineClipGeom],
         zoom: f32,
     ) -> bool {
-        if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.timeline_binding_focus = None;
-        }
         let now = Instant::now();
         let hover = ui.ctx().pointer_hover_pos();
         let hovered_index = hover.and_then(|pos| {
@@ -487,29 +484,12 @@ impl LatentSlateApp {
         });
         if let Some(index) = hovered_index {
             let route = &routes[index];
-            if !self
-                .timeline_binding_focus
-                .as_ref()
-                .is_some_and(|focus| focus.pinned)
-            {
-                self.timeline_binding_focus = Some(super::TimelineBindingFocus {
-                    target_clip_id: route.target_clip_id,
-                    field_name: route.plan.field_name.clone(),
-                    last_seen: now,
-                    pinned: false,
-                });
-            } else if let Some(focus) = self.timeline_binding_focus.as_mut() {
-                if focus.target_clip_id == route.target_clip_id
-                    && focus.field_name == route.plan.field_name
-                {
-                    focus.last_seen = now;
-                }
-            }
-        } else if let Some(focus) = self
-            .timeline_binding_focus
-            .as_ref()
-            .filter(|focus| !focus.pinned)
-        {
+            self.timeline_binding_focus = Some(super::TimelineBindingFocus {
+                target_clip_id: route.target_clip_id,
+                field_name: route.plan.field_name.clone(),
+                last_seen: now,
+            });
+        } else if let Some(focus) = self.timeline_binding_focus.as_ref() {
             let elapsed = now.saturating_duration_since(focus.last_seen);
             if elapsed >= TimelineBindingVisualMetrics::FOCUS_LATCH {
                 self.timeline_binding_focus = None;
@@ -517,23 +497,6 @@ impl LatentSlateApp {
                 ui.ctx().request_repaint_after(
                     TimelineBindingVisualMetrics::FOCUS_LATCH.saturating_sub(elapsed),
                 );
-            }
-        }
-        if let Some(index) = hovered_index {
-            if ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary)) {
-                let route = &routes[index];
-                let already_pinned = self.timeline_binding_focus.as_ref().is_some_and(|focus| {
-                    focus.pinned
-                        && focus.target_clip_id == route.target_clip_id
-                        && focus.field_name == route.plan.field_name
-                });
-                self.timeline_binding_focus =
-                    (!already_pinned).then(|| super::TimelineBindingFocus {
-                        target_clip_id: route.target_clip_id,
-                        field_name: route.plan.field_name.clone(),
-                        last_seen: now,
-                        pinned: true,
-                    });
             }
         }
         let focused_index = self.timeline_binding_focus.as_ref().and_then(|focus| {
@@ -546,7 +509,7 @@ impl LatentSlateApp {
         let mut reveal_project_asset = None;
         let mut reveal_frozen = None;
         let mut hover_text = None;
-        let mut binding_pointer_captured = hovered_index.is_some();
+        let mut binding_pointer_captured = false;
 
         if routes.len() <= TimelineBindingVisualMetrics::AMBIENT_ROUTE_LIMIT {
             for route in routes {
@@ -1928,12 +1891,19 @@ fn local_source_terminal_visual(
 
 fn paint_lock_mark(painter: &egui::Painter, center: Pos2, color: Color32) {
     let body = Rect::from_center_size(center + Vec2::new(0.0, 1.5), Vec2::new(7.0, 5.5));
-    painter.rect_filled(body, 1.0, color);
+    let outline = kit::PANEL_SUNKEN.gamma_multiply(0.95);
+    painter.circle_stroke(
+        center + Vec2::new(0.0, -2.2),
+        2.4,
+        Stroke::new(3.1_f32, outline),
+    );
     painter.circle_stroke(
         center + Vec2::new(0.0, -2.2),
         2.4,
         Stroke::new(1.3_f32, color),
     );
+    painter.rect_filled(body.expand(1.0), 1.5, outline);
+    painter.rect_filled(body, 1.0, color);
 }
 
 fn paint_binding_segment(

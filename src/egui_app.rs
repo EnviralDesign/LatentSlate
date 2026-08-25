@@ -131,10 +131,11 @@ const TIMELINE_MARKER_LABEL_W: f32 = 96.0;
 const TIMELINE_MARKER_LABEL_H: f32 = 18.0;
 const TIMELINE_SCRUB_PREVIEW_SECONDS: f64 = 0.03;
 const TIMELINE_WHEEL_ZOOM_SENSITIVITY: f32 = 0.01;
-// Set this to false to restore the original immediate timeline zoom path.
+// Timeline zoom motion is app-controlled; it does not follow OS animation preferences.
+// Set this to false to restore the immediate zoom path.
 const TIMELINE_ZOOM_ANIMATION_ENABLED: bool = true;
-const TIMELINE_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(140);
-const TIMELINE_ZOOM_ANIMATION_EASE_OUT_POWER: i32 = 4;
+const TIMELINE_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(220);
+const TIMELINE_ZOOM_ANIMATION_EASE_OUT_POWER: i32 = 3;
 const TIMELINE_HEADER_PAD_X: f32 = 4.0;
 const TIMELINE_HEADER_LEFT_W: f32 = 390.0;
 const TIMELINE_HEADER_RIGHT_W: f32 = 102.0;
@@ -364,7 +365,6 @@ struct TimelineBindingFocus {
     target_clip_id: Uuid,
     field_name: String,
     last_seen: Instant,
-    pinned: bool,
 }
 
 #[derive(Clone, Debug)]
