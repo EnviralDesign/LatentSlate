@@ -77,6 +77,10 @@ impl LatentSlateApp {
                         .is_some_and(|provider| {
                             self.editor.provider_in_project_scope(provider.id)
                                 && provider_is_available_for_generation(provider)
+                                && !provider_refresh_blocks_provider(
+                                    self.provider_refresh_state,
+                                    provider,
+                                )
                         })
                 });
 

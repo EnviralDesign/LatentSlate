@@ -245,6 +245,7 @@ impl LatentSlateApp {
                             );
                         let release_enabled = release_target_count > 0
                             && !self.provider_resource_release_in_flight
+                            && !self.provider_refresh_state.blocks_new_engine_work()
                             && active_count == 0;
                         let dump_response = ui
                             .add_enabled_ui(release_enabled, |ui| {
@@ -256,6 +257,8 @@ impl LatentSlateApp {
                             .inner;
                         let dump_response = if self.provider_resource_release_in_flight {
                             dump_response.on_hover_text("Releasing cached provider RAM and VRAM…")
+                        } else if self.provider_refresh_state.blocks_new_engine_work() {
+                            dump_response.on_hover_text(ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE)
                         } else if release_target_count == 0 {
                             dump_response
                                 .on_hover_text("No configured providers support resource release.")
@@ -282,6 +285,10 @@ impl LatentSlateApp {
     }
 
     pub(super) fn start_provider_resource_release(&mut self, ctx: &Context) {
+        if self.provider_refresh_state.blocks_new_engine_work() {
+            self.editor.status = ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE.to_string();
+            return;
+        }
         if self.provider_resource_release_in_flight {
             self.editor.status = "Provider resource release is already running.".to_string();
             return;

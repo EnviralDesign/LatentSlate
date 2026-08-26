@@ -738,6 +738,10 @@ fn asset_lab_compare_resolve_timing(
     let probed_fps = probed
         .and_then(|metadata| metadata.fps)
         .filter(|fps| *fps > 0.0);
+    let probed_frame_count = probed.and_then(|metadata| metadata.frame_count);
+    let probed_explicit_duration = probed
+        .and_then(|metadata| metadata.duration_seconds)
+        .filter(|duration| duration.is_finite() && *duration > 0.0);
     let fps = probed_fps
         .or(input_fps)
         .or(asset_fps)
@@ -751,17 +755,18 @@ fn asset_lab_compare_resolve_timing(
         AssetLabTimingSource::LegacyAsset
     };
 
-    let probed_frame_count = probed.and_then(|metadata| metadata.frame_count);
+    let has_version_timing = probed_fps.is_some()
+        || probed_frame_count.is_some()
+        || probed_explicit_duration.is_some()
+        || input_fps.is_some()
+        || input_frame_count.is_some()
+        || input_duration.is_some();
     let frame_count = probed_frame_count
         .or(input_frame_count)
-        .or(asset_frame_count);
-    let probed_duration = probed
-        .and_then(|metadata| metadata.duration_seconds)
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .or_else(|| (!has_version_timing).then_some(asset_frame_count).flatten());
+    let probed_duration = probed_explicit_duration
         .or_else(|| probed_frame_count.map(|frames| f64::from(frames) / fps));
-    let input_frame_duration = input_frame_count
-        .zip(input_fps)
-        .map(|(frames, input_fps)| f64::from(frames) / input_fps);
+    let input_frame_duration = input_frame_count.map(|frames| f64::from(frames) / fps);
     let duration_seconds = probed_duration
         .or(input_duration)
         .or(input_frame_duration)
@@ -8208,10 +8213,46 @@ mod asset_lab_compare_tests {
         );
         assert_eq!(duration.duration_seconds, 6.0);
         assert_eq!(duration.fps, 24.0);
+        assert_eq!(duration.frame_count, None);
+        assert_eq!(duration.last_frame_index(), 143);
         assert_eq!(
             duration.duration_source,
             AssetLabTimingSource::DurationInput
         );
+
+        let mut changed_asset = asset.clone();
+        changed_asset.duration_seconds = Some(20.0);
+        if let AssetKind::GenerativeVideo {
+            fps, frame_count, ..
+        } = &mut changed_asset.kind
+        {
+            *fps = 60.0;
+            *frame_count = 1_200;
+        }
+        let unchanged_version = asset_lab_compare_resolve_timing(
+            &changed_asset,
+            Some(&duration_record),
+            &providers,
+            None,
+            30.0,
+        );
+        assert_eq!(unchanged_version.duration_seconds, 6.0);
+        assert_eq!(unchanged_version.fps, 24.0);
+        assert_eq!(unchanged_version.frame_count, None);
+        assert_eq!(unchanged_version.last_frame_index(), 143);
+
+        let count_only_record = timing_record(provider.id, "V04", &[("frames", 96.0)], None);
+        let count_only = asset_lab_compare_resolve_timing(
+            &asset,
+            Some(&count_only_record),
+            &providers,
+            None,
+            30.0,
+        );
+        assert_eq!(count_only.fps, 16.0);
+        assert_eq!(count_only.duration_seconds, 6.0);
+        assert_eq!(count_only.frame_count, Some(96));
+        assert_eq!(count_only.last_frame_index(), 95);
 
         let frames_record = timing_record(
             provider.id,
@@ -8245,6 +8286,24 @@ mod asset_lab_compare_tests {
         assert_eq!(probed.fps, 25.0);
         assert_eq!(probed.frame_count, Some(75));
         assert_eq!(probed.duration_source, AssetLabTimingSource::OutputProbe);
+
+        let probed_without_count = asset_lab_compare_resolve_timing(
+            &asset,
+            Some(&duration_record),
+            &providers,
+            Some(crate::core::media::VideoMetadata {
+                duration_seconds: Some(3.0),
+                fps: Some(25.0),
+                frame_count: None,
+                width: Some(640),
+                height: Some(360),
+            }),
+            30.0,
+        );
+        assert_eq!(probed_without_count.duration_seconds, 3.0);
+        assert_eq!(probed_without_count.fps, 25.0);
+        assert_eq!(probed_without_count.frame_count, None);
+        assert_eq!(probed_without_count.last_frame_index(), 74);
 
         let baseline_probe = asset_lab_compare_resolve_timing(
             &asset,
@@ -8285,6 +8344,7 @@ mod asset_lab_compare_tests {
         let legacy = asset_lab_compare_resolve_timing(&asset, None, &[], None, 30.0);
         assert_eq!(legacy.duration_seconds, 5.0);
         assert_eq!(legacy.fps, 16.0);
+        assert_eq!(legacy.frame_count, Some(81));
         assert_eq!(legacy.duration_source, AssetLabTimingSource::LegacyAsset);
     }
 

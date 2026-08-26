@@ -438,12 +438,17 @@ enum ProviderRefreshCompletion {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ProviderRefreshState {
     latest_revision: u64,
+    applied_revision: u64,
     in_flight_revision: Option<u64>,
 }
 
 impl ProviderRefreshState {
     fn is_in_flight(self) -> bool {
         self.in_flight_revision.is_some()
+    }
+
+    fn blocks_new_engine_work(self) -> bool {
+        self.latest_revision != self.applied_revision
     }
 
     fn request(&mut self) -> Option<u64> {
@@ -453,6 +458,17 @@ impl ProviderRefreshState {
 
     fn invalidate(&mut self) {
         self.latest_revision = self.latest_revision.wrapping_add(1).max(1);
+    }
+
+    fn replace_with_applied_snapshot(&mut self) {
+        self.invalidate();
+        self.applied_revision = self.latest_revision;
+    }
+
+    fn mark_applied(&mut self, revision: u64) {
+        if revision == self.latest_revision {
+            self.applied_revision = revision;
+        }
     }
 
     fn launch_latest_if_idle(&mut self) -> Option<u64> {
@@ -470,11 +486,38 @@ impl ProviderRefreshState {
         self.in_flight_revision = None;
         if revision == self.latest_revision {
             ProviderRefreshCompletion::Apply
-        } else if let Some(latest) = self.launch_latest_if_idle() {
-            ProviderRefreshCompletion::DiscardAndRerun(latest)
         } else {
-            ProviderRefreshCompletion::Discard
+            self.blocks_new_engine_work()
+                .then(|| self.launch_latest_if_idle())
+                .flatten()
+                .map(ProviderRefreshCompletion::DiscardAndRerun)
+                .unwrap_or(ProviderRefreshCompletion::Discard)
         }
+    }
+}
+
+fn provider_uses_latentslate_engine(provider: &ProviderEntry) -> bool {
+    matches!(
+        &provider.connection,
+        ProviderConnection::LatentSlateEngine { .. }
+    )
+}
+
+fn provider_refresh_blocks_provider(state: ProviderRefreshState, provider: &ProviderEntry) -> bool {
+    state.blocks_new_engine_work() && provider_uses_latentslate_engine(provider)
+}
+
+const ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE: &str =
+    "Wait for the latest Engine settings and catalog to finish applying before starting new provider work.";
+
+fn ensure_provider_snapshot_ready_for_new_work(
+    state: ProviderRefreshState,
+    provider: &ProviderEntry,
+) -> Result<(), &'static str> {
+    if provider_refresh_blocks_provider(state, provider) {
+        Err(ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE)
+    } else {
+        Ok(())
     }
 }
 

@@ -452,7 +452,7 @@ impl LatentSlateApp {
                         self.warm_audio_playback_cache();
                     }
                     if response.ok && provider_state_command {
-                        self.provider_refresh_state.invalidate();
+                        self.provider_refresh_state.replace_with_applied_snapshot();
                     }
                     envelope.respond(response);
                 }
@@ -720,6 +720,11 @@ impl LatentSlateApp {
         else {
             return crate::core::automation::AutomationResponse::not_found("Provider not found.");
         };
+        if let Err(message) =
+            ensure_provider_snapshot_ready_for_new_work(self.provider_refresh_state, &provider)
+        {
+            return crate::core::automation::AutomationResponse::conflict(message);
+        }
         let Some(runtime) = self.generation_runtime.as_ref() else {
             return crate::core::automation::AutomationResponse::with_status(
                 "Generation runtime is unavailable.",
@@ -745,6 +750,12 @@ impl LatentSlateApp {
         ctx: &Context,
         envelope: crate::core::automation::AutomationEnvelope,
     ) {
+        if self.provider_refresh_state.blocks_new_engine_work() {
+            envelope.respond(crate::core::automation::AutomationResponse::conflict(
+                ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE,
+            ));
+            return;
+        }
         if self.provider_resource_release_in_flight {
             envelope.respond(crate::core::automation::AutomationResponse::conflict(
                 "Provider resource release is already running.",

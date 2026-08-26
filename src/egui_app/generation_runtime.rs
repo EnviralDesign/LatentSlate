@@ -521,6 +521,8 @@ impl LatentSlateApp {
                     .to_string(),
             );
         }
+        ensure_provider_snapshot_ready_for_new_work(self.provider_refresh_state, &provider)
+            .map_err(str::to_string)?;
         if !self.editor.provider_in_project_scope(provider.id) {
             return Err("Provider is outside this project's provider scope.".to_string());
         }

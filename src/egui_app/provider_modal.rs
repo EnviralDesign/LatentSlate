@@ -79,8 +79,14 @@ impl LatentSlateApp {
                 });
             });
         if close_clicked || outside_clicked || !open {
-            if self.persist_engine_connection_draft().is_ok() {
-                self.editor.overlays.providers = false;
+            match self.persist_engine_connection_draft() {
+                Ok(changed) => {
+                    if changed {
+                        self.launch_pending_provider_refresh(ctx);
+                    }
+                    self.editor.overlays.providers = false;
+                }
+                Err(_) => {}
             }
         }
     }
@@ -204,7 +210,10 @@ impl LatentSlateApp {
             });
 
             if let Some(selection) = next_selection {
-                self.select_provider_modal_item(selection);
+                let changed = self.select_provider_modal_item(selection);
+                if changed {
+                    self.launch_pending_provider_refresh(ui.ctx());
+                }
             }
         });
     }
@@ -253,13 +262,13 @@ impl LatentSlateApp {
         }
     }
 
-    fn select_provider_modal_item(&mut self, selection: ProviderModalSelection) {
+    fn select_provider_modal_item(&mut self, selection: ProviderModalSelection) -> bool {
         if self.selected_provider.as_ref() == Some(&selection) {
-            return;
+            return false;
         }
-        if self.persist_engine_connection_draft().is_err() {
-            return;
-        }
+        let Ok(changed) = self.persist_engine_connection_draft() else {
+            return false;
+        };
         match &selection {
             ProviderModalSelection::Engine(id) => {
                 self.engine_connection_draft = self
@@ -275,6 +284,7 @@ impl LatentSlateApp {
             }
         }
         self.selected_provider = Some(selection);
+        changed
     }
 
     fn persist_engine_connection_draft(&mut self) -> Result<bool, String> {
@@ -316,7 +326,7 @@ impl LatentSlateApp {
                 self.engine_connection_save_error = None;
                 self.editor.engine_connections = updated;
                 self.editor.refresh_providers();
-                self.provider_refresh_state.invalidate();
+                self.provider_refresh_state.replace_with_applied_snapshot();
                 self.select_provider_modal_item(ProviderModalSelection::Engine(created_id));
                 self.editor.status = "Created LatentSlate Engine backend.".to_string();
             }
@@ -337,7 +347,7 @@ impl LatentSlateApp {
                 self.engine_connection_draft = None;
                 self.selected_provider = None;
                 self.editor.refresh_providers();
-                self.provider_refresh_state.invalidate();
+                self.provider_refresh_state.replace_with_applied_snapshot();
                 self.ensure_provider_modal_selection();
                 self.editor.status = "Deleted LatentSlate Engine backend.".to_string();
             }
@@ -601,8 +611,12 @@ impl LatentSlateApp {
 
         if save_clicked || refresh_clicked {
             match self.persist_engine_connection_draft() {
-                Ok(_) => {
-                    self.start_provider_refresh(ui.ctx());
+                Ok(changed) => {
+                    if changed {
+                        self.launch_pending_provider_refresh(ui.ctx());
+                    } else {
+                        self.start_provider_refresh(ui.ctx());
+                    }
                     self.editor.status = if refresh_clicked {
                         "Refreshing LatentSlate Engine catalog…".to_string()
                     } else {
@@ -623,6 +637,12 @@ impl LatentSlateApp {
 
     fn start_provider_refresh(&mut self, ctx: &Context) {
         if let Some(revision) = self.provider_refresh_state.request() {
+            self.launch_provider_refresh(ctx, revision);
+        }
+    }
+
+    fn launch_pending_provider_refresh(&mut self, ctx: &Context) {
+        if let Some(revision) = self.provider_refresh_state.launch_latest_if_idle() {
             self.launch_provider_refresh(ctx, revision);
         }
     }
@@ -656,12 +676,14 @@ impl LatentSlateApp {
             match self.provider_refresh_state.complete(result.revision) {
                 ProviderRefreshCompletion::Apply => {
                     let error = result.error.clone();
+                    let revision = result.revision;
                     self.editor.apply_provider_refresh(
                         result.provider_entries,
                         result.provider_files,
                         result.engine_connections,
                         result.reports,
                     );
+                    self.provider_refresh_state.mark_applied(revision);
                     self.ensure_provider_modal_selection();
                     if self.engine_connection_save_error.is_none() {
                         self.editor.status = match error {
@@ -888,7 +910,7 @@ impl LatentSlateApp {
 
     pub(super) fn refresh_provider_files(&mut self) {
         self.editor.refresh_providers();
-        self.provider_refresh_state.invalidate();
+        self.provider_refresh_state.replace_with_applied_snapshot();
         self.ensure_provider_modal_selection();
     }
 
@@ -1827,6 +1849,22 @@ impl LatentSlateApp {
 mod provider_refresh_tests {
     use super::*;
 
+    fn engine_provider(base_url: &str, api_key: Option<&str>) -> ProviderEntry {
+        ProviderEntry::new(
+            "Engine Tool",
+            ProviderOutputType::Video,
+            ProviderConnection::LatentSlateEngine {
+                base_url: base_url.to_string(),
+                api_key: api_key.map(str::to_string),
+                tool_key: "video.generate".to_string(),
+                schema_revision: 1,
+                schema_hash: "sha256:test".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        )
+    }
+
     #[test]
     fn stale_refresh_completion_discards_and_reruns_only_the_latest_revision() {
         let mut state = ProviderRefreshState::default();
@@ -1840,8 +1878,82 @@ mod provider_refresh_tests {
             ProviderRefreshCompletion::DiscardAndRerun(latest)
         );
         assert_eq!(state.in_flight_revision, Some(latest));
+        assert!(state.blocks_new_engine_work());
         assert_eq!(state.complete(latest), ProviderRefreshCompletion::Apply);
+        assert!(state.blocks_new_engine_work());
+        state.mark_applied(latest);
+        assert!(!state.blocks_new_engine_work());
         assert!(!state.is_in_flight());
+    }
+
+    #[test]
+    fn changed_draft_closed_modal_launches_the_pending_refresh() {
+        let mut state = ProviderRefreshState::default();
+        state.invalidate();
+        let revision = state
+            .launch_latest_if_idle()
+            .expect("close launches changed settings refresh");
+        assert_eq!(revision, state.latest_revision);
+        assert!(state.blocks_new_engine_work());
+    }
+
+    #[test]
+    fn changed_draft_selecting_another_provider_launches_the_pending_refresh() {
+        let mut state = ProviderRefreshState::default();
+        state.invalidate();
+        let revision = state
+            .launch_latest_if_idle()
+            .expect("selection launches changed settings refresh");
+        assert_eq!(revision, state.latest_revision);
+        assert!(state.blocks_new_engine_work());
+    }
+
+    #[test]
+    fn save_then_immediate_start_generation_is_rejected_until_latest_snapshot_applies() {
+        let provider = engine_provider("http://new-engine:8765", Some("new-token"));
+        let mut state = ProviderRefreshState::default();
+        let revision = state.request().expect("refresh launches");
+
+        assert_eq!(
+            ensure_provider_snapshot_ready_for_new_work(state, &provider),
+            Err(ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE)
+        );
+        assert_eq!(state.complete(revision), ProviderRefreshCompletion::Apply);
+        assert_eq!(
+            ensure_provider_snapshot_ready_for_new_work(state, &provider),
+            Err(ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE)
+        );
+
+        state.mark_applied(revision);
+        assert_eq!(
+            ensure_provider_snapshot_ready_for_new_work(state, &provider),
+            Ok(())
+        );
+        let captured = provider.clone();
+        assert!(matches!(
+            captured.connection,
+            ProviderConnection::LatentSlateEngine {
+                ref base_url,
+                api_key: Some(ref api_key),
+                ..
+            } if base_url == "http://new-engine:8765" && api_key == "new-token"
+        ));
+    }
+
+    #[test]
+    fn stale_completion_never_removes_the_engine_submission_block() {
+        let provider = engine_provider("http://new-engine:8765", None);
+        let mut state = ProviderRefreshState::default();
+        let stale = state.request().expect("first refresh launches");
+        state.invalidate();
+        let latest = state.latest_revision;
+
+        assert_eq!(
+            state.complete(stale),
+            ProviderRefreshCompletion::DiscardAndRerun(latest)
+        );
+        assert!(provider_refresh_blocks_provider(state, &provider));
+        assert_eq!(state.applied_revision, 0);
     }
 
     #[test]
