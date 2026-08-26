@@ -1125,15 +1125,6 @@ fn menu_button(
     app.top_bar_menu_open |= open;
 }
 
-const ADD_ASSETS_CARD_H: f32 = kit::SECTION_PAD as f32 * 2.0
-    + kit::FIELD_LABEL_H
-    + 6.0
-    + kit::STANDALONE_BUTTON_H
-    + kit::FORM_ROW_GAP
-    + kit::FIELD_LABEL_H
-    + 6.0
-    + kit::MEDIA_PILL_H
-    + kit::FORM_ROW_GAP;
 const ASSET_ROW_H: f32 = 56.0;
 const ASSET_ROW_THUMBNAIL_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 const ASSET_THUMBNAIL_IMAGE_INSET: f32 = 3.0;

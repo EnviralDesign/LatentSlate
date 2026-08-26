@@ -447,6 +447,169 @@ fn asset_group_header(ui: &mut Ui, group: AssetMediaGroup, count: usize) {
     ui.add_space(2.0);
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AssetAddAction {
+    ImportMedia,
+    CreateVideo,
+    CreateImage,
+    CreateAudio,
+}
+
+fn generative_asset_actions(ui: &mut Ui, action: &mut Option<AssetAddAction>) {
+    if kit::popover_action_row(
+        ui,
+        "●",
+        kit::VIDEO,
+        "Video…",
+        "Create a generative video asset",
+    )
+    .clicked()
+    {
+        *action = Some(AssetAddAction::CreateVideo);
+        ui.close();
+    }
+    if kit::popover_action_row(
+        ui,
+        "●",
+        kit::IMAGE,
+        "Image",
+        "Create a generative image asset",
+    )
+    .clicked()
+    {
+        *action = Some(AssetAddAction::CreateImage);
+        ui.close();
+    }
+    if kit::popover_action_row(
+        ui,
+        "●",
+        kit::AUDIO,
+        "Audio",
+        "Create a generative audio asset",
+    )
+    .clicked()
+    {
+        *action = Some(AssetAddAction::CreateAudio);
+        ui.close();
+    }
+}
+
+fn asset_add_popover(trigger: &egui::Response, include_import: bool) -> Option<AssetAddAction> {
+    const POPOVER_W: f32 = 264.0;
+
+    let mut action = None;
+    egui::Popup::menu(trigger)
+        .id(trigger.id.with("asset_add_popover"))
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(4.0)
+        .width(POPOVER_W)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_width(POPOVER_W);
+            if include_import {
+                kit::field_label(ui, "Add Asset");
+                ui.add_space(4.0);
+                if kit::popover_action_row(
+                    ui,
+                    "⇧",
+                    kit::TEXT_MUTED,
+                    "Import media…",
+                    "Video, image, or audio files",
+                )
+                .clicked()
+                {
+                    action = Some(AssetAddAction::ImportMedia);
+                    ui.close();
+                }
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+            }
+            kit::field_label(ui, "Create Generative");
+            ui.add_space(4.0);
+            generative_asset_actions(ui, &mut action);
+        });
+    action
+}
+
+fn empty_asset_library(ui: &mut Ui, action: &mut Option<AssetAddAction>) {
+    ui.centered_and_justified(|ui| {
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new("No assets yet")
+                    .color(kit::TEXT_MUTED)
+                    .strong(),
+            );
+            ui.add_space(5.0);
+            ui.label(
+                RichText::new("Drop media here, import files,\nor create a generative asset.")
+                    .color(kit::TEXT_DIM)
+                    .size(11.0),
+            );
+            ui.add_space(14.0);
+
+            let available_width = ui.available_width().min(280.0);
+            if available_width >= 250.0 {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(available_width, kit::STANDALONE_BUTTON_H),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = kit::FORM_ROW_GAP;
+                        let button_width = (available_width - kit::FORM_ROW_GAP) * 0.5;
+                        if kit::secondary_button(ui, "Import Media", button_width).clicked() {
+                            *action = Some(AssetAddAction::ImportMedia);
+                        }
+                        let trigger = kit::secondary_button(ui, "New Generative ▾", button_width);
+                        if let Some(selected) = asset_add_popover(&trigger, false) {
+                            *action = Some(selected);
+                        }
+                    },
+                );
+            } else {
+                if kit::secondary_button(ui, "Import Media", available_width).clicked() {
+                    *action = Some(AssetAddAction::ImportMedia);
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
+                let trigger = kit::secondary_button(ui, "New Generative ▾", available_width);
+                if let Some(selected) = asset_add_popover(&trigger, false) {
+                    *action = Some(selected);
+                }
+            }
+        });
+    });
+}
+
+fn asset_drop_state(ui: &mut Ui) {
+    let height = (ui.clip_rect().bottom() - ui.cursor().top()).max(120.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    let target_rect = rect.shrink(6.0);
+    ui.painter().rect_filled(
+        target_rect,
+        kit::field_radius(),
+        kit::FIELD_BG_ACTIVE.gamma_multiply(0.9),
+    );
+    ui.painter().rect_stroke(
+        target_rect,
+        kit::field_radius(),
+        Stroke::new(1.5_f32, kit::BORDER_FOCUS),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        target_rect.center() - Vec2::new(0.0, 10.0),
+        egui::Align2::CENTER_CENTER,
+        "Drop media to import",
+        FontId::proportional(13.0),
+        kit::TEXT,
+    );
+    ui.painter().text(
+        target_rect.center() + Vec2::new(0.0, 11.0),
+        egui::Align2::CENTER_CENTER,
+        "Video, image, or audio files",
+        FontId::proportional(10.5),
+        kit::TEXT_MUTED,
+    );
+}
+
 impl LatentSlateApp {
     pub(super) fn left_panel(&mut self, root: &mut Ui) {
         if self.editor.layout.left_collapsed {
@@ -479,67 +642,45 @@ impl LatentSlateApp {
     }
 
     pub(super) fn assets_panel(&mut self, ui: &mut Ui) {
-        kit::panel_header(ui, "ASSETS", Some("◀"), || {
+        let mut add_action = None;
+        let mut collapse_panel = false;
+        kit::panel_header_with_actions(ui, "ASSETS", |ui| {
+            if kit::icon_button(ui, "◀")
+                .on_hover_text("Collapse Assets panel")
+                .clicked()
+            {
+                collapse_panel = true;
+            }
+            let trigger = kit::icon_button(ui, "+").on_hover_text("Add asset");
+            add_action = asset_add_popover(&trigger, true);
+        });
+        if collapse_panel {
             self.editor.layout.left_collapsed = true;
-        });
+        }
         ui.add_space(8.0);
-        let mut create_video = false;
-        let mut create_image = false;
-        let mut create_audio = false;
-        kit::stack_card_panel(ui, ADD_ASSETS_CARD_H, |ui| {
-            kit::field_label(ui, "Add Assets");
-            ui.add_space(6.0);
-            let import_button_w = ui.available_width();
-            if kit::secondary_button(ui, "Import Files...", import_button_w).clicked() {
-                let initial_dir = self
-                    .editor
-                    .project
-                    .project_path
-                    .clone()
-                    .unwrap_or_else(default_projects_dir);
-                let options = kit::BrowseFileOptions::new()
-                    .id_salt("asset_import_file")
-                    .initial_dir(initial_dir.as_path())
-                    .remember_last_dir()
-                    .filters(ASSET_IMPORT_FILTERS);
-                if let Some(path) = kit::pick_file_dialog(ui, options) {
-                    self.import_asset_files(vec![path]);
+        let asset_files_hovered =
+            ui.ctx().input(|input| {
+                !input.raw.hovered_files.is_empty()
+                    && input
+                        .pointer
+                        .hover_pos()
+                        .is_some_and(|pointer| ui.max_rect().contains(pointer))
+            }) || (!ui.ctx().input(|input| input.raw.hovered_files.is_empty())
+                && self.asset_drop_target_hovered);
+        if self.editor.project.assets.is_empty() {
+            kit::scroll_body(ui, |ui| {
+                if asset_files_hovered {
+                    asset_drop_state(ui);
+                } else {
+                    empty_asset_library(ui, &mut add_action);
                 }
+            });
+            if let Some(action) = add_action {
+                self.perform_asset_add_action(ui, action);
             }
-
-            ui.add_space(kit::FORM_ROW_GAP);
-            kit::field_label(ui, "New Generative");
-            ui.add_space(6.0);
-            kit::equal_media_pill_row(
-                ui,
-                &[
-                    ("Video", kit::VIDEO),
-                    ("Image", kit::IMAGE),
-                    ("Audio", kit::AUDIO),
-                ],
-                |index| match index {
-                    0 => create_video = true,
-                    1 => create_image = true,
-                    2 => create_audio = true,
-                    _ => {}
-                },
-            );
-        });
-        if create_video {
-            self.editor.overlays.generative_video = true;
-        }
-        if create_image {
-            if let Err(err) = self.editor.create_generative_image() {
-                self.editor.status = err;
-            }
-        }
-        if create_audio {
-            if let Err(err) = self.editor.create_generative_audio() {
-                self.editor.status = err;
-            }
+            return;
         }
 
-        ui.add_space(kit::FORM_ROW_GAP);
         if kit::search_field(
             ui,
             &mut self.asset_search,
@@ -692,42 +833,40 @@ impl LatentSlateApp {
                 self.asset_reveal_scroll_target = None;
             }
         }
-        if assets.len() != total_assets || hidden_selected > 0 {
-            ui.add_space(4.0);
-            let summary = if hidden_selected > 0 {
-                format!(
-                    "{} of {total_assets} assets · {hidden_selected} selected hidden",
-                    assets.len()
-                )
-            } else {
-                format!("{} of {total_assets} assets", assets.len())
-            };
-            let color = if hidden_selected > 0 {
-                kit::MARKER
-            } else {
-                kit::TEXT_DIM
-            };
-            ui.label(kit::caption(summary).color(color));
-        }
+        ui.add_space(4.0);
+        let summary = if hidden_selected > 0 {
+            format!(
+                "{} of {total_assets} assets · {hidden_selected} selected hidden",
+                assets.len()
+            )
+        } else if assets.len() != total_assets {
+            format!("{} of {total_assets} assets", assets.len())
+        } else if total_assets == 1 {
+            "1 asset".to_string()
+        } else {
+            format!("{total_assets} assets")
+        };
+        let color = if hidden_selected > 0 {
+            kit::MARKER
+        } else {
+            kit::TEXT_DIM
+        };
+        ui.label(kit::caption(summary).color(color));
 
         let mut clear_selection = false;
-        let library_is_empty = self.editor.project.assets.is_empty();
         let visible_assets_empty = assets.is_empty();
         kit::scroll_body(ui, |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+            if asset_files_hovered {
+                asset_drop_state(ui);
+                return;
+            }
             if visible_assets_empty {
-                let (title, detail) = if library_is_empty {
-                    (
-                        "No assets yet",
-                        "Import media or create a generative asset to begin.",
-                    )
-                } else {
-                    (
-                        "No matching assets",
-                        "Adjust the search or filter controls above.",
-                    )
-                };
-                kit::empty_state(ui, title, detail);
+                kit::empty_state(
+                    ui,
+                    "No matching assets",
+                    "Adjust the search or filter controls above.",
+                );
                 ui.add_space(kit::FORM_ROW_GAP);
             }
             let mut current_group = None;
@@ -830,6 +969,42 @@ impl LatentSlateApp {
         });
         if clear_selection {
             self.editor.selection.clear();
+        }
+        if let Some(action) = add_action {
+            self.perform_asset_add_action(ui, action);
+        }
+    }
+
+    fn perform_asset_add_action(&mut self, ui: &Ui, action: AssetAddAction) {
+        match action {
+            AssetAddAction::ImportMedia => {
+                let initial_dir = self
+                    .editor
+                    .project
+                    .project_path
+                    .clone()
+                    .unwrap_or_else(default_projects_dir);
+                let options = kit::BrowseFileOptions::new()
+                    .id_salt("asset_import_files")
+                    .initial_dir(initial_dir.as_path())
+                    .remember_last_dir()
+                    .filters(ASSET_IMPORT_FILTERS);
+                let paths = kit::pick_files_dialog(ui, options);
+                self.import_asset_files(paths);
+            }
+            AssetAddAction::CreateVideo => {
+                self.editor.overlays.generative_video = true;
+            }
+            AssetAddAction::CreateImage => {
+                if let Err(err) = self.editor.create_generative_image() {
+                    self.editor.status = err;
+                }
+            }
+            AssetAddAction::CreateAudio => {
+                if let Err(err) = self.editor.create_generative_audio() {
+                    self.editor.status = err;
+                }
+            }
         }
     }
 

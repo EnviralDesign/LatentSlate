@@ -98,7 +98,6 @@ pub const FIELD_GRID_ROW_CLIP_GUARD: f32 = 3.0;
 pub const FORM_ROW_GAP: f32 = 8.0;
 pub const ACTION_GAP: f32 = 12.0;
 pub const MEDIA_PILL_H: f32 = 24.0;
-pub const MEDIA_PILL_MIN_W: f32 = 42.0;
 pub const MEDIA_PILL_MIN_GAP: f32 = 4.0;
 pub const TIMELINE_TOOL_BUTTON_H: f32 = 20.0;
 pub const TIMELINE_TOOL_ICON_W: f32 = 22.0;
@@ -315,13 +314,6 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
     child.set_max_width(content_rect.width());
     add_contents(&mut child);
     crate::core::automation::instrument_response(response, "panel", None, false, false)
-}
-
-pub fn stack_card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
-    card_panel(ui, height, |ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        add_contents(ui);
-    })
 }
 
 /// Lays out a body in the remaining height above an exact bottom footer.
@@ -737,9 +729,9 @@ pub fn pick_folder_dialog(ui: &Ui, options: BrowsePathOptions<'_>) -> Option<Pat
     pick_folder_dialog_with_id(ui, options, ("folder_dialog", options.button_label))
 }
 
-/// Opens a native file dialog using the shared browse dialog directory policy.
-pub fn pick_file_dialog(ui: &Ui, options: BrowseFileOptions<'_>) -> Option<PathBuf> {
-    pick_file_dialog_with_id(ui, options, ("file_dialog", options.path.button_label))
+/// Opens a native multi-file dialog using the shared browse dialog directory policy.
+pub fn pick_files_dialog(ui: &Ui, options: BrowseFileOptions<'_>) -> Vec<PathBuf> {
+    pick_files_dialog_with_id(ui, options, ("files_dialog", options.path.button_label))
 }
 
 pub fn labeled_field_height(control_height: f32) -> f32 {
@@ -1136,6 +1128,29 @@ fn pick_file_dialog_with_id(
     }
     let picked = dialog.pick_file();
     if let Some(file) = picked.as_ref() {
+        let remembered_dir = file.parent().unwrap_or(file);
+        remember_dialog_dir(ui, memory_id, options.path, remembered_dir);
+    }
+    picked
+}
+
+fn pick_files_dialog_with_id(
+    ui: &Ui,
+    options: BrowseFileOptions<'_>,
+    fallback_id: impl Hash,
+) -> Vec<PathBuf> {
+    let memory_id = browse_dialog_memory_id(ui, options.path, "files", fallback_id);
+    let start_dir = browse_start_dir(ui, memory_id, options.path);
+    let mut dialog = with_dialog_directory(rfd::FileDialog::new(), start_dir.as_deref());
+    for filter in options
+        .filters
+        .iter()
+        .filter(|filter| !filter.extensions.is_empty())
+    {
+        dialog = dialog.add_filter(filter.name, filter.extensions);
+    }
+    let picked = dialog.pick_files().unwrap_or_default();
+    if let Some(file) = picked.first() {
         let remembered_dir = file.parent().unwrap_or(file);
         remember_dialog_dir(ui, memory_id, options.path, remembered_dir);
     }
@@ -1820,16 +1835,13 @@ pub fn modal_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
         .show(ui, add_contents);
 }
 
-pub fn panel_header(ui: &mut Ui, label: &str, toggle: Option<&str>, mut on_toggle: impl FnMut()) {
+/// Renders a panel title with compact, right-aligned panel-level actions.
+///
+/// Actions are laid out right-to-left, so add the rightmost action first.
+pub fn panel_header_with_actions(ui: &mut Ui, label: &str, add_actions: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
         ui.label(section_label(label));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if let Some(toggle) = toggle {
-                if icon_button(ui, toggle).clicked() {
-                    on_toggle();
-                }
-            }
-        });
+        ui.with_layout(Layout::right_to_left(Align::Center), add_actions);
     });
 }
 
@@ -2266,6 +2278,82 @@ pub fn popover_button(ui: &mut Ui, label: &str, width: f32, enabled: bool) -> Re
     )
 }
 
+/// Renders a full-width, two-line action for compact operational popovers.
+pub fn popover_action_row(
+    ui: &mut Ui,
+    icon: &str,
+    accent: Color32,
+    title: &str,
+    detail: &str,
+) -> Response {
+    const ROW_H: f32 = 48.0;
+    const ICON_W: f32 = 22.0;
+    const TEXT_GAP: f32 = 8.0;
+
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if response.is_pointer_button_down_on() {
+        FIELD_BG_ACTIVE
+    } else if response.hovered() || response.has_focus() {
+        FIELD_BG_HOVER
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(4), fill);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(4),
+            Stroke::new(1.0_f32, BORDER_FOCUS),
+            StrokeKind::Inside,
+        );
+    }
+
+    let icon_center = Pos2::new(rect.left() + ICON_W * 0.5 + 4.0, rect.center().y);
+    ui.painter().text(
+        icon_center,
+        egui::Align2::CENTER_CENTER,
+        icon,
+        FontId::proportional(13.0),
+        accent,
+    );
+    let text_left = rect.left() + ICON_W + TEXT_GAP;
+    let text_width = (rect.right() - text_left - 6.0).max(0.0);
+    let title_galley = egui::WidgetText::from(RichText::new(title).color(TEXT).size(12.0).strong())
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            text_width,
+            FontId::proportional(12.0),
+        );
+    ui.painter().galley(
+        Pos2::new(text_left, rect.center().y - title_galley.size().y - 1.0),
+        title_galley,
+        TEXT,
+    );
+    let detail_galley = egui::WidgetText::from(RichText::new(detail).color(TEXT_MUTED).size(10.5))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            text_width,
+            FontId::proportional(10.5),
+        );
+    ui.painter().galley(
+        Pos2::new(text_left, rect.center().y + 2.0),
+        detail_galley,
+        TEXT_MUTED,
+    );
+
+    crate::core::automation::instrument_response(
+        response,
+        "popover_action",
+        Some(title.to_string()),
+        true,
+        false,
+    )
+}
+
 fn subtle_button(
     ui: &mut Ui,
     label: &str,
@@ -2500,43 +2588,6 @@ pub fn media_pill_sized(ui: &mut Ui, label: &str, color: Color32, width: f32) ->
             radius: 5,
         },
     )
-}
-
-pub fn equal_media_pill_row(
-    ui: &mut Ui,
-    items: &[(&str, Color32)],
-    mut on_clicked: impl FnMut(usize),
-) {
-    if items.is_empty() {
-        return;
-    }
-
-    let row_width = ui.available_width().max(0.0);
-    let (row_rect, _) = ui.allocate_exact_size(Vec2::new(row_width, MEDIA_PILL_H), Sense::hover());
-    let count = items.len() as f32;
-    let gaps = (items.len().saturating_sub(1)) as f32;
-    let ideal_gap = FORM_ROW_GAP
-        .min(((row_width - MEDIA_PILL_MIN_W * count) / gaps.max(1.0)).max(MEDIA_PILL_MIN_GAP));
-    let gap = if items.len() > 1 { ideal_gap } else { 0.0 };
-    let button_w = ((row_width - gap * gaps) / count).max(0.0);
-
-    let mut x = row_rect.left();
-    for (index, (label, color)) in items.iter().enumerate() {
-        let rect = Rect::from_min_size(
-            Pos2::new(x, row_rect.top()),
-            Vec2::new(button_w, MEDIA_PILL_H),
-        );
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(Layout::top_down(Align::Min)),
-        );
-        child.shrink_clip_rect(rect);
-        if media_pill_sized(&mut child, label, *color, button_w).clicked() {
-            on_clicked(index);
-        }
-        x += button_w + gap;
-    }
 }
 
 #[derive(Clone, Copy)]
