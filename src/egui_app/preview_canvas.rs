@@ -9,34 +9,37 @@ enum PreviewSafeAction {
 struct PreviewOperation {
     presentation: kit::OperationPresentation,
     action: Option<PreviewSafeAction>,
-    retained_frame: bool,
 }
 
 fn preview_operation(
     report: &PreviewRenderReport,
     pending: bool,
     retained_frame: bool,
+    scrubbing: bool,
 ) -> Option<PreviewOperation> {
     use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
 
-    if pending {
+    if scrubbing || pending {
         return Some(PreviewOperation {
             presentation: OperationPresentation::new(
                 Phase::Running,
                 Severity::Informational,
-                if retained_frame {
+                if scrubbing {
+                    "Scrubbing preview."
+                } else if retained_frame {
                     "Updating preview."
                 } else {
                     "Rendering preview."
                 },
             )
-            .detail(if retained_frame {
+            .detail(if scrubbing {
+                "Release the playhead to settle on the final preview frame."
+            } else if retained_frame {
                 "The previous frame remains visible while the update renders."
             } else {
                 "You can continue working elsewhere while this frame renders."
             }),
             action: None,
-            retained_frame,
         });
     }
 
@@ -61,7 +64,6 @@ fn preview_operation(
         return Some(PreviewOperation {
             presentation: presentation.primary_action("Show Asset"),
             action: Some(PreviewSafeAction::ShowAsset(issue.asset_id)),
-            retained_frame: true,
         });
     }
 
@@ -74,7 +76,6 @@ fn preview_operation(
             )
             .detail("Move the playhead onto an image or video clip to preview it."),
             action: None,
-            retained_frame: false,
         });
     };
 
@@ -121,7 +122,6 @@ fn preview_operation(
     Some(PreviewOperation {
         presentation,
         action: Some(action),
-        retained_frame: false,
     })
 }
 
@@ -158,6 +158,28 @@ impl LatentSlateApp {
                     self.preview_auto_fit = !self.preview_auto_fit;
                     if self.preview_auto_fit {
                         self.preview_pan = Vec2::ZERO;
+                    }
+                }
+                let pending = self.preview_render_busy_since.is_some();
+                let retained = self.preview_layers.is_some()
+                    && self.preview_render_report.rendered_visual_clips > 0;
+                let scrubbing = matches!(self.timeline_drag.as_ref(), Some(TimelineDrag::Playhead));
+                if pending || scrubbing {
+                    if let Some(operation) =
+                        preview_operation(&self.preview_render_report, pending, retained, scrubbing)
+                    {
+                        kit::operation_status_pill(
+                            &mut controls_ui,
+                            operation.presentation.phase,
+                            operation.presentation.severity,
+                        )
+                        .on_hover_text(
+                            operation
+                                .presentation
+                                .detail
+                                .as_deref()
+                                .unwrap_or(&operation.presentation.title),
+                        );
                     }
                 }
                 let s = &self.editor.project.settings;
@@ -337,24 +359,35 @@ impl LatentSlateApp {
         let pending = self.preview_render_busy_since.is_some();
         let retained =
             self.preview_layers.is_some() && self.preview_render_report.rendered_visual_clips > 0;
-        let Some(operation) = preview_operation(&self.preview_render_report, pending, retained)
+        let scrubbing = matches!(self.timeline_drag.as_ref(), Some(TimelineDrag::Playhead));
+        let Some(operation) =
+            preview_operation(&self.preview_render_report, pending, retained, scrubbing)
         else {
             return;
         };
 
-        if operation.retained_frame && operation.presentation.phase == kit::OperationPhase::Running
-        {
-            let pill_w = kit::operation_status_pill_width(operation.presentation.phase);
-            let pill_rect = Rect::from_min_size(
-                rect.right_top() + Vec2::new(-pill_w - 12.0, 12.0),
-                Vec2::new(pill_w, 20.0),
+        if operation.presentation.phase == kit::OperationPhase::Running {
+            return;
+        }
+
+        if operation.presentation.phase == kit::OperationPhase::Idle {
+            let center = rect.center();
+            ui.painter().text(
+                center - Vec2::new(0.0, 8.0),
+                egui::Align2::CENTER_CENTER,
+                &operation.presentation.title,
+                FontId::proportional(12.0),
+                kit::TEXT_MUTED,
             );
-            kit::paint_operation_status_pill(
-                ui,
-                pill_rect,
-                operation.presentation.phase,
-                operation.presentation.severity,
-            );
+            if let Some(detail) = operation.presentation.detail.as_deref() {
+                ui.painter().text(
+                    center + Vec2::new(0.0, 12.0),
+                    egui::Align2::CENTER_CENTER,
+                    detail,
+                    FontId::proportional(10.5),
+                    kit::TEXT_DIM,
+                );
+            }
             return;
         }
 
@@ -364,7 +397,7 @@ impl LatentSlateApp {
         let mut overlay_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(overlay_rect)
-                .layout(Layout::top_down(Align::Min)),
+                .layout(Layout::top_down(Align::Min).with_main_align(Align::Center)),
         );
         overlay_ui.shrink_clip_rect(overlay_rect);
         overlay_ui.set_width(overlay_rect.width());
@@ -1164,15 +1197,25 @@ mod operation_mapping_tests {
     #[test]
     fn preview_pending_distinguishes_initial_render_from_retained_update() {
         let report = PreviewRenderReport::default();
-        let initial = preview_operation(&report, true, false).unwrap();
+        let initial = preview_operation(&report, true, false, false).unwrap();
         assert_eq!(initial.presentation.phase, Phase::Running);
         assert_eq!(initial.presentation.severity, Severity::Informational);
-        assert!(!initial.retained_frame);
 
-        let updating = preview_operation(&report, true, true).unwrap();
+        let updating = preview_operation(&report, true, true, false).unwrap();
         assert_eq!(updating.presentation.phase, Phase::Running);
-        assert!(updating.retained_frame);
         assert!(updating.presentation.title.contains("Updating"));
+    }
+
+    #[test]
+    fn active_scrub_has_one_stable_running_state_instead_of_empty_idle() {
+        let report = PreviewRenderReport::default();
+        let scrubbing = preview_operation(&report, false, false, true).unwrap();
+        assert_eq!(scrubbing.presentation.phase, Phase::Running);
+        assert_eq!(scrubbing.presentation.severity, Severity::Informational);
+        assert!(scrubbing.presentation.title.contains("Scrubbing"));
+
+        let settled = preview_operation(&report, false, false, false).unwrap();
+        assert_eq!(settled.presentation.phase, Phase::Idle);
     }
 
     #[test]
@@ -1182,7 +1225,7 @@ mod operation_mapping_tests {
         missing
             .issues
             .push(issue(PreviewRenderIssueKind::MissingMedia));
-        let missing = preview_operation(&missing, false, false).unwrap();
+        let missing = preview_operation(&missing, false, false, false).unwrap();
         assert_eq!(missing.presentation.phase, Phase::Blocked);
         assert_eq!(missing.presentation.severity, Severity::Warning);
         assert!(matches!(
@@ -1195,7 +1238,7 @@ mod operation_mapping_tests {
         failed
             .issues
             .push(issue(PreviewRenderIssueKind::DecodeFailed));
-        let failed = preview_operation(&failed, false, false).unwrap();
+        let failed = preview_operation(&failed, false, false, false).unwrap();
         assert_eq!(failed.presentation.phase, Phase::Failed);
         assert_eq!(failed.presentation.severity, Severity::Error);
         assert_eq!(
@@ -1208,7 +1251,7 @@ mod operation_mapping_tests {
             rendered_visual_clips: 1,
             issues: Vec::new(),
         };
-        assert!(preview_operation(&ready, false, true).is_none());
+        assert!(preview_operation(&ready, false, true, false).is_none());
     }
 
     #[test]
@@ -1218,7 +1261,7 @@ mod operation_mapping_tests {
             rendered_visual_clips: 1,
             issues: vec![issue(PreviewRenderIssueKind::Unsupported)],
         };
-        let presentation = preview_operation(&report, false, true)
+        let presentation = preview_operation(&report, false, true, false)
             .unwrap()
             .presentation;
         assert_eq!(presentation.phase, Phase::Succeeded);
