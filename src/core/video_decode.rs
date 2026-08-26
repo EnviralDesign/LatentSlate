@@ -687,6 +687,27 @@ impl VideoDecoder {
             }
         }
 
+        // Codecs with frame reordering can retain their final decoded frames
+        // until end-of-stream is signaled. Without this flush, an exact seek
+        // to the last valid frame may return no image even though that frame is
+        // present in the file (and comparison playback can look perpetually
+        // busy after the shorter side reaches its end).
+        if result.is_none() && decoder.send_eof().is_ok() {
+            result = receive_until_target(
+                decoder,
+                hw_state.as_deref(),
+                scaler,
+                scaler_src,
+                target_width,
+                target_height,
+                target_pts,
+                &mut decoded,
+                &mut sw_frame,
+                &mut rgba_frame,
+                timings,
+            );
+        }
+
         let elapsed = elapsed_ms(forward_start);
         let accounted = timings.transfer_ms + timings.scale_ms + timings.copy_ms;
         timings.packet_ms += (elapsed - accounted).max(0.0);

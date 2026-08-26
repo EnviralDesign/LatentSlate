@@ -375,6 +375,66 @@ impl LatentSlateApp {
                     };
                     envelope.respond(response);
                 }
+                crate::core::automation::AutomationCommand::OpenAssetLab {
+                    asset_id,
+                    version,
+                    compare_with_active,
+                } => {
+                    let result = if let Some(version) = version.as_deref() {
+                        self.open_asset_lab_version(asset_id, version)
+                    } else if self.editor.project.find_asset(asset_id).is_some() {
+                        self.open_asset_lab(asset_id);
+                        Ok(())
+                    } else {
+                        Err("Asset not found.".to_string())
+                    };
+                    match result {
+                        Ok(()) => {
+                            if compare_with_active {
+                                self.begin_asset_lab_compare(asset_id);
+                            }
+                            envelope.respond(crate::core::automation::AutomationResponse::ok(
+                                serde_json::json!({
+                                    "asset_id": asset_id,
+                                    "selected_version": self.asset_lab.selected_version,
+                                    "comparing": self.asset_lab.compare.is_some(),
+                                }),
+                            ));
+                        }
+                        Err(err) => envelope
+                            .respond(crate::core::automation::AutomationResponse::not_found(err)),
+                    }
+                }
+                crate::core::automation::AutomationCommand::CloseAssetLab => {
+                    self.close_asset_lab();
+                    envelope.respond(crate::core::automation::AutomationResponse::empty_ok());
+                }
+                crate::core::automation::AutomationCommand::SetAssetLabCompareTime {
+                    seconds,
+                    playing,
+                } => {
+                    let response = if !seconds.is_finite() || seconds < 0.0 {
+                        crate::core::automation::AutomationResponse::error(
+                            "Comparison time must be finite and nonnegative.",
+                        )
+                    } else if let Some(compare) = self.asset_lab.compare.as_mut() {
+                        compare.shared_time_seconds = seconds;
+                        if let Some(playing) = playing {
+                            compare.playing = playing;
+                        }
+                        compare.last_playback_update = Some(Instant::now());
+                        ctx.request_repaint();
+                        crate::core::automation::AutomationResponse::ok(serde_json::json!({
+                            "seconds": compare.shared_time_seconds,
+                            "playing": compare.playing,
+                        }))
+                    } else {
+                        crate::core::automation::AutomationResponse::conflict(
+                            "Asset Lab comparison is not open.",
+                        )
+                    };
+                    envelope.respond(response);
+                }
                 _ => {
                     let previous_project_path = self.editor.project.project_path.clone();
                     let response = self.editor.apply_automation_command(&envelope.command);

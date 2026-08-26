@@ -128,6 +128,11 @@ impl LatentSlateApp {
         self.preview_drag = None;
         self.preview_snap_guides.clear();
         self.generation_active = None;
+        self.asset_lab = AssetLabState::default();
+        self.asset_lab_preview_texture = None;
+        self.asset_lab_node_preview_textures.clear();
+        self.clear_asset_lab_compare_runtime();
+        self.asset_lab_video_decoder.invalidate_pending();
     }
 
     pub(super) fn warm_audio_playback_cache(&mut self) {
