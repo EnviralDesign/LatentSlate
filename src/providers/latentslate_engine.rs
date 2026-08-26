@@ -51,6 +51,32 @@ pub struct EngineConnectionSettings {
     pub catalog_timeout_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineCatalogLoadPhase {
+    Disabled,
+    Live,
+    Cached,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineCatalogFailureKind {
+    CredentialsRejected,
+    Unreachable,
+    InvalidResponse,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineCatalogLoadReport {
+    pub connection_id: Uuid,
+    pub phase: EngineCatalogLoadPhase,
+    pub discovered_count: usize,
+    pub available_count: usize,
+    pub failure_kind: Option<EngineCatalogFailureKind>,
+    pub technical_detail: Option<String>,
+}
+
 impl Default for EngineConnectionSettings {
     fn default() -> Self {
         Self {
@@ -226,33 +252,57 @@ fn apply_env_overrides(connections: &mut [EngineConnectionSettings]) {
     }
 }
 
-pub fn load_provider_entries() -> Result<Vec<ProviderEntry>, String> {
+pub fn load_provider_entries_with_reports() -> (Vec<ProviderEntry>, Vec<EngineCatalogLoadReport>) {
     let mut providers = Vec::new();
+    let mut reports = Vec::new();
     for settings in load_connections() {
-        if !settings.enabled || settings.base_url.trim().is_empty() {
+        if !settings.enabled {
+            reports.push(EngineCatalogLoadReport {
+                connection_id: settings.id,
+                phase: EngineCatalogLoadPhase::Disabled,
+                discovered_count: 0,
+                available_count: 0,
+                failure_kind: None,
+                technical_detail: None,
+            });
             continue;
         }
-        match load_provider_entries_for_connection(&settings) {
-            Ok(entries) => providers.extend(entries),
-            Err(err) => println!(
-                "Failed to load LatentSlate Engine tools from {}: {err}",
-                settings.base_url
-            ),
+        if settings.base_url.trim().is_empty() {
+            reports.push(EngineCatalogLoadReport {
+                connection_id: settings.id,
+                phase: EngineCatalogLoadPhase::Failed,
+                discovered_count: 0,
+                available_count: 0,
+                failure_kind: Some(EngineCatalogFailureKind::Other),
+                technical_detail: Some("The Engine endpoint is empty.".to_string()),
+            });
+            continue;
         }
+        let (entries, report) = load_provider_entries_for_connection(&settings);
+        if report.phase == EngineCatalogLoadPhase::Failed {
+            if let Some(detail) = report.technical_detail.as_deref() {
+                println!(
+                    "Failed to load LatentSlate Engine tools from {}: {detail}",
+                    settings.base_url
+                );
+            }
+        }
+        providers.extend(entries);
+        reports.push(report);
     }
-    Ok(providers)
+    (providers, reports)
 }
 
 fn load_provider_entries_for_connection(
     settings: &EngineConnectionSettings,
-) -> Result<Vec<ProviderEntry>, String> {
+) -> (Vec<ProviderEntry>, EngineCatalogLoadReport) {
     let cache_path = catalog_cache_path_for(settings.id);
-    let (mut catalog, loaded_from_cache) = match fetch_catalog_blocking(settings) {
+    let (mut catalog, phase, live_error) = match fetch_catalog_blocking(settings) {
         Ok(catalog) => {
             if let Err(err) = save_catalog_cache(&cache_path, &catalog) {
                 println!("Failed to cache LatentSlate Engine catalog: {err}");
             }
-            (catalog, false)
+            (catalog, EngineCatalogLoadPhase::Live, None)
         }
         Err(live_error) => match load_catalog_cache(&cache_path) {
             Ok(catalog) => {
@@ -260,16 +310,80 @@ fn load_provider_entries_for_connection(
                     "LatentSlate Engine unavailable at {}; using cached catalog: {live_error}",
                     settings.base_url
                 );
-                (catalog, true)
+                (catalog, EngineCatalogLoadPhase::Cached, Some(live_error))
             }
-            Err(_) => return Ok(Vec::new()),
+            Err(_) => {
+                let report = EngineCatalogLoadReport {
+                    connection_id: settings.id,
+                    phase: EngineCatalogLoadPhase::Failed,
+                    discovered_count: 0,
+                    available_count: 0,
+                    failure_kind: Some(engine_catalog_failure_kind(&live_error)),
+                    technical_detail: Some(live_error),
+                };
+                return (Vec::new(), report);
+            }
         },
     };
 
-    if loaded_from_cache {
+    if phase == EngineCatalogLoadPhase::Cached {
         mark_cached_catalog_unavailable(&mut catalog);
     }
-    catalog_to_provider_entries(&catalog, settings)
+    let entries = match catalog_to_provider_entries(&catalog, settings) {
+        Ok(entries) => entries,
+        Err(err) => {
+            return (
+                Vec::new(),
+                EngineCatalogLoadReport {
+                    connection_id: settings.id,
+                    phase: EngineCatalogLoadPhase::Failed,
+                    discovered_count: 0,
+                    available_count: 0,
+                    failure_kind: Some(EngineCatalogFailureKind::InvalidResponse),
+                    technical_detail: Some(err),
+                },
+            );
+        }
+    };
+    let available_count = entries
+        .iter()
+        .filter(|provider| provider_is_available(provider))
+        .count();
+    let report = EngineCatalogLoadReport {
+        connection_id: settings.id,
+        phase,
+        discovered_count: entries.len(),
+        available_count,
+        failure_kind: live_error.as_deref().map(engine_catalog_failure_kind),
+        technical_detail: live_error,
+    };
+    (entries, report)
+}
+
+fn provider_is_available(provider: &ProviderEntry) -> bool {
+    !matches!(
+        provider.connection,
+        ProviderConnection::LatentSlateEngine {
+            available: false,
+            ..
+        }
+    )
+}
+
+fn engine_catalog_failure_kind(error: &str) -> EngineCatalogFailureKind {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("401") || lower.contains("403") || lower.contains("unauthorized") {
+        EngineCatalogFailureKind::CredentialsRejected
+    } else if lower.contains("invalid") || lower.contains("response") {
+        EngineCatalogFailureKind::InvalidResponse
+    } else if lower.contains("request failed")
+        || lower.contains("connect")
+        || lower.contains("timeout")
+    {
+        EngineCatalogFailureKind::Unreachable
+    } else {
+        EngineCatalogFailureKind::Other
+    }
 }
 
 fn fetch_catalog_blocking(settings: &EngineConnectionSettings) -> Result<EngineCatalog, String> {
@@ -1923,5 +2037,21 @@ mod tests {
         );
         let extra = catalog_cache_path_for(Uuid::new_v4());
         assert!(extra.to_string_lossy().contains("engine_catalogs"));
+    }
+
+    #[test]
+    fn catalog_failures_preserve_actionable_categories() {
+        assert_eq!(
+            engine_catalog_failure_kind("Engine catalog request failed (401 Unauthorized)"),
+            EngineCatalogFailureKind::CredentialsRejected
+        );
+        assert_eq!(
+            engine_catalog_failure_kind("Engine catalog request failed: connection timed out"),
+            EngineCatalogFailureKind::Unreachable
+        );
+        assert_eq!(
+            engine_catalog_failure_kind("Engine catalog response was invalid: bad JSON"),
+            EngineCatalogFailureKind::InvalidResponse
+        );
     }
 }

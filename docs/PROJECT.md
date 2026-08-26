@@ -25,6 +25,7 @@ This file is the living project status page. Keep it current, concise, and factu
 - Audio import, waveform rendering, timeline playback, audio scrubbing, and clip/track volume controls.
 - Generative image, video, and audio assets with per-asset `config.json`, active versions, and version history.
 - Generation queue with provider selection, schema-driven inputs, progress/status feedback, cancellation, and generated output saved into the project.
+- Queue, Preview, AI Providers, and Export share a UI-facing operation grammar that keeps lifecycle phase separate from neutral/info/success/warning/error severity, with persistent local outcomes and copyable technical detail.
 - Timeline and Asset Lab continuation actions seed new I2I/I2V/edit steps from the referenced generative settings while replacing the media reference; last-frame I2V extension continues on the source track.
 - Provider media fields use canonical timeline-aware bindings (Follow / Lock Source / Freeze Input) with a Resolved now inspector, selected-only timeline connectors, and job provenance snapshots. Legacy pinned `asset_ref` values still load and migrate.
 - Error-like app status messages are emphasized in the bottom status bar instead of rendering as muted chrome text.
@@ -87,6 +88,7 @@ Not a primary goal:
 |---|---|
 | Project identity | Public name, executable, package, automation env vars, and portable app data root use `LatentSlate`; maker identity is Enviral Design. |
 | UI runtime | `egui`/`eframe` native desktop shell. |
+| Operation-state UX | Domain-specific state remains authoritative; UI adapters map it into shared phase/severity presentation primitives without a generalized task framework. |
 | Language | Rust. |
 | Project model | Project equals folder; imported media is copied into project-local folders. |
 | Timeline model | Video/audio clips are range-based; markers are point-based. |
@@ -127,4 +129,4 @@ Avoid docs for docs' sake. Keep docs short, current, and operational.
 - Delete old plans once the code has absorbed them.
 - Use git history for long session logs instead of keeping them in public docs.
 
-*Last updated: 2026-08-07*
+*Last updated: 2026-08-25*

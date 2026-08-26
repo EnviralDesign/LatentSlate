@@ -248,11 +248,18 @@ impl LatentSlateApp {
                         }
                     }
                     Err(err) => {
-                        let message = match err {
+                        let mut technical_detail = match err {
                             GenerationFailure::Offline(err) => format!("Provider offline: {err}"),
                             GenerationFailure::Error(err) => err,
                             GenerationFailure::Canceled => "Generation cancelled.".to_string(),
                         };
+                        let seed_save_error = job_snapshot
+                            .as_ref()
+                            .and_then(|job| self.advance_generation_seed_after_attempt(job).err());
+                        if let Some(err) = seed_save_error {
+                            technical_detail
+                                .push_str(&format!("\nSeed advance could not be saved: {err}"));
+                        }
                         if let Some(entry) = self
                             .editor
                             .generation_queue
@@ -262,16 +269,14 @@ impl LatentSlateApp {
                             entry.status = GenerationJobStatus::Failed;
                             entry.progress_overall = None;
                             entry.progress_node = None;
-                            entry.error = Some(message.clone());
+                            entry.error = Some(technical_detail);
                         }
-                        let seed_save_error = job_snapshot
+                        let label = job_snapshot
                             .as_ref()
-                            .and_then(|job| self.advance_generation_seed_after_attempt(job).err());
-                        self.editor.status = if let Some(err) = seed_save_error {
-                            format!("{message} (seed advance save failed: {err})")
-                        } else {
-                            message
-                        };
+                            .map(|job| job.asset_label.as_str())
+                            .unwrap_or("the selected asset");
+                        self.editor.status =
+                            format!("Generation failed for {label}. Open the queue for details.");
                     }
                 }
             }
@@ -301,7 +306,11 @@ impl LatentSlateApp {
             entry.progress_node = None;
             entry.error = Some(message.clone());
         }
-        self.editor.status = message;
+        self.editor.status = if status == GenerationJobStatus::Failed {
+            "Generation cancellation failed. Open the queue for details.".to_string()
+        } else {
+            message
+        };
     }
 
     pub(super) fn advance_generation_seed_after_attempt(

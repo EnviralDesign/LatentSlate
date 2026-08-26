@@ -1,5 +1,130 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewSafeAction {
+    ShowAsset(Uuid),
+    OpenAssetLab(Uuid),
+}
+
+struct PreviewOperation {
+    presentation: kit::OperationPresentation,
+    action: Option<PreviewSafeAction>,
+    retained_frame: bool,
+}
+
+fn preview_operation(
+    report: &PreviewRenderReport,
+    pending: bool,
+    retained_frame: bool,
+) -> Option<PreviewOperation> {
+    use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
+
+    if pending {
+        return Some(PreviewOperation {
+            presentation: OperationPresentation::new(
+                Phase::Running,
+                Severity::Informational,
+                if retained_frame {
+                    "Updating preview."
+                } else {
+                    "Rendering preview."
+                },
+            )
+            .detail(if retained_frame {
+                "The previous frame remains visible while the update renders."
+            } else {
+                "You can continue working elsewhere while this frame renders."
+            }),
+            action: None,
+            retained_frame,
+        });
+    }
+
+    if report.rendered_visual_clips > 0 {
+        if report.issues.is_empty() {
+            return None;
+        }
+        let issue = &report.issues[0];
+        let mut presentation = OperationPresentation::new(
+            Phase::Succeeded,
+            Severity::Warning,
+            "Preview ready with warnings.",
+        )
+        .detail(format!(
+            "{} rendered; {} could not be shown.",
+            report.rendered_visual_clips,
+            report.issues.len()
+        ));
+        if let Some(detail) = issue.detail.as_deref() {
+            presentation = presentation.technical_detail(detail);
+        }
+        return Some(PreviewOperation {
+            presentation: presentation.primary_action("Show Asset"),
+            action: Some(PreviewSafeAction::ShowAsset(issue.asset_id)),
+            retained_frame: true,
+        });
+    }
+
+    let Some(issue) = report.issues.first() else {
+        return Some(PreviewOperation {
+            presentation: OperationPresentation::new(
+                Phase::Idle,
+                Severity::Neutral,
+                "No visual content at the playhead.",
+            )
+            .detail("Move the playhead onto an image or video clip to preview it."),
+            action: None,
+            retained_frame: false,
+        });
+    };
+
+    let (phase, severity, title, detail, action_label, action) = match issue.kind {
+        PreviewRenderIssueKind::NoAvailableFrame => (
+            Phase::Waiting,
+            Severity::Warning,
+            "No frame is available for this asset.",
+            format!("{} has no active source version.", issue.asset_name),
+            "Open Asset Lab",
+            PreviewSafeAction::OpenAssetLab(issue.asset_id),
+        ),
+        PreviewRenderIssueKind::MissingMedia => (
+            Phase::Blocked,
+            Severity::Warning,
+            "Source media is missing.",
+            format!("{} cannot be shown at the playhead.", issue.asset_name),
+            "Show Asset",
+            PreviewSafeAction::ShowAsset(issue.asset_id),
+        ),
+        PreviewRenderIssueKind::DecodeFailed => (
+            Phase::Failed,
+            Severity::Error,
+            "Preview rendering failed.",
+            format!("{} could not be decoded.", issue.asset_name),
+            "Show Asset",
+            PreviewSafeAction::ShowAsset(issue.asset_id),
+        ),
+        PreviewRenderIssueKind::Unsupported => (
+            Phase::Blocked,
+            Severity::Warning,
+            "This media cannot be previewed.",
+            format!("{} uses an unsupported preview state.", issue.asset_name),
+            "Show Asset",
+            PreviewSafeAction::ShowAsset(issue.asset_id),
+        ),
+    };
+    let mut presentation = OperationPresentation::new(phase, severity, title)
+        .detail(detail)
+        .primary_action(action_label);
+    if let Some(technical_detail) = issue.detail.as_deref() {
+        presentation = presentation.technical_detail(technical_detail);
+    }
+    Some(PreviewOperation {
+        presentation,
+        action: Some(action),
+        retained_frame: false,
+    })
+}
+
 impl LatentSlateApp {
     pub(super) fn central_preview(&mut self, root: &mut Ui) {
         egui::CentralPanel::default()
@@ -115,14 +240,10 @@ impl LatentSlateApp {
                 &object_geometries,
             );
         } else {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "No preview frame",
-                FontId::proportional(14.0),
-                kit::TEXT_DIM,
-            );
+            painter.rect_filled(rect, 0.0, kit::PANEL_SUNKEN);
         }
+
+        self.paint_preview_operation(ui, rect);
 
         if self.editor.layout.preview_stats {
             if let Some(stats) = &self.preview_stats {
@@ -208,6 +329,66 @@ impl LatentSlateApp {
                     FontId::monospace(11.0),
                     kit::TEXT_MUTED,
                 );
+            }
+        }
+    }
+
+    fn paint_preview_operation(&mut self, ui: &mut Ui, rect: Rect) {
+        let pending = self.preview_render_busy_since.is_some();
+        let retained =
+            self.preview_layers.is_some() && self.preview_render_report.rendered_visual_clips > 0;
+        let Some(operation) = preview_operation(&self.preview_render_report, pending, retained)
+        else {
+            return;
+        };
+
+        if operation.retained_frame && operation.presentation.phase == kit::OperationPhase::Running
+        {
+            let pill_w = kit::operation_status_pill_width(operation.presentation.phase);
+            let pill_rect = Rect::from_min_size(
+                rect.right_top() + Vec2::new(-pill_w - 12.0, 12.0),
+                Vec2::new(pill_w, 20.0),
+            );
+            kit::paint_operation_status_pill(
+                ui,
+                pill_rect,
+                operation.presentation.phase,
+                operation.presentation.severity,
+            );
+            return;
+        }
+
+        let width = rect.width().min(390.0).max(220.0);
+        let height = rect.height().min(220.0).max(120.0);
+        let overlay_rect = Rect::from_center_size(rect.center(), Vec2::new(width, height));
+        let mut overlay_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(overlay_rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        overlay_ui.shrink_clip_rect(overlay_rect);
+        overlay_ui.set_width(overlay_rect.width());
+        let response = kit::operation_banner(
+            &mut overlay_ui,
+            "preview_canvas_operation",
+            &operation.presentation,
+        );
+        if response.technical_detail_copied {
+            self.editor.status = "Copied preview details.".to_string();
+        }
+        if response.primary_clicked {
+            match operation.action {
+                Some(PreviewSafeAction::ShowAsset(asset_id)) => {
+                    self.editor.selection.asset_ids = vec![asset_id];
+                    self.asset_reveal_override = Some(asset_id);
+                    self.asset_reveal_scroll_target = Some(asset_id);
+                    self.editor.layout.left_collapsed = false;
+                    self.editor.status = "Revealed preview source in Assets.".to_string();
+                }
+                Some(PreviewSafeAction::OpenAssetLab(asset_id)) => {
+                    self.open_asset_lab(asset_id);
+                }
+                None => {}
             }
         }
     }
@@ -960,6 +1141,88 @@ impl LatentSlateApp {
             .iter()
             .find(|clip| clip.id == clip_id)
             .map(|clip| clip.transform)
+    }
+}
+
+#[cfg(test)]
+mod operation_mapping_tests {
+    use super::*;
+    use crate::core::preview::PreviewRenderIssue;
+    use crate::ui_kit::{OperationPhase as Phase, OperationSeverity as Severity};
+
+    fn issue(kind: PreviewRenderIssueKind) -> PreviewRenderIssue {
+        PreviewRenderIssue {
+            kind,
+            clip_id: Uuid::new_v4(),
+            asset_id: Uuid::new_v4(),
+            asset_name: "Stargazers V07".to_string(),
+            source_path: Some(PathBuf::from("missing.mp4")),
+            detail: Some("decoder detail".to_string()),
+        }
+    }
+
+    #[test]
+    fn preview_pending_distinguishes_initial_render_from_retained_update() {
+        let report = PreviewRenderReport::default();
+        let initial = preview_operation(&report, true, false).unwrap();
+        assert_eq!(initial.presentation.phase, Phase::Running);
+        assert_eq!(initial.presentation.severity, Severity::Informational);
+        assert!(!initial.retained_frame);
+
+        let updating = preview_operation(&report, true, true).unwrap();
+        assert_eq!(updating.presentation.phase, Phase::Running);
+        assert!(updating.retained_frame);
+        assert!(updating.presentation.title.contains("Updating"));
+    }
+
+    #[test]
+    fn preview_missing_decode_and_ready_states_map_truthfully() {
+        let mut missing = PreviewRenderReport::default();
+        missing.active_visual_clips = 1;
+        missing
+            .issues
+            .push(issue(PreviewRenderIssueKind::MissingMedia));
+        let missing = preview_operation(&missing, false, false).unwrap();
+        assert_eq!(missing.presentation.phase, Phase::Blocked);
+        assert_eq!(missing.presentation.severity, Severity::Warning);
+        assert!(matches!(
+            missing.action,
+            Some(PreviewSafeAction::ShowAsset(_))
+        ));
+
+        let mut failed = PreviewRenderReport::default();
+        failed.active_visual_clips = 1;
+        failed
+            .issues
+            .push(issue(PreviewRenderIssueKind::DecodeFailed));
+        let failed = preview_operation(&failed, false, false).unwrap();
+        assert_eq!(failed.presentation.phase, Phase::Failed);
+        assert_eq!(failed.presentation.severity, Severity::Error);
+        assert_eq!(
+            failed.presentation.technical_detail.as_deref(),
+            Some("decoder detail")
+        );
+
+        let ready = PreviewRenderReport {
+            active_visual_clips: 1,
+            rendered_visual_clips: 1,
+            issues: Vec::new(),
+        };
+        assert!(preview_operation(&ready, false, true).is_none());
+    }
+
+    #[test]
+    fn preview_partial_result_is_success_with_warning() {
+        let report = PreviewRenderReport {
+            active_visual_clips: 2,
+            rendered_visual_clips: 1,
+            issues: vec![issue(PreviewRenderIssueKind::Unsupported)],
+        };
+        let presentation = preview_operation(&report, false, true)
+            .unwrap()
+            .presentation;
+        assert_eq!(presentation.phase, Phase::Succeeded);
+        assert_eq!(presentation.severity, Severity::Warning);
     }
 }
 

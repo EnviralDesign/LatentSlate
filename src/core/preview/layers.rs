@@ -12,6 +12,8 @@ use super::types::{FrameKey, PreviewLayerPlacement};
 
 pub(crate) struct PendingDecode {
     pub(crate) clip_id: uuid::Uuid,
+    pub(crate) asset_id: uuid::Uuid,
+    pub(crate) asset_name: String,
     pub(crate) track_index: usize,
     pub(crate) start_time: f64,
     pub(crate) path: PathBuf,

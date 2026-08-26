@@ -2,10 +2,6 @@ use super::*;
 
 impl LatentSlateApp {
     pub(super) fn open_export_modal(&mut self) {
-        if self.export_cancel.is_none() {
-            self.export_modal = ExportModalState::for_project(&self.editor.project);
-            self.export_preview_texture = None;
-        }
         self.editor.overlays.export_video = true;
     }
 
@@ -13,7 +9,7 @@ impl LatentSlateApp {
         if let Some(cancel) = &self.export_cancel {
             cancel.store(true, Ordering::Relaxed);
             self.export_modal.message = "Cancelling export...".to_string();
-            self.export_modal.status = ExportRunStatus::Running;
+            self.export_modal.status = ExportRunStatus::Canceling;
         } else {
             self.editor.overlays.export_video = false;
         }
@@ -282,24 +278,13 @@ impl LatentSlateApp {
         kit::card_frame().show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
             kit::field_label(ui, "Progress");
-            ui.label(kit::body(&self.export_modal.message));
-            ui.add(
-                egui::ProgressBar::new(self.export_modal.progress.clamp(0.0, 1.0))
-                    .show_percentage()
-                    .animate(self.export_cancel.is_some())
-                    .desired_width(ui.available_width()),
-            );
-            if !self.export_modal.frame_label.is_empty() {
-                ui.label(kit::caption(&self.export_modal.frame_label));
-            } else {
-                ui.label(kit::caption(&self.export_modal.stage));
+            let presentation = export_operation_presentation(&self.export_modal);
+            let response = kit::operation_banner(ui, "export_video", &presentation);
+            if response.technical_detail_copied {
+                self.editor.status = "Copied export details.".to_string();
             }
             ui.add_space(kit::FORM_ROW_GAP);
             self.export_preview(ui);
-            if let Some(error) = &self.export_modal.error {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(RichText::new(error).color(kit::DANGER).size(11.0));
-            }
             if let Some(summary) = &self.export_modal.summary {
                 ui.add_space(kit::FORM_ROW_GAP);
                 ui.label(kit::caption(format!(
@@ -316,18 +301,6 @@ impl LatentSlateApp {
                     }
                 )));
                 ui.label(kit::caption(path_label(&summary.output_path)));
-            }
-            if !self.export_modal.warnings.is_empty() {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(kit::caption(format!(
-                    "{} warning{}",
-                    self.export_modal.warnings.len(),
-                    if self.export_modal.warnings.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                )));
             }
         });
     }
@@ -369,6 +342,10 @@ impl LatentSlateApp {
 
     pub(super) fn export_footer(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if matches!(self.export_modal.status, ExportRunStatus::Canceling) {
+                ui.add_enabled_ui(false, |ui| kit::secondary_button(ui, "Canceling…", 150.0));
+                return;
+            }
             if self.export_cancel.is_some() {
                 if kit::danger_button(ui, "Cancel Export", 150.0).clicked() {
                     self.close_or_cancel_export_modal();
@@ -397,14 +374,28 @@ impl LatentSlateApp {
         let settings = match self.export_modal.to_settings() {
             Ok(settings) => settings,
             Err(err) => {
-                self.export_modal.status = ExportRunStatus::Failed;
+                self.export_modal.status = ExportRunStatus::ValidationIssue;
                 self.export_modal.error = Some(err);
                 self.export_modal.message = "Export settings need attention.".to_string();
                 self.export_modal.progress = 0.0;
                 return;
             }
         };
+        if let Err(err) = crate::core::export::validate_video_export_settings(&settings) {
+            self.export_modal.status = ExportRunStatus::ValidationIssue;
+            self.export_modal.error = Some(err);
+            self.export_modal.message = "Export settings need attention.".to_string();
+            self.export_modal.progress = 0.0;
+            return;
+        }
         let project = self.editor.project.clone();
+        if project.project_path.is_none() {
+            self.export_modal.status = ExportRunStatus::ValidationIssue;
+            self.export_modal.error = Some("Save the project before exporting.".to_string());
+            self.export_modal.message = "Export settings need attention.".to_string();
+            self.export_modal.progress = 0.0;
+            return;
+        }
         let job = VideoExportJob { project, settings };
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_thread = Arc::clone(&cancel);
@@ -473,10 +464,10 @@ impl LatentSlateApp {
                 VideoExportEvent::Failed(err) => {
                     self.export_cancel = None;
                     self.export_modal.status = ExportRunStatus::Failed;
-                    self.export_modal.stage = "failed".to_string();
                     self.export_modal.message = "Export failed".to_string();
                     self.export_modal.error = Some(err.clone());
-                    self.editor.status = format!("Export failed: {err}");
+                    self.editor.status =
+                        "Export failed. Open Export Video for details.".to_string();
                 }
             }
         }

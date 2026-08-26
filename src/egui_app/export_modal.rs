@@ -9,7 +9,9 @@ use crate::state::Project;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ExportRunStatus {
     Idle,
+    ValidationIssue,
     Running,
+    Canceling,
     Finished,
     Cancelled,
     Failed,
@@ -68,6 +70,9 @@ impl ExportModalState {
     }
 
     pub(super) fn to_settings(&self) -> Result<VideoExportSettings, String> {
+        if self.output_path.trim().is_empty() {
+            return Err("Choose an output file before exporting.".to_string());
+        }
         let output_path = ensure_mp4_extension(PathBuf::from(self.output_path.trim()));
         let width = parse_export_u32("Width", &self.width)?;
         let height = parse_export_u32("Height", &self.height)?;
@@ -90,6 +95,107 @@ impl ExportModalState {
                 position: self.timestamp_overlay_position,
             },
         })
+    }
+}
+
+pub(super) fn export_operation_presentation(
+    state: &ExportModalState,
+) -> crate::ui_kit::OperationPresentation {
+    use crate::ui_kit::{
+        OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity,
+    };
+
+    match state.status {
+        ExportRunStatus::Idle => {
+            OperationPresentation::new(Phase::Idle, Severity::Neutral, "Ready to export.")
+                .detail("Choose settings, then start the export.")
+        }
+        ExportRunStatus::ValidationIssue => {
+            let mut presentation = OperationPresentation::new(
+                Phase::Blocked,
+                Severity::Warning,
+                "Export settings need attention.",
+            );
+            if let Some(error) = state.error.as_deref() {
+                presentation = presentation.detail(error);
+            }
+            presentation
+        }
+        ExportRunStatus::Running => {
+            let title = match state.stage.as_str() {
+                "frames" => "Rendering video.",
+                "audio" => "Preparing audio.",
+                "encode" => "Encoding and writing MP4.",
+                _ => "Preparing export.",
+            };
+            OperationPresentation::new(Phase::Running, Severity::Informational, title)
+                .detail(&state.message)
+                .progress(state.progress, export_progress_label(state))
+        }
+        ExportRunStatus::Canceling => OperationPresentation::new(
+            Phase::Canceling,
+            Severity::Informational,
+            "Canceling export.",
+        )
+        .detail("The current export step is being stopped safely.")
+        .progress(state.progress, export_progress_label(state)),
+        ExportRunStatus::Finished => {
+            let severity = if state.warnings.is_empty() {
+                Severity::Success
+            } else {
+                Severity::Warning
+            };
+            let mut presentation = OperationPresentation::new(
+                Phase::Succeeded,
+                severity,
+                if state.warnings.is_empty() {
+                    "Export complete."
+                } else {
+                    "Export complete with warnings."
+                },
+            );
+            if let Some(summary) = state.summary.as_ref() {
+                presentation = presentation.detail(summary.output_path.display().to_string());
+            }
+            if !state.warnings.is_empty() {
+                presentation = presentation.technical_detail(state.warnings.join("\n"));
+            }
+            presentation
+        }
+        ExportRunStatus::Failed => {
+            let mut presentation =
+                OperationPresentation::new(Phase::Failed, Severity::Error, "Export failed.")
+                    .detail(format!(
+                        "The output could not be completed during {}.",
+                        export_stage_label(&state.stage)
+                    ));
+            if let Some(error) = state.error.as_deref() {
+                presentation = presentation.technical_detail(error);
+            }
+            presentation
+        }
+        ExportRunStatus::Cancelled => {
+            OperationPresentation::new(Phase::Canceled, Severity::Neutral, "Export canceled.")
+                .detail("No completed output was reported.")
+        }
+    }
+}
+
+fn export_progress_label(state: &ExportModalState) -> String {
+    if state.frame_label.is_empty() {
+        export_stage_label(&state.stage).to_string()
+    } else {
+        state.frame_label.clone()
+    }
+}
+
+fn export_stage_label(stage: &str) -> &'static str {
+    match stage {
+        "frames" => "video rendering",
+        "audio" => "audio preparation",
+        "encode" => "MP4 encoding",
+        "preparing" => "preparation",
+        _ => "export processing",
     }
 }
 
@@ -156,5 +262,64 @@ fn format_export_number(value: f64) -> String {
             .trim_end_matches('0')
             .trim_end_matches('.')
             .to_string()
+    }
+}
+
+#[cfg(test)]
+mod operation_mapping_tests {
+    use super::*;
+    use crate::ui_kit::{OperationPhase as Phase, OperationSeverity as Severity};
+
+    fn state(status: ExportRunStatus) -> ExportModalState {
+        let mut state = ExportModalState::for_project(&Project::default());
+        state.status = status;
+        state
+    }
+
+    #[test]
+    fn export_validation_failure_and_success_have_distinct_meaning() {
+        let mut validation = state(ExportRunStatus::ValidationIssue);
+        validation.error = Some("Width must be a whole number.".to_string());
+        let validation = export_operation_presentation(&validation);
+        assert_eq!(validation.phase, Phase::Blocked);
+        assert_eq!(validation.severity, Severity::Warning);
+        assert!(validation.technical_detail.is_none());
+
+        let failed = export_operation_presentation(&state(ExportRunStatus::Failed));
+        assert_eq!(failed.phase, Phase::Failed);
+        assert_eq!(failed.severity, Severity::Error);
+
+        let succeeded = export_operation_presentation(&state(ExportRunStatus::Finished));
+        assert_eq!(succeeded.phase, Phase::Succeeded);
+        assert_eq!(succeeded.severity, Severity::Success);
+    }
+
+    #[test]
+    fn export_canceling_and_warning_success_are_not_errors() {
+        let canceling = export_operation_presentation(&state(ExportRunStatus::Canceling));
+        assert_eq!(canceling.phase, Phase::Canceling);
+        assert_eq!(canceling.severity, Severity::Informational);
+
+        let mut warned = state(ExportRunStatus::Finished);
+        warned
+            .warnings
+            .push("Audio source was skipped.".to_string());
+        let warned = export_operation_presentation(&warned);
+        assert_eq!(warned.phase, Phase::Succeeded);
+        assert_eq!(warned.severity, Severity::Warning);
+        assert_eq!(
+            warned.technical_detail.as_deref(),
+            Some("Audio source was skipped.")
+        );
+    }
+
+    #[test]
+    fn empty_output_path_stays_a_local_validation_issue() {
+        let mut state = ExportModalState::for_project(&Project::default());
+        state.output_path = "  ".to_string();
+        assert_eq!(
+            state.to_settings().unwrap_err(),
+            "Choose an output file before exporting."
+        );
     }
 }

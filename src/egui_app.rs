@@ -32,7 +32,10 @@ use crate::core::generation::{
     update_seed_inputs,
 };
 use crate::core::media::{probe_duration_seconds, probe_video_metadata};
-use crate::core::preview::{PreviewDecodeMode, PreviewLayerStack, PreviewStats, RenderOutput};
+use crate::core::preview::{
+    PreviewDecodeMode, PreviewLayerStack, PreviewRenderIssueKind, PreviewRenderReport,
+    PreviewStats, RenderOutput,
+};
 use crate::core::timeline_snap::{
     best_snap_delta_frames, frames_from_seconds, seconds_from_frames, snap_time_to_frame,
     SnapTarget,
@@ -196,7 +199,7 @@ const QUEUE_EMPTY_BODY_H: f32 = 42.0;
 const QUEUE_JOB_GAP: f32 = 8.0;
 const QUEUE_JOB_CARD_H: f32 = 64.0;
 const QUEUE_JOB_RUNNING_H: f32 = 106.0;
-const QUEUE_JOB_FAILED_H: f32 = 84.0;
+const QUEUE_JOB_FAILED_H: f32 = 104.0;
 const MAX_GENERATION_BATCH_COUNT: u32 = 50;
 #[allow(dead_code)]
 const ASSET_LAB_VERSION_ROW_H: f32 = 54.0;
@@ -302,6 +305,7 @@ pub struct LatentSlateApp {
     preview_drag: Option<PreviewTransformDrag>,
     preview_snap_guides: Vec<PreviewSnapGuide>,
     preview_stats: Option<PreviewStats>,
+    preview_render_report: PreviewRenderReport,
     preview_perf_samples: VecDeque<PreviewPerfSample>,
     preview_perf_sequence: u64,
     last_tick: Instant,
@@ -338,6 +342,9 @@ pub struct LatentSlateApp {
     provider_resource_release_tx: mpsc::Sender<crate::providers::ProviderResourceReleaseReport>,
     provider_resource_release_rx: mpsc::Receiver<crate::providers::ProviderResourceReleaseReport>,
     provider_resource_release_in_flight: bool,
+    provider_refresh_tx: mpsc::Sender<ProviderRefreshResult>,
+    provider_refresh_rx: mpsc::Receiver<ProviderRefreshResult>,
+    provider_refresh_in_flight: bool,
     pending_provider_resource_release_automation:
         Option<crate::core::automation::AutomationEnvelope>,
     export_modal: ExportModalState,
@@ -401,6 +408,14 @@ struct PreviewRenderResult {
     requested_at: Instant,
     finished_at: Instant,
     output: RenderOutput,
+}
+
+struct ProviderRefreshResult {
+    provider_entries: Vec<ProviderEntry>,
+    provider_files: Vec<PathBuf>,
+    engine_connections: Vec<crate::providers::latentslate_engine::EngineConnectionSettings>,
+    reports: Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+    error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -599,6 +614,7 @@ impl LatentSlateApp {
         };
         let (generation_events_tx, generation_events_rx) = mpsc::channel();
         let (provider_resource_release_tx, provider_resource_release_rx) = mpsc::channel();
+        let (provider_refresh_tx, provider_refresh_rx) = mpsc::channel();
         let (export_events_tx, export_events_rx) = mpsc::channel();
         let (preview_render_tx, preview_render_rx) = mpsc::channel();
         let export_modal = ExportModalState::for_project(&editor.project);
@@ -669,6 +685,7 @@ impl LatentSlateApp {
             preview_drag: None,
             preview_snap_guides: Vec::new(),
             preview_stats: None,
+            preview_render_report: PreviewRenderReport::default(),
             preview_perf_samples: VecDeque::new(),
             preview_perf_sequence: 0,
             last_tick: now,
@@ -703,6 +720,9 @@ impl LatentSlateApp {
             provider_resource_release_tx,
             provider_resource_release_rx,
             provider_resource_release_in_flight: false,
+            provider_refresh_tx,
+            provider_refresh_rx,
+            provider_refresh_in_flight: false,
             pending_provider_resource_release_automation: None,
             export_modal,
             export_events_tx,

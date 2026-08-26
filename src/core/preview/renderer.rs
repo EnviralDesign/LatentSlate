@@ -19,8 +19,9 @@ use super::{
     },
     types::{
         FrameKey, PlateCache, PreviewCacheStats, PreviewDecodeMode, PreviewLayerGpu,
-        PreviewLayerPlacement, PreviewLayerStack, PreviewRgbaFrame, PreviewStats, RenderOutput,
-        RenderRgbaOutput, MAX_CACHE_BUCKETS, PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH,
+        PreviewLayerPlacement, PreviewLayerStack, PreviewRenderIssue, PreviewRenderIssueKind,
+        PreviewRenderReport, PreviewRgbaFrame, PreviewStats, RenderOutput, RenderRgbaOutput,
+        MAX_CACHE_BUCKETS, PLATE_BORDER_COLOR, PLATE_BORDER_WIDTH,
     },
     utils::{
         clamp_time, draw_border, elapsed_ms, frame_index_to_time, resolve_asset_source,
@@ -202,7 +203,7 @@ impl PreviewRenderer {
 
         let fps = project.settings.fps.max(1.0);
         let collect_start = Instant::now();
-        let layers = self.collect_layers(
+        let (layers, _report) = self.collect_layers(
             project,
             project_root,
             time_seconds,
@@ -277,7 +278,7 @@ impl PreviewRenderer {
 
         let fps = project.settings.fps.max(1.0);
         let collect_start = Instant::now();
-        let layers = self.collect_layers(
+        let (layers, report) = self.collect_layers(
             project,
             project_root,
             time_seconds,
@@ -301,6 +302,7 @@ impl PreviewRenderer {
             return RenderOutput {
                 layers: None,
                 stats,
+                report,
             };
         }
 
@@ -353,6 +355,7 @@ impl PreviewRenderer {
                 layers: gpu_layers,
             }),
             stats,
+            report,
         }
     }
 
@@ -365,8 +368,9 @@ impl PreviewRenderer {
         decode_mode: PreviewDecodeMode,
         allow_hw_decode: bool,
         stats: &mut PreviewStats,
-    ) -> Vec<PreviewLayer> {
+    ) -> (Vec<PreviewLayer>, PreviewRenderReport) {
         let decode_epoch = self.video_decoder.current_epoch();
+        let mut report = PreviewRenderReport::default();
         let mut track_order: HashMap<uuid::Uuid, usize> = HashMap::new();
         let mut video_tracks = 0;
         for track in project.tracks.iter() {
@@ -398,14 +402,62 @@ impl PreviewRenderer {
                 continue;
             }
 
+            report.active_visual_clips += 1;
+
             let Some((path, is_video, duration)) = resolve_asset_source(
                 project_root,
                 asset,
                 &["png", "jpg", "jpeg", "webp"],
                 &["mp4", "mov", "mkv", "webm"],
             ) else {
+                report.issues.push(PreviewRenderIssue {
+                    kind: PreviewRenderIssueKind::NoAvailableFrame,
+                    clip_id: clip.id,
+                    asset_id: asset.id,
+                    asset_name: asset.name.clone(),
+                    source_path: None,
+                    detail: Some(
+                        "No active source version is available for this asset.".to_string(),
+                    ),
+                });
                 continue;
             };
+            if !path.exists() {
+                report.issues.push(PreviewRenderIssue {
+                    kind: PreviewRenderIssueKind::MissingMedia,
+                    clip_id: clip.id,
+                    asset_id: asset.id,
+                    asset_name: asset.name.clone(),
+                    source_path: Some(path.clone()),
+                    detail: Some(format!("Source file was not found: {}", path.display())),
+                });
+                continue;
+            }
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase);
+            let supported = extension.as_deref().is_some_and(|extension| {
+                if is_video {
+                    ["mp4", "mov", "mkv", "webm"].contains(&extension)
+                } else {
+                    ["png", "jpg", "jpeg", "webp"].contains(&extension)
+                }
+            });
+            if !supported {
+                report.issues.push(PreviewRenderIssue {
+                    kind: PreviewRenderIssueKind::Unsupported,
+                    clip_id: clip.id,
+                    asset_id: asset.id,
+                    asset_name: asset.name.clone(),
+                    source_path: Some(path.clone()),
+                    detail: Some(format!(
+                        "The preview renderer does not support this source type: {}",
+                        path.display()
+                    )),
+                });
+                continue;
+            }
             let source_time = clip.source_time_at(time_seconds, duration);
 
             let (frame_index, frame_time) = if is_video {
@@ -440,6 +492,7 @@ impl PreviewRenderer {
                             source_width: cached.source_width,
                             source_height: cached.source_height,
                         });
+                        report.rendered_visual_clips += 1;
                         continue;
                     }
                 }
@@ -475,12 +528,27 @@ impl PreviewRenderer {
                         source_width: decoded.source_width,
                         source_height: decoded.source_height,
                     });
+                    report.rendered_visual_clips += 1;
+                } else {
+                    report.issues.push(PreviewRenderIssue {
+                        kind: PreviewRenderIssueKind::DecodeFailed,
+                        clip_id: clip.id,
+                        asset_id: asset.id,
+                        asset_name: asset.name.clone(),
+                        source_path: Some(path.clone()),
+                        detail: Some(format!(
+                            "The image decoder could not read {}.",
+                            path.display()
+                        )),
+                    });
                 }
                 continue;
             }
 
             pending.push(PendingDecode {
                 clip_id: clip.id,
+                asset_id: asset.id,
+                asset_name: asset.name.clone(),
                 track_index,
                 start_time: clip.start_time,
                 path,
@@ -503,6 +571,15 @@ impl PreviewRenderer {
                     decode_epoch,
                 ) {
                     requests.push((item, receiver));
+                } else {
+                    report.issues.push(PreviewRenderIssue {
+                        kind: PreviewRenderIssueKind::DecodeFailed,
+                        clip_id: item.clip_id,
+                        asset_id: item.asset_id,
+                        asset_name: item.asset_name,
+                        source_path: Some(item.path),
+                        detail: Some("The video decoder was unavailable.".to_string()),
+                    });
                 }
             }
 
@@ -544,7 +621,28 @@ impl PreviewRenderer {
                             source_width: response.source_width,
                             source_height: response.source_height,
                         });
+                        report.rendered_visual_clips += 1;
+                    } else {
+                        report.issues.push(PreviewRenderIssue {
+                            kind: PreviewRenderIssueKind::DecodeFailed,
+                            clip_id: item.clip_id,
+                            asset_id: item.asset_id,
+                            asset_name: item.asset_name,
+                            source_path: Some(item.path),
+                            detail: Some("The video decoder did not return a frame.".to_string()),
+                        });
                     }
+                } else {
+                    report.issues.push(PreviewRenderIssue {
+                        kind: PreviewRenderIssueKind::DecodeFailed,
+                        clip_id: item.clip_id,
+                        asset_id: item.asset_id,
+                        asset_name: item.asset_name,
+                        source_path: Some(item.path),
+                        detail: Some(
+                            "The video decoder stopped before returning a frame.".to_string(),
+                        ),
+                    });
                 }
             }
         }
@@ -557,7 +655,7 @@ impl PreviewRenderer {
             })
         });
 
-        layers
+        (layers, report)
     }
 
     pub fn prefetch_frames(
