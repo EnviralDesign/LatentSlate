@@ -455,6 +455,22 @@ pub enum AutomationCommand {
     OpenExportVideo,
     /// Close the export-video modal.
     CloseExportVideo,
+    /// Open Asset Lab for an existing asset without submitting generation.
+    OpenAssetLab {
+        asset_id: Uuid,
+        #[serde(default)]
+        version: Option<String>,
+        #[serde(default)]
+        compare_with_active: bool,
+    },
+    /// Close Asset Lab and clear its ephemeral comparison state.
+    CloseAssetLab,
+    /// Set ephemeral Asset Lab comparison transport state for native UI acceptance.
+    SetAssetLabCompareTime {
+        seconds: f64,
+        #[serde(default)]
+        playing: Option<bool>,
+    },
     /// Set collapsible layout and preview flags for reference screenshots.
     SetLayout {
         #[serde(default)]
@@ -2465,6 +2481,9 @@ fn agent_command_names() -> Vec<&'static str> {
         "close_generative_video",
         "open_export_video",
         "close_export_video",
+        "open_asset_lab",
+        "close_asset_lab",
+        "set_asset_lab_compare_time",
         "set_layout",
         "close_all_overlays",
     ]
@@ -2556,7 +2575,9 @@ fn agent_command_schema_json() -> Value {
             { "type": "click_ui", "fields": { "id": "ui element id from get_ui" } },
             { "type": "text_ui", "fields": { "id": "ui element id from get_ui", "text": "string", "replace?": "bool" } },
             { "type": "screenshot", "fields": { "name?": "string" } },
-            { "type": "open_providers|close_providers|open_project_settings|close_project_settings|open_new_project|close_new_project|open_queue|close_queue|open_generative_video|close_generative_video|open_export_video|close_export_video|close_all_overlays", "fields": {} },
+            { "type": "open_providers|close_providers|open_project_settings|close_project_settings|open_new_project|close_new_project|open_queue|close_queue|open_generative_video|close_generative_video|open_export_video|close_export_video|close_asset_lab|close_all_overlays", "fields": {} },
+            { "type": "open_asset_lab", "fields": { "asset_id": "uuid", "version?": "string", "compare_with_active?": "boolean" } },
+            { "type": "set_asset_lab_compare_time", "fields": { "seconds": "number", "playing?": "boolean" } },
             { "type": "set_layout", "fields": { "left_collapsed?": "bool", "right_collapsed?": "bool", "timeline_collapsed?": "bool", "preview_stats?": "bool", "hardware_decode?": "bool", "left_width?": "f32", "right_width?": "f32", "timeline_height?": "f32", "timeline_zoom?": "f32", "timeline_scroll_x?": "f32", "timeline_scroll_y?": "f32" } }
         ]
     })
@@ -2739,6 +2760,26 @@ mod tests {
                 context_clip_id: None,
                 wait: false,
             } if parsed_asset_id == asset_id
+        ));
+    }
+
+    #[test]
+    fn open_asset_lab_compare_command_is_non_generating_and_defaults_are_explicit() {
+        let asset_id = Uuid::new_v4();
+        let command = serde_json::from_value::<AutomationCommand>(json!({
+            "type": "open_asset_lab",
+            "asset_id": asset_id,
+            "version": "V08",
+            "compare_with_active": true
+        }))
+        .expect("open_asset_lab should deserialize");
+        assert!(matches!(
+            command,
+            AutomationCommand::OpenAssetLab {
+                asset_id: parsed_asset_id,
+                version: Some(version),
+                compare_with_active: true,
+            } if parsed_asset_id == asset_id && version == "V08"
         ));
     }
 

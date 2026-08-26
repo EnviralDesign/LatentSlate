@@ -24,6 +24,7 @@ This file is the living project status page. Keep it current, concise, and factu
 - Preview panel with FFmpeg-backed media decode, cached timeline thumbnails, transform handles, preview stats, and scrub/playhead updates.
 - Audio import, waveform rendering, timeline playback, audio scrubbing, and clip/track volume controls.
 - Generative image, video, and audio assets with per-asset `config.json`, active versions, and version history.
+- Asset Lab A/B comparison for generated images and videos, with a fixed active baseline, candidate browsing, synchronized visual inspection, truthful input deltas, and canonical make-active/branch decisions.
 - Generation queue with provider selection, schema-driven inputs, progress/status feedback, cancellation, and generated output saved into the project.
 - Timeline and Asset Lab continuation actions seed new I2I/I2V/edit steps from the referenced generative settings while replacing the media reference; last-frame I2V extension continues on the source track.
 - Provider media fields use canonical timeline-aware bindings (Follow / Lock Source / Freeze Input) with a Resolved now inspector, selected-only timeline connectors, and job provenance snapshots. Legacy pinned `asset_ref` values still load and migrate.
@@ -127,4 +128,4 @@ Avoid docs for docs' sake. Keep docs short, current, and operational.
 - Delete old plans once the code has absorbed them.
 - Use git history for long session logs instead of keeping them in public docs.
 
-*Last updated: 2026-08-07*
+*Last updated: 2026-08-25*

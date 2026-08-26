@@ -51,6 +51,7 @@ pub(super) struct AssetLabState {
     pub(super) draft_inputs: HashMap<String, InputValue>,
     pub(super) run_batch_count: u32,
     pub(super) run_seed_strategy: SeedStrategy,
+    pub(super) compare: Option<AssetLabCompareState>,
 }
 
 impl Default for AssetLabState {
@@ -76,6 +77,7 @@ impl Default for AssetLabState {
             draft_inputs: HashMap::new(),
             run_batch_count: 1,
             run_seed_strategy: SeedStrategy::Increment,
+            compare: None,
         }
     }
 }
@@ -100,6 +102,204 @@ impl AssetLabState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub(super) enum AssetLabCompareSide {
+    Baseline,
+    Candidate,
+}
+
+impl AssetLabCompareSide {
+    fn lane_id(self) -> u64 {
+        match self {
+            Self::Baseline => 0xA11A_BA5E,
+            Self::Candidate => 0xA11A_CADD,
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Baseline => "A",
+            Self::Candidate => "B",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct AssetLabCompareState {
+    pub(super) baseline_version: String,
+    pub(super) candidate_version: Option<String>,
+    pub(super) shared_time_seconds: f64,
+    pub(super) playing: bool,
+    pub(super) last_playback_update: Option<std::time::Instant>,
+}
+
+impl AssetLabCompareState {
+    fn enter(active_version: &str, selected_version: &str) -> Option<Self> {
+        (active_version != selected_version).then(|| Self {
+            baseline_version: active_version.to_string(),
+            candidate_version: Some(selected_version.to_string()),
+            shared_time_seconds: 0.0,
+            playing: false,
+            last_playback_update: None,
+        })
+    }
+
+    fn select_candidate(&mut self, version: Option<&str>, has_concrete_output: bool) -> bool {
+        let Some(version) = version.filter(|_| has_concrete_output) else {
+            return false;
+        };
+        if version == self.baseline_version {
+            return false;
+        }
+        let changed = self.candidate_version.as_deref() != Some(version);
+        self.candidate_version = Some(version.to_string());
+        changed
+    }
+
+    fn swap(&mut self) -> bool {
+        let Some(candidate) = self.candidate_version.take() else {
+            return false;
+        };
+        let previous_baseline = std::mem::replace(&mut self.baseline_version, candidate);
+        self.candidate_version = Some(previous_baseline);
+        true
+    }
+
+    fn use_candidate_as_baseline(&mut self) -> bool {
+        let Some(candidate) = self.candidate_version.take() else {
+            return false;
+        };
+        self.baseline_version = candidate;
+        self.playing = false;
+        self.last_playback_update = None;
+        true
+    }
+
+    fn max_duration(a_duration: f64, b_duration: Option<f64>) -> f64 {
+        a_duration.max(b_duration.unwrap_or(0.0)).max(0.0)
+    }
+
+    fn side_time(&self, duration: f64) -> f64 {
+        self.shared_time_seconds.max(0.0).min(duration.max(0.0))
+    }
+
+    fn side_has_ended(&self, duration: f64, max_duration: f64) -> bool {
+        duration > 0.0 && max_duration > duration && self.shared_time_seconds >= duration
+    }
+
+    fn decision_version(&self, side: AssetLabCompareSide) -> Option<&str> {
+        match side {
+            AssetLabCompareSide::Baseline => Some(&self.baseline_version),
+            AssetLabCompareSide::Candidate => self.candidate_version.as_deref(),
+        }
+    }
+
+    fn repair_versions(
+        &mut self,
+        mut version_exists: impl FnMut(&str) -> bool,
+    ) -> AssetLabCompareRepair {
+        if !version_exists(&self.baseline_version) {
+            return AssetLabCompareRepair::Exit;
+        }
+        if self
+            .candidate_version
+            .as_deref()
+            .is_some_and(|version| !version_exists(version))
+        {
+            self.candidate_version = None;
+            self.playing = false;
+            self.last_playback_update = None;
+            return AssetLabCompareRepair::CandidateCleared;
+        }
+        AssetLabCompareRepair::Unchanged
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssetLabCompareRepair {
+    Unchanged,
+    CandidateCleared,
+    Exit,
+}
+
+pub(super) struct AssetLabCompareVideoRequest {
+    key: AssetLabCompareDecodeKey,
+    receiver: mpsc::Receiver<DecodeResponse>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AssetLabCompareDecodeKey {
+    side: AssetLabCompareSide,
+    asset_id: Uuid,
+    version: String,
+    path: PathBuf,
+    frame_index: i64,
+    decoder_epoch: u64,
+    project_session_revision: u64,
+}
+
+impl AssetLabCompareDecodeKey {
+    fn matches_desired(
+        &self,
+        side: AssetLabCompareSide,
+        asset_id: Uuid,
+        version: &str,
+        path: &Path,
+        frame_index: i64,
+        decoder_epoch: u64,
+        project_session_revision: u64,
+    ) -> bool {
+        self.side == side
+            && self.asset_id == asset_id
+            && self.version == version
+            && self.path == path
+            && self.frame_index == frame_index
+            && self.decoder_epoch == decoder_epoch
+            && self.project_session_revision == project_session_revision
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AssetLabCompareField {
+    key: String,
+    label: String,
+    value: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AssetLabCompareSnapshot {
+    fields: Vec<AssetLabCompareField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AssetLabCompareDeltaRow {
+    label: String,
+    baseline: String,
+    candidate: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AssetLabCompareDelta {
+    changed: Vec<AssetLabCompareDeltaRow>,
+    unchanged_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssetLabComparePaneStatus {
+    Ready,
+    Loading,
+    Updating,
+    MissingOutput,
+    DecodeFailed,
+    Unsupported,
+}
+
+struct AssetLabComparePanePreview {
+    texture: Option<(TextureId, Vec2)>,
+    status: AssetLabComparePaneStatus,
+    technical_detail: Option<String>,
+}
+
 pub(super) struct AssetLabPreviewTexture {
     pub(super) asset_id: Uuid,
     pub(super) version: Option<String>,
@@ -120,6 +320,13 @@ pub(super) struct AssetLabNodePreviewKey {
 #[derive(Clone, Debug)]
 pub(super) enum AssetLabAction {
     SelectVersion(String),
+    EnterCompare,
+    ExitCompare,
+    SwapCompare,
+    UseCompareCandidateAsBaseline,
+    MakeCompareCandidateActive,
+    BranchFromCompareBaseline,
+    BranchFromCompareCandidate,
     SetActive(String),
     DuplicateVersion(String),
     ExtractVersion(String),
@@ -285,6 +492,164 @@ pub(super) fn asset_lab_provider_name(providers: &[ProviderEntry], provider_id: 
         .find(|provider| provider.id == provider_id)
         .map(|provider| provider.name.clone())
         .unwrap_or_else(|| provider_id.to_string())
+}
+
+fn asset_lab_compare_input_value_label(
+    project: &Project,
+    value: &InputValue,
+    role: Option<InputRole>,
+) -> Option<String> {
+    match value {
+        InputValue::Literal { value } => {
+            let raw = input_value_as_string(value)?;
+            if role == Some(InputRole::DurationSeconds) {
+                input_value_as_f64(value).map(|duration| format!("{duration:.1}s"))
+            } else {
+                Some(raw)
+            }
+        }
+        InputValue::AssetRef {
+            asset_id,
+            frame_reference,
+            ..
+        } => {
+            let asset = project.find_asset(*asset_id)?;
+            let mut label = asset_display_name(asset);
+            if let Some(frame) = frame_reference {
+                label.push_str(&format!(" · {}", frame.label()));
+            }
+            Some(label)
+        }
+        InputValue::GenerationRef {
+            asset_id,
+            version,
+            frame_reference,
+        } => {
+            let asset = project.find_asset(*asset_id)?;
+            let mut label = format!("{} · {version}", asset_display_name(asset));
+            if let Some(frame) = frame_reference {
+                label.push_str(&format!(" · {}", frame.label()));
+            }
+            Some(label)
+        }
+    }
+}
+
+fn asset_lab_compare_snapshot(
+    project: &Project,
+    record: &GenerationRecord,
+    providers: &[ProviderEntry],
+) -> AssetLabCompareSnapshot {
+    let Some(provider) = providers
+        .iter()
+        .find(|provider| provider.id == record.provider_id)
+    else {
+        return AssetLabCompareSnapshot::default();
+    };
+    let mut fields = vec![AssetLabCompareField {
+        key: "provider".to_string(),
+        label: "Provider".to_string(),
+        value: provider.name.clone(),
+    }];
+
+    let width = provider
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(InputRole::Width))
+        .and_then(|input| record.inputs_snapshot.get(&input.name))
+        .and_then(|value| {
+            asset_lab_compare_input_value_label(project, value, Some(InputRole::Width))
+        });
+    let height = provider
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(InputRole::Height))
+        .and_then(|input| record.inputs_snapshot.get(&input.name))
+        .and_then(|value| {
+            asset_lab_compare_input_value_label(project, value, Some(InputRole::Height))
+        });
+    if let (Some(width), Some(height)) = (width, height) {
+        fields.push(AssetLabCompareField {
+            key: "resolution".to_string(),
+            label: "Resolution".to_string(),
+            value: format!("{width}×{height}"),
+        });
+    }
+
+    for input in &provider.inputs {
+        if matches!(input.role, Some(InputRole::Width | InputRole::Height)) {
+            continue;
+        }
+        let Some(value) = record.inputs_snapshot.get(&input.name) else {
+            continue;
+        };
+        let Some(value) = asset_lab_compare_input_value_label(project, value, input.role) else {
+            continue;
+        };
+        fields.push(AssetLabCompareField {
+            key: input
+                .role
+                .map(|role| format!("role:{role:?}"))
+                .unwrap_or_else(|| format!("input:{}", input.name)),
+            label: asset_lab_input_label(input),
+            value,
+        });
+    }
+    AssetLabCompareSnapshot { fields }
+}
+
+fn asset_lab_compare_delta(
+    baseline: &AssetLabCompareSnapshot,
+    candidate: &AssetLabCompareSnapshot,
+) -> AssetLabCompareDelta {
+    let mut delta = AssetLabCompareDelta::default();
+    let mut emitted = HashSet::new();
+    for field in candidate.fields.iter().chain(baseline.fields.iter()) {
+        if !emitted.insert(field.key.as_str()) {
+            continue;
+        }
+        let Some(a) = baseline.fields.iter().find(|value| value.key == field.key) else {
+            continue;
+        };
+        let Some(b) = candidate.fields.iter().find(|value| value.key == field.key) else {
+            continue;
+        };
+        if a.value == b.value {
+            delta.unchanged_count += 1;
+        } else {
+            delta.changed.push(AssetLabCompareDeltaRow {
+                label: b.label.clone(),
+                baseline: a.value.clone(),
+                candidate: b.value.clone(),
+            });
+        }
+    }
+    delta
+}
+
+fn asset_lab_compare_record_duration(
+    asset: &Asset,
+    record: Option<&GenerationRecord>,
+    providers: &[ProviderEntry],
+) -> f64 {
+    let from_record = record.and_then(|record| {
+        let provider = providers
+            .iter()
+            .find(|provider| provider.id == record.provider_id)?;
+        let input = provider
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::DurationSeconds))?;
+        let value = record.inputs_snapshot.get(&input.name)?;
+        match value {
+            InputValue::Literal { value } => input_value_as_f64(value),
+            _ => None,
+        }
+    });
+    from_record
+        .or(asset.duration_seconds)
+        .unwrap_or(0.0)
+        .max(0.0)
 }
 
 pub(super) fn asset_lab_output_type(asset: &Asset) -> Option<ProviderOutputType> {
@@ -539,6 +904,20 @@ fn asset_lab_node_id_for_version(
 fn asset_lab_record_is_node_baseline(record: &GenerationRecord, node: &AssetLabNode) -> bool {
     record.lab_node_id == Some(node.id)
         || node.output_version.as_deref() == Some(record.version.as_str())
+}
+
+fn asset_lab_node_represents_version(
+    config: Option<&GenerativeConfig>,
+    node: &AssetLabNode,
+    version: &str,
+) -> bool {
+    node.output_version.as_deref() == Some(version)
+        || config.is_some_and(|config| {
+            config
+                .versions
+                .iter()
+                .any(|record| record.version == version && record.lab_node_id == Some(node.id))
+        })
 }
 
 fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &str) -> Option<i64> {
@@ -1495,6 +1874,26 @@ pub(super) fn asset_lab_scrub_tick_step(duration: f64, width: f32) -> f64 {
     }
 }
 
+fn asset_lab_compare_frame_index(time_seconds: f64, duration: f64, fps: f64) -> i64 {
+    let fps = if fps.is_finite() { fps.max(1.0) } else { 1.0 };
+    let duration = if duration.is_finite() {
+        duration.max(0.0)
+    } else {
+        0.0
+    };
+    let last_frame = if duration > 0.0 {
+        (duration * fps).ceil().max(1.0) as i64 - 1
+    } else {
+        i64::MAX
+    };
+    let time = if time_seconds.is_finite() {
+        time_seconds.max(0.0)
+    } else {
+        0.0
+    };
+    ((time * fps).round().max(0.0) as i64).min(last_frame.max(0))
+}
+
 pub(super) fn copy_generative_version_files(
     folder_path: &Path,
     source_version: &str,
@@ -1677,6 +2076,177 @@ pub(super) fn load_preview_image(path: &Path, max_edge: u32) -> Option<(ColorIma
     Some((color_image, display_size))
 }
 impl LatentSlateApp {
+    pub(super) fn clear_asset_lab_compare_runtime(&mut self) {
+        self.asset_lab_compare_preview_textures.clear();
+        self.asset_lab_compare_video_requests.clear();
+        self.asset_lab_compare_errors.clear();
+    }
+
+    fn asset_lab_version_has_record(config: Option<&GenerativeConfig>, version: &str) -> bool {
+        config.is_some_and(|config| {
+            config
+                .versions
+                .iter()
+                .any(|record| record.version == version)
+        })
+    }
+
+    fn asset_lab_version_has_output(&self, asset: &Asset, version: &str) -> bool {
+        self.editor
+            .project
+            .project_path
+            .as_ref()
+            .and_then(|root| asset_lab_media_path(root, asset, Some(version)))
+            .is_some_and(|path| path.is_file())
+    }
+
+    fn repair_asset_lab_compare_state(&mut self, asset: &Asset, config: Option<&GenerativeConfig>) {
+        let Some(compare) = self.asset_lab.compare.as_mut() else {
+            return;
+        };
+        match compare.repair_versions(|version| Self::asset_lab_version_has_record(config, version))
+        {
+            AssetLabCompareRepair::Exit => {
+                self.asset_lab.compare = None;
+                self.clear_asset_lab_compare_runtime();
+                self.editor.status =
+                    "Comparison ended because the baseline output is no longer available."
+                        .to_string();
+                return;
+            }
+            AssetLabCompareRepair::CandidateCleared => {
+                self.asset_lab_compare_preview_textures
+                    .remove(&AssetLabCompareSide::Candidate);
+                self.asset_lab_compare_errors
+                    .remove(&AssetLabCompareSide::Candidate);
+                self.editor.status =
+                    "The candidate output was removed. Select another output to compare."
+                        .to_string();
+            }
+            AssetLabCompareRepair::Unchanged => {}
+        }
+        if !asset.is_visual() {
+            self.asset_lab.compare = None;
+            self.clear_asset_lab_compare_runtime();
+        }
+    }
+
+    fn update_asset_lab_compare_candidate(&mut self, asset_id: Uuid, version: Option<&str>) {
+        let Some(version) = version else {
+            return;
+        };
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            return;
+        };
+        let has_record = Self::asset_lab_version_has_record(
+            self.editor.project.generative_config(asset_id),
+            version,
+        );
+        let has_output = has_record && self.asset_lab_version_has_output(&asset, version);
+        let changed = self
+            .asset_lab
+            .compare
+            .as_mut()
+            .is_some_and(|compare| compare.select_candidate(Some(version), has_output));
+        if changed {
+            self.asset_lab.selected_version = Some(version.to_string());
+            self.asset_lab_compare_preview_textures
+                .remove(&AssetLabCompareSide::Candidate);
+            self.asset_lab_compare_errors
+                .remove(&AssetLabCompareSide::Candidate);
+        }
+    }
+
+    pub(super) fn begin_asset_lab_compare(&mut self, asset_id: Uuid) {
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            return;
+        };
+        if !matches!(
+            asset.kind,
+            AssetKind::GenerativeImage { .. } | AssetKind::GenerativeVideo { .. }
+        ) {
+            self.editor.status =
+                "Compare is available for generated images and videos.".to_string();
+            return;
+        }
+        let Some(config) = self.editor.project.generative_config(asset_id) else {
+            return;
+        };
+        let Some(active) = config.active_version.clone() else {
+            self.editor.status = "Set an active output before comparing.".to_string();
+            return;
+        };
+        let Some(selected) = self.asset_lab.selected_version.clone() else {
+            self.editor.status = "Select an output to compare with the active output.".to_string();
+            return;
+        };
+        if !Self::asset_lab_version_has_record(Some(config), &active)
+            || !Self::asset_lab_version_has_record(Some(config), &selected)
+            || !self.asset_lab_version_has_output(&asset, &active)
+            || !self.asset_lab_version_has_output(&asset, &selected)
+        {
+            self.editor.status =
+                "Both comparison outputs must have available local media.".to_string();
+            return;
+        }
+        let Some(compare) = AssetLabCompareState::enter(&active, &selected) else {
+            self.editor.status = "Select a different output to compare.".to_string();
+            return;
+        };
+        self.asset_lab.compare = Some(compare);
+        self.asset_lab.preview_auto_fit = true;
+        self.asset_lab.preview_zoom = 1.0;
+        self.asset_lab.preview_pan = Vec2::ZERO;
+        self.asset_lab.preview_pan_drag = None;
+        self.clear_asset_lab_compare_runtime();
+        self.editor.status = format!("Comparing {selected} with active output {active}.");
+    }
+
+    fn branch_from_asset_lab_compare(&mut self, asset_id: Uuid, baseline: bool) {
+        let side = if baseline {
+            AssetLabCompareSide::Baseline
+        } else {
+            AssetLabCompareSide::Candidate
+        };
+        let version = self
+            .asset_lab
+            .compare
+            .as_ref()
+            .and_then(|compare| compare.decision_version(side))
+            .map(str::to_string);
+        let Some(version) = version else {
+            return;
+        };
+        let Some(asset) = self.editor.project.find_asset(asset_id).cloned() else {
+            return;
+        };
+        if !Self::asset_lab_version_has_record(
+            self.editor.project.generative_config(asset_id),
+            &version,
+        ) || !self.asset_lab_version_has_output(&asset, &version)
+        {
+            self.editor.status = format!("Output {version} is unavailable for branching.");
+            return;
+        }
+        let before = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .map(|config| config.lab_graph.nodes.len())
+            .unwrap_or_default();
+        self.create_asset_lab_edit_step_from_version(asset_id, &version);
+        let after = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .map(|config| config.lab_graph.nodes.len())
+            .unwrap_or_default();
+        if after > before {
+            self.asset_lab.compare = None;
+            self.clear_asset_lab_compare_runtime();
+        }
+    }
+
     pub(super) fn open_asset_lab(&mut self, asset_id: Uuid) {
         self.open_asset_lab_at_time(asset_id, None);
     }
@@ -1750,9 +2320,11 @@ impl LatentSlateApp {
             draft_inputs: HashMap::new(),
             run_batch_count: 1,
             run_seed_strategy: SeedStrategy::Increment,
+            compare: None,
         };
         self.asset_lab_preview_texture = None;
         self.asset_lab_node_preview_textures.clear();
+        self.clear_asset_lab_compare_runtime();
         self.editor.overlays.asset_lab = true;
         self.ensure_asset_lab_graph_for_versions(asset_id);
         self.asset_lab.pending_graph_focus_node_id = self
@@ -1773,6 +2345,7 @@ impl LatentSlateApp {
         self.asset_lab = AssetLabState::default();
         self.asset_lab_preview_texture = None;
         self.asset_lab_node_preview_textures.clear();
+        self.clear_asset_lab_compare_runtime();
     }
 
     pub(super) fn asset_lab_modal(&mut self, ctx: &Context) {
@@ -1799,6 +2372,7 @@ impl LatentSlateApp {
                     .or_else(|| asset.active_version().map(str::to_string));
             }
         }
+        self.repair_asset_lab_compare_state(&asset, config_snapshot.as_ref());
 
         let mut open = true;
         let mut close_clicked = false;
@@ -1906,6 +2480,14 @@ impl LatentSlateApp {
                         .any(|node| node.id == *node_id)
                 })
             });
+        let inspector_node_id = if let Some(compare) = self.asset_lab.compare.as_ref() {
+            compare
+                .candidate_version
+                .as_deref()
+                .and_then(|version| asset_lab_node_id_for_version(config, Some(version)))
+        } else {
+            selected_node_id
+        };
         let compatible_providers: Vec<ProviderEntry> = self
             .editor
             .provider_entries
@@ -1927,16 +2509,29 @@ impl LatentSlateApp {
             .size(Size::exact(inspector_width))
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
-                    self.asset_lab_flow_column(
-                        ui,
-                        asset,
-                        config,
-                        &versions,
-                        selected_node_id,
-                        active_version.as_deref(),
-                        &compatible_providers,
-                        action,
-                    );
+                    if self.asset_lab.compare.is_some() {
+                        self.asset_lab_compare_column(
+                            ui,
+                            asset,
+                            config,
+                            &versions,
+                            selected_node_id,
+                            active_version.as_deref(),
+                            &compatible_providers,
+                            action,
+                        );
+                    } else {
+                        self.asset_lab_flow_column(
+                            ui,
+                            asset,
+                            config,
+                            &versions,
+                            selected_node_id,
+                            active_version.as_deref(),
+                            &compatible_providers,
+                            action,
+                        );
+                    }
                 });
                 strip.cell(|ui| {
                     self.asset_lab_node_inspector(
@@ -1944,7 +2539,7 @@ impl LatentSlateApp {
                         asset,
                         config,
                         &versions,
-                        selected_node_id,
+                        inspector_node_id,
                         selected_version.as_deref(),
                         active_version.as_deref(),
                         pending_delete.as_deref(),
@@ -2008,6 +2603,201 @@ impl LatentSlateApp {
                 action,
             );
         });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn asset_lab_compare_column(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        versions: &[GenerationRecord],
+        selected_node_id: Option<Uuid>,
+        active_version: Option<&str>,
+        compatible_providers: &[ProviderEntry],
+        action: &mut Option<AssetLabAction>,
+    ) {
+        self.poll_asset_lab_compare_video_requests(ui.ctx());
+        let available_h = ui.available_height().max(360.0);
+        let stage_h = (available_h * 0.60).clamp(260.0, (available_h - 210.0).max(260.0));
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::exact(stage_h))
+            .size(Size::remainder().at_least(170.0))
+            .vertical(|mut strip| {
+                strip.cell(|ui| {
+                    kit::card_frame().show(ui, |ui| {
+                        let compact = ui.available_width() < 560.0;
+                        ui.horizontal(|ui| {
+                            kit::field_label(ui, "Compare");
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                kit::media_pill(ui, "A / B", kit::PRIMARY);
+                            });
+                        });
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        kit::equal_width_action_row(
+                            ui,
+                            3,
+                            kit::SECONDARY_BUTTON_H,
+                            kit::FIELD_COMPOUND_GAP,
+                            |ui, index, width| match index {
+                                0 => {
+                                    let enabled =
+                                        self.asset_lab.compare.as_ref().is_some_and(|compare| {
+                                            compare.candidate_version.is_some()
+                                        });
+                                    ui.add_enabled_ui(enabled, |ui| {
+                                        let label = if compact { "Swap" } else { "Swap A / B" };
+                                        if kit::secondary_button(ui, label, width).clicked() {
+                                            *action = Some(AssetLabAction::SwapCompare);
+                                        }
+                                    });
+                                }
+                                1 => {
+                                    let enabled =
+                                        self.asset_lab.compare.as_ref().is_some_and(|compare| {
+                                            compare.candidate_version.is_some()
+                                        });
+                                    ui.add_enabled_ui(enabled, |ui| {
+                                        let label = if compact {
+                                            "B → A"
+                                        } else {
+                                            "Use B as Baseline"
+                                        };
+                                        if kit::secondary_button(ui, label, width).clicked() {
+                                            *action =
+                                                Some(AssetLabAction::UseCompareCandidateAsBaseline);
+                                        }
+                                    });
+                                }
+                                _ => {
+                                    let label = if compact { "Exit" } else { "Exit Compare" };
+                                    if kit::secondary_button(ui, label, width).clicked() {
+                                        *action = Some(AssetLabAction::ExitCompare);
+                                    }
+                                }
+                            },
+                        );
+                        ui.add_space(kit::ACTION_GAP);
+
+                        let Some(compare) = self.asset_lab.compare.clone() else {
+                            return;
+                        };
+                        let baseline_record =
+                            asset_lab_record_for_version(config, Some(&compare.baseline_version));
+                        let candidate_record = asset_lab_record_for_version(
+                            config,
+                            compare.candidate_version.as_deref(),
+                        );
+                        let a_duration = asset_lab_compare_record_duration(
+                            asset,
+                            baseline_record,
+                            &self.editor.provider_entries,
+                        );
+                        let b_duration = compare.candidate_version.as_ref().map(|_| {
+                            asset_lab_compare_record_duration(
+                                asset,
+                                candidate_record,
+                                &self.editor.provider_entries,
+                            )
+                        });
+                        let max_duration =
+                            AssetLabCompareState::max_duration(a_duration, b_duration);
+                        self.advance_asset_lab_compare_playback(ui.ctx(), max_duration);
+                        let compare = self.asset_lab.compare.clone().unwrap_or(compare);
+                        let a_time = compare.side_time(a_duration);
+                        let b_time = b_duration.map(|duration| compare.side_time(duration));
+                        let a_preview = self.asset_lab_compare_pane_preview(
+                            ui.ctx(),
+                            asset,
+                            AssetLabCompareSide::Baseline,
+                            Some(&compare.baseline_version),
+                            a_time,
+                            a_duration,
+                        );
+                        let b_preview = self.asset_lab_compare_pane_preview(
+                            ui.ctx(),
+                            asset,
+                            AssetLabCompareSide::Candidate,
+                            compare.candidate_version.as_deref(),
+                            b_time.unwrap_or(0.0),
+                            b_duration.unwrap_or(0.0),
+                        );
+
+                        let transport_h = if asset.is_video() { 72.0 } else { 0.0 };
+                        let pane_h = (ui.available_height() - transport_h).max(120.0);
+                        let pane_gap = kit::FIELD_COMPOUND_GAP;
+                        let pane_w = ((ui.available_width() - pane_gap) * 0.5).max(1.0);
+                        kit::bounded_horizontal_row(ui, pane_h, |ui, _| {
+                            ui.spacing_mut().item_spacing.x = pane_gap;
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(pane_w, pane_h),
+                                Layout::top_down(Align::Min),
+                                |ui| {
+                                    self.paint_asset_lab_compare_pane(
+                                        ui,
+                                        asset,
+                                        config,
+                                        AssetLabCompareSide::Baseline,
+                                        Some(&compare.baseline_version),
+                                        active_version,
+                                        a_duration,
+                                        compare.side_has_ended(a_duration, max_duration),
+                                        a_preview,
+                                    );
+                                },
+                            );
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(pane_w, pane_h),
+                                Layout::top_down(Align::Min),
+                                |ui| {
+                                    self.paint_asset_lab_compare_pane(
+                                        ui,
+                                        asset,
+                                        config,
+                                        AssetLabCompareSide::Candidate,
+                                        compare.candidate_version.as_deref(),
+                                        active_version,
+                                        b_duration.unwrap_or(0.0),
+                                        b_duration.is_some_and(|duration| {
+                                            compare.side_has_ended(duration, max_duration)
+                                        }),
+                                        b_preview,
+                                    );
+                                },
+                            );
+                        });
+                        if asset.is_video() {
+                            self.asset_lab_compare_transport(ui, max_duration);
+                        }
+                    });
+                });
+                strip.cell(|ui| {
+                    kit::card_frame().show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            kit::field_label(ui, "Graph · Candidate Browser");
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                kit::media_pill(
+                                    ui,
+                                    &format!("{:.0}%", self.asset_lab.graph_zoom * 100.0),
+                                    kit::TEXT_MUTED,
+                                );
+                            });
+                        });
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        self.asset_lab_flow_canvas(
+                            ui,
+                            asset,
+                            config,
+                            versions,
+                            selected_node_id,
+                            active_version,
+                            compatible_providers,
+                            action,
+                        );
+                    });
+                });
+            });
     }
 
     #[allow(dead_code)]
@@ -2132,6 +2922,7 @@ impl LatentSlateApp {
         compatible_providers: &[ProviderEntry],
         action: &mut Option<AssetLabAction>,
     ) {
+        let compare = self.asset_lab.compare.clone();
         let nodes = config
             .map(|config| config.lab_graph.nodes.as_slice())
             .unwrap_or(&[]);
@@ -2649,6 +3440,52 @@ impl LatentSlateApp {
                 &output_label,
                 zoom,
             );
+            if let Some(compare) = compare.as_ref() {
+                let is_a =
+                    asset_lab_node_represents_version(config, node, &compare.baseline_version);
+                let is_b = compare.candidate_version.as_deref().is_some_and(|version| {
+                    asset_lab_node_represents_version(config, node, version)
+                });
+                if is_a || is_b {
+                    let badge_size = Vec2::new((22.0 * zoom).clamp(16.0, 24.0), 18.0);
+                    let gap = (4.0 * zoom).clamp(2.0, 5.0);
+                    let count = usize::from(is_a) + usize::from(is_b);
+                    let total_w =
+                        badge_size.x * count as f32 + gap * count.saturating_sub(1) as f32;
+                    let mut badge_left = preview_rect.right() - total_w - 6.0;
+                    for (visible, side, color) in [
+                        (is_a, AssetLabCompareSide::Baseline, kit::PRIMARY),
+                        (is_b, AssetLabCompareSide::Candidate, kit::MARKER),
+                    ] {
+                        if !visible {
+                            continue;
+                        }
+                        let badge_rect = Rect::from_min_size(
+                            Pos2::new(badge_left, preview_rect.top() + 6.0),
+                            badge_size,
+                        );
+                        painter.rect_filled(
+                            badge_rect,
+                            kit::field_radius(),
+                            Color32::from_rgba_unmultiplied(12, 16, 18, 226),
+                        );
+                        painter.rect_stroke(
+                            badge_rect,
+                            kit::field_radius(),
+                            Stroke::new(1.2_f32, color),
+                            egui::StrokeKind::Inside,
+                        );
+                        painter.text(
+                            badge_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            side.marker(),
+                            FontId::proportional((10.5 * zoom).clamp(9.0, 11.5)),
+                            color,
+                        );
+                        badge_left += badge_size.x + gap;
+                    }
+                }
+            }
             if asset.is_video() && output_path.is_some() {
                 let scrub_y = preview_rect.bottom() - 4.0;
                 painter.line_segment(
@@ -2904,6 +3741,130 @@ impl LatentSlateApp {
         }
     }
 
+    fn asset_lab_compare_inspector_summary(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        action: &mut Option<AssetLabAction>,
+    ) {
+        let Some(compare) = self.asset_lab.compare.clone() else {
+            return;
+        };
+        ui.horizontal_wrapped(|ui| {
+            kit::media_pill(ui, "B · CANDIDATE", kit::MARKER);
+            ui.label(kit::caption(format!(
+                "Compared to A · {}",
+                compare.baseline_version
+            )));
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+
+        let baseline_record = asset_lab_record_for_version(config, Some(&compare.baseline_version));
+        let candidate_record =
+            asset_lab_record_for_version(config, compare.candidate_version.as_deref());
+        if let (Some(baseline), Some(candidate)) = (baseline_record, candidate_record) {
+            let baseline = asset_lab_compare_snapshot(
+                &self.editor.project,
+                baseline,
+                &self.editor.provider_entries,
+            );
+            let candidate = asset_lab_compare_snapshot(
+                &self.editor.project,
+                candidate,
+                &self.editor.provider_entries,
+            );
+            let delta = asset_lab_compare_delta(&baseline, &candidate);
+            if delta.changed.is_empty() {
+                ui.label(kit::caption(
+                    "Persisted provider inputs match the baseline.",
+                ));
+            } else {
+                for row in delta.changed.iter().take(5) {
+                    asset_lab_meta_row(
+                        ui,
+                        &row.label,
+                        format!("{} → {}", row.baseline, row.candidate),
+                    );
+                }
+                if delta.changed.len() > 5 {
+                    egui::CollapsingHeader::new(
+                        RichText::new(format!("All differing inputs ({})", delta.changed.len()))
+                            .color(kit::TEXT_MUTED)
+                            .size(10.5),
+                    )
+                    .id_salt(("asset_lab_compare_delta", asset.id))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for row in &delta.changed {
+                            asset_lab_meta_row(
+                                ui,
+                                &row.label,
+                                format!("{} → {}", row.baseline, row.candidate),
+                            );
+                        }
+                    });
+                }
+            }
+            if delta.unchanged_count > 0 {
+                ui.label(kit::caption(format!(
+                    "{} persisted fields unchanged",
+                    delta.unchanged_count
+                )));
+            }
+        } else {
+            ui.label(kit::caption("Select another output to compare."));
+        }
+
+        ui.add_space(kit::ACTION_GAP);
+        let baseline_available =
+            Self::asset_lab_version_has_record(config, &compare.baseline_version)
+                && self.asset_lab_version_has_output(asset, &compare.baseline_version);
+        let candidate_available = compare.candidate_version.as_deref().is_some_and(|version| {
+            Self::asset_lab_version_has_record(config, version)
+                && self.asset_lab_version_has_output(asset, version)
+        });
+        ui.add_enabled_ui(candidate_available, |ui| {
+            if kit::primary_button(ui, "Make B Active", ui.available_width()).clicked() {
+                *action = Some(AssetLabAction::MakeCompareCandidateActive);
+            }
+        });
+        ui.label(kit::caption(
+            "Updates all timeline placements of this asset. Pinned references stay pinned.",
+        ));
+        ui.add_space(kit::FORM_ROW_GAP);
+        kit::equal_width_action_row(
+            ui,
+            2,
+            kit::SECONDARY_BUTTON_H,
+            kit::FIELD_COMPOUND_GAP,
+            |ui, index, width| match index {
+                0 => {
+                    ui.add_enabled_ui(baseline_available, |ui| {
+                        if kit::secondary_button(ui, "Branch from A", width).clicked() {
+                            *action = Some(AssetLabAction::BranchFromCompareBaseline);
+                        }
+                    });
+                }
+                _ => {
+                    ui.add_enabled_ui(candidate_available, |ui| {
+                        if kit::secondary_button(ui, "Branch from B", width).clicked() {
+                            *action = Some(AssetLabAction::BranchFromCompareCandidate);
+                        }
+                    });
+                }
+            },
+        );
+        if !candidate_available {
+            ui.add_space(kit::FORM_ROW_GAP);
+            ui.label(
+                RichText::new("Candidate media is unavailable; decision actions are disabled.")
+                    .color(kit::MARKER)
+                    .size(10.5),
+            );
+        }
+    }
+
     pub(super) fn asset_lab_node_inspector(
         &mut self,
         ui: &mut Ui,
@@ -2912,7 +3873,7 @@ impl LatentSlateApp {
         versions: &[GenerationRecord],
         selected_node_id: Option<Uuid>,
         selected_version: Option<&str>,
-        _active_version: Option<&str>,
+        active_version: Option<&str>,
         _pending_delete: Option<&str>,
         compatible_providers: &[ProviderEntry],
         generate_shortcut_requested: bool,
@@ -2921,7 +3882,14 @@ impl LatentSlateApp {
         let focus_before = ui.memory(|memory| memory.focused());
         let tracked_focus_before = self.asset_lab.inspector_focus_id == focus_before;
         let card = kit::card_frame().show(ui, |ui| {
-            kit::field_label(ui, "Inspector");
+            kit::field_label(
+                ui,
+                if self.asset_lab.compare.is_some() {
+                    "Candidate Inspector"
+                } else {
+                    "Inspector"
+                },
+            );
             ui.add_space(kit::FORM_ROW_GAP);
 
             let selected_node = config.and_then(|config| {
@@ -2930,9 +3898,11 @@ impl LatentSlateApp {
             });
 
             let Some(node) = selected_node else {
-                ui.label(kit::caption(
-                    "Select a node to edit provider settings and generation parameters.",
-                ));
+                ui.label(kit::caption(if self.asset_lab.compare.is_some() {
+                    "Select another output to compare. The baseline remains fixed."
+                } else {
+                    "Select a node to edit provider settings and generation parameters."
+                }));
                 return;
             };
 
@@ -2981,6 +3951,31 @@ impl LatentSlateApp {
                         )
                 })
                 .map(|job| job.status);
+            if self.asset_lab.compare.is_some() {
+                self.asset_lab_compare_inspector_summary(ui, asset, config, action);
+                ui.add_space(kit::ACTION_GAP);
+                ui.separator();
+                ui.add_space(kit::ACTION_GAP);
+            } else if selected_version.is_some()
+                && selected_version != active_version
+                && asset.is_visual()
+            {
+                let can_compare = selected_version.is_some_and(|version| {
+                    Self::asset_lab_version_has_record(config, version)
+                        && self.asset_lab_version_has_output(asset, version)
+                }) && active_version.is_some_and(|version| {
+                    Self::asset_lab_version_has_record(config, version)
+                        && self.asset_lab_version_has_output(asset, version)
+                });
+                ui.add_enabled_ui(can_compare, |ui| {
+                    if kit::primary_button(ui, "Compare with Active", ui.available_width())
+                        .clicked()
+                    {
+                        *action = Some(AssetLabAction::EnterCompare);
+                    }
+                });
+                ui.add_space(kit::ACTION_GAP);
+            }
             self.asset_lab_run_header(
                 ui,
                 asset,
@@ -4230,10 +5225,11 @@ impl LatentSlateApp {
                                 .find(|record| record.version == version)
                                 .and_then(|record| record.lab_node_id)
                         });
-                self.asset_lab.selected_version = Some(version);
+                self.asset_lab.selected_version = Some(version.clone());
                 self.asset_lab.pending_delete_version = None;
                 self.asset_lab_preview_texture = None;
                 self.asset_lab.clear_draft();
+                self.update_asset_lab_compare_candidate(asset_id, Some(&version));
                 if let Some(node_id) = selected_node_id {
                     let updated =
                         self.editor
@@ -4248,11 +5244,87 @@ impl LatentSlateApp {
                     }
                 }
             }
+            AssetLabAction::EnterCompare => {
+                self.begin_asset_lab_compare(asset_id);
+            }
+            AssetLabAction::ExitCompare => {
+                self.asset_lab.compare = None;
+                self.clear_asset_lab_compare_runtime();
+                self.editor.status = "Exited comparison. Timeline output unchanged.".to_string();
+            }
+            AssetLabAction::SwapCompare => {
+                let swapped = self
+                    .asset_lab
+                    .compare
+                    .as_mut()
+                    .is_some_and(AssetLabCompareState::swap);
+                if swapped {
+                    self.asset_lab.selected_version = self
+                        .asset_lab
+                        .compare
+                        .as_ref()
+                        .and_then(|compare| compare.candidate_version.clone());
+                    self.clear_asset_lab_compare_runtime();
+                }
+            }
+            AssetLabAction::UseCompareCandidateAsBaseline => {
+                let changed = self
+                    .asset_lab
+                    .compare
+                    .as_mut()
+                    .is_some_and(AssetLabCompareState::use_candidate_as_baseline);
+                if changed {
+                    self.asset_lab.selected_version = None;
+                    self.asset_lab_compare_preview_textures
+                        .remove(&AssetLabCompareSide::Candidate);
+                    self.asset_lab_compare_errors
+                        .remove(&AssetLabCompareSide::Candidate);
+                }
+            }
+            AssetLabAction::MakeCompareCandidateActive => {
+                let version = self
+                    .asset_lab
+                    .compare
+                    .as_ref()
+                    .and_then(|compare| compare.candidate_version.clone());
+                if let Some(version) = version {
+                    let output_available = self
+                        .editor
+                        .project
+                        .find_asset(asset_id)
+                        .cloned()
+                        .is_some_and(|asset| self.asset_lab_version_has_output(&asset, &version));
+                    if output_available
+                        && self
+                            .set_generative_active_version(asset_id, &version)
+                            .is_ok()
+                    {
+                        self.asset_lab.selected_version = Some(version.clone());
+                        self.asset_lab.compare = None;
+                        self.clear_asset_lab_compare_runtime();
+                        self.editor.status = format!(
+                            "Set {version} active. All timeline placements of this asset now use it."
+                        );
+                    }
+                }
+            }
+            AssetLabAction::BranchFromCompareBaseline => {
+                self.branch_from_asset_lab_compare(asset_id, true);
+            }
+            AssetLabAction::BranchFromCompareCandidate => {
+                self.branch_from_asset_lab_compare(asset_id, false);
+            }
             AssetLabAction::SetActive(version) => {
-                let _ = self.set_generative_active_version(asset_id, &version);
-                self.asset_lab.selected_version = Some(version);
-                self.asset_lab.pending_delete_version = None;
-                self.asset_lab.clear_draft();
+                if self
+                    .set_generative_active_version(asset_id, &version)
+                    .is_ok()
+                {
+                    self.asset_lab.selected_version = Some(version);
+                    self.asset_lab.pending_delete_version = None;
+                    self.asset_lab.clear_draft();
+                    self.asset_lab.compare = None;
+                    self.clear_asset_lab_compare_runtime();
+                }
             }
             AssetLabAction::DuplicateVersion(version) => {
                 let _ = self.duplicate_generative_version(asset_id, &version);
@@ -4275,6 +5347,8 @@ impl LatentSlateApp {
             }
             AssetLabAction::SelectNode(node_id) => {
                 self.select_asset_lab_node(asset_id, node_id);
+                let selected = self.asset_lab.selected_version.clone();
+                self.update_asset_lab_compare_candidate(asset_id, selected.as_deref());
             }
             AssetLabAction::ClearNodeSelection => {
                 self.clear_asset_lab_node_selection(asset_id);
@@ -5723,7 +6797,572 @@ impl LatentSlateApp {
         self.asset_lab_preview_texture = None;
         self.asset_lab_node_preview_textures
             .retain(|key, _| key.asset_id != asset_id);
+        self.asset_lab_compare_preview_textures
+            .retain(|_, preview| preview.asset_id != asset_id);
+        self.asset_lab_compare_video_requests
+            .retain(|request| request.key.asset_id != asset_id);
         self.editor.preview_dirty = true;
+    }
+
+    fn advance_asset_lab_compare_playback(&mut self, ctx: &Context, max_duration: f64) {
+        let Some(compare) = self.asset_lab.compare.as_mut() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if !compare.playing || max_duration <= 0.0 {
+            compare.last_playback_update = Some(now);
+            return;
+        }
+        let elapsed = compare
+            .last_playback_update
+            .replace(now)
+            .map(|previous| now.saturating_duration_since(previous).as_secs_f64())
+            .unwrap_or(0.0)
+            .clamp(0.0, 0.1);
+        compare.shared_time_seconds = (compare.shared_time_seconds + elapsed).min(max_duration);
+        if compare.shared_time_seconds >= max_duration {
+            compare.playing = false;
+        } else {
+            ctx.request_repaint();
+        }
+    }
+
+    fn poll_asset_lab_compare_video_requests(&mut self, ctx: &Context) {
+        let requests = std::mem::take(&mut self.asset_lab_compare_video_requests);
+        for request in requests {
+            match request.receiver.try_recv() {
+                Ok(response) => {
+                    let role_version = self.asset_lab.compare.as_ref().and_then(|compare| {
+                        match request.key.side {
+                            AssetLabCompareSide::Baseline => {
+                                Some(compare.baseline_version.as_str())
+                            }
+                            AssetLabCompareSide::Candidate => compare.candidate_version.as_deref(),
+                        }
+                    });
+                    let current =
+                        role_version.is_some_and(|version| {
+                            let Some(asset) = self.editor.project.find_asset(request.key.asset_id)
+                            else {
+                                return false;
+                            };
+                            let Some(path) =
+                                self.editor.project.project_path.as_ref().and_then(|root| {
+                                    asset_lab_media_path(root, asset, Some(version))
+                                })
+                            else {
+                                return false;
+                            };
+                            let record = asset_lab_record_for_version(
+                                self.editor.project.generative_config(request.key.asset_id),
+                                Some(version),
+                            );
+                            let duration = asset_lab_compare_record_duration(
+                                asset,
+                                record,
+                                &self.editor.provider_entries,
+                            );
+                            let side_time = self
+                                .asset_lab
+                                .compare
+                                .as_ref()
+                                .map(|compare| compare.side_time(duration))
+                                .unwrap_or(0.0);
+                            let frame_index = asset_lab_compare_frame_index(
+                                side_time,
+                                duration,
+                                asset_lab_video_fps(asset, self.editor.project.settings.fps),
+                            );
+                            request.key.matches_desired(
+                                request.key.side,
+                                request.key.asset_id,
+                                version,
+                                &path,
+                                frame_index,
+                                self.asset_lab_video_decoder.current_epoch(),
+                                self.editor.project_session_revision,
+                            )
+                        });
+                    if !current {
+                        continue;
+                    }
+                    if let Some(frame) = response.image {
+                        let size =
+                            Vec2::new(frame.width().max(1) as f32, frame.height().max(1) as f32);
+                        let image = ColorImage::from_rgba_unmultiplied(
+                            [frame.width() as usize, frame.height() as usize],
+                            frame.as_raw(),
+                        );
+                        let texture = ctx.load_texture(
+                            format!(
+                                "asset-lab-compare-{}-{}-{}",
+                                request.key.side.marker(),
+                                request.key.version,
+                                request.key.frame_index
+                            ),
+                            image,
+                            TextureOptions::LINEAR,
+                        );
+                        self.asset_lab_compare_preview_textures.insert(
+                            request.key.side,
+                            AssetLabPreviewTexture {
+                                asset_id: request.key.asset_id,
+                                version: Some(request.key.version),
+                                path: request.key.path,
+                                frame_index: Some(request.key.frame_index),
+                                texture,
+                                size,
+                            },
+                        );
+                        self.asset_lab_compare_errors.remove(&request.key.side);
+                    } else {
+                        self.asset_lab_compare_errors.insert(
+                            request.key.side,
+                            format!(
+                                "Could not decode {} at frame {}.",
+                                request.key.path.display(),
+                                request.key.frame_index
+                            ),
+                        );
+                    }
+                    ctx.request_repaint();
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.asset_lab_compare_video_requests.push(request);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.asset_lab_compare_errors.insert(
+                        request.key.side,
+                        "The local video decoder stopped before returning a frame.".to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn asset_lab_compare_pane_preview(
+        &mut self,
+        ctx: &Context,
+        asset: &Asset,
+        side: AssetLabCompareSide,
+        version: Option<&str>,
+        local_time_seconds: f64,
+        duration: f64,
+    ) -> AssetLabComparePanePreview {
+        let Some(version) = version else {
+            return AssetLabComparePanePreview {
+                texture: None,
+                status: AssetLabComparePaneStatus::MissingOutput,
+                technical_detail: None,
+            };
+        };
+        if !asset.is_visual() {
+            return AssetLabComparePanePreview {
+                texture: None,
+                status: AssetLabComparePaneStatus::Unsupported,
+                technical_detail: None,
+            };
+        }
+        let Some(path) = self
+            .editor
+            .project
+            .project_path
+            .as_ref()
+            .and_then(|root| asset_lab_media_path(root, asset, Some(version)))
+        else {
+            return AssetLabComparePanePreview {
+                texture: None,
+                status: AssetLabComparePaneStatus::MissingOutput,
+                technical_detail: None,
+            };
+        };
+        if !path.is_file() {
+            return AssetLabComparePanePreview {
+                texture: None,
+                status: AssetLabComparePaneStatus::MissingOutput,
+                technical_detail: Some(format!("Missing local output: {}", path.display())),
+            };
+        }
+
+        if !asset.is_video() {
+            let cached = self
+                .asset_lab_compare_preview_textures
+                .get(&side)
+                .filter(|preview| {
+                    preview.asset_id == asset.id
+                        && preview.version.as_deref() == Some(version)
+                        && preview.path == path
+                        && preview.frame_index.is_none()
+                });
+            if let Some(cached) = cached {
+                return AssetLabComparePanePreview {
+                    texture: Some((cached.texture.id(), cached.size)),
+                    status: AssetLabComparePaneStatus::Ready,
+                    technical_detail: None,
+                };
+            }
+            let Some((image, size)) = load_preview_image(&path, 1024) else {
+                let detail = format!("Could not decode image output {}.", path.display());
+                self.asset_lab_compare_errors.insert(side, detail.clone());
+                return AssetLabComparePanePreview {
+                    texture: None,
+                    status: AssetLabComparePaneStatus::DecodeFailed,
+                    technical_detail: Some(detail),
+                };
+            };
+            let texture = ctx.load_texture(
+                format!("asset-lab-compare-{}-{version}", side.marker()),
+                image,
+                TextureOptions::LINEAR,
+            );
+            let texture_id = texture.id();
+            self.asset_lab_compare_preview_textures.insert(
+                side,
+                AssetLabPreviewTexture {
+                    asset_id: asset.id,
+                    version: Some(version.to_string()),
+                    path,
+                    frame_index: None,
+                    texture,
+                    size,
+                },
+            );
+            return AssetLabComparePanePreview {
+                texture: Some((texture_id, size)),
+                status: AssetLabComparePaneStatus::Ready,
+                technical_detail: None,
+            };
+        }
+
+        let fps = asset_lab_video_fps(asset, self.editor.project.settings.fps);
+        let frame_index = asset_lab_compare_frame_index(local_time_seconds, duration, fps);
+        let cached = self.asset_lab_compare_preview_textures.get(&side);
+        let exact = cached.filter(|preview| {
+            preview.asset_id == asset.id
+                && preview.version.as_deref() == Some(version)
+                && preview.path == path
+                && preview.frame_index == Some(frame_index)
+        });
+        if let Some(cached) = exact {
+            return AssetLabComparePanePreview {
+                texture: Some((cached.texture.id(), cached.size)),
+                status: AssetLabComparePaneStatus::Ready,
+                technical_detail: None,
+            };
+        }
+
+        let pending = self
+            .asset_lab_compare_video_requests
+            .iter()
+            .any(|request| request.key.side == side);
+        if !pending {
+            let epoch = self.asset_lab_video_decoder.current_epoch();
+            let mode = if self
+                .asset_lab
+                .compare
+                .as_ref()
+                .is_some_and(|compare| compare.playing)
+                && cached.is_some_and(|preview| {
+                    preview.version.as_deref() == Some(version)
+                        && preview.frame_index.is_some_and(|frame| frame < frame_index)
+                }) {
+                DecodeMode::Sequential
+            } else {
+                DecodeMode::Seek
+            };
+            let frame_time = seconds_from_frames(frame_index as f64, fps);
+            if let Some(receiver) = self.asset_lab_video_decoder.decode_async_at_epoch(
+                &path,
+                frame_time,
+                mode,
+                side.lane_id(),
+                self.editor.layout.hardware_decode,
+                epoch,
+            ) {
+                self.asset_lab_compare_video_requests
+                    .push(AssetLabCompareVideoRequest {
+                        key: AssetLabCompareDecodeKey {
+                            side,
+                            asset_id: asset.id,
+                            version: version.to_string(),
+                            path: path.clone(),
+                            frame_index,
+                            decoder_epoch: epoch,
+                            project_session_revision: self.editor.project_session_revision,
+                        },
+                        receiver,
+                    });
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+        }
+
+        let retained = cached.filter(|preview| {
+            preview.asset_id == asset.id
+                && preview.version.as_deref() == Some(version)
+                && preview.path == path
+        });
+        let technical_detail = self.asset_lab_compare_errors.get(&side).cloned();
+        let status = if technical_detail.is_some() && !pending {
+            AssetLabComparePaneStatus::DecodeFailed
+        } else if retained.is_some() {
+            AssetLabComparePaneStatus::Updating
+        } else {
+            AssetLabComparePaneStatus::Loading
+        };
+        AssetLabComparePanePreview {
+            texture: retained.map(|preview| (preview.texture.id(), preview.size)),
+            status,
+            technical_detail,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_asset_lab_compare_pane(
+        &mut self,
+        ui: &mut Ui,
+        asset: &Asset,
+        config: Option<&GenerativeConfig>,
+        side: AssetLabCompareSide,
+        version: Option<&str>,
+        active_version: Option<&str>,
+        duration: f64,
+        ended: bool,
+        preview: AssetLabComparePanePreview,
+    ) {
+        ui.horizontal(|ui| {
+            kit::media_pill(
+                ui,
+                side.marker(),
+                if side == AssetLabCompareSide::Baseline {
+                    kit::PRIMARY
+                } else {
+                    kit::MARKER
+                },
+            );
+            ui.add(
+                egui::Label::new(RichText::new(version.unwrap_or("No candidate")).strong())
+                    .truncate(),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ended {
+                    kit::media_pill(ui, "ENDED", kit::TEXT_MUTED);
+                } else if version.is_some_and(|version| active_version == Some(version)) {
+                    kit::media_pill(ui, "ACTIVE", kit::PRIMARY);
+                } else {
+                    kit::media_pill(
+                        ui,
+                        if side == AssetLabCompareSide::Baseline {
+                            "BASELINE"
+                        } else {
+                            "CANDIDATE"
+                        },
+                        kit::TEXT_MUTED,
+                    );
+                }
+            });
+        });
+        let provider = asset_lab_record_for_version(config, version)
+            .and_then(|record| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == record.provider_id)
+            })
+            .map(|provider| provider.name.as_str())
+            .unwrap_or("Local output");
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(kit::caption(provider)).truncate());
+            if asset.is_video() && duration > 0.0 {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(kit::caption(timecode(duration)));
+                });
+            }
+        });
+        ui.add_space(kit::FORM_ROW_GAP);
+
+        let desired_h = ui.available_height().max(70.0);
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), desired_h),
+            Sense::click_and_drag(),
+        );
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
+        painter.rect_stroke(
+            rect,
+            kit::field_radius(),
+            Stroke::new(1.0_f32, kit::BORDER_SOFT),
+            egui::StrokeKind::Inside,
+        );
+        if let Some((texture_id, size)) = preview.texture {
+            let image_bounds = rect.shrink(8.0);
+            let fit = (image_bounds.width() / size.x.max(1.0))
+                .min(image_bounds.height() / size.y.max(1.0))
+                .max(0.01);
+            if self.asset_lab.preview_auto_fit {
+                self.asset_lab.preview_zoom = 1.0;
+                self.asset_lab.preview_pan = Vec2::ZERO;
+            }
+            if response.double_clicked() {
+                self.asset_lab.preview_auto_fit = true;
+                self.asset_lab.preview_zoom = 1.0;
+                self.asset_lab.preview_pan = Vec2::ZERO;
+            }
+            let scroll_delta = preview_scroll_delta(ui, rect);
+            if scroll_delta.abs() > f32::EPSILON {
+                let old_zoom = self.asset_lab.preview_zoom.max(0.1);
+                let zoom_factor = (1.0
+                    + scroll_delta
+                        * PREVIEW_SCROLL_ZOOM_SENSITIVITY
+                        * PREVIEW_WHEEL_ZOOM_MULTIPLIER)
+                    .clamp(0.5, 2.0);
+                self.asset_lab.preview_zoom = (old_zoom * zoom_factor).clamp(0.1, PREVIEW_ZOOM_MAX);
+                self.asset_lab.preview_auto_fit = false;
+            }
+            let secondary_down =
+                ui.input(|input| input.pointer.button_down(egui::PointerButton::Secondary));
+            if secondary_down && (response.hovered() || self.asset_lab.preview_pan_drag.is_some()) {
+                if let Some(pointer) = ui.ctx().pointer_hover_pos() {
+                    let (start_pan, start_pointer) = self
+                        .asset_lab
+                        .preview_pan_drag
+                        .get_or_insert((self.asset_lab.preview_pan, pointer));
+                    self.asset_lab.preview_pan = *start_pan + (pointer - *start_pointer);
+                    self.asset_lab.preview_auto_fit = false;
+                }
+            } else if !secondary_down {
+                self.asset_lab.preview_pan_drag = None;
+            }
+            let scale = fit * self.asset_lab.preview_zoom.max(0.1);
+            let image_rect = Rect::from_center_size(image_bounds.center(), size * scale)
+                .translate(self.asset_lab.preview_pan);
+            painter.image(
+                texture_id,
+                image_rect,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+
+        let status_copy = match (version, preview.status) {
+            (None, _) => Some("Select another output to compare."),
+            (_, AssetLabComparePaneStatus::Loading) => Some("Loading frame…"),
+            (_, AssetLabComparePaneStatus::Updating) => Some("Updating…"),
+            (_, AssetLabComparePaneStatus::MissingOutput) => Some("Output file is unavailable."),
+            (_, AssetLabComparePaneStatus::DecodeFailed) => Some("Could not decode this output."),
+            (_, AssetLabComparePaneStatus::Unsupported) => Some("This media type is unsupported."),
+            (_, AssetLabComparePaneStatus::Ready) => None,
+        };
+        if let Some(copy) = status_copy {
+            let color = if matches!(
+                preview.status,
+                AssetLabComparePaneStatus::DecodeFailed | AssetLabComparePaneStatus::MissingOutput
+            ) {
+                kit::MARKER
+            } else {
+                kit::TEXT_MUTED
+            };
+            let pos = if preview.texture.is_some() {
+                rect.left_bottom() + Vec2::new(8.0, -8.0)
+            } else {
+                rect.center()
+            };
+            let align = if preview.texture.is_some() {
+                egui::Align2::LEFT_BOTTOM
+            } else {
+                egui::Align2::CENTER_CENTER
+            };
+            painter.text(pos, align, copy, FontId::proportional(10.5), color);
+        }
+        if let Some(detail) = preview.technical_detail {
+            response.on_hover_text(format!("{detail}\n\nOpen Details to copy this diagnostic."));
+            let details_rect = Rect::from_min_size(
+                rect.right_bottom() - Vec2::new(70.0, 28.0),
+                Vec2::new(62.0, 20.0),
+            );
+            let trigger = ui.put(
+                details_rect,
+                egui::Button::new(RichText::new("Details").size(9.5)),
+            );
+            egui::Popup::menu(&trigger)
+                .id(trigger.id.with(("asset_lab_compare_details", side)))
+                .align(egui::RectAlign::BOTTOM_END)
+                .width(300.0)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.set_max_width(300.0);
+                    kit::field_label(ui, "Technical details");
+                    ui.add_space(kit::FIELD_LABEL_GAP);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&detail)
+                                .monospace()
+                                .size(10.0)
+                                .color(kit::TEXT_MUTED),
+                        )
+                        .wrap()
+                        .selectable(true),
+                    );
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    if kit::secondary_button(ui, "Copy details", ui.available_width()).clicked() {
+                        ui.ctx().copy_text(detail.clone());
+                    }
+                });
+        }
+    }
+
+    fn asset_lab_compare_transport(&mut self, ui: &mut Ui, max_duration: f64) {
+        ui.add_space(kit::FORM_ROW_GAP);
+        ui.horizontal(|ui| {
+            let playing = self
+                .asset_lab
+                .compare
+                .as_ref()
+                .is_some_and(|compare| compare.playing);
+            ui.add_enabled_ui(max_duration > 0.0, |ui| {
+                if kit::secondary_button(ui, if playing { "Pause" } else { "Play" }, 70.0).clicked()
+                {
+                    if let Some(compare) = self.asset_lab.compare.as_mut() {
+                        if !playing && compare.shared_time_seconds >= max_duration {
+                            compare.shared_time_seconds = 0.0;
+                        }
+                        compare.playing = !playing;
+                        compare.last_playback_update = Some(std::time::Instant::now());
+                    }
+                }
+            });
+            let current = self
+                .asset_lab
+                .compare
+                .as_ref()
+                .map(|compare| compare.shared_time_seconds)
+                .unwrap_or(0.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} / {}",
+                    timecode(current.min(max_duration)),
+                    timecode(max_duration)
+                ))
+                .monospace()
+                .size(10.5)
+                .color(kit::TEXT_MUTED),
+            );
+        });
+        if let Some(compare) = self.asset_lab.compare.as_mut() {
+            let mut time = compare
+                .shared_time_seconds
+                .clamp(0.0, max_duration.max(0.0));
+            let response = ui.add_enabled(
+                max_duration > 0.0,
+                egui::Slider::new(&mut time, 0.0..=max_duration.max(0.0))
+                    .show_value(false)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            if response.changed() {
+                compare.shared_time_seconds = time.max(0.0);
+                compare.last_playback_update = Some(std::time::Instant::now());
+            }
+        }
     }
 
     pub(super) fn asset_lab_node_preview_texture(
@@ -5871,5 +7510,193 @@ impl LatentSlateApp {
             size,
         });
         Some((texture_id, size))
+    }
+}
+
+#[cfg(test)]
+mod asset_lab_compare_tests {
+    use super::*;
+
+    fn compare() -> AssetLabCompareState {
+        AssetLabCompareState::enter("V03", "V08").expect("distinct outputs compare")
+    }
+
+    fn snapshot(fields: &[(&str, &str, &str)]) -> AssetLabCompareSnapshot {
+        AssetLabCompareSnapshot {
+            fields: fields
+                .iter()
+                .map(|(key, label, value)| AssetLabCompareField {
+                    key: (*key).to_string(),
+                    label: (*label).to_string(),
+                    value: (*value).to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn compare_entry_requires_a_distinct_selected_output() {
+        let state = compare();
+        assert_eq!(state.baseline_version, "V03");
+        assert_eq!(state.candidate_version.as_deref(), Some("V08"));
+        assert!(AssetLabCompareState::enter("V03", "V03").is_none());
+    }
+
+    #[test]
+    fn concrete_candidate_updates_b_only_and_staged_nodes_do_not_corrupt_it() {
+        let mut state = compare();
+        assert!(state.select_candidate(Some("V09"), true));
+        assert_eq!(state.baseline_version, "V03");
+        assert_eq!(state.candidate_version.as_deref(), Some("V09"));
+        assert!(!state.select_candidate(None, false));
+        assert!(!state.select_candidate(Some("STAGED"), false));
+        assert!(!state.select_candidate(Some("V03"), true));
+        assert_eq!(state.candidate_version.as_deref(), Some("V09"));
+    }
+
+    #[test]
+    fn swap_and_use_candidate_as_baseline_never_imply_an_active_mutation() {
+        let project_active = "V03";
+        let mut state = compare();
+        assert!(state.swap());
+        assert_eq!(state.baseline_version, "V08");
+        assert_eq!(state.candidate_version.as_deref(), Some("V03"));
+        assert_eq!(project_active, "V03");
+
+        assert!(state.use_candidate_as_baseline());
+        assert_eq!(state.baseline_version, "V03");
+        assert_eq!(state.candidate_version, None);
+        assert_eq!(project_active, "V03");
+    }
+
+    #[test]
+    fn decision_roles_resolve_the_exact_existing_version() {
+        let state = compare();
+        assert_eq!(
+            state.decision_version(AssetLabCompareSide::Baseline),
+            Some("V03")
+        );
+        assert_eq!(
+            state.decision_version(AssetLabCompareSide::Candidate),
+            Some("V08")
+        );
+    }
+
+    #[test]
+    fn delta_collapses_same_values_omits_unavailable_and_keeps_candidate_order() {
+        let baseline = snapshot(&[
+            ("provider", "Provider", "Engine A"),
+            ("prompt", "Prompt", "quiet lake"),
+            ("seed", "Seed", "4281"),
+            ("a_only", "Removed", "value"),
+        ]);
+        let candidate = snapshot(&[
+            ("provider", "Provider", "Engine A"),
+            ("seed", "Seed", "4286"),
+            ("prompt", "Prompt", "stormy lake"),
+            ("b_only", "Added", "value"),
+        ]);
+        let delta = asset_lab_compare_delta(&baseline, &candidate);
+        assert_eq!(delta.unchanged_count, 1);
+        assert_eq!(
+            delta
+                .changed
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Seed", "Prompt"]
+        );
+        assert_eq!(delta.changed[0].baseline, "4281");
+        assert_eq!(delta.changed[0].candidate, "4286");
+    }
+
+    #[test]
+    fn shared_video_time_uses_longer_range_and_clamps_the_shorter_side() {
+        let mut state = compare();
+        state.shared_time_seconds = 5.5;
+        let max = AssetLabCompareState::max_duration(5.0, Some(6.0));
+        assert_eq!(max, 6.0);
+        assert_eq!(state.side_time(5.0), 5.0);
+        assert_eq!(state.side_time(6.0), 5.5);
+        assert!(state.side_has_ended(5.0, max));
+        assert!(!state.side_has_ended(6.0, max));
+        assert_eq!(asset_lab_compare_frame_index(5.0, 5.0, 30.0), 149);
+        assert_eq!(asset_lab_compare_frame_index(f64::NAN, 5.0, 30.0), 0);
+    }
+
+    #[test]
+    fn repair_exits_for_deleted_a_and_clears_only_deleted_b() {
+        let mut state = compare();
+        let outcome = state.repair_versions(|version| version != "V08");
+        assert_eq!(outcome, AssetLabCompareRepair::CandidateCleared);
+        assert_eq!(state.baseline_version, "V03");
+        assert_eq!(state.candidate_version, None);
+
+        let mut state = compare();
+        let outcome = state.repair_versions(|version| version != "V03");
+        assert_eq!(outcome, AssetLabCompareRepair::Exit);
+    }
+
+    #[test]
+    fn decode_identity_rejects_cross_side_stale_frame_version_epoch_and_project() {
+        let asset_id = Uuid::new_v4();
+        let key = AssetLabCompareDecodeKey {
+            side: AssetLabCompareSide::Baseline,
+            asset_id,
+            version: "V03".to_string(),
+            path: PathBuf::from("V03.mp4"),
+            frame_index: 42,
+            decoder_epoch: 7,
+            project_session_revision: 11,
+        };
+        assert!(key.matches_desired(
+            AssetLabCompareSide::Baseline,
+            asset_id,
+            "V03",
+            Path::new("V03.mp4"),
+            42,
+            7,
+            11
+        ));
+        assert!(!key.matches_desired(
+            AssetLabCompareSide::Candidate,
+            asset_id,
+            "V03",
+            Path::new("V03.mp4"),
+            42,
+            7,
+            11
+        ));
+        assert!(!key.matches_desired(
+            AssetLabCompareSide::Baseline,
+            asset_id,
+            "V08",
+            Path::new("V03.mp4"),
+            42,
+            7,
+            11
+        ));
+        assert!(!key.matches_desired(
+            AssetLabCompareSide::Baseline,
+            asset_id,
+            "V03",
+            Path::new("V03.mp4"),
+            43,
+            7,
+            11
+        ));
+        assert!(!key.matches_desired(
+            AssetLabCompareSide::Baseline,
+            asset_id,
+            "V03",
+            Path::new("V03.mp4"),
+            42,
+            8,
+            12
+        ));
+        assert_ne!(
+            AssetLabCompareSide::Baseline.lane_id(),
+            AssetLabCompareSide::Candidate.lane_id()
+        );
     }
 }

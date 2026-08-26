@@ -431,7 +431,7 @@ impl LatentSlateApp {
         self.editor.previewer.invalidate_folder(&job.folder_path);
         self.invalidate_asset_visual_cache(job.asset_id);
         self.editor.preview_dirty = true;
-        if self.asset_lab.asset_id == Some(job.asset_id) {
+        if self.asset_lab.asset_id == Some(job.asset_id) && self.asset_lab.compare.is_none() {
             self.asset_lab.selected_version = Some(version.clone());
             self.asset_lab.pending_delete_version = None;
             self.asset_lab_preview_texture = None;

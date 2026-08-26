@@ -2230,6 +2230,11 @@ impl EditorState {
                 self.overlays = EditorOverlays::default();
                 AutomationResponse::empty_ok()
             }
+            AutomationCommand::OpenAssetLab { .. }
+            | AutomationCommand::CloseAssetLab
+            | AutomationCommand::SetAssetLabCompareTime { .. } => AutomationResponse::conflict(
+                "Asset Lab automation requires the desktop UI runtime.",
+            ),
         }
     }
 

@@ -37,7 +37,7 @@ use crate::core::timeline_snap::{
     best_snap_delta_frames, frames_from_seconds, seconds_from_frames, snap_time_to_frame,
     SnapTarget,
 };
-use crate::core::video_decode::VideoDecodeWorker;
+use crate::core::video_decode::{DecodeMode, DecodeResponse, VideoDecodeWorker};
 use crate::editor::{
     default_generative_video_fps, default_generative_video_frames, default_projects_dir,
     EditorState,
@@ -324,6 +324,9 @@ pub struct LatentSlateApp {
     asset_lab: AssetLabState,
     asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
     asset_lab_node_preview_textures: HashMap<AssetLabNodePreviewKey, AssetLabPreviewTexture>,
+    asset_lab_compare_preview_textures: HashMap<AssetLabCompareSide, AssetLabPreviewTexture>,
+    asset_lab_compare_video_requests: Vec<AssetLabCompareVideoRequest>,
+    asset_lab_compare_errors: HashMap<AssetLabCompareSide, String>,
     asset_lab_video_decoder: VideoDecodeWorker,
     provider_template_kind: ProviderTemplateKind,
     project_delete_confirmation: Option<ProjectDeleteConfirmation>,
@@ -689,6 +692,9 @@ impl LatentSlateApp {
             asset_lab: AssetLabState::default(),
             asset_lab_preview_texture: None,
             asset_lab_node_preview_textures: HashMap::new(),
+            asset_lab_compare_preview_textures: HashMap::new(),
+            asset_lab_compare_video_requests: Vec::new(),
+            asset_lab_compare_errors: HashMap::new(),
             asset_lab_video_decoder: VideoDecodeWorker::new(8192, 8192),
             provider_template_kind: ProviderTemplateKind::default(),
             project_delete_confirmation: None,
