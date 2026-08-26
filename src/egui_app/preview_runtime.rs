@@ -356,7 +356,7 @@ impl LatentSlateApp {
 
     pub(super) fn update_preview_texture(&mut self, ctx: &Context) {
         self.poll_preview_render_results(ctx);
-        if !self.editor.preview_dirty && self.preview_layers.is_some() {
+        if !self.editor.preview_dirty {
             return;
         }
         if self.editor.project.project_path.is_none() {
