@@ -164,23 +164,14 @@ impl LatentSlateApp {
                 let retained = self.preview_layers.is_some()
                     && self.preview_render_report.rendered_visual_clips > 0;
                 let scrubbing = matches!(self.timeline_drag.as_ref(), Some(TimelineDrag::Playhead));
-                if pending || scrubbing {
-                    if let Some(operation) =
-                        preview_operation(&self.preview_render_report, pending, retained, scrubbing)
-                    {
-                        kit::operation_status_pill(
-                            &mut controls_ui,
-                            operation.presentation.phase,
-                            operation.presentation.severity,
-                        )
-                        .on_hover_text(
-                            operation
-                                .presentation
-                                .detail
-                                .as_deref()
-                                .unwrap_or(&operation.presentation.title),
-                        );
-                    }
+                if let Some(operation) =
+                    preview_operation(&self.preview_render_report, pending, retained, scrubbing)
+                {
+                    self.preview_operation_status(
+                        &mut controls_ui,
+                        operation,
+                        header_inner.width(),
+                    );
                 }
                 let s = &self.editor.project.settings;
                 ui.painter().text(
@@ -264,8 +255,6 @@ impl LatentSlateApp {
         } else {
             painter.rect_filled(rect, 0.0, kit::PANEL_SUNKEN);
         }
-
-        self.paint_preview_operation(ui, rect);
 
         if self.editor.layout.preview_stats {
             if let Some(stats) = &self.preview_stats {
@@ -355,73 +344,91 @@ impl LatentSlateApp {
         }
     }
 
-    fn paint_preview_operation(&mut self, ui: &mut Ui, rect: Rect) {
-        let pending = self.preview_render_busy_since.is_some();
-        let retained =
-            self.preview_layers.is_some() && self.preview_render_report.rendered_visual_clips > 0;
-        let scrubbing = matches!(self.timeline_drag.as_ref(), Some(TimelineDrag::Playhead));
-        let Some(operation) =
-            preview_operation(&self.preview_render_report, pending, retained, scrubbing)
-        else {
-            return;
-        };
-
-        if operation.presentation.phase == kit::OperationPhase::Running {
-            return;
-        }
-
-        if operation.presentation.phase == kit::OperationPhase::Idle {
-            let center = rect.center();
-            ui.painter().text(
-                center - Vec2::new(0.0, 8.0),
-                egui::Align2::CENTER_CENTER,
-                &operation.presentation.title,
-                FontId::proportional(12.0),
-                kit::TEXT_MUTED,
+    fn preview_operation_status(
+        &mut self,
+        ui: &mut Ui,
+        operation: PreviewOperation,
+        header_width: f32,
+    ) {
+        let pill = kit::operation_status_pill(
+            ui,
+            operation.presentation.phase,
+            operation.presentation.severity,
+        );
+        let mut trigger_rect = pill.rect;
+        let title_width = (header_width - 330.0).clamp(0.0, 190.0);
+        if title_width >= 48.0 {
+            let title = ui.add_sized(
+                [title_width, 20.0],
+                egui::Label::new(
+                    RichText::new(&operation.presentation.title)
+                        .color(kit::TEXT_MUTED)
+                        .size(10.5),
+                )
+                .truncate(),
             );
-            if let Some(detail) = operation.presentation.detail.as_deref() {
-                ui.painter().text(
-                    center + Vec2::new(0.0, 12.0),
-                    egui::Align2::CENTER_CENTER,
-                    detail,
-                    FontId::proportional(10.5),
-                    kit::TEXT_DIM,
-                );
-            }
-            return;
+            trigger_rect = trigger_rect.union(title.rect);
         }
 
-        let width = rect.width().min(390.0).max(220.0);
-        let height = rect.height().min(220.0).max(120.0);
-        let overlay_rect = Rect::from_center_size(rect.center(), Vec2::new(width, height));
-        let mut overlay_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(overlay_rect)
-                .layout(Layout::top_down(Align::Min).with_main_align(Align::Center)),
-        );
-        overlay_ui.shrink_clip_rect(overlay_rect);
-        overlay_ui.set_width(overlay_rect.width());
-        let response = kit::operation_banner(
-            &mut overlay_ui,
-            "preview_canvas_operation",
-            &operation.presentation,
-        );
-        if response.technical_detail_copied {
+        let hover_text = operation
+            .presentation
+            .detail
+            .as_deref()
+            .unwrap_or(&operation.presentation.title);
+        let trigger = crate::core::automation::instrument_response(
+            ui.interact(
+                trigger_rect,
+                ui.make_persistent_id("preview_operation_status"),
+                Sense::click(),
+            ),
+            "preview_status",
+            Some(operation.presentation.title.clone()),
+            true,
+            false,
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover_text);
+        let mut copied_details = false;
+        let mut requested_action = None;
+        egui::Popup::menu(&trigger)
+            .id(trigger.id.with("details"))
+            .align(egui::RectAlign::BOTTOM_START)
+            .gap(4.0)
+            .width(360.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_max_width(360.0);
+                let response = kit::operation_banner(
+                    ui,
+                    "preview_header_operation_details",
+                    &operation.presentation,
+                );
+                copied_details = response.technical_detail_copied;
+                if response.primary_clicked {
+                    requested_action = operation.action;
+                    ui.close();
+                }
+            });
+
+        if copied_details {
             self.editor.status = "Copied preview details.".to_string();
         }
-        if response.primary_clicked {
-            match operation.action {
-                Some(PreviewSafeAction::ShowAsset(asset_id)) => {
-                    self.editor.selection.asset_ids = vec![asset_id];
-                    self.asset_reveal_override = Some(asset_id);
-                    self.asset_reveal_scroll_target = Some(asset_id);
-                    self.editor.layout.left_collapsed = false;
-                    self.editor.status = "Revealed preview source in Assets.".to_string();
-                }
-                Some(PreviewSafeAction::OpenAssetLab(asset_id)) => {
-                    self.open_asset_lab(asset_id);
-                }
-                None => {}
+        if let Some(action) = requested_action {
+            self.apply_preview_safe_action(action);
+        }
+    }
+
+    fn apply_preview_safe_action(&mut self, action: PreviewSafeAction) {
+        match action {
+            PreviewSafeAction::ShowAsset(asset_id) => {
+                self.editor.selection.asset_ids = vec![asset_id];
+                self.asset_reveal_override = Some(asset_id);
+                self.asset_reveal_scroll_target = Some(asset_id);
+                self.editor.layout.left_collapsed = false;
+                self.editor.status = "Revealed preview source in Assets.".to_string();
+            }
+            PreviewSafeAction::OpenAssetLab(asset_id) => {
+                self.open_asset_lab(asset_id);
             }
         }
     }
