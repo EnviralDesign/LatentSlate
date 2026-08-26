@@ -599,7 +599,9 @@ impl LatentSlateApp {
     pub(super) fn agent_export_status_json(&self) -> serde_json::Value {
         let status = match self.export_modal.status {
             ExportRunStatus::Idle => "idle",
+            ExportRunStatus::ValidationIssue => "blocked",
             ExportRunStatus::Running => "running",
+            ExportRunStatus::Canceling => "canceling",
             ExportRunStatus::Finished => "finished",
             ExportRunStatus::Cancelled => "cancelled",
             ExportRunStatus::Failed => "failed",

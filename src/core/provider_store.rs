@@ -9,13 +9,15 @@ use crate::state::{
     ProviderOutputType, ProviderWorkflowKind,
 };
 
-pub fn load_local_provider_entries() -> io::Result<Vec<ProviderEntry>> {
+pub fn load_local_provider_entries_with_reports() -> io::Result<(
+    Vec<ProviderEntry>,
+    Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+)> {
     let mut entries = load_provider_entries_from(&local_providers_root())?;
-    match crate::providers::latentslate_engine::load_provider_entries() {
-        Ok(engine_entries) => merge_provider_entries(&mut entries, engine_entries),
-        Err(err) => println!("Failed to load LatentSlate Engine tools: {err}"),
-    }
-    Ok(entries)
+    let (engine_entries, reports) =
+        crate::providers::latentslate_engine::load_provider_entries_with_reports();
+    merge_provider_entries(&mut entries, engine_entries);
+    Ok((entries, reports))
 }
 
 fn merge_provider_entries(entries: &mut Vec<ProviderEntry>, incoming: Vec<ProviderEntry>) {
@@ -24,16 +26,6 @@ fn merge_provider_entries(entries: &mut Vec<ProviderEntry>, incoming: Vec<Provid
             entries[index] = provider;
         } else {
             entries.push(provider);
-        }
-    }
-}
-
-pub fn load_local_provider_entries_or_empty() -> Vec<ProviderEntry> {
-    match load_local_provider_entries() {
-        Ok(entries) => entries,
-        Err(err) => {
-            println!("Failed to load provider entries: {}", err);
-            Vec::new()
         }
     }
 }

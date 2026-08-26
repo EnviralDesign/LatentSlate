@@ -298,38 +298,30 @@ fn export_video_inner(
     result
 }
 
-fn validate_export_settings(settings: &VideoExportSettings) -> ExportResult<()> {
+pub fn validate_video_export_settings(settings: &VideoExportSettings) -> Result<(), String> {
     if settings.width < 2 || settings.height < 2 {
-        return Err(ExportFailure::Error(
-            "Export width and height must be at least 2 pixels.".to_string(),
-        ));
+        return Err("Export width and height must be at least 2 pixels.".to_string());
     }
     if settings.width % 2 != 0 || settings.height % 2 != 0 {
-        return Err(ExportFailure::Error(
-            "Export width and height must be even for MP4/H.264/H.265.".to_string(),
-        ));
+        return Err("Export width and height must be even for MP4/H.264/H.265.".to_string());
     }
     if !(settings.fps.is_finite() && settings.fps > 0.0 && settings.fps <= 240.0) {
-        return Err(ExportFailure::Error(
-            "Export FPS must be between 1 and 240.".to_string(),
-        ));
+        return Err("Export FPS must be between 1 and 240.".to_string());
     }
     if !(settings.start_seconds.is_finite() && settings.start_seconds >= 0.0) {
-        return Err(ExportFailure::Error(
-            "Export start time must be zero or greater.".to_string(),
-        ));
+        return Err("Export start time must be zero or greater.".to_string());
     }
     if !(settings.duration_seconds.is_finite() && settings.duration_seconds > 0.0) {
-        return Err(ExportFailure::Error(
-            "Export duration must be greater than zero.".to_string(),
-        ));
+        return Err("Export duration must be greater than zero.".to_string());
     }
     if settings.output_path.as_os_str().is_empty() {
-        return Err(ExportFailure::Error(
-            "Choose an output file before exporting.".to_string(),
-        ));
+        return Err("Choose an output file before exporting.".to_string());
     }
     Ok(())
+}
+
+fn validate_export_settings(settings: &VideoExportSettings) -> ExportResult<()> {
+    validate_video_export_settings(settings).map_err(ExportFailure::Error)
 }
 
 fn render_video_frames(
@@ -882,5 +874,60 @@ fn format_fps(fps: f64) -> String {
         format!("{:.0}", fps)
     } else {
         format!("{fps:.3}")
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    fn settings() -> VideoExportSettings {
+        VideoExportSettings {
+            output_path: PathBuf::from("output.mp4"),
+            codec: VideoExportCodec::H264,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            start_seconds: 0.0,
+            duration_seconds: 5.0,
+            include_audio: true,
+            quality: VideoExportQuality::Balanced,
+            frame_format: VideoExportFrameFormat::Png,
+            timestamp_overlay: TimestampOverlaySettings {
+                enabled: false,
+                position: TimestampOverlayPosition::BottomCenter,
+            },
+        }
+    }
+
+    #[test]
+    fn export_validation_rejects_invalid_dimensions_and_rate_without_rendering() {
+        let mut odd = settings();
+        odd.width = 1919;
+        assert!(validate_video_export_settings(&odd)
+            .unwrap_err()
+            .contains("must be even"));
+
+        let mut bad_fps = settings();
+        bad_fps.fps = 0.0;
+        assert!(validate_video_export_settings(&bad_fps)
+            .unwrap_err()
+            .contains("between 1 and 240"));
+    }
+
+    #[test]
+    fn export_validation_rejects_invalid_range_and_empty_output() {
+        let mut range = settings();
+        range.duration_seconds = 0.0;
+        assert!(validate_video_export_settings(&range)
+            .unwrap_err()
+            .contains("greater than zero"));
+
+        let mut output = settings();
+        output.output_path = PathBuf::new();
+        assert_eq!(
+            validate_video_export_settings(&output).unwrap_err(),
+            "Choose an output file before exporting."
+        );
     }
 }

@@ -94,6 +94,32 @@ pub struct PreviewLayerStack {
 pub struct RenderOutput {
     pub layers: Option<PreviewLayerStack>,
     pub stats: PreviewStats,
+    pub report: PreviewRenderReport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewRenderIssueKind {
+    NoAvailableFrame,
+    MissingMedia,
+    DecodeFailed,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewRenderIssue {
+    pub kind: PreviewRenderIssueKind,
+    pub clip_id: Uuid,
+    pub asset_id: Uuid,
+    pub asset_name: String,
+    pub source_path: Option<PathBuf>,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PreviewRenderReport {
+    pub active_visual_clips: usize,
+    pub rendered_visual_clips: usize,
+    pub issues: Vec<PreviewRenderIssue>,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]

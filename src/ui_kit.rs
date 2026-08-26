@@ -114,6 +114,138 @@ pub const POPOVER_BUTTON_RADIUS: u8 = 6;
 pub const COLLAPSED_RAIL_W: f32 = 34.0;
 pub const COLLAPSED_RAIL_BUTTON_SIZE: f32 = 24.0;
 
+/// UI-facing lifecycle phase for work presented by editor surfaces.
+///
+/// Domain state remains authoritative; surfaces adapt their own state into this
+/// shared vocabulary so phase and visual severity are not conflated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationPhase {
+    Idle,
+    Waiting,
+    Queued,
+    Running,
+    Canceling,
+    Succeeded,
+    Failed,
+    Canceled,
+    Blocked,
+}
+
+impl OperationPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::Waiting => "Waiting",
+            Self::Queued => "Queued",
+            Self::Running => "Running",
+            Self::Canceling => "Canceling",
+            Self::Succeeded => "Succeeded",
+            Self::Failed => "Failed",
+            Self::Canceled => "Canceled",
+            Self::Blocked => "Blocked",
+        }
+    }
+}
+
+/// Visual importance of an operation presentation, independent of its phase.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationSeverity {
+    Neutral,
+    Informational,
+    Success,
+    Warning,
+    Error,
+}
+
+impl OperationSeverity {
+    pub fn color(self) -> Color32 {
+        match self {
+            Self::Neutral => TEXT_MUTED,
+            Self::Informational => AUDIO,
+            Self::Success => PRIMARY_HOVER,
+            Self::Warning => MARKER,
+            Self::Error => DANGER,
+        }
+    }
+}
+
+/// Minimal UI adapter consumed by shared operation-state widgets.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OperationPresentation {
+    pub phase: OperationPhase,
+    pub severity: OperationSeverity,
+    pub title: String,
+    pub detail: Option<String>,
+    pub progress: Option<f32>,
+    pub progress_label: Option<String>,
+    pub technical_detail: Option<String>,
+    pub primary_action: Option<String>,
+    pub secondary_action: Option<String>,
+    pub dismissible: bool,
+}
+
+impl OperationPresentation {
+    pub fn new(
+        phase: OperationPhase,
+        severity: OperationSeverity,
+        title: impl Into<String>,
+    ) -> Self {
+        Self {
+            phase,
+            severity,
+            title: title.into(),
+            detail: None,
+            progress: None,
+            progress_label: None,
+            technical_detail: None,
+            primary_action: None,
+            secondary_action: None,
+            dismissible: false,
+        }
+    }
+
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn progress(mut self, progress: f32, label: impl Into<String>) -> Self {
+        self.progress = Some(progress.clamp(0.0, 1.0));
+        self.progress_label = Some(label.into());
+        self
+    }
+
+    pub fn technical_detail(mut self, detail: impl Into<String>) -> Self {
+        self.technical_detail = Some(detail.into());
+        self
+    }
+
+    pub fn primary_action(mut self, label: impl Into<String>) -> Self {
+        self.primary_action = Some(label.into());
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn secondary_action(mut self, label: impl Into<String>) -> Self {
+        self.secondary_action = Some(label.into());
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn dismissible(mut self, dismissible: bool) -> Self {
+        self.dismissible = dismissible;
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OperationUiResponse {
+    pub primary_clicked: bool,
+    pub secondary_clicked: bool,
+    pub dismissed: bool,
+    pub technical_detail_copied: bool,
+}
+
 pub fn configure_style(ctx: &Context) {
     configure_fonts(ctx);
 
@@ -314,6 +446,273 @@ pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) 
     child.set_max_width(content_rect.width());
     add_contents(&mut child);
     crate::core::automation::instrument_response(response, "panel", None, false, false)
+}
+
+pub fn operation_status_pill(
+    ui: &mut Ui,
+    phase: OperationPhase,
+    severity: OperationSeverity,
+) -> Response {
+    let width = operation_status_pill_width(phase);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
+    paint_operation_status_pill(ui, rect, phase, severity);
+    crate::core::automation::instrument_response(
+        response,
+        "status",
+        Some(phase.label().to_string()),
+        false,
+        false,
+    )
+}
+
+pub fn operation_status_pill_width(phase: OperationPhase) -> f32 {
+    (phase.label().chars().count() as f32 * 5.8 + 22.0).max(48.0)
+}
+
+pub fn paint_operation_status_pill(
+    ui: &Ui,
+    rect: Rect,
+    phase: OperationPhase,
+    severity: OperationSeverity,
+) {
+    let color = severity.color();
+    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 24);
+    ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(10),
+        Stroke::new(1.0_f32, color),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        phase.label().to_ascii_uppercase(),
+        FontId::proportional(9.0),
+        color,
+    );
+}
+
+/// Stable, compact operation summary with optional progress, actions, and
+/// secondary copyable technical detail.
+pub fn operation_banner(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    presentation: &OperationPresentation,
+) -> OperationUiResponse {
+    let mut result = OperationUiResponse::default();
+    let color = presentation.severity.color();
+    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 12);
+    let id = ui.make_persistent_id(("operation_banner", id_salt));
+
+    Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, color.gamma_multiply(0.72)))
+        .corner_radius(CornerRadius::same(RADIUS))
+        .inner_margin(Margin::symmetric(10, 9))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            bounded_horizontal_row(ui, 20.0, |ui, row_width| {
+                let pill_width = operation_status_pill_width(presentation.phase);
+                operation_status_pill(ui, presentation.phase, presentation.severity);
+                let dismiss_width = if presentation.dismissible { 24.0 } else { 0.0 };
+                let gaps = if presentation.dismissible { 2.0 } else { 1.0 };
+                let title_width =
+                    (row_width - pill_width - dismiss_width - ui.spacing().item_spacing.x * gaps)
+                        .max(0.0);
+                ui.add_sized(
+                    [title_width, 20.0],
+                    egui::Label::new(
+                        RichText::new(&presentation.title)
+                            .color(TEXT)
+                            .size(11.5)
+                            .strong(),
+                    )
+                    .truncate(),
+                );
+                if presentation.dismissible
+                    && icon_button(ui, "×").on_hover_text("Dismiss").clicked()
+                {
+                    result.dismissed = true;
+                }
+            });
+
+            if let Some(detail) = presentation.detail.as_deref() {
+                ui.add(egui::Label::new(RichText::new(detail).color(TEXT_MUTED).size(10.5)).wrap());
+            }
+
+            if let Some(progress) = presentation.progress {
+                let label = presentation.progress_label.as_deref().unwrap_or("Progress");
+                bounded_horizontal_row(ui, 14.0, |ui, row_width| {
+                    ui.add_sized(
+                        [row_width, 14.0],
+                        egui::Label::new(RichText::new(label).color(TEXT_DIM).size(9.5)).truncate(),
+                    );
+                });
+                ui.add(
+                    egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                        .show_percentage()
+                        .animate(matches!(
+                            presentation.phase,
+                            OperationPhase::Waiting
+                                | OperationPhase::Queued
+                                | OperationPhase::Running
+                                | OperationPhase::Canceling
+                        ))
+                        .desired_width(ui.available_width()),
+                );
+            }
+
+            if presentation.primary_action.is_some() || presentation.secondary_action.is_some() {
+                let action_count = usize::from(presentation.primary_action.is_some())
+                    + usize::from(presentation.secondary_action.is_some());
+                let narrow = ui.available_width() < 250.0 && action_count > 1;
+                if narrow {
+                    if let Some(label) = presentation.primary_action.as_deref() {
+                        result.primary_clicked =
+                            primary_button(ui, label, ui.available_width()).clicked();
+                    }
+                    if let Some(label) = presentation.secondary_action.as_deref() {
+                        result.secondary_clicked =
+                            secondary_button(ui, label, ui.available_width()).clicked();
+                    }
+                } else {
+                    equal_width_action_row(
+                        ui,
+                        action_count,
+                        STANDALONE_BUTTON_H,
+                        FIELD_COMPOUND_GAP,
+                        |ui, index, width| {
+                            let primary_first = presentation.primary_action.is_some();
+                            if index == 0 && primary_first {
+                                result.primary_clicked = primary_button(
+                                    ui,
+                                    presentation.primary_action.as_deref().unwrap_or_default(),
+                                    width,
+                                )
+                                .clicked();
+                            } else {
+                                result.secondary_clicked = secondary_button(
+                                    ui,
+                                    presentation.secondary_action.as_deref().unwrap_or_default(),
+                                    width,
+                                )
+                                .clicked();
+                            }
+                        },
+                    );
+                }
+            }
+
+            if let Some(detail) = presentation.technical_detail.as_deref() {
+                egui::CollapsingHeader::new("Technical details")
+                    .id_salt(id.with("technical_details"))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(detail).color(TEXT_DIM).size(10.0).monospace(),
+                            )
+                            .wrap()
+                            .selectable(true),
+                        );
+                        let copy_width = ui.available_width().min(112.0);
+                        if secondary_button(ui, "Copy details", copy_width).clicked() {
+                            ui.ctx().copy_text(detail.to_string());
+                            result.technical_detail_copied = true;
+                        }
+                    });
+            }
+        });
+    result
+}
+
+/// One-line operation treatment for dense inspector surfaces. Concise detail is
+/// available on hover; technical detail remains copyable from an anchored
+/// disclosure without changing row height.
+pub fn compact_operation_banner(
+    ui: &mut Ui,
+    id_salt: impl Hash + Copy,
+    presentation: &OperationPresentation,
+) -> OperationUiResponse {
+    let mut result = OperationUiResponse::default();
+    let color = presentation.severity.color();
+    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 12);
+    Frame::new()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, color.gamma_multiply(0.72)))
+        .corner_radius(CornerRadius::same(RADIUS))
+        .inner_margin(Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            bounded_horizontal_row(ui, 24.0, |ui, row_width| {
+                let pill_width = operation_status_pill_width(presentation.phase);
+                operation_status_pill(ui, presentation.phase, presentation.severity);
+                let details_width = if presentation.technical_detail.is_some() {
+                    64.0
+                } else {
+                    0.0
+                };
+                let gap_count = if details_width > 0.0 { 2.0 } else { 1.0 };
+                let title_width = (row_width
+                    - pill_width
+                    - details_width
+                    - ui.spacing().item_spacing.x * gap_count)
+                    .max(0.0);
+                let title = ui.add_sized(
+                    [title_width, 20.0],
+                    egui::Label::new(
+                        RichText::new(&presentation.title)
+                            .color(TEXT)
+                            .size(10.5)
+                            .strong(),
+                    )
+                    .truncate(),
+                );
+                if let Some(detail) = presentation.detail.as_deref() {
+                    title.on_hover_text(detail);
+                }
+                if let Some(detail) = presentation.technical_detail.as_deref() {
+                    let trigger = popover_button(ui, "Details", details_width, true);
+                    result.technical_detail_copied =
+                        technical_details_popup(&trigger, id_salt, detail);
+                }
+            });
+        });
+    result
+}
+
+/// Anchors copyable technical detail to a compact trigger without changing the
+/// surrounding surface's layout.
+pub fn technical_details_popup(trigger: &Response, id_salt: impl Hash, detail: &str) -> bool {
+    let mut copied = false;
+    egui::Popup::menu(trigger)
+        .id(trigger.id.with(("technical_details_popup", id_salt)))
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(4.0)
+        .width(300.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_max_width(300.0);
+            ui.label(section_label("Technical details"));
+            ui.add_space(FIELD_LABEL_GAP);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(detail)
+                        .color(TEXT_MUTED)
+                        .size(10.0)
+                        .monospace(),
+                )
+                .wrap()
+                .selectable(true),
+            );
+            ui.add_space(FORM_ROW_GAP);
+            if secondary_button(ui, "Copy details", ui.available_width()).clicked() {
+                ui.ctx().copy_text(detail.to_string());
+                copied = true;
+                ui.close();
+            }
+        });
+    copied
 }
 
 /// Lays out a body in the remaining height above an exact bottom footer.
@@ -3594,5 +3993,22 @@ mod tests {
             assert_eq!(inner.response.id, predicted_button_id);
             assert!(inner.inner.is_some(), "the requested popup should render");
         });
+    }
+
+    #[test]
+    fn operation_phase_and_severity_are_independent() {
+        let warning = OperationPresentation::new(
+            OperationPhase::Succeeded,
+            OperationSeverity::Warning,
+            "Completed with warnings",
+        );
+        let success = OperationPresentation::new(
+            OperationPhase::Succeeded,
+            OperationSeverity::Success,
+            "Completed",
+        );
+        assert_eq!(warning.phase, success.phase);
+        assert_ne!(warning.severity, success.severity);
+        assert_ne!(warning.severity.color(), success.severity.color());
     }
 }

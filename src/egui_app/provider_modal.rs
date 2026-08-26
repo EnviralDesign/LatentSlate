@@ -2,6 +2,7 @@ use super::*;
 
 impl LatentSlateApp {
     pub(super) fn providers_modal(&mut self, ctx: &Context) {
+        self.poll_provider_refresh(ctx);
         self.ensure_provider_modal_selection();
         let mut open = true;
         let mut close_clicked = false;
@@ -64,7 +65,7 @@ impl LatentSlateApp {
                 ui.label(kit::section_label("Providers"));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if kit::secondary_button(ui, "Reload", 76.0).clicked() {
-                        self.editor.refresh_providers();
+                        self.start_provider_refresh(ui.ctx());
                     }
                 });
             });
@@ -258,13 +259,12 @@ impl LatentSlateApp {
         }
     }
 
-    fn save_engine_connections_and_refresh(&mut self) {
+    fn save_engine_connections_and_refresh(&mut self, ctx: &Context) {
         match crate::providers::latentslate_engine::save_connections(
             &self.editor.engine_connections,
         ) {
             Ok(()) => {
-                self.editor.refresh_providers();
-                self.ensure_provider_modal_selection();
+                self.start_provider_refresh(ctx);
             }
             Err(err) => {
                 self.editor.status = format!("Failed to save Engine backend: {err}");
@@ -345,25 +345,45 @@ impl LatentSlateApp {
             .cloned()
             .collect::<Vec<_>>();
         let state = engine_provider_state(connection.enabled, &tools);
+        let load_report = self
+            .editor
+            .engine_catalog_reports
+            .iter()
+            .find(|report| report.connection_id == connection_id)
+            .cloned();
         let available_count = tools
             .iter()
             .filter(|provider| provider_is_available_for_generation(provider))
             .count();
-        let first_unavailable_reason = tools.iter().find_map(|provider| {
-            provider_unavailable_reason(provider).map(|reason| {
-                (
-                    reason.to_string(),
-                    provider_engine_state(provider).unwrap_or(EngineProviderState::Unavailable),
-                )
-            })
-        });
-
         ui.horizontal(|ui| {
             ui.label(kit::section_label("Connection"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 engine_state_badge(ui, state);
             });
         });
+        ui.add_space(kit::FORM_ROW_GAP);
+        let connection_operation = if self.provider_refresh_in_flight {
+            kit::OperationPresentation::new(
+                kit::OperationPhase::Running,
+                kit::OperationSeverity::Informational,
+                "Refreshing Engine connection.",
+            )
+            .detail("The existing catalog remains visible while the endpoint is checked.")
+        } else {
+            engine_connection_operation_with_report(
+                connection.enabled,
+                &tools,
+                load_report.as_ref(),
+            )
+        };
+        let response = kit::compact_operation_banner(
+            ui,
+            ("engine_connection", connection_id),
+            &connection_operation,
+        );
+        if response.technical_detail_copied {
+            self.editor.status = "Copied Engine connection details.".to_string();
+        }
         ui.add_space(kit::FORM_ROW_GAP);
 
         let mut save_clicked = false;
@@ -413,6 +433,25 @@ impl LatentSlateApp {
             });
         });
         ui.add_space(kit::FORM_ROW_GAP);
+        let catalog_operation = if self.provider_refresh_in_flight {
+            kit::OperationPresentation::new(
+                kit::OperationPhase::Running,
+                kit::OperationSeverity::Informational,
+                "Refreshing catalog.",
+            )
+            .detail("Provider tools will update when the refresh completes.")
+        } else {
+            engine_catalog_operation_with_report(connection.enabled, &tools, load_report.as_ref())
+        };
+        let response = kit::compact_operation_banner(
+            ui,
+            ("engine_catalog", connection_id),
+            &catalog_operation,
+        );
+        if response.technical_detail_copied {
+            self.editor.status = "Copied Engine catalog details.".to_string();
+        }
+        ui.add_space(kit::FORM_ROW_GAP);
         kit::field_label(ui, "Search");
         ui.add_space(kit::FIELD_LABEL_GAP);
         kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, row_width| {
@@ -422,14 +461,6 @@ impl LatentSlateApp {
             kit::singleline_text_field(ui, &mut self.engine_catalog_search, field_w);
             automation_checkbox(ui, &mut self.engine_available_only, "Available only");
         });
-        if let Some((reason, reason_state)) = first_unavailable_reason {
-            ui.add_space(kit::FIELD_LABEL_GAP);
-            ui.add(
-                egui::Label::new(RichText::new(reason).color(reason_state.color()).size(10.5))
-                    .truncate(),
-            )
-            .on_hover_text(provider_engine_state_summary(state, &tools));
-        }
         ui.add_space(kit::FORM_ROW_GAP);
 
         let search = self.engine_catalog_search.trim().to_ascii_lowercase();
@@ -535,15 +566,61 @@ impl LatentSlateApp {
 
         if save_clicked || refresh_clicked {
             self.persist_engine_connection_draft();
-            self.save_engine_connections_and_refresh();
+            self.save_engine_connections_and_refresh(ui.ctx());
             if refresh_clicked {
-                self.editor.status = "Refreshed LatentSlate Engine catalog.".to_string();
+                self.editor.status = "Refreshing LatentSlate Engine catalog…".to_string();
             } else {
-                self.editor.status = "Saved LatentSlate Engine backend.".to_string();
+                self.editor.status = "Saved Engine backend; refreshing catalog…".to_string();
             }
         }
         if delete_clicked {
             self.delete_engine_connection(connection_id);
+        }
+    }
+
+    fn start_provider_refresh(&mut self, ctx: &Context) {
+        if self.provider_refresh_in_flight {
+            return;
+        }
+        self.provider_refresh_in_flight = true;
+        let tx = self.provider_refresh_tx.clone();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let loaded = crate::core::provider_store::load_local_provider_entries_with_reports();
+            let (provider_entries, reports, error) = match loaded {
+                Ok((entries, reports)) => (entries, reports, None),
+                Err(err) => (Vec::new(), Vec::new(), Some(err.to_string())),
+            };
+            let _ = tx.send(ProviderRefreshResult {
+                provider_entries,
+                provider_files: crate::core::provider_store::list_local_provider_files(),
+                engine_connections: crate::providers::latentslate_engine::load_connections(),
+                reports,
+                error,
+            });
+            repaint.request_repaint();
+        });
+        ctx.request_repaint();
+    }
+
+    fn poll_provider_refresh(&mut self, ctx: &Context) {
+        if let Ok(result) = self.provider_refresh_rx.try_recv() {
+            self.provider_refresh_in_flight = false;
+            let error = result.error.clone();
+            self.editor.apply_provider_refresh(
+                result.provider_entries,
+                result.provider_files,
+                result.engine_connections,
+                result.reports,
+            );
+            self.ensure_provider_modal_selection();
+            self.editor.status = match error {
+                Some(error) => format!("Provider refresh failed: {error}"),
+                None => "Refreshed provider catalogs.".to_string(),
+            };
+        }
+        if self.provider_refresh_in_flight {
+            ctx.request_repaint_after(Duration::from_millis(80));
         }
     }
 
@@ -1686,16 +1763,4 @@ impl LatentSlateApp {
         self.provider_builder_open = false;
         self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
     }
-}
-
-fn provider_engine_state_summary(
-    state: EngineProviderState,
-    providers: &[ProviderEntry],
-) -> String {
-    let mut text = format!("LatentSlate Engine state: {}", state.label());
-    if let Some(reason) = providers.iter().find_map(provider_unavailable_reason) {
-        text.push_str("\n\n");
-        text.push_str(reason);
-    }
-    text
 }

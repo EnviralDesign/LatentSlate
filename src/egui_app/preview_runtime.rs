@@ -82,6 +82,7 @@ impl LatentSlateApp {
         self.preview_prefetch_in_flight
             .store(false, Ordering::Relaxed);
         self.preview_stats = None;
+        self.preview_render_report = PreviewRenderReport::default();
         self.preview_perf_samples.clear();
         self.preview_perf_sequence = 0;
         self.asset_thumbnails.clear();
@@ -324,6 +325,7 @@ impl LatentSlateApp {
         }
         if self.editor.project.project_path.is_none() {
             self.preview_layers = None;
+            self.preview_render_report = PreviewRenderReport::default();
             return;
         }
 
@@ -343,6 +345,7 @@ impl LatentSlateApp {
             decode_mode,
             self.editor.layout.hardware_decode,
         );
+        self.preview_render_report = output.report.clone();
         let mut stats = output.stats;
         let Some(layers) = output.layers else {
             self.preview_layers = None;
@@ -405,6 +408,7 @@ impl LatentSlateApp {
             .as_secs_f64()
             * 1000.0;
         let delivery_ms = result.requested_at.elapsed().as_secs_f64() * 1000.0;
+        self.preview_render_report = result.output.report.clone();
         let mut stats = result.output.stats;
         let Some(layers) = result.output.layers else {
             self.preview_layers = None;

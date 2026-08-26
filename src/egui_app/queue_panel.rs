@@ -188,16 +188,9 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     );
 
     let content = rect.shrink(10.0);
-    let (status_label, status_color) = queue_status_style(job.status);
+    let presentation = queue_operation_presentation(job);
     let output_label = queue_output_label(job.output_type);
-    let status_w = match job.status {
-        GenerationJobStatus::Succeeded => 56.0,
-        GenerationJobStatus::Running => 64.0,
-        GenerationJobStatus::Canceling => 64.0,
-        GenerationJobStatus::Failed => 60.0,
-        GenerationJobStatus::Queued => 62.0,
-        GenerationJobStatus::Canceled => 74.0,
-    };
+    let status_w = kit::operation_status_pill_width(presentation.phase);
     let title_rect = Rect::from_min_max(
         content.left_top(),
         Pos2::new(content.right() - status_w - 8.0, content.top() + 18.0),
@@ -207,7 +200,7 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
         Vec2::new(status_w, 18.0),
     );
     queue_clipped_label(ui, title_rect, &job.asset_label, kit::TEXT, 12.0, true);
-    paint_queue_status_pill(ui, status_rect, status_label, status_color);
+    kit::paint_operation_status_pill(ui, status_rect, presentation.phase, presentation.severity);
 
     let meta_y = content.top() + 24.0;
     let provider_rect = Rect::from_min_size(
@@ -251,12 +244,42 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
             queue_clipped_label(ui, cancel_rect, "Canceling…", kit::TEXT_DIM, 10.0, false);
         }
         GenerationJobStatus::Failed => {
-            if let Some(error) = job.error.as_ref() {
-                let error_rect = Rect::from_min_size(
-                    Pos2::new(content.left(), content.top() + 44.0),
-                    Vec2::new(content.width(), 30.0),
+            let outcome_rect = Rect::from_min_size(
+                Pos2::new(content.left(), content.top() + 44.0),
+                Vec2::new(content.width(), 16.0),
+            );
+            queue_clipped_label(
+                ui,
+                outcome_rect,
+                &presentation.title,
+                kit::DANGER,
+                10.5,
+                true,
+            );
+            if let Some(detail) = presentation.detail.as_deref() {
+                let detail_rect = Rect::from_min_size(
+                    Pos2::new(content.left(), content.top() + 62.0),
+                    Vec2::new((content.width() - 72.0).max(0.0), 16.0),
                 );
-                queue_clipped_label(ui, error_rect, error, kit::DANGER, 10.0, false);
+                queue_clipped_label(ui, detail_rect, detail, kit::TEXT_MUTED, 10.0, false);
+            }
+            if let Some(technical_detail) = presentation.technical_detail.as_deref() {
+                let trigger_rect = Rect::from_min_size(
+                    Pos2::new(content.right() - 64.0, content.bottom() - 24.0),
+                    Vec2::new(64.0, 24.0),
+                );
+                let mut trigger_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(trigger_rect)
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                trigger_ui.shrink_clip_rect(trigger_rect);
+                let trigger = kit::popover_button(&mut trigger_ui, "Details", 64.0, true);
+                let _ = kit::technical_details_popup(
+                    &trigger,
+                    ("generation_job", job.id),
+                    technical_detail,
+                );
             }
         }
         GenerationJobStatus::Queued
@@ -273,31 +296,13 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
             Pos2::new(content.right() - 52.0, content.bottom() - 20.0),
             Vec2::new(52.0, 18.0),
         );
-        let cancel_response = ui.interact(
-            cancel_rect,
-            ui.id().with(("generation-job-cancel", job.id)),
-            Sense::click(),
+        let mut cancel_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(cancel_rect)
+                .layout(Layout::left_to_right(Align::Center)),
         );
-        let fill = if cancel_response.hovered() {
-            Color32::from_rgba_unmultiplied(145, 32, 42, 92)
-        } else {
-            Color32::from_rgba_unmultiplied(145, 32, 42, 40)
-        };
-        ui.painter()
-            .rect_filled(cancel_rect, egui::CornerRadius::same(5), fill);
-        ui.painter().rect_stroke(
-            cancel_rect,
-            egui::CornerRadius::same(5),
-            Stroke::new(1.0_f32, kit::DANGER.gamma_multiply(0.75)),
-            egui::StrokeKind::Inside,
-        );
-        ui.painter().text(
-            cancel_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "Cancel",
-            FontId::proportional(9.0),
-            kit::TEXT,
-        );
+        cancel_ui.shrink_clip_rect(cancel_rect);
+        let cancel_response = kit::popover_button(&mut cancel_ui, "Cancel", 52.0, true);
         cancel_clicked = cancel_response.clicked();
     }
     let _ = response.on_hover_text(provider_identity_tooltip(&job.provider));
@@ -359,25 +364,6 @@ fn queue_progress_row(ui: &mut Ui, rect: Rect, label: &str, progress: f32, color
         .rect_filled(fill_rect, egui::CornerRadius::same(3), color);
 }
 
-fn paint_queue_status_pill(ui: &mut Ui, rect: Rect, label: &str, color: Color32) {
-    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 22);
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(9), fill);
-    ui.painter().rect_stroke(
-        rect,
-        egui::CornerRadius::same(9),
-        Stroke::new(1.0_f32, color),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label.to_ascii_uppercase(),
-        FontId::proportional(9.0),
-        color,
-    );
-}
-
 fn queue_clipped_label(
     ui: &mut Ui,
     rect: Rect,
@@ -400,14 +386,42 @@ fn queue_clipped_label(
     child.add_sized(rect.size(), egui::Label::new(text).truncate());
 }
 
-fn queue_status_style(status: GenerationJobStatus) -> (&'static str, Color32) {
-    match status {
-        GenerationJobStatus::Queued => ("Queued", kit::TEXT_MUTED),
-        GenerationJobStatus::Running => ("Running", kit::MARKER),
-        GenerationJobStatus::Canceling => ("Canceling", kit::TEXT_DIM),
-        GenerationJobStatus::Succeeded => ("Done", kit::PRIMARY_HOVER),
-        GenerationJobStatus::Failed => ("Failed", kit::DANGER),
-        GenerationJobStatus::Canceled => ("Canceled", kit::TEXT_DIM),
+fn queue_operation_presentation(job: &GenerationJob) -> kit::OperationPresentation {
+    use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
+
+    match job.status {
+        GenerationJobStatus::Queued => {
+            OperationPresentation::new(Phase::Queued, Severity::Neutral, "Waiting to generate.")
+        }
+        GenerationJobStatus::Running => OperationPresentation::new(
+            Phase::Running,
+            Severity::Informational,
+            "Generation in progress.",
+        ),
+        GenerationJobStatus::Canceling => OperationPresentation::new(
+            Phase::Canceling,
+            Severity::Informational,
+            "Cancel request sent.",
+        ),
+        GenerationJobStatus::Succeeded => {
+            OperationPresentation::new(Phase::Succeeded, Severity::Success, "Generation complete.")
+        }
+        GenerationJobStatus::Failed => {
+            let mut presentation =
+                OperationPresentation::new(Phase::Failed, Severity::Error, "Generation failed.")
+                    .detail(format!("{} was not generated.", job.asset_label));
+            if let Some(error) = job
+                .error
+                .as_deref()
+                .filter(|error| !error.trim().is_empty())
+            {
+                presentation = presentation.technical_detail(error);
+            }
+            presentation
+        }
+        GenerationJobStatus::Canceled => {
+            OperationPresentation::new(Phase::Canceled, Severity::Neutral, "Generation canceled.")
+        }
     }
 }
 
@@ -416,6 +430,107 @@ fn queue_output_label(output_type: ProviderOutputType) -> &'static str {
         ProviderOutputType::Image => "Image",
         ProviderOutputType::Video => "Video",
         ProviderOutputType::Audio => "Audio",
+    }
+}
+
+#[cfg(test)]
+mod operation_mapping_tests {
+    use super::*;
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn job(status: GenerationJobStatus, error: Option<&str>) -> GenerationJob {
+        GenerationJob {
+            id: Uuid::new_v4(),
+            created_at: Utc::now(),
+            status,
+            progress_overall: None,
+            progress_node: None,
+            attempts: 0,
+            next_attempt_at: None,
+            provider: crate::state::ProviderEntry::new(
+                "Provider",
+                ProviderOutputType::Image,
+                crate::state::ProviderConnection::ComfyUi {
+                    base_url: "http://127.0.0.1:8188".to_string(),
+                    workflow_path: None,
+                    manifest: None,
+                },
+            ),
+            output_type: ProviderOutputType::Image,
+            asset_id: Uuid::new_v4(),
+            clip_id: None,
+            asset_label: "Stargazers V07".to_string(),
+            folder_path: PathBuf::new(),
+            inputs: HashMap::new(),
+            inputs_snapshot: HashMap::new(),
+            media_bindings_snapshot: HashMap::new(),
+            resolved_media_inputs: HashMap::new(),
+            seed_advance: None,
+            version: None,
+            lab_node_id: None,
+            activate_on_success: true,
+            error: error.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn queue_statuses_map_phase_and_severity_independently() {
+        use kit::{OperationPhase as Phase, OperationSeverity as Severity};
+        let cases = [
+            (
+                GenerationJobStatus::Queued,
+                Phase::Queued,
+                Severity::Neutral,
+            ),
+            (
+                GenerationJobStatus::Running,
+                Phase::Running,
+                Severity::Informational,
+            ),
+            (
+                GenerationJobStatus::Canceling,
+                Phase::Canceling,
+                Severity::Informational,
+            ),
+            (
+                GenerationJobStatus::Succeeded,
+                Phase::Succeeded,
+                Severity::Success,
+            ),
+            (GenerationJobStatus::Failed, Phase::Failed, Severity::Error),
+            (
+                GenerationJobStatus::Canceled,
+                Phase::Canceled,
+                Severity::Neutral,
+            ),
+        ];
+        for (status, phase, severity) in cases {
+            let presentation = queue_operation_presentation(&job(status, None));
+            assert_eq!(presentation.phase, phase);
+            assert_eq!(presentation.severity, severity);
+        }
+    }
+
+    #[test]
+    fn failed_job_keeps_raw_error_secondary_and_has_no_speculative_action() {
+        let presentation = queue_operation_presentation(&job(
+            GenerationJobStatus::Failed,
+            Some("HTTP 500: no output file"),
+        ));
+        assert_eq!(presentation.title, "Generation failed.");
+        assert!(presentation
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("Stargazers V07"));
+        assert_eq!(
+            presentation.technical_detail.as_deref(),
+            Some("HTTP 500: no output file")
+        );
+        assert!(presentation.primary_action.is_none());
+        assert!(presentation.secondary_action.is_none());
     }
 }
 impl LatentSlateApp {
@@ -430,6 +545,7 @@ impl LatentSlateApp {
         );
         let anchor = self.queue_button_rect.unwrap_or(fallback_anchor);
         let bounds = app_rect.shrink(QUEUE_PANEL_MARGIN);
+        let panel_w = QUEUE_PANEL_W.min(bounds.width()).max(240.0);
         let jobs = self.editor.generation_queue.clone();
         let has_attention = jobs.iter().any(|job| {
             matches!(
@@ -451,9 +567,9 @@ impl LatentSlateApp {
             QUEUE_PANEL_MIN_H,
             max_h_by_window.min(max_h_below).max(QUEUE_PANEL_MIN_H),
         );
-        let max_x = (bounds.right() - QUEUE_PANEL_W).max(bounds.left());
+        let max_x = (bounds.right() - panel_w).max(bounds.left());
         let panel_pos = Pos2::new(
-            (anchor.right() - QUEUE_PANEL_W).clamp(bounds.left(), max_x),
+            (anchor.right() - panel_w).clamp(bounds.left(), max_x),
             panel_top,
         );
 
@@ -466,7 +582,7 @@ impl LatentSlateApp {
             .fixed_pos(panel_pos)
             .show(ctx, |ui| {
                 let (panel_rect, _) =
-                    ui.allocate_exact_size(Vec2::new(QUEUE_PANEL_W, panel_h), Sense::hover());
+                    ui.allocate_exact_size(Vec2::new(panel_w, panel_h), Sense::hover());
                 paint_queue_panel_shell(ui, panel_rect, has_attention);
 
                 let content_rect = panel_rect.shrink(QUEUE_PANEL_PAD);

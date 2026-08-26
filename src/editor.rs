@@ -16,8 +16,8 @@ use crate::core::generation::{migrate_legacy_size_input, semantic_reference_slot
 use crate::core::media::{probe_missing_duration, resolve_asset_duration_seconds};
 use crate::core::provider_store::{
     default_openai_image_provider_entry, default_provider_entry, default_xai_image_provider_entry,
-    default_xai_video_provider_entry, list_local_provider_files,
-    load_local_provider_entries_or_empty, provider_path_for_entry, save_local_provider_entry,
+    default_xai_video_provider_entry, list_local_provider_files, provider_path_for_entry,
+    save_local_provider_entry,
 };
 use crate::core::thumbnailer::Thumbnailer;
 use crate::core::timeline_bridge::{provider_is_timeline_bridge, resolve_timeline_bridge_clip};
@@ -121,6 +121,7 @@ pub struct EditorState {
     pub provider_entries: Vec<ProviderEntry>,
     pub provider_files: Vec<PathBuf>,
     pub engine_connections: Vec<crate::providers::latentslate_engine::EngineConnectionSettings>,
+    pub engine_catalog_reports: Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
     pub thumbnailer: Arc<Thumbnailer>,
     pub previewer: Arc<crate::core::preview::PreviewRenderer>,
     pub current_time: f64,
@@ -139,12 +140,20 @@ pub struct EditorState {
 impl EditorState {
     pub fn new() -> Self {
         let scratch = crate::core::paths::app_cache_root().join("scratch");
+        let (provider_entries, engine_catalog_reports) =
+            crate::core::provider_store::load_local_provider_entries_with_reports().unwrap_or_else(
+                |err| {
+                    println!("Failed to load provider entries: {err}");
+                    (Vec::new(), Vec::new())
+                },
+            );
         Self {
             project: Project::default(),
             selection: SelectionState::default(),
-            provider_entries: load_local_provider_entries_or_empty(),
+            provider_entries,
             provider_files: list_local_provider_files(),
             engine_connections: crate::providers::latentslate_engine::load_connections(),
+            engine_catalog_reports,
             thumbnailer: Arc::new(Thumbnailer::new(scratch.clone())),
             previewer: Arc::new(crate::core::preview::PreviewRenderer::new_with_limits(
                 scratch,
@@ -174,9 +183,31 @@ impl EditorState {
     }
 
     pub fn refresh_providers(&mut self) {
-        self.provider_entries = load_local_provider_entries_or_empty();
+        let (provider_entries, engine_catalog_reports) =
+            crate::core::provider_store::load_local_provider_entries_with_reports().unwrap_or_else(
+                |err| {
+                    println!("Failed to load provider entries: {err}");
+                    (Vec::new(), Vec::new())
+                },
+            );
+        self.provider_entries = provider_entries;
+        self.engine_catalog_reports = engine_catalog_reports;
         self.provider_files = list_local_provider_files();
         self.engine_connections = crate::providers::latentslate_engine::load_connections();
+        self.reconcile_generative_dimension_configs();
+    }
+
+    pub fn apply_provider_refresh(
+        &mut self,
+        provider_entries: Vec<ProviderEntry>,
+        provider_files: Vec<PathBuf>,
+        engine_connections: Vec<crate::providers::latentslate_engine::EngineConnectionSettings>,
+        engine_catalog_reports: Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+    ) {
+        self.provider_entries = provider_entries;
+        self.provider_files = provider_files;
+        self.engine_connections = engine_connections;
+        self.engine_catalog_reports = engine_catalog_reports;
         self.reconcile_generative_dimension_configs();
     }
 

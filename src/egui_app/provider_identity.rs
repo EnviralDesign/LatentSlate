@@ -200,6 +200,198 @@ pub(super) fn engine_provider_state(
     }
 }
 
+pub(super) fn engine_connection_operation(
+    connection_enabled: bool,
+    providers: &[ProviderEntry],
+) -> kit::OperationPresentation {
+    use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
+
+    match engine_provider_state(connection_enabled, providers) {
+        EngineProviderState::Disabled => OperationPresentation::new(
+            Phase::Idle,
+            Severity::Neutral,
+            "Engine connection disabled.",
+        )
+        .detail("Enable and save this backend when you want to use it."),
+        EngineProviderState::Live => OperationPresentation::new(
+            Phase::Succeeded,
+            Severity::Success,
+            "Engine connection is live.",
+        )
+        .detail("The catalog endpoint is reachable."),
+        EngineProviderState::CachedOffline => {
+            let mut presentation = OperationPresentation::new(
+                Phase::Blocked,
+                Severity::Warning,
+                "Engine connection is offline.",
+            )
+            .detail("A cached catalog is available for inspection, but generation is blocked.");
+            if let Some(reason) = providers.iter().find_map(provider_unavailable_reason) {
+                presentation = presentation.technical_detail(reason);
+            }
+            presentation
+        }
+        EngineProviderState::Unavailable => {
+            let mut presentation = OperationPresentation::new(
+                Phase::Blocked,
+                Severity::Warning,
+                "Engine tools are unavailable.",
+            )
+            .detail("The backend responded, but its current tools cannot generate.");
+            if let Some(reason) = providers.iter().find_map(provider_unavailable_reason) {
+                presentation = presentation.technical_detail(reason);
+            }
+            presentation
+        }
+        EngineProviderState::NotDiscovered => OperationPresentation::new(
+            Phase::Blocked,
+            Severity::Warning,
+            "No Engine catalog is available.",
+        )
+        .detail("Save the endpoint and refresh when the Engine is reachable."),
+    }
+}
+
+pub(super) fn engine_connection_operation_with_report(
+    connection_enabled: bool,
+    providers: &[ProviderEntry],
+    report: Option<&crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+) -> kit::OperationPresentation {
+    use crate::providers::latentslate_engine::{
+        EngineCatalogFailureKind as FailureKind, EngineCatalogLoadPhase as LoadPhase,
+    };
+    use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
+
+    if !connection_enabled {
+        return engine_connection_operation(false, providers);
+    }
+    let Some(report) = report else {
+        return engine_connection_operation(true, providers);
+    };
+    match report.phase {
+        LoadPhase::Failed => {
+            let credentials = report.failure_kind == Some(FailureKind::CredentialsRejected);
+            let mut presentation = OperationPresentation::new(
+                Phase::Blocked,
+                if credentials {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+                if credentials {
+                    "Engine credentials were rejected."
+                } else {
+                    "Engine connection is unreachable."
+                },
+            )
+            .detail(if credentials {
+                "Update the API token, then save and refresh."
+            } else {
+                "Check the endpoint or start the Engine, then refresh."
+            });
+            if let Some(detail) = report.technical_detail.as_deref() {
+                presentation = presentation.technical_detail(detail);
+            }
+            presentation
+        }
+        LoadPhase::Cached => engine_connection_operation(true, providers),
+        LoadPhase::Live => OperationPresentation::new(
+            Phase::Succeeded,
+            Severity::Success,
+            "Engine connection is live.",
+        )
+        .detail("The catalog endpoint is reachable."),
+        LoadPhase::Disabled => engine_connection_operation(false, providers),
+    }
+}
+
+pub(super) fn engine_catalog_operation(
+    connection_enabled: bool,
+    providers: &[ProviderEntry],
+) -> kit::OperationPresentation {
+    use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
+
+    if !connection_enabled {
+        return OperationPresentation::new(
+            Phase::Idle,
+            Severity::Neutral,
+            "Catalog refresh is disabled.",
+        );
+    }
+    if providers.is_empty() {
+        return OperationPresentation::new(
+            Phase::Blocked,
+            Severity::Warning,
+            "No tools discovered.",
+        )
+        .detail("Refresh the catalog after the connection is available.");
+    }
+    let available = providers
+        .iter()
+        .filter(|provider| provider_is_available_for_generation(provider))
+        .count();
+    if available == providers.len() {
+        return OperationPresentation::new(Phase::Succeeded, Severity::Success, "Catalog ready.")
+            .detail(format!("{} tools available.", providers.len()));
+    }
+    if available > 0 {
+        return OperationPresentation::new(
+            Phase::Succeeded,
+            Severity::Warning,
+            "Catalog partially available.",
+        )
+        .detail(format!(
+            "{available} of {} tools are ready; unavailable tools remain inspectable.",
+            providers.len()
+        ));
+    }
+    let mut presentation = OperationPresentation::new(
+        Phase::Blocked,
+        Severity::Warning,
+        "Catalog tools are blocked.",
+    )
+    .detail(format!(
+        "{} tools discovered; none are currently ready.",
+        providers.len()
+    ));
+    if let Some(reason) = providers.iter().find_map(provider_unavailable_reason) {
+        presentation = presentation.technical_detail(reason);
+    }
+    presentation
+}
+
+pub(super) fn engine_catalog_operation_with_report(
+    connection_enabled: bool,
+    providers: &[ProviderEntry],
+    report: Option<&crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+) -> kit::OperationPresentation {
+    use crate::providers::latentslate_engine::EngineCatalogLoadPhase as LoadPhase;
+    use kit::{OperationPhase as Phase, OperationPresentation, OperationSeverity as Severity};
+
+    let Some(report) = report else {
+        return engine_catalog_operation(connection_enabled, providers);
+    };
+    match report.phase {
+        LoadPhase::Failed => {
+            let mut presentation = OperationPresentation::new(
+                Phase::Blocked,
+                Severity::Warning,
+                "Catalog refresh failed.",
+            )
+            .detail("No live or cached tools are available for this backend.");
+            if let Some(detail) = report.technical_detail.as_deref() {
+                presentation = presentation.technical_detail(detail);
+            }
+            presentation
+        }
+        LoadPhase::Live if report.discovered_count == 0 => {
+            OperationPresentation::new(Phase::Blocked, Severity::Warning, "Catalog is empty.")
+                .detail("The Engine is live but did not advertise any tools.")
+        }
+        _ => engine_catalog_operation(connection_enabled, providers),
+    }
+}
+
 pub(super) fn provider_identity_tooltip(provider: &ProviderEntry) -> String {
     let source = provider_source_kind(&provider.connection);
     let output = match provider.output_type {
@@ -610,5 +802,33 @@ mod provider_identity_tests {
         assert!(!provider_is_available_for_generation(&cached));
         assert!(provider_identity_tooltip(&cached).contains("CACHED OFFLINE"));
         assert!(provider_identity_tooltip(&cached).contains("cached catalog"));
+    }
+
+    #[test]
+    fn provider_disabled_and_offline_have_distinct_operation_meaning() {
+        use kit::{OperationPhase as Phase, OperationSeverity as Severity};
+        let disabled = engine_connection_operation(false, &[]);
+        assert_eq!(disabled.phase, Phase::Idle);
+        assert_eq!(disabled.severity, Severity::Neutral);
+
+        let cached = engine_provider(
+            false,
+            Some("LatentSlate Engine is offline; this tool was loaded from the cached catalog."),
+        );
+        let offline = engine_connection_operation(true, &[cached]);
+        assert_eq!(offline.phase, Phase::Blocked);
+        assert_eq!(offline.severity, Severity::Warning);
+        assert!(offline.technical_detail.is_some());
+    }
+
+    #[test]
+    fn partially_available_catalog_succeeds_with_warning() {
+        use kit::{OperationPhase as Phase, OperationSeverity as Severity};
+        let live = engine_provider(true, None);
+        let blocked = engine_provider(false, Some("Required model bundle is not installed."));
+        let catalog = engine_catalog_operation(true, &[live, blocked]);
+        assert_eq!(catalog.phase, Phase::Succeeded);
+        assert_eq!(catalog.severity, Severity::Warning);
+        assert!(catalog.title.contains("partially"));
     }
 }
