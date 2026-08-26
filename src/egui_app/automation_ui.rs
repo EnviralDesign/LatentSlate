@@ -436,12 +436,23 @@ impl LatentSlateApp {
                     envelope.respond(response);
                 }
                 _ => {
-                    let previous_project_path = self.editor.project.project_path.clone();
+                    let previous_project_session_revision = self.editor.project_session_revision;
+                    let provider_state_command = matches!(
+                        &envelope.command,
+                        crate::core::automation::AutomationCommand::RefreshProviders { .. }
+                            | crate::core::automation::AutomationCommand::CreateProviderFromTemplate { .. }
+                            | crate::core::automation::AutomationCommand::CreateProvider { .. }
+                            | crate::core::automation::AutomationCommand::UpdateProvider { .. }
+                            | crate::core::automation::AutomationCommand::DeleteProvider { .. }
+                    );
                     let response = self.editor.apply_automation_command(&envelope.command);
                     self.project_settings = self.editor.project.settings.clone();
-                    if self.editor.project.project_path != previous_project_path {
+                    if self.editor.project_session_revision != previous_project_session_revision {
                         self.clear_project_runtime_cache();
                         self.warm_audio_playback_cache();
+                    }
+                    if response.ok && provider_state_command {
+                        self.provider_refresh_state.invalidate();
                     }
                     envelope.respond(response);
                 }

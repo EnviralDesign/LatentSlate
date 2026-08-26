@@ -258,6 +258,7 @@ pub struct LatentSlateApp {
     preview_render_tx: mpsc::Sender<PreviewRenderResult>,
     preview_render_rx: mpsc::Receiver<PreviewRenderResult>,
     preview_render_in_flight: Arc<AtomicBool>,
+    preview_render_owner_id: Arc<AtomicU64>,
     preview_render_request_id: Arc<AtomicU64>,
     preview_render_busy_since: Option<Instant>,
     preview_render_completed_count: u64,
@@ -328,9 +329,12 @@ pub struct LatentSlateApp {
     asset_lab: AssetLabState,
     asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
     asset_lab_node_preview_textures: HashMap<AssetLabNodePreviewKey, AssetLabPreviewTexture>,
-    asset_lab_compare_preview_textures: HashMap<AssetLabCompareSide, AssetLabPreviewTexture>,
+    asset_lab_compare_preview_textures: HashMap<AssetLabCompareSide, AssetLabComparePreviewTexture>,
     asset_lab_compare_video_requests: Vec<AssetLabCompareVideoRequest>,
-    asset_lab_compare_errors: HashMap<AssetLabCompareSide, String>,
+    asset_lab_compare_errors: HashMap<AssetLabCompareSide, AssetLabCompareFailure>,
+    asset_lab_compare_timing_cache:
+        HashMap<AssetLabCompareTimingKey, Option<crate::core::media::VideoMetadata>>,
+    asset_lab_compare_timing_requests: Vec<AssetLabCompareTimingRequest>,
     asset_lab_video_decoder: VideoDecodeWorker,
     provider_template_kind: ProviderTemplateKind,
     project_delete_confirmation: Option<ProjectDeleteConfirmation>,
@@ -347,7 +351,8 @@ pub struct LatentSlateApp {
     provider_resource_release_in_flight: bool,
     provider_refresh_tx: mpsc::Sender<ProviderRefreshResult>,
     provider_refresh_rx: mpsc::Receiver<ProviderRefreshResult>,
-    provider_refresh_in_flight: bool,
+    provider_refresh_state: ProviderRefreshState,
+    engine_connection_save_error: Option<String>,
     pending_provider_resource_release_automation:
         Option<crate::core::automation::AutomationEnvelope>,
     export_modal: ExportModalState,
@@ -406,6 +411,7 @@ struct PreviewLayerTexture {
 
 struct PreviewRenderResult {
     request_id: u64,
+    project_session_revision: u64,
     time_seconds: f64,
     decode_mode: PreviewDecodeMode,
     requested_at: Instant,
@@ -414,11 +420,62 @@ struct PreviewRenderResult {
 }
 
 struct ProviderRefreshResult {
+    revision: u64,
     provider_entries: Vec<ProviderEntry>,
     provider_files: Vec<PathBuf>,
     engine_connections: Vec<crate::providers::latentslate_engine::EngineConnectionSettings>,
     reports: Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
     error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderRefreshCompletion {
+    Apply,
+    Discard,
+    DiscardAndRerun(u64),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProviderRefreshState {
+    latest_revision: u64,
+    in_flight_revision: Option<u64>,
+}
+
+impl ProviderRefreshState {
+    fn is_in_flight(self) -> bool {
+        self.in_flight_revision.is_some()
+    }
+
+    fn request(&mut self) -> Option<u64> {
+        self.latest_revision = self.latest_revision.wrapping_add(1).max(1);
+        self.launch_latest_if_idle()
+    }
+
+    fn invalidate(&mut self) {
+        self.latest_revision = self.latest_revision.wrapping_add(1).max(1);
+    }
+
+    fn launch_latest_if_idle(&mut self) -> Option<u64> {
+        if self.in_flight_revision.is_some() || self.latest_revision == 0 {
+            return None;
+        }
+        self.in_flight_revision = Some(self.latest_revision);
+        self.in_flight_revision
+    }
+
+    fn complete(&mut self, revision: u64) -> ProviderRefreshCompletion {
+        if self.in_flight_revision != Some(revision) {
+            return ProviderRefreshCompletion::Discard;
+        }
+        self.in_flight_revision = None;
+        if revision == self.latest_revision {
+            ProviderRefreshCompletion::Apply
+        } else if let Some(latest) = self.launch_latest_if_idle() {
+            ProviderRefreshCompletion::DiscardAndRerun(latest)
+        } else {
+            ProviderRefreshCompletion::Discard
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -640,6 +697,7 @@ impl LatentSlateApp {
             preview_render_tx,
             preview_render_rx,
             preview_render_in_flight: Arc::new(AtomicBool::new(false)),
+            preview_render_owner_id: Arc::new(AtomicU64::new(0)),
             preview_render_request_id: Arc::new(AtomicU64::new(0)),
             preview_render_busy_since: None,
             preview_render_completed_count: 0,
@@ -712,6 +770,8 @@ impl LatentSlateApp {
             asset_lab_compare_preview_textures: HashMap::new(),
             asset_lab_compare_video_requests: Vec::new(),
             asset_lab_compare_errors: HashMap::new(),
+            asset_lab_compare_timing_cache: HashMap::new(),
+            asset_lab_compare_timing_requests: Vec::new(),
             asset_lab_video_decoder: VideoDecodeWorker::new(8192, 8192),
             provider_template_kind: ProviderTemplateKind::default(),
             project_delete_confirmation: None,
@@ -728,7 +788,8 @@ impl LatentSlateApp {
             provider_resource_release_in_flight: false,
             provider_refresh_tx,
             provider_refresh_rx,
-            provider_refresh_in_flight: false,
+            provider_refresh_state: ProviderRefreshState::default(),
+            engine_connection_save_error: None,
             pending_provider_resource_release_automation: None,
             export_modal,
             export_events_tx,

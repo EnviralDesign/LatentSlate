@@ -1,8 +1,47 @@
 use super::*;
 
+fn persist_engine_connection_draft_with(
+    connections: &mut Vec<crate::providers::latentslate_engine::EngineConnectionSettings>,
+    draft: &EngineConnectionDraft,
+    save: impl FnOnce(
+        &[crate::providers::latentslate_engine::EngineConnectionSettings],
+    ) -> Result<(), String>,
+) -> Result<bool, String> {
+    let Some(index) = connections
+        .iter()
+        .position(|connection| connection.id == draft.id)
+    else {
+        return Ok(false);
+    };
+    let next = draft.to_connection(Some(&connections[index]));
+    if next == connections[index] {
+        return Ok(false);
+    }
+    let mut updated = connections.clone();
+    updated[index] = next;
+    save(&updated)?;
+    *connections = updated;
+    Ok(true)
+}
+
+fn engine_connection_save_failure_operation(
+    error: Option<&str>,
+) -> Option<kit::OperationPresentation> {
+    error.map(|error| {
+        kit::OperationPresentation::new(
+            kit::OperationPhase::Failed,
+            kit::OperationSeverity::Error,
+            "Engine settings were not saved.",
+        )
+        .detail(
+            "The last successfully saved connection remains active. Correct the issue and save again.",
+        )
+        .technical_detail(error)
+    })
+}
+
 impl LatentSlateApp {
     pub(super) fn providers_modal(&mut self, ctx: &Context) {
-        self.poll_provider_refresh(ctx);
         self.ensure_provider_modal_selection();
         let mut open = true;
         let mut close_clicked = false;
@@ -40,8 +79,9 @@ impl LatentSlateApp {
                 });
             });
         if close_clicked || outside_clicked || !open {
-            self.persist_engine_connection_draft();
-            self.editor.overlays.providers = false;
+            if self.persist_engine_connection_draft().is_ok() {
+                self.editor.overlays.providers = false;
+            }
         }
     }
 
@@ -217,7 +257,9 @@ impl LatentSlateApp {
         if self.selected_provider.as_ref() == Some(&selection) {
             return;
         }
-        self.persist_engine_connection_draft();
+        if self.persist_engine_connection_draft().is_err() {
+            return;
+        }
         match &selection {
             ProviderModalSelection::Engine(id) => {
                 self.engine_connection_draft = self
@@ -235,83 +277,72 @@ impl LatentSlateApp {
         self.selected_provider = Some(selection);
     }
 
-    fn persist_engine_connection_draft(&mut self) {
+    fn persist_engine_connection_draft(&mut self) -> Result<bool, String> {
         let Some(draft) = self.engine_connection_draft.clone() else {
-            return;
+            return Ok(false);
         };
-        let Some(index) = self
-            .editor
-            .engine_connections
-            .iter()
-            .position(|connection| connection.id == draft.id)
-        else {
-            return;
-        };
-        let next = draft.to_connection(Some(&self.editor.engine_connections[index]));
-        if next == self.editor.engine_connections[index] {
-            return;
-        }
-        self.editor.engine_connections[index] = next;
-        if let Err(err) =
-            crate::providers::latentslate_engine::save_connections(&self.editor.engine_connections)
-        {
+        let result = persist_engine_connection_draft_with(
+            &mut self.editor.engine_connections,
+            &draft,
+            |connections| {
+                crate::providers::latentslate_engine::save_connections(connections)
+                    .map_err(|err| err.to_string())
+            },
+        );
+        if let Err(err) = &result {
+            self.engine_connection_save_error = Some(err.clone());
             self.editor.status = format!("Failed to save Engine backend: {err}");
-        }
-    }
-
-    fn save_engine_connections_and_refresh(&mut self, ctx: &Context) {
-        match crate::providers::latentslate_engine::save_connections(
-            &self.editor.engine_connections,
-        ) {
-            Ok(()) => {
-                self.start_provider_refresh(ctx);
-            }
-            Err(err) => {
-                self.editor.status = format!("Failed to save Engine backend: {err}");
+        } else {
+            self.engine_connection_save_error = None;
+            if result.as_ref().is_ok_and(|changed| *changed) {
+                self.provider_refresh_state.invalidate();
             }
         }
+        result
     }
 
     fn create_engine_connection(&mut self) {
-        self.persist_engine_connection_draft();
+        if self.persist_engine_connection_draft().is_err() {
+            return;
+        }
         let created = crate::providers::latentslate_engine::new_engine_connection(
             &self.editor.engine_connections,
         );
         let created_id = created.id;
-        self.editor.engine_connections.push(created);
-        match crate::providers::latentslate_engine::save_connections(
-            &self.editor.engine_connections,
-        ) {
+        let mut updated = self.editor.engine_connections.clone();
+        updated.push(created);
+        match crate::providers::latentslate_engine::save_connections(&updated) {
             Ok(()) => {
+                self.engine_connection_save_error = None;
+                self.editor.engine_connections = updated;
                 self.editor.refresh_providers();
+                self.provider_refresh_state.invalidate();
                 self.select_provider_modal_item(ProviderModalSelection::Engine(created_id));
                 self.editor.status = "Created LatentSlate Engine backend.".to_string();
             }
             Err(err) => {
-                self.editor
-                    .engine_connections
-                    .retain(|connection| connection.id != created_id);
+                self.engine_connection_save_error = Some(err.clone());
                 self.editor.status = format!("Failed to create Engine backend: {err}");
             }
         }
     }
 
     fn delete_engine_connection(&mut self, connection_id: Uuid) {
-        self.editor
-            .engine_connections
-            .retain(|connection| connection.id != connection_id);
-        match crate::providers::latentslate_engine::save_connections(
-            &self.editor.engine_connections,
-        ) {
+        let mut updated = self.editor.engine_connections.clone();
+        updated.retain(|connection| connection.id != connection_id);
+        match crate::providers::latentslate_engine::save_connections(&updated) {
             Ok(()) => {
+                self.engine_connection_save_error = None;
+                self.editor.engine_connections = updated;
                 self.engine_connection_draft = None;
                 self.selected_provider = None;
                 self.editor.refresh_providers();
+                self.provider_refresh_state.invalidate();
                 self.ensure_provider_modal_selection();
                 self.editor.status = "Deleted LatentSlate Engine backend.".to_string();
             }
             Err(err) => {
-                self.editor.refresh_providers();
+                self.engine_connection_save_error = Some(err.clone());
                 self.editor.status = format!("Failed to delete Engine backend: {err}");
             }
         }
@@ -362,7 +393,11 @@ impl LatentSlateApp {
             });
         });
         ui.add_space(kit::FORM_ROW_GAP);
-        let connection_operation = if self.provider_refresh_in_flight {
+        let connection_operation = if let Some(operation) =
+            engine_connection_save_failure_operation(self.engine_connection_save_error.as_deref())
+        {
+            operation
+        } else if self.provider_refresh_state.is_in_flight() {
             kit::OperationPresentation::new(
                 kit::OperationPhase::Running,
                 kit::OperationSeverity::Informational,
@@ -433,7 +468,7 @@ impl LatentSlateApp {
             });
         });
         ui.add_space(kit::FORM_ROW_GAP);
-        let catalog_operation = if self.provider_refresh_in_flight {
+        let catalog_operation = if self.provider_refresh_state.is_in_flight() {
             kit::OperationPresentation::new(
                 kit::OperationPhase::Running,
                 kit::OperationSeverity::Informational,
@@ -565,12 +600,20 @@ impl LatentSlateApp {
         });
 
         if save_clicked || refresh_clicked {
-            self.persist_engine_connection_draft();
-            self.save_engine_connections_and_refresh(ui.ctx());
-            if refresh_clicked {
-                self.editor.status = "Refreshing LatentSlate Engine catalog…".to_string();
-            } else {
-                self.editor.status = "Saved Engine backend; refreshing catalog…".to_string();
+            match self.persist_engine_connection_draft() {
+                Ok(_) => {
+                    self.start_provider_refresh(ui.ctx());
+                    self.editor.status = if refresh_clicked {
+                        "Refreshing LatentSlate Engine catalog…".to_string()
+                    } else {
+                        "Saved Engine backend; refreshing catalog…".to_string()
+                    };
+                }
+                Err(_) => {
+                    // The transactional persistence helper already installed
+                    // the exact failure status and left in-memory settings
+                    // aligned with the last successfully saved configuration.
+                }
             }
         }
         if delete_clicked {
@@ -579,22 +622,27 @@ impl LatentSlateApp {
     }
 
     fn start_provider_refresh(&mut self, ctx: &Context) {
-        if self.provider_refresh_in_flight {
-            return;
+        if let Some(revision) = self.provider_refresh_state.request() {
+            self.launch_provider_refresh(ctx, revision);
         }
-        self.provider_refresh_in_flight = true;
+    }
+
+    fn launch_provider_refresh(&mut self, ctx: &Context, revision: u64) {
         let tx = self.provider_refresh_tx.clone();
         let repaint = ctx.clone();
+        let engine_connections = self.editor.engine_connections.clone();
         std::thread::spawn(move || {
-            let loaded = crate::core::provider_store::load_local_provider_entries_with_reports();
+            let loaded = crate::core::provider_store::
+                load_local_provider_entries_for_connections_with_reports(&engine_connections);
             let (provider_entries, reports, error) = match loaded {
                 Ok((entries, reports)) => (entries, reports, None),
                 Err(err) => (Vec::new(), Vec::new(), Some(err.to_string())),
             };
             let _ = tx.send(ProviderRefreshResult {
+                revision,
                 provider_entries,
                 provider_files: crate::core::provider_store::list_local_provider_files(),
-                engine_connections: crate::providers::latentslate_engine::load_connections(),
+                engine_connections,
                 reports,
                 error,
             });
@@ -603,23 +651,32 @@ impl LatentSlateApp {
         ctx.request_repaint();
     }
 
-    fn poll_provider_refresh(&mut self, ctx: &Context) {
+    pub(super) fn poll_provider_refresh(&mut self, ctx: &Context) {
         if let Ok(result) = self.provider_refresh_rx.try_recv() {
-            self.provider_refresh_in_flight = false;
-            let error = result.error.clone();
-            self.editor.apply_provider_refresh(
-                result.provider_entries,
-                result.provider_files,
-                result.engine_connections,
-                result.reports,
-            );
-            self.ensure_provider_modal_selection();
-            self.editor.status = match error {
-                Some(error) => format!("Provider refresh failed: {error}"),
-                None => "Refreshed provider catalogs.".to_string(),
-            };
+            match self.provider_refresh_state.complete(result.revision) {
+                ProviderRefreshCompletion::Apply => {
+                    let error = result.error.clone();
+                    self.editor.apply_provider_refresh(
+                        result.provider_entries,
+                        result.provider_files,
+                        result.engine_connections,
+                        result.reports,
+                    );
+                    self.ensure_provider_modal_selection();
+                    if self.engine_connection_save_error.is_none() {
+                        self.editor.status = match error {
+                            Some(error) => format!("Provider refresh failed: {error}"),
+                            None => "Refreshed provider catalogs.".to_string(),
+                        };
+                    }
+                }
+                ProviderRefreshCompletion::DiscardAndRerun(revision) => {
+                    self.launch_provider_refresh(ctx, revision);
+                }
+                ProviderRefreshCompletion::Discard => {}
+            }
         }
-        if self.provider_refresh_in_flight {
+        if self.provider_refresh_state.is_in_flight() {
             ctx.request_repaint_after(Duration::from_millis(80));
         }
     }
@@ -831,6 +888,7 @@ impl LatentSlateApp {
 
     pub(super) fn refresh_provider_files(&mut self) {
         self.editor.refresh_providers();
+        self.provider_refresh_state.invalidate();
         self.ensure_provider_modal_selection();
     }
 
@@ -1762,5 +1820,76 @@ impl LatentSlateApp {
         self.refresh_provider_files();
         self.provider_builder_open = false;
         self.editor.status = format!("Saved provider {}", path_label(&save.provider_path));
+    }
+}
+
+#[cfg(test)]
+mod provider_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn stale_refresh_completion_discards_and_reruns_only_the_latest_revision() {
+        let mut state = ProviderRefreshState::default();
+        let first = state.request().expect("first request launches");
+        assert_eq!(state.request(), None);
+        assert_eq!(state.request(), None);
+        let latest = state.latest_revision;
+
+        assert_eq!(
+            state.complete(first),
+            ProviderRefreshCompletion::DiscardAndRerun(latest)
+        );
+        assert_eq!(state.in_flight_revision, Some(latest));
+        assert_eq!(state.complete(latest), ProviderRefreshCompletion::Apply);
+        assert!(!state.is_in_flight());
+    }
+
+    #[test]
+    fn failed_connection_save_leaves_last_persisted_settings_in_memory() {
+        let mut connections =
+            vec![crate::providers::latentslate_engine::EngineConnectionSettings::default()];
+        let original = connections.clone();
+        let mut draft = EngineConnectionDraft::from_connection(&connections[0]);
+        draft.name = "Unsaved name".to_string();
+
+        let result = persist_engine_connection_draft_with(&mut connections, &draft, |_| {
+            Err("disk unavailable".to_string())
+        });
+
+        assert_eq!(result, Err("disk unavailable".to_string()));
+        assert_eq!(connections, original);
+    }
+
+    #[test]
+    fn successful_connection_save_commits_once_after_persistence() {
+        let mut connections =
+            vec![crate::providers::latentslate_engine::EngineConnectionSettings::default()];
+        let mut draft = EngineConnectionDraft::from_connection(&connections[0]);
+        draft.name = "Studio Engine".to_string();
+        let mut save_calls = 0;
+
+        let changed = persist_engine_connection_draft_with(&mut connections, &draft, |saved| {
+            save_calls += 1;
+            assert_eq!(saved[0].name, "Studio Engine");
+            Ok(())
+        })
+        .expect("save succeeds");
+
+        assert!(changed);
+        assert_eq!(save_calls, 1);
+        assert_eq!(connections[0].name, "Studio Engine");
+    }
+
+    #[test]
+    fn failed_save_presentation_remains_failed_even_during_an_existing_refresh() {
+        let mut state = ProviderRefreshState::default();
+        assert!(state.request().is_some());
+        assert!(state.is_in_flight());
+
+        let operation = engine_connection_save_failure_operation(Some("access denied"))
+            .expect("save error has durable presentation");
+        assert_eq!(operation.phase, kit::OperationPhase::Failed);
+        assert_eq!(operation.severity, kit::OperationSeverity::Error);
+        assert_eq!(operation.technical_detail.as_deref(), Some("access denied"));
     }
 }

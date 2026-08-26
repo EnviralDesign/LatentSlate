@@ -548,6 +548,7 @@ impl eframe::App for LatentSlateApp {
         self.tick_playback(&ctx);
         self.service_generation_queue(&ctx);
         self.service_provider_resource_release();
+        self.poll_provider_refresh(&ctx);
         self.service_export_events(&ctx);
         self.update_preview_texture(&ctx);
         self.service_preview_idle_prefetch(&ctx);

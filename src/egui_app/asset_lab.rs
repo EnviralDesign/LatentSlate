@@ -227,35 +227,102 @@ pub(super) struct AssetLabCompareVideoRequest {
     receiver: mpsc::Receiver<DecodeResponse>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(super) struct AssetLabLocalFileIdentity {
+    path: PathBuf,
+    len: u64,
+    modified_unix_nanos: Option<u128>,
+}
+
+impl AssetLabLocalFileIdentity {
+    fn read(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok()?;
+        let modified_unix_nanos = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos());
+        Some(Self {
+            path: path.to_path_buf(),
+            len: metadata.len(),
+            modified_unix_nanos,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct AssetLabCompareDecodeKey {
     side: AssetLabCompareSide,
     asset_id: Uuid,
     version: String,
-    path: PathBuf,
-    frame_index: i64,
+    file: AssetLabLocalFileIdentity,
+    frame_index: Option<i64>,
+    frame_time_micros: Option<i64>,
     decoder_epoch: u64,
     project_session_revision: u64,
 }
 
-impl AssetLabCompareDecodeKey {
-    fn matches_desired(
-        &self,
-        side: AssetLabCompareSide,
-        asset_id: Uuid,
-        version: &str,
-        path: &Path,
-        frame_index: i64,
-        decoder_epoch: u64,
-        project_session_revision: u64,
-    ) -> bool {
-        self.side == side
-            && self.asset_id == asset_id
-            && self.version == version
-            && self.path == path
-            && self.frame_index == frame_index
-            && self.decoder_epoch == decoder_epoch
-            && self.project_session_revision == project_session_revision
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AssetLabCompareFailure {
+    key: AssetLabCompareDecodeKey,
+    detail: String,
+}
+
+fn asset_lab_compare_failure_blocks_attempt(
+    failure: Option<&AssetLabCompareFailure>,
+    desired: &AssetLabCompareDecodeKey,
+) -> bool {
+    failure.is_some_and(|failure| failure.key == *desired)
+}
+
+pub(super) struct AssetLabComparePreviewTexture {
+    key: AssetLabCompareDecodeKey,
+    texture: TextureHandle,
+    size: Vec2,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(super) struct AssetLabCompareTimingKey {
+    asset_id: Uuid,
+    version: String,
+    file: AssetLabLocalFileIdentity,
+    project_session_revision: u64,
+}
+
+pub(super) struct AssetLabCompareTimingRequest {
+    key: AssetLabCompareTimingKey,
+    receiver: mpsc::Receiver<Option<crate::core::media::VideoMetadata>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssetLabTimingSource {
+    OutputProbe,
+    DurationInput,
+    FrameCountFpsInput,
+    LegacyAsset,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct AssetLabVersionTiming {
+    duration_seconds: f64,
+    fps: f64,
+    frame_count: Option<u32>,
+    duration_source: AssetLabTimingSource,
+    fps_source: AssetLabTimingSource,
+}
+
+enum AssetLabTimingLookup {
+    Pending,
+    Ready(AssetLabVersionTiming),
+}
+
+impl AssetLabVersionTiming {
+    fn last_frame_index(self) -> i64 {
+        self.frame_count
+            .filter(|frames| *frames > 0)
+            .map(|frames| i64::from(frames) - 1)
+            .unwrap_or_else(|| (self.duration_seconds * self.fps).ceil().max(1.0) as i64 - 1)
+            .max(0)
     }
 }
 
@@ -327,6 +394,7 @@ pub(super) enum AssetLabAction {
     MakeCompareCandidateActive,
     BranchFromCompareBaseline,
     BranchFromCompareCandidate,
+    RetryCompareSide(AssetLabCompareSide),
     SetActive(String),
     DuplicateVersion(String),
     ExtractVersion(String),
@@ -627,29 +695,97 @@ fn asset_lab_compare_delta(
     delta
 }
 
-fn asset_lab_compare_record_duration(
+fn asset_lab_compare_record_role_value(
+    record: Option<&GenerationRecord>,
+    providers: &[ProviderEntry],
+    role: InputRole,
+) -> Option<f64> {
+    let record = record?;
+    let provider = providers
+        .iter()
+        .find(|provider| provider.id == record.provider_id)?;
+    let input = provider
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(role))?;
+    match record.inputs_snapshot.get(&input.name)? {
+        InputValue::Literal { value } => input_value_as_f64(value),
+        _ => None,
+    }
+    .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn asset_lab_compare_resolve_timing(
     asset: &Asset,
     record: Option<&GenerationRecord>,
     providers: &[ProviderEntry],
-) -> f64 {
-    let from_record = record.and_then(|record| {
-        let provider = providers
-            .iter()
-            .find(|provider| provider.id == record.provider_id)?;
-        let input = provider
-            .inputs
-            .iter()
-            .find(|input| input.role == Some(InputRole::DurationSeconds))?;
-        let value = record.inputs_snapshot.get(&input.name)?;
-        match value {
-            InputValue::Literal { value } => input_value_as_f64(value),
-            _ => None,
-        }
-    });
-    from_record
+    probed: Option<crate::core::media::VideoMetadata>,
+    project_fps: f64,
+) -> AssetLabVersionTiming {
+    let input_duration =
+        asset_lab_compare_record_role_value(record, providers, InputRole::DurationSeconds);
+    let input_fps = asset_lab_compare_record_role_value(record, providers, InputRole::Fps);
+    let input_frame_count =
+        asset_lab_compare_record_role_value(record, providers, InputRole::FrameCount)
+            .map(|frames| frames.round().clamp(1.0, u32::MAX as f64) as u32);
+    let (asset_fps, asset_frame_count) = match &asset.kind {
+        AssetKind::GenerativeVideo {
+            fps, frame_count, ..
+        } => (Some(*fps), Some(*frame_count)),
+        _ => (None, None),
+    };
+
+    let probed_fps = probed
+        .and_then(|metadata| metadata.fps)
+        .filter(|fps| *fps > 0.0);
+    let fps = probed_fps
+        .or(input_fps)
+        .or(asset_fps)
+        .unwrap_or(project_fps)
+        .max(1.0);
+    let fps_source = if probed_fps.is_some() {
+        AssetLabTimingSource::OutputProbe
+    } else if input_fps.is_some() {
+        AssetLabTimingSource::FrameCountFpsInput
+    } else {
+        AssetLabTimingSource::LegacyAsset
+    };
+
+    let probed_frame_count = probed.and_then(|metadata| metadata.frame_count);
+    let frame_count = probed_frame_count
+        .or(input_frame_count)
+        .or(asset_frame_count);
+    let probed_duration = probed
+        .and_then(|metadata| metadata.duration_seconds)
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .or_else(|| probed_frame_count.map(|frames| f64::from(frames) / fps));
+    let input_frame_duration = input_frame_count
+        .zip(input_fps)
+        .map(|(frames, input_fps)| f64::from(frames) / input_fps);
+    let duration_seconds = probed_duration
+        .or(input_duration)
+        .or(input_frame_duration)
         .or(asset.duration_seconds)
+        .or_else(|| frame_count.map(|frames| f64::from(frames) / fps))
         .unwrap_or(0.0)
-        .max(0.0)
+        .max(0.0);
+    let duration_source = if probed_duration.is_some() {
+        AssetLabTimingSource::OutputProbe
+    } else if input_duration.is_some() {
+        AssetLabTimingSource::DurationInput
+    } else if input_frame_duration.is_some() {
+        AssetLabTimingSource::FrameCountFpsInput
+    } else {
+        AssetLabTimingSource::LegacyAsset
+    };
+
+    AssetLabVersionTiming {
+        duration_seconds,
+        fps,
+        frame_count,
+        duration_source,
+        fps_source,
+    }
 }
 
 pub(super) fn asset_lab_output_type(asset: &Asset) -> Option<ProviderOutputType> {
@@ -899,6 +1035,16 @@ fn asset_lab_node_id_for_version(
     version: Option<&str>,
 ) -> Option<Uuid> {
     asset_lab_record_for_version(config, version).and_then(|record| record.lab_node_id)
+}
+
+fn asset_lab_effective_selected_node_id(
+    config: Option<&GenerativeConfig>,
+    compare: Option<&AssetLabCompareState>,
+) -> Option<Uuid> {
+    if let Some(compare) = compare {
+        return asset_lab_node_id_for_version(config, compare.candidate_version.as_deref());
+    }
+    config.and_then(|config| config.lab_graph.selected_node_id)
 }
 
 fn asset_lab_record_is_node_baseline(record: &GenerationRecord, node: &AssetLabNode) -> bool {
@@ -1874,24 +2020,18 @@ pub(super) fn asset_lab_scrub_tick_step(duration: f64, width: f32) -> f64 {
     }
 }
 
-fn asset_lab_compare_frame_index(time_seconds: f64, duration: f64, fps: f64) -> i64 {
-    let fps = if fps.is_finite() { fps.max(1.0) } else { 1.0 };
-    let duration = if duration.is_finite() {
-        duration.max(0.0)
+fn asset_lab_compare_frame_index(time_seconds: f64, timing: AssetLabVersionTiming) -> i64 {
+    let fps = if timing.fps.is_finite() {
+        timing.fps.max(1.0)
     } else {
-        0.0
-    };
-    let last_frame = if duration > 0.0 {
-        (duration * fps).ceil().max(1.0) as i64 - 1
-    } else {
-        i64::MAX
+        1.0
     };
     let time = if time_seconds.is_finite() {
         time_seconds.max(0.0)
     } else {
         0.0
     };
-    ((time * fps).round().max(0.0) as i64).min(last_frame.max(0))
+    ((time * fps).round().max(0.0) as i64).min(timing.last_frame_index())
 }
 
 pub(super) fn copy_generative_version_files(
@@ -2080,6 +2220,161 @@ impl LatentSlateApp {
         self.asset_lab_compare_preview_textures.clear();
         self.asset_lab_compare_video_requests.clear();
         self.asset_lab_compare_errors.clear();
+        self.asset_lab_compare_timing_cache.clear();
+        self.asset_lab_compare_timing_requests.clear();
+    }
+
+    fn poll_asset_lab_compare_timing_requests(&mut self, ctx: &Context) {
+        let requests = std::mem::take(&mut self.asset_lab_compare_timing_requests);
+        for request in requests {
+            match request.receiver.try_recv() {
+                Ok(metadata) => {
+                    if self.asset_lab_compare_timing_cache.len() >= 16 {
+                        self.asset_lab_compare_timing_cache.clear();
+                    }
+                    self.asset_lab_compare_timing_cache
+                        .insert(request.key, metadata);
+                    ctx.request_repaint();
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.asset_lab_compare_timing_requests.push(request);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.asset_lab_compare_timing_cache
+                        .insert(request.key, None);
+                    ctx.request_repaint();
+                }
+            }
+        }
+    }
+
+    fn asset_lab_compare_timing_key(
+        &self,
+        asset: &Asset,
+        version: &str,
+    ) -> Option<AssetLabCompareTimingKey> {
+        let path = self
+            .editor
+            .project
+            .project_path
+            .as_ref()
+            .and_then(|root| asset_lab_media_path(root, asset, Some(version)))?;
+        let file = AssetLabLocalFileIdentity::read(&path)?;
+        Some(AssetLabCompareTimingKey {
+            asset_id: asset.id,
+            version: version.to_string(),
+            file,
+            project_session_revision: self.editor.project_session_revision,
+        })
+    }
+
+    fn asset_lab_compare_version_timing(
+        &mut self,
+        ctx: &Context,
+        asset: &Asset,
+        version: &str,
+        record: Option<&GenerationRecord>,
+    ) -> AssetLabTimingLookup {
+        let Some(key) = self.asset_lab_compare_timing_key(asset, version) else {
+            return AssetLabTimingLookup::Ready(asset_lab_compare_resolve_timing(
+                asset,
+                record,
+                &self.editor.provider_entries,
+                None,
+                self.editor.project.settings.fps,
+            ));
+        };
+        if let Some(metadata) = self.asset_lab_compare_timing_cache.get(&key).copied() {
+            return AssetLabTimingLookup::Ready(asset_lab_compare_resolve_timing(
+                asset,
+                record,
+                &self.editor.provider_entries,
+                metadata,
+                self.editor.project.settings.fps,
+            ));
+        }
+        if self
+            .asset_lab_compare_timing_requests
+            .iter()
+            .any(|request| request.key == key)
+        {
+            return AssetLabTimingLookup::Pending;
+        }
+        let path = key.file.path.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::core::media::probe_video_metadata(&path));
+        });
+        self.asset_lab_compare_timing_requests
+            .push(AssetLabCompareTimingRequest { key, receiver });
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        AssetLabTimingLookup::Pending
+    }
+
+    fn asset_lab_compare_cached_version_timing(
+        &self,
+        asset: &Asset,
+        version: &str,
+        record: Option<&GenerationRecord>,
+    ) -> Option<AssetLabVersionTiming> {
+        let key = self.asset_lab_compare_timing_key(asset, version);
+        match key {
+            Some(key) => self
+                .asset_lab_compare_timing_cache
+                .get(&key)
+                .map(|metadata| {
+                    asset_lab_compare_resolve_timing(
+                        asset,
+                        record,
+                        &self.editor.provider_entries,
+                        *metadata,
+                        self.editor.project.settings.fps,
+                    )
+                }),
+            None => Some(asset_lab_compare_resolve_timing(
+                asset,
+                record,
+                &self.editor.provider_entries,
+                None,
+                self.editor.project.settings.fps,
+            )),
+        }
+    }
+
+    fn asset_lab_compare_decode_key(
+        &self,
+        side: AssetLabCompareSide,
+        asset: &Asset,
+        version: &str,
+        path: &Path,
+        frame_index: Option<i64>,
+        frame_time_seconds: Option<f64>,
+    ) -> Option<AssetLabCompareDecodeKey> {
+        Some(AssetLabCompareDecodeKey {
+            side,
+            asset_id: asset.id,
+            version: version.to_string(),
+            file: AssetLabLocalFileIdentity::read(path)?,
+            frame_index,
+            frame_time_micros: frame_time_seconds
+                .map(|seconds| (seconds.max(0.0) * 1_000_000.0).round() as i64),
+            decoder_epoch: self.asset_lab_video_decoder.current_epoch(),
+            project_session_revision: self.editor.project_session_revision,
+        })
+    }
+
+    fn asset_lab_compare_failure_for_key(
+        &self,
+        side: AssetLabCompareSide,
+        key: &AssetLabCompareDecodeKey,
+    ) -> Option<String> {
+        self.asset_lab_compare_errors
+            .get(&side)
+            .and_then(|failure| {
+                asset_lab_compare_failure_blocks_attempt(Some(failure), key)
+                    .then(|| failure.detail.clone())
+            })
     }
 
     fn asset_lab_version_has_record(config: Option<&GenerativeConfig>, version: &str) -> bool {
@@ -2377,18 +2672,19 @@ impl LatentSlateApp {
         let mut open = true;
         let mut close_clicked = false;
         let mut action: Option<AssetLabAction> = None;
-        let focused_node_id = config_snapshot
-            .as_ref()
-            .and_then(|config| config.lab_graph.selected_node_id)
-            .filter(|node_id| {
-                config_snapshot.as_ref().is_some_and(|config| {
-                    config
-                        .lab_graph
-                        .nodes
-                        .iter()
-                        .any(|node| node.id == *node_id)
-                })
-            });
+        let focused_node_id = asset_lab_effective_selected_node_id(
+            config_snapshot.as_ref(),
+            self.asset_lab.compare.as_ref(),
+        )
+        .filter(|node_id| {
+            config_snapshot.as_ref().is_some_and(|config| {
+                config
+                    .lab_graph
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == *node_id)
+            })
+        });
         let inspector_has_keyboard_focus = self
             .asset_lab
             .inspector_focus_id
@@ -2480,14 +2776,8 @@ impl LatentSlateApp {
                         .any(|node| node.id == *node_id)
                 })
             });
-        let inspector_node_id = if let Some(compare) = self.asset_lab.compare.as_ref() {
-            compare
-                .candidate_version
-                .as_deref()
-                .and_then(|version| asset_lab_node_id_for_version(config, Some(version)))
-        } else {
-            selected_node_id
-        };
+        let inspector_node_id =
+            asset_lab_effective_selected_node_id(config, self.asset_lab.compare.as_ref());
         let compatible_providers: Vec<ProviderEntry> = self
             .editor
             .provider_entries
@@ -2515,7 +2805,7 @@ impl LatentSlateApp {
                             asset,
                             config,
                             &versions,
-                            selected_node_id,
+                            inspector_node_id,
                             active_version.as_deref(),
                             &compatible_providers,
                             action,
@@ -2617,6 +2907,7 @@ impl LatentSlateApp {
         compatible_providers: &[ProviderEntry],
         action: &mut Option<AssetLabAction>,
     ) {
+        self.poll_asset_lab_compare_timing_requests(ui.ctx());
         self.poll_asset_lab_compare_video_requests(ui.ctx());
         let available_h = ui.available_height().max(360.0);
         let stage_h = (available_h * 0.60).clamp(260.0, (available_h - 210.0).max(260.0));
@@ -2689,21 +2980,58 @@ impl LatentSlateApp {
                             config,
                             compare.candidate_version.as_deref(),
                         );
-                        let a_duration = asset_lab_compare_record_duration(
-                            asset,
-                            baseline_record,
-                            &self.editor.provider_entries,
-                        );
-                        let b_duration = compare.candidate_version.as_ref().map(|_| {
-                            asset_lab_compare_record_duration(
+                        let a_timing = if asset.is_video() {
+                            match self.asset_lab_compare_version_timing(
+                                ui.ctx(),
                                 asset,
-                                candidate_record,
+                                &compare.baseline_version,
+                                baseline_record,
+                            ) {
+                                AssetLabTimingLookup::Ready(timing) => Some(timing),
+                                AssetLabTimingLookup::Pending => None,
+                            }
+                        } else {
+                            Some(asset_lab_compare_resolve_timing(
+                                asset,
+                                baseline_record,
                                 &self.editor.provider_entries,
-                            )
-                        });
+                                None,
+                                self.editor.project.settings.fps,
+                            ))
+                        };
+                        let b_timing =
+                            if let Some(candidate_version) = compare.candidate_version.as_deref() {
+                                if asset.is_video() {
+                                    match self.asset_lab_compare_version_timing(
+                                        ui.ctx(),
+                                        asset,
+                                        candidate_version,
+                                        candidate_record,
+                                    ) {
+                                        AssetLabTimingLookup::Ready(timing) => Some(timing),
+                                        AssetLabTimingLookup::Pending => None,
+                                    }
+                                } else {
+                                    Some(asset_lab_compare_resolve_timing(
+                                        asset,
+                                        candidate_record,
+                                        &self.editor.provider_entries,
+                                        None,
+                                        self.editor.project.settings.fps,
+                                    ))
+                                }
+                            } else {
+                                None
+                            };
+                        let a_duration = a_timing
+                            .map(|timing| timing.duration_seconds)
+                            .unwrap_or(0.0);
+                        let b_duration = b_timing.map(|timing| timing.duration_seconds);
                         let max_duration =
                             AssetLabCompareState::max_duration(a_duration, b_duration);
-                        self.advance_asset_lab_compare_playback(ui.ctx(), max_duration);
+                        if !asset.is_video() || (a_timing.is_some() && b_timing.is_some()) {
+                            self.advance_asset_lab_compare_playback(ui.ctx(), max_duration);
+                        }
                         let compare = self.asset_lab.compare.clone().unwrap_or(compare);
                         let a_time = compare.side_time(a_duration);
                         let b_time = b_duration.map(|duration| compare.side_time(duration));
@@ -2713,7 +3041,7 @@ impl LatentSlateApp {
                             AssetLabCompareSide::Baseline,
                             Some(&compare.baseline_version),
                             a_time,
-                            a_duration,
+                            a_timing,
                         );
                         let b_preview = self.asset_lab_compare_pane_preview(
                             ui.ctx(),
@@ -2721,7 +3049,7 @@ impl LatentSlateApp {
                             AssetLabCompareSide::Candidate,
                             compare.candidate_version.as_deref(),
                             b_time.unwrap_or(0.0),
-                            b_duration.unwrap_or(0.0),
+                            b_timing,
                         );
 
                         let transport_h = if asset.is_video() { 72.0 } else { 0.0 };
@@ -2744,6 +3072,7 @@ impl LatentSlateApp {
                                         a_duration,
                                         compare.side_has_ended(a_duration, max_duration),
                                         a_preview,
+                                        action,
                                     );
                                 },
                             );
@@ -2763,6 +3092,7 @@ impl LatentSlateApp {
                                             compare.side_has_ended(duration, max_duration)
                                         }),
                                         b_preview,
+                                        action,
                                     );
                                 },
                             );
@@ -5314,6 +5644,12 @@ impl LatentSlateApp {
             AssetLabAction::BranchFromCompareCandidate => {
                 self.branch_from_asset_lab_compare(asset_id, false);
             }
+            AssetLabAction::RetryCompareSide(side) => {
+                self.asset_lab_compare_errors.remove(&side);
+                self.asset_lab_compare_video_requests
+                    .retain(|request| request.key.side != side);
+                self.editor.status = format!("Retrying comparison side {}.", side.marker());
+            }
             AssetLabAction::SetActive(version) => {
                 if self
                     .set_generative_active_version(asset_id, &version)
@@ -6798,8 +7134,14 @@ impl LatentSlateApp {
         self.asset_lab_node_preview_textures
             .retain(|key, _| key.asset_id != asset_id);
         self.asset_lab_compare_preview_textures
-            .retain(|_, preview| preview.asset_id != asset_id);
+            .retain(|_, preview| preview.key.asset_id != asset_id);
         self.asset_lab_compare_video_requests
+            .retain(|request| request.key.asset_id != asset_id);
+        self.asset_lab_compare_errors
+            .retain(|_, failure| failure.key.asset_id != asset_id);
+        self.asset_lab_compare_timing_cache
+            .retain(|key, _| key.asset_id != asset_id);
+        self.asset_lab_compare_timing_requests
             .retain(|request| request.key.asset_id != asset_id);
         self.editor.preview_dirty = true;
     }
@@ -6842,13 +7184,17 @@ impl LatentSlateApp {
                     });
                     let current =
                         role_version.is_some_and(|version| {
-                            let Some(asset) = self.editor.project.find_asset(request.key.asset_id)
+                            let Some(asset) = self
+                                .editor
+                                .project
+                                .find_asset(request.key.asset_id)
+                                .cloned()
                             else {
                                 return false;
                             };
                             let Some(path) =
                                 self.editor.project.project_path.as_ref().and_then(|root| {
-                                    asset_lab_media_path(root, asset, Some(version))
+                                    asset_lab_media_path(root, &asset, Some(version))
                                 })
                             else {
                                 return false;
@@ -6857,31 +7203,29 @@ impl LatentSlateApp {
                                 self.editor.project.generative_config(request.key.asset_id),
                                 Some(version),
                             );
-                            let duration = asset_lab_compare_record_duration(
-                                asset,
-                                record,
-                                &self.editor.provider_entries,
-                            );
+                            let Some(timing) = self
+                                .asset_lab_compare_cached_version_timing(&asset, version, record)
+                            else {
+                                return false;
+                            };
                             let side_time = self
                                 .asset_lab
                                 .compare
                                 .as_ref()
-                                .map(|compare| compare.side_time(duration))
+                                .map(|compare| compare.side_time(timing.duration_seconds))
                                 .unwrap_or(0.0);
-                            let frame_index = asset_lab_compare_frame_index(
-                                side_time,
-                                duration,
-                                asset_lab_video_fps(asset, self.editor.project.settings.fps),
-                            );
-                            request.key.matches_desired(
+                            let frame_index = asset_lab_compare_frame_index(side_time, timing);
+                            let frame_time = seconds_from_frames(frame_index as f64, timing.fps);
+                            self.asset_lab_compare_decode_key(
                                 request.key.side,
-                                request.key.asset_id,
+                                &asset,
                                 version,
                                 &path,
-                                frame_index,
-                                self.asset_lab_video_decoder.current_epoch(),
-                                self.editor.project_session_revision,
+                                Some(frame_index),
+                                Some(frame_time),
                             )
+                            .as_ref()
+                                == Some(&request.key)
                         });
                     if !current {
                         continue;
@@ -6898,31 +7242,32 @@ impl LatentSlateApp {
                                 "asset-lab-compare-{}-{}-{}",
                                 request.key.side.marker(),
                                 request.key.version,
-                                request.key.frame_index
+                                request.key.frame_index.unwrap_or_default()
                             ),
                             image,
                             TextureOptions::LINEAR,
                         );
                         self.asset_lab_compare_preview_textures.insert(
                             request.key.side,
-                            AssetLabPreviewTexture {
-                                asset_id: request.key.asset_id,
-                                version: Some(request.key.version),
-                                path: request.key.path,
-                                frame_index: Some(request.key.frame_index),
+                            AssetLabComparePreviewTexture {
+                                key: request.key.clone(),
                                 texture,
                                 size,
                             },
                         );
                         self.asset_lab_compare_errors.remove(&request.key.side);
                     } else {
+                        let frame_index = request.key.frame_index.unwrap_or_default();
                         self.asset_lab_compare_errors.insert(
                             request.key.side,
-                            format!(
-                                "Could not decode {} at frame {}.",
-                                request.key.path.display(),
-                                request.key.frame_index
-                            ),
+                            AssetLabCompareFailure {
+                                key: request.key.clone(),
+                                detail: format!(
+                                    "Could not decode {} at frame {}.",
+                                    request.key.file.path.display(),
+                                    frame_index
+                                ),
+                            },
                         );
                     }
                     ctx.request_repaint();
@@ -6934,8 +7279,13 @@ impl LatentSlateApp {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.asset_lab_compare_errors.insert(
                         request.key.side,
-                        "The local video decoder stopped before returning a frame.".to_string(),
+                        AssetLabCompareFailure {
+                            key: request.key,
+                            detail: "The local video decoder stopped before returning a frame."
+                                .to_string(),
+                        },
                     );
+                    ctx.request_repaint();
                 }
             }
         }
@@ -6948,7 +7298,7 @@ impl LatentSlateApp {
         side: AssetLabCompareSide,
         version: Option<&str>,
         local_time_seconds: f64,
-        duration: f64,
+        timing: Option<AssetLabVersionTiming>,
     ) -> AssetLabComparePanePreview {
         let Some(version) = version else {
             return AssetLabComparePanePreview {
@@ -6986,15 +7336,19 @@ impl LatentSlateApp {
         }
 
         if !asset.is_video() {
+            let Some(key) =
+                self.asset_lab_compare_decode_key(side, asset, version, &path, None, None)
+            else {
+                return AssetLabComparePanePreview {
+                    texture: None,
+                    status: AssetLabComparePaneStatus::MissingOutput,
+                    technical_detail: None,
+                };
+            };
             let cached = self
                 .asset_lab_compare_preview_textures
                 .get(&side)
-                .filter(|preview| {
-                    preview.asset_id == asset.id
-                        && preview.version.as_deref() == Some(version)
-                        && preview.path == path
-                        && preview.frame_index.is_none()
-                });
+                .filter(|preview| preview.key == key);
             if let Some(cached) = cached {
                 return AssetLabComparePanePreview {
                     texture: Some((cached.texture.id(), cached.size)),
@@ -7002,9 +7356,22 @@ impl LatentSlateApp {
                     technical_detail: None,
                 };
             }
+            if let Some(detail) = self.asset_lab_compare_failure_for_key(side, &key) {
+                return AssetLabComparePanePreview {
+                    texture: None,
+                    status: AssetLabComparePaneStatus::DecodeFailed,
+                    technical_detail: Some(detail),
+                };
+            }
             let Some((image, size)) = load_preview_image(&path, 1024) else {
                 let detail = format!("Could not decode image output {}.", path.display());
-                self.asset_lab_compare_errors.insert(side, detail.clone());
+                self.asset_lab_compare_errors.insert(
+                    side,
+                    AssetLabCompareFailure {
+                        key,
+                        detail: detail.clone(),
+                    },
+                );
                 return AssetLabComparePanePreview {
                     texture: None,
                     status: AssetLabComparePaneStatus::DecodeFailed,
@@ -7017,17 +7384,8 @@ impl LatentSlateApp {
                 TextureOptions::LINEAR,
             );
             let texture_id = texture.id();
-            self.asset_lab_compare_preview_textures.insert(
-                side,
-                AssetLabPreviewTexture {
-                    asset_id: asset.id,
-                    version: Some(version.to_string()),
-                    path,
-                    frame_index: None,
-                    texture,
-                    size,
-                },
-            );
+            self.asset_lab_compare_preview_textures
+                .insert(side, AssetLabComparePreviewTexture { key, texture, size });
             return AssetLabComparePanePreview {
                 texture: Some((texture_id, size)),
                 status: AssetLabComparePaneStatus::Ready,
@@ -7035,20 +7393,60 @@ impl LatentSlateApp {
             };
         }
 
-        let fps = asset_lab_video_fps(asset, self.editor.project.settings.fps);
-        let frame_index = asset_lab_compare_frame_index(local_time_seconds, duration, fps);
+        let Some(timing) = timing else {
+            let retained = self
+                .asset_lab_compare_preview_textures
+                .get(&side)
+                .filter(|preview| {
+                    preview.key.asset_id == asset.id
+                        && preview.key.version == version
+                        && preview.key.file.path == path
+                });
+            return AssetLabComparePanePreview {
+                texture: retained.map(|preview| (preview.texture.id(), preview.size)),
+                status: if retained.is_some() {
+                    AssetLabComparePaneStatus::Updating
+                } else {
+                    AssetLabComparePaneStatus::Loading
+                },
+                technical_detail: None,
+            };
+        };
+        let frame_index = asset_lab_compare_frame_index(local_time_seconds, timing);
+        let frame_time = seconds_from_frames(frame_index as f64, timing.fps);
+        let Some(key) = self.asset_lab_compare_decode_key(
+            side,
+            asset,
+            version,
+            &path,
+            Some(frame_index),
+            Some(frame_time),
+        ) else {
+            return AssetLabComparePanePreview {
+                texture: None,
+                status: AssetLabComparePaneStatus::MissingOutput,
+                technical_detail: None,
+            };
+        };
         let cached = self.asset_lab_compare_preview_textures.get(&side);
-        let exact = cached.filter(|preview| {
-            preview.asset_id == asset.id
-                && preview.version.as_deref() == Some(version)
-                && preview.path == path
-                && preview.frame_index == Some(frame_index)
-        });
+        let exact = cached.filter(|preview| preview.key == key);
         if let Some(cached) = exact {
             return AssetLabComparePanePreview {
                 texture: Some((cached.texture.id(), cached.size)),
                 status: AssetLabComparePaneStatus::Ready,
                 technical_detail: None,
+            };
+        }
+        if let Some(detail) = self.asset_lab_compare_failure_for_key(side, &key) {
+            let retained = cached.filter(|preview| {
+                preview.key.asset_id == asset.id
+                    && preview.key.version == version
+                    && preview.key.file == key.file
+            });
+            return AssetLabComparePanePreview {
+                texture: retained.map(|preview| (preview.texture.id(), preview.size)),
+                status: AssetLabComparePaneStatus::DecodeFailed,
+                technical_detail: Some(detail),
             };
         }
 
@@ -7064,14 +7462,16 @@ impl LatentSlateApp {
                 .as_ref()
                 .is_some_and(|compare| compare.playing)
                 && cached.is_some_and(|preview| {
-                    preview.version.as_deref() == Some(version)
-                        && preview.frame_index.is_some_and(|frame| frame < frame_index)
+                    preview.key.version == version
+                        && preview
+                            .key
+                            .frame_index
+                            .is_some_and(|frame| frame < frame_index)
                 }) {
                 DecodeMode::Sequential
             } else {
                 DecodeMode::Seek
             };
-            let frame_time = seconds_from_frames(frame_index as f64, fps);
             if let Some(receiver) = self.asset_lab_video_decoder.decode_async_at_epoch(
                 &path,
                 frame_time,
@@ -7082,30 +7482,38 @@ impl LatentSlateApp {
             ) {
                 self.asset_lab_compare_video_requests
                     .push(AssetLabCompareVideoRequest {
-                        key: AssetLabCompareDecodeKey {
-                            side,
-                            asset_id: asset.id,
-                            version: version.to_string(),
-                            path: path.clone(),
-                            frame_index,
-                            decoder_epoch: epoch,
-                            project_session_revision: self.editor.project_session_revision,
-                        },
+                        key: key.clone(),
                         receiver,
                     });
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            } else {
+                let detail = "The local video decoder is unavailable.".to_string();
+                self.asset_lab_compare_errors.insert(
+                    side,
+                    AssetLabCompareFailure {
+                        key: key.clone(),
+                        detail: detail.clone(),
+                    },
+                );
+                let retained = cached.filter(|preview| {
+                    preview.key.asset_id == asset.id
+                        && preview.key.version == version
+                        && preview.key.file == key.file
+                });
+                return AssetLabComparePanePreview {
+                    texture: retained.map(|preview| (preview.texture.id(), preview.size)),
+                    status: AssetLabComparePaneStatus::DecodeFailed,
+                    technical_detail: Some(detail),
+                };
             }
         }
 
         let retained = cached.filter(|preview| {
-            preview.asset_id == asset.id
-                && preview.version.as_deref() == Some(version)
-                && preview.path == path
+            preview.key.asset_id == asset.id
+                && preview.key.version == version
+                && preview.key.file == key.file
         });
-        let technical_detail = self.asset_lab_compare_errors.get(&side).cloned();
-        let status = if technical_detail.is_some() && !pending {
-            AssetLabComparePaneStatus::DecodeFailed
-        } else if retained.is_some() {
+        let status = if retained.is_some() {
             AssetLabComparePaneStatus::Updating
         } else {
             AssetLabComparePaneStatus::Loading
@@ -7113,7 +7521,7 @@ impl LatentSlateApp {
         AssetLabComparePanePreview {
             texture: retained.map(|preview| (preview.texture.id(), preview.size)),
             status,
-            technical_detail,
+            technical_detail: None,
         }
     }
 
@@ -7129,6 +7537,7 @@ impl LatentSlateApp {
         duration: f64,
         ended: bool,
         preview: AssetLabComparePanePreview,
+        action: &mut Option<AssetLabAction>,
     ) {
         ui.horizontal(|ui| {
             kit::media_pill(
@@ -7276,6 +7685,19 @@ impl LatentSlateApp {
         }
         if let Some(detail) = preview.technical_detail {
             response.on_hover_text(format!("{detail}\n\nOpen Details to copy this diagnostic."));
+            let retry_rect = Rect::from_min_size(
+                rect.right_bottom() - Vec2::new(140.0, 28.0),
+                Vec2::new(62.0, 20.0),
+            );
+            if ui
+                .put(
+                    retry_rect,
+                    egui::Button::new(RichText::new("Retry").size(9.5)),
+                )
+                .clicked()
+            {
+                *action = Some(AssetLabAction::RetryCompareSide(side));
+            }
             let details_rect = Rect::from_min_size(
                 rect.right_bottom() - Vec2::new(70.0, 28.0),
                 Vec2::new(62.0, 20.0),
@@ -7534,6 +7956,97 @@ mod asset_lab_compare_tests {
         }
     }
 
+    fn timing_provider() -> ProviderEntry {
+        let mut provider = ProviderEntry::new(
+            "Timing",
+            ProviderOutputType::Video,
+            crate::state::ProviderConnection::CustomHttp {
+                base_url: "http://127.0.0.1".to_string(),
+                api_key: None,
+            },
+        );
+        provider.inputs = [
+            ("duration", InputRole::DurationSeconds),
+            ("fps", InputRole::Fps),
+            ("frames", InputRole::FrameCount),
+        ]
+        .into_iter()
+        .map(|(name, role)| ProviderInputField {
+            name: name.to_string(),
+            label: name.to_string(),
+            description: None,
+            input_type: ProviderInputType::Number,
+            required: false,
+            default: None,
+            role: Some(role),
+            ui: None,
+        })
+        .collect();
+        provider
+    }
+
+    fn timing_record(
+        provider_id: Uuid,
+        version: &str,
+        values: &[(&str, f64)],
+        node_id: Option<Uuid>,
+    ) -> GenerationRecord {
+        GenerationRecord {
+            version: version.to_string(),
+            timestamp: chrono::Utc::now(),
+            provider_id,
+            inputs_snapshot: values
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        (*name).to_string(),
+                        InputValue::Literal {
+                            value: serde_json::json!(value),
+                        },
+                    )
+                })
+                .collect(),
+            media_bindings_snapshot: HashMap::new(),
+            resolved_media_inputs: HashMap::new(),
+            lab_node_id: node_id,
+        }
+    }
+
+    fn video_asset(fps: f64, frame_count: u32, duration: Option<f64>) -> Asset {
+        Asset {
+            id: Uuid::new_v4(),
+            name: "Video".to_string(),
+            duration_seconds: duration,
+            kind: AssetKind::GenerativeVideo {
+                folder: PathBuf::from("generated/video"),
+                active_version: Some("V03".to_string()),
+                fps,
+                frame_count,
+            },
+        }
+    }
+
+    fn decode_key(
+        side: AssetLabCompareSide,
+        version: &str,
+        frame: i64,
+    ) -> AssetLabCompareDecodeKey {
+        AssetLabCompareDecodeKey {
+            side,
+            asset_id: Uuid::nil(),
+            version: version.to_string(),
+            file: AssetLabLocalFileIdentity {
+                path: PathBuf::from(format!("{version}.mp4")),
+                len: 100,
+                modified_unix_nanos: Some(200),
+            },
+            frame_index: Some(frame),
+            frame_time_micros: Some(frame * 40_000),
+            decoder_epoch: 7,
+            project_session_revision: 11,
+        }
+    }
+
     #[test]
     fn compare_entry_requires_a_distinct_selected_output() {
         let state = compare();
@@ -7620,8 +8133,181 @@ mod asset_lab_compare_tests {
         assert_eq!(state.side_time(6.0), 5.5);
         assert!(state.side_has_ended(5.0, max));
         assert!(!state.side_has_ended(6.0, max));
-        assert_eq!(asset_lab_compare_frame_index(5.0, 5.0, 30.0), 149);
-        assert_eq!(asset_lab_compare_frame_index(f64::NAN, 5.0, 30.0), 0);
+        let timing = AssetLabVersionTiming {
+            duration_seconds: 5.0,
+            fps: 30.0,
+            frame_count: Some(150),
+            duration_source: AssetLabTimingSource::OutputProbe,
+            fps_source: AssetLabTimingSource::OutputProbe,
+        };
+        assert_eq!(asset_lab_compare_frame_index(5.0, timing), 149);
+        assert_eq!(asset_lab_compare_frame_index(f64::NAN, timing), 0);
+    }
+
+    #[test]
+    fn queued_and_completed_other_node_do_not_move_compare_candidate_or_action_target() {
+        let candidate_node = AssetLabNode::new(None);
+        let mut other_node = AssetLabNode::new(None);
+        let provider = timing_provider();
+        let mut config = GenerativeConfig::default();
+        config.versions.push(timing_record(
+            provider.id,
+            "V08",
+            &[],
+            Some(candidate_node.id),
+        ));
+        config.lab_graph.nodes = vec![candidate_node.clone(), other_node.clone()];
+        let selected_version = Some("V08".to_string());
+        let state = compare();
+
+        // Queueing another node moves the persisted graph selection, but the
+        // comparison label, selected version, inspector, and action target stay B.
+        config.lab_graph.selected_node_id = Some(other_node.id);
+        assert_eq!(
+            asset_lab_effective_selected_node_id(Some(&config), Some(&state)),
+            Some(candidate_node.id)
+        );
+        assert_eq!(state.candidate_version.as_deref(), Some("V08"));
+        assert_eq!(
+            selected_version.as_deref(),
+            state.candidate_version.as_deref()
+        );
+
+        // Completing that other node and assigning it V09 must not adopt it as B.
+        other_node.output_version = Some("V09".to_string());
+        config.lab_graph.nodes[1] = other_node.clone();
+        config
+            .versions
+            .push(timing_record(provider.id, "V09", &[], Some(other_node.id)));
+        assert_eq!(
+            asset_lab_effective_selected_node_id(Some(&config), Some(&state)),
+            Some(candidate_node.id)
+        );
+        assert_eq!(state.candidate_version.as_deref(), Some("V08"));
+        assert_eq!(selected_version.as_deref(), Some("V08"));
+    }
+
+    #[test]
+    fn timing_resolves_duration_roles_frame_count_fps_probe_and_legacy_fallback() {
+        let provider = timing_provider();
+        let providers = vec![provider.clone()];
+        let asset = video_asset(16.0, 81, Some(5.0));
+
+        let duration_record = timing_record(
+            provider.id,
+            "V03",
+            &[("duration", 6.0), ("fps", 24.0)],
+            None,
+        );
+        let duration = asset_lab_compare_resolve_timing(
+            &asset,
+            Some(&duration_record),
+            &providers,
+            None,
+            30.0,
+        );
+        assert_eq!(duration.duration_seconds, 6.0);
+        assert_eq!(duration.fps, 24.0);
+        assert_eq!(
+            duration.duration_source,
+            AssetLabTimingSource::DurationInput
+        );
+
+        let frames_record = timing_record(
+            provider.id,
+            "V08",
+            &[("frames", 120.0), ("fps", 30.0)],
+            None,
+        );
+        let frames =
+            asset_lab_compare_resolve_timing(&asset, Some(&frames_record), &providers, None, 30.0);
+        assert_eq!(frames.duration_seconds, 4.0);
+        assert_eq!(frames.frame_count, Some(120));
+        assert_eq!(
+            frames.duration_source,
+            AssetLabTimingSource::FrameCountFpsInput
+        );
+
+        let probed = asset_lab_compare_resolve_timing(
+            &asset,
+            Some(&duration_record),
+            &providers,
+            Some(crate::core::media::VideoMetadata {
+                duration_seconds: Some(3.0),
+                fps: Some(25.0),
+                frame_count: Some(75),
+                width: Some(640),
+                height: Some(360),
+            }),
+            30.0,
+        );
+        assert_eq!(probed.duration_seconds, 3.0);
+        assert_eq!(probed.fps, 25.0);
+        assert_eq!(probed.frame_count, Some(75));
+        assert_eq!(probed.duration_source, AssetLabTimingSource::OutputProbe);
+
+        let baseline_probe = asset_lab_compare_resolve_timing(
+            &asset,
+            Some(&duration_record),
+            &providers,
+            Some(crate::core::media::VideoMetadata {
+                duration_seconds: Some(2.5),
+                fps: Some(24.0),
+                frame_count: Some(60),
+                width: None,
+                height: None,
+            }),
+            30.0,
+        );
+        let candidate_probe = asset_lab_compare_resolve_timing(
+            &asset,
+            Some(&duration_record),
+            &providers,
+            Some(crate::core::media::VideoMetadata {
+                duration_seconds: Some(4.0),
+                fps: Some(30.0),
+                frame_count: Some(120),
+                width: None,
+                height: None,
+            }),
+            30.0,
+        );
+        assert_eq!(
+            AssetLabCompareState::max_duration(
+                baseline_probe.duration_seconds,
+                Some(candidate_probe.duration_seconds)
+            ),
+            4.0
+        );
+        assert_eq!(baseline_probe.last_frame_index(), 59);
+        assert_eq!(candidate_probe.last_frame_index(), 119);
+
+        let legacy = asset_lab_compare_resolve_timing(&asset, None, &[], None, 30.0);
+        assert_eq!(legacy.duration_seconds, 5.0);
+        assert_eq!(legacy.fps, 16.0);
+        assert_eq!(legacy.duration_source, AssetLabTimingSource::LegacyAsset);
+    }
+
+    #[test]
+    fn different_version_fps_quantize_the_same_time_independently() {
+        let timing_24 = AssetLabVersionTiming {
+            duration_seconds: 5.0,
+            fps: 24.0,
+            frame_count: Some(120),
+            duration_source: AssetLabTimingSource::OutputProbe,
+            fps_source: AssetLabTimingSource::OutputProbe,
+        };
+        let timing_30 = AssetLabVersionTiming {
+            duration_seconds: 5.0,
+            fps: 30.0,
+            frame_count: Some(150),
+            duration_source: AssetLabTimingSource::OutputProbe,
+            fps_source: AssetLabTimingSource::OutputProbe,
+        };
+        assert_eq!(asset_lab_compare_frame_index(1.0, timing_24), 24);
+        assert_eq!(asset_lab_compare_frame_index(1.0, timing_30), 30);
+        assert_eq!(asset_lab_compare_frame_index(5.0, timing_24), 119);
+        assert_eq!(asset_lab_compare_frame_index(5.0, timing_30), 149);
     }
 
     #[test]
@@ -7639,64 +8325,49 @@ mod asset_lab_compare_tests {
 
     #[test]
     fn decode_identity_rejects_cross_side_stale_frame_version_epoch_and_project() {
-        let asset_id = Uuid::new_v4();
-        let key = AssetLabCompareDecodeKey {
-            side: AssetLabCompareSide::Baseline,
-            asset_id,
-            version: "V03".to_string(),
-            path: PathBuf::from("V03.mp4"),
-            frame_index: 42,
-            decoder_epoch: 7,
-            project_session_revision: 11,
-        };
-        assert!(key.matches_desired(
-            AssetLabCompareSide::Baseline,
-            asset_id,
-            "V03",
-            Path::new("V03.mp4"),
-            42,
-            7,
-            11
-        ));
-        assert!(!key.matches_desired(
-            AssetLabCompareSide::Candidate,
-            asset_id,
-            "V03",
-            Path::new("V03.mp4"),
-            42,
-            7,
-            11
-        ));
-        assert!(!key.matches_desired(
-            AssetLabCompareSide::Baseline,
-            asset_id,
-            "V08",
-            Path::new("V03.mp4"),
-            42,
-            7,
-            11
-        ));
-        assert!(!key.matches_desired(
-            AssetLabCompareSide::Baseline,
-            asset_id,
-            "V03",
-            Path::new("V03.mp4"),
-            43,
-            7,
-            11
-        ));
-        assert!(!key.matches_desired(
-            AssetLabCompareSide::Baseline,
-            asset_id,
-            "V03",
-            Path::new("V03.mp4"),
-            42,
-            8,
-            12
-        ));
+        let key = decode_key(AssetLabCompareSide::Baseline, "V03", 42);
+        assert_eq!(key, key.clone());
+        assert_ne!(key, decode_key(AssetLabCompareSide::Candidate, "V03", 42));
+        assert_ne!(key, decode_key(AssetLabCompareSide::Baseline, "V08", 42));
+        assert_ne!(key, decode_key(AssetLabCompareSide::Baseline, "V03", 43));
+        let mut changed_time = key.clone();
+        changed_time.frame_time_micros = Some(1_234_567);
+        assert_ne!(key, changed_time);
+        let mut changed_epoch = key.clone();
+        changed_epoch.decoder_epoch += 1;
+        assert_ne!(key, changed_epoch);
+        let mut changed_project = key.clone();
+        changed_project.project_session_revision += 1;
+        assert_ne!(key, changed_project);
         assert_ne!(
             AssetLabCompareSide::Baseline.lane_id(),
             AssetLabCompareSide::Candidate.lane_id()
         );
+    }
+
+    #[test]
+    fn terminal_failure_blocks_only_the_exact_media_identity_and_retry_clears_it() {
+        let key = decode_key(AssetLabCompareSide::Baseline, "V03", 42);
+        let failure = AssetLabCompareFailure {
+            key: key.clone(),
+            detail: "decode failed".to_string(),
+        };
+        assert!(asset_lab_compare_failure_blocks_attempt(
+            Some(&failure),
+            &key
+        ));
+
+        let changed_frame = decode_key(AssetLabCompareSide::Baseline, "V03", 43);
+        assert!(!asset_lab_compare_failure_blocks_attempt(
+            Some(&failure),
+            &changed_frame
+        ));
+        let mut changed_file = key.clone();
+        changed_file.file.modified_unix_nanos = Some(201);
+        assert!(!asset_lab_compare_failure_blocks_attempt(
+            Some(&failure),
+            &changed_file
+        ));
+        assert!(!asset_lab_compare_failure_blocks_attempt(None, &key));
     }
 }

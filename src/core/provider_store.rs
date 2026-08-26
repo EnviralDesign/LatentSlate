@@ -13,9 +13,21 @@ pub fn load_local_provider_entries_with_reports() -> io::Result<(
     Vec<ProviderEntry>,
     Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
 )> {
+    let connections = crate::providers::latentslate_engine::load_connections();
+    load_local_provider_entries_for_connections_with_reports(&connections)
+}
+
+pub fn load_local_provider_entries_for_connections_with_reports(
+    connections: &[crate::providers::latentslate_engine::EngineConnectionSettings],
+) -> io::Result<(
+    Vec<ProviderEntry>,
+    Vec<crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+)> {
     let mut entries = load_provider_entries_from(&local_providers_root())?;
     let (engine_entries, reports) =
-        crate::providers::latentslate_engine::load_provider_entries_with_reports();
+        crate::providers::latentslate_engine::load_provider_entries_for_connections_with_reports(
+            connections,
+        );
     merge_provider_entries(&mut entries, engine_entries);
     Ok((entries, reports))
 }

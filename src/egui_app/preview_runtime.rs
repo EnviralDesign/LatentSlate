@@ -2,6 +2,36 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
+fn preview_render_matches_current(
+    result_request_id: u64,
+    result_project_session_revision: u64,
+    result_time_seconds: f64,
+    latest_request_id: u64,
+    current_project_session_revision: u64,
+    current_time_seconds: f64,
+    project_is_open: bool,
+) -> bool {
+    result_request_id == latest_request_id
+        && result_project_session_revision == current_project_session_revision
+        && (result_time_seconds - current_time_seconds).abs() < 0.0001
+        && project_is_open
+}
+
+fn release_preview_render_owner(
+    owner_id: &AtomicU64,
+    in_flight: &AtomicBool,
+    request_id: u64,
+) -> bool {
+    if owner_id
+        .compare_exchange(request_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    in_flight.store(false, Ordering::Relaxed);
+    true
+}
+
 fn asset_dimension_source_path(project_root: &Path, asset: &Asset) -> Option<PathBuf> {
     match &asset.kind {
         AssetKind::Image { path } | AssetKind::Video { path } => Some(project_root.join(path)),
@@ -73,6 +103,7 @@ impl LatentSlateApp {
     }
 
     pub(super) fn clear_project_runtime_cache(&mut self) {
+        self.invalidate_preview_render_jobs();
         self.preview_layers = None;
         self.preview_layer_textures.clear();
         self.preview_layer_texture_sequence = 0;
@@ -394,18 +425,22 @@ impl LatentSlateApp {
             return;
         };
 
-        self.preview_render_busy_since = None;
         let latest_id = self.preview_render_request_id.load(Ordering::Relaxed);
-        let time_matches = (result.time_seconds - self.editor.current_time).abs() < 0.0001;
-        if result.request_id != latest_id
-            || !time_matches
-            || self.editor.project.project_path.is_none()
-        {
+        if !preview_render_matches_current(
+            result.request_id,
+            result.project_session_revision,
+            result.time_seconds,
+            latest_id,
+            self.editor.project_session_revision,
+            self.editor.current_time,
+            self.editor.project.project_path.is_some(),
+        ) {
             self.preview_render_stale_count = self.preview_render_stale_count.saturating_add(1);
             self.editor.preview_dirty = true;
             ctx.request_repaint();
             return;
         }
+        self.preview_render_busy_since = None;
 
         let worker_ms = result
             .finished_at
@@ -471,6 +506,9 @@ impl LatentSlateApp {
             .preview_render_request_id
             .fetch_add(1, Ordering::Relaxed)
             .wrapping_add(1);
+        self.preview_render_owner_id
+            .store(request_id, Ordering::Relaxed);
+        let project_session_revision = self.editor.project_session_revision;
         let time_seconds = self.editor.current_time;
         let decode_mode = if self.editor.is_playing {
             PreviewDecodeMode::Sequential
@@ -482,6 +520,7 @@ impl LatentSlateApp {
         let allow_hw_decode = self.editor.layout.hardware_decode;
         let tx = self.preview_render_tx.clone();
         let flag = Arc::clone(&self.preview_render_in_flight);
+        let owner_id = Arc::clone(&self.preview_render_owner_id);
         let repaint_ctx = ctx.clone();
         let requested_at = Instant::now();
         self.preview_render_busy_since = Some(requested_at);
@@ -494,13 +533,14 @@ impl LatentSlateApp {
             let finished_at = Instant::now();
             let _ = tx.send(PreviewRenderResult {
                 request_id,
+                project_session_revision,
                 time_seconds,
                 decode_mode,
                 requested_at,
                 finished_at,
                 output,
             });
-            flag.store(false, Ordering::Relaxed);
+            release_preview_render_owner(&owner_id, &flag, request_id);
             repaint_ctx.request_repaint();
         });
     }
@@ -508,6 +548,7 @@ impl LatentSlateApp {
     pub(super) fn invalidate_preview_render_jobs(&mut self) {
         self.preview_render_request_id
             .fetch_add(1, Ordering::Relaxed);
+        self.preview_render_owner_id.store(0, Ordering::Relaxed);
         self.preview_render_in_flight
             .store(false, Ordering::Relaxed);
         self.preview_render_busy_since = None;
@@ -848,5 +889,34 @@ impl LatentSlateApp {
         }
 
         tiles
+    }
+}
+
+#[cfg(test)]
+mod preview_render_session_tests {
+    use super::*;
+
+    #[test]
+    fn identical_request_and_time_from_an_old_project_session_is_rejected() {
+        assert!(!preview_render_matches_current(
+            17, 4, 1.25, 17, 5, 1.25, true
+        ));
+        assert!(preview_render_matches_current(
+            17, 5, 1.25, 17, 5, 1.25, true
+        ));
+    }
+
+    #[test]
+    fn old_worker_cannot_release_a_newer_render_owner() {
+        let owner_id = AtomicU64::new(22);
+        let in_flight = AtomicBool::new(true);
+
+        assert!(!release_preview_render_owner(&owner_id, &in_flight, 21));
+        assert_eq!(owner_id.load(Ordering::Relaxed), 22);
+        assert!(in_flight.load(Ordering::Relaxed));
+
+        assert!(release_preview_render_owner(&owner_id, &in_flight, 22));
+        assert_eq!(owner_id.load(Ordering::Relaxed), 0);
+        assert!(!in_flight.load(Ordering::Relaxed));
     }
 }

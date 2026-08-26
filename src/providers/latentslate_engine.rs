@@ -252,10 +252,12 @@ fn apply_env_overrides(connections: &mut [EngineConnectionSettings]) {
     }
 }
 
-pub fn load_provider_entries_with_reports() -> (Vec<ProviderEntry>, Vec<EngineCatalogLoadReport>) {
+pub fn load_provider_entries_for_connections_with_reports(
+    connections: &[EngineConnectionSettings],
+) -> (Vec<ProviderEntry>, Vec<EngineCatalogLoadReport>) {
     let mut providers = Vec::new();
     let mut reports = Vec::new();
-    for settings in load_connections() {
+    for settings in connections.iter().cloned() {
         if !settings.enabled {
             reports.push(EngineCatalogLoadReport {
                 connection_id: settings.id,
