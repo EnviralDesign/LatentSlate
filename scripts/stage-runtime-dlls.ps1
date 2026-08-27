@@ -214,6 +214,7 @@ function Test-WindowsImportName {
             "imm32.dll",
             "kernel32.dll",
             "msvcrt.dll",
+            "ncrypt.dll",
             "ntdll.dll",
             "ole32.dll",
             "oleaut32.dll",

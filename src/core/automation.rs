@@ -714,8 +714,13 @@ pub struct ProjectSettingsPatch {
 pub struct TrackPatch {
     #[serde(default)]
     pub name: Option<String>,
+    /// Legacy combined toggle that disables both visual and audio output.
     #[serde(default)]
     pub muted: Option<bool>,
+    #[serde(default)]
+    pub visual_enabled: Option<bool>,
+    #[serde(default)]
+    pub audio_muted: Option<bool>,
     #[serde(default)]
     pub volume: Option<f32>,
 }
@@ -2166,8 +2171,13 @@ pub fn build_agent_bootstrap(
     } else {
         for track in project.tracks.iter().take(12) {
             lines.push(format!(
-                "- id={} | type={:?} | name={} | muted={} | volume={:.2}",
-                track.id, track.track_type, track.name, track.muted, track.volume
+                "- id={} | type={:?} | name={} | visual_enabled={} | audio_muted={} | volume={:.2}",
+                track.id,
+                track.track_type,
+                track.name,
+                track.visual_output_enabled(),
+                track.is_audio_muted(),
+                track.volume
             ));
         }
     }
@@ -2518,7 +2528,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "set_selection", "fields": { "assets": ["uuid"], "clips": ["uuid"], "tracks": ["uuid"], "markers": ["uuid"] } },
             { "type": "select_asset|select_clip|select_track|select_marker", "fields": { "asset_id/clip_id/track_id/marker_id?": "uuid", "index?": "usize" } },
             { "type": "add_track", "fields": { "track_type": "Video|Audio|Marker", "index?": "usize", "name?": "string" } },
-            { "type": "set_track", "fields": { "track_id": "uuid", "patch": { "name?": "string", "muted?": "bool", "volume?": "0.0..4.0" } } },
+            { "type": "set_track", "fields": { "track_id": "uuid", "patch": { "name?": "string", "visual_enabled?": "bool; video output", "audio_muted?": "bool; audio output", "muted?": "bool; legacy combined disable", "volume?": "0.0..4.0" } } },
             { "type": "move_track", "fields": { "track_id": "uuid", "index": "usize" } },
             { "type": "delete_track", "fields": { "track_id": "uuid", "dry_run?": "bool" } },
             { "type": "set_clip", "fields": { "clip_id": "uuid", "patch": "ClipPatch" } },

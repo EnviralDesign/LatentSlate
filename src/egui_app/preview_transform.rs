@@ -60,6 +60,7 @@ pub(super) struct PreviewSnapGuide {
 #[derive(Clone, Debug)]
 pub(super) struct PreviewObjectGeometry {
     pub(super) clip_id: Uuid,
+    pub(super) source_size: Vec2,
     pub(super) project_rect: Rect,
     pub(super) screen_corners: [Pos2; 4],
     pub(super) screen_center: Pos2,
@@ -108,6 +109,7 @@ pub(super) fn preview_geometry_for_clip(
 
     PreviewObjectGeometry {
         clip_id: clip.id,
+        source_size,
         project_rect,
         screen_corners,
         screen_center: preview_project_to_screen(center, canvas_rect, preview_scale, canvas_scale),

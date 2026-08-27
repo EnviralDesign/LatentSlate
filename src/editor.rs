@@ -1637,7 +1637,13 @@ impl EditorState {
                     track.name = name.trim().to_string();
                 }
                 if let Some(muted) = patch.muted {
-                    track.muted = muted;
+                    track.set_track_disabled(muted);
+                }
+                if let Some(visual_enabled) = patch.visual_enabled {
+                    track.set_visual_output_enabled(visual_enabled);
+                }
+                if let Some(audio_muted) = patch.audio_muted {
+                    track.set_audio_muted(audio_muted);
                 }
                 if let Some(volume) = patch.volume {
                     track.volume = volume.clamp(0.0, 4.0);

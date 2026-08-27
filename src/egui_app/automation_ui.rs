@@ -445,6 +445,10 @@ impl LatentSlateApp {
                             | crate::core::automation::AutomationCommand::UpdateProvider { .. }
                             | crate::core::automation::AutomationCommand::DeleteProvider { .. }
                     );
+                    let track_output_command = matches!(
+                        &envelope.command,
+                        crate::core::automation::AutomationCommand::SetTrack { .. }
+                    );
                     let response = self.editor.apply_automation_command(&envelope.command);
                     self.project_settings = self.editor.project.settings.clone();
                     if self.editor.project_session_revision != previous_project_session_revision {
@@ -453,6 +457,9 @@ impl LatentSlateApp {
                     }
                     if response.ok && provider_state_command {
                         self.provider_refresh_state.replace_with_applied_snapshot();
+                    }
+                    if response.ok && track_output_command {
+                        self.refresh_audio_playback_items();
                     }
                     envelope.respond(response);
                 }

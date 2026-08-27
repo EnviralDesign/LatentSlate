@@ -388,10 +388,28 @@ impl LatentSlateApp {
                 Pos2::new(outer.left(), row_rect.top()),
                 Pos2::new(rects.tracks.left(), row_rect.bottom()),
             );
-            let label_hit_rect = label_rect.intersect(label_viewport);
+            let control_count: usize = match track.track_type {
+                TrackType::Video => 2,
+                TrackType::Audio => 1,
+                TrackType::Marker => 0,
+            };
+            let control_size = 18.0;
+            let control_gap = 3.0;
+            let controls_width = control_count as f32 * control_size
+                + control_count.saturating_sub(1) as f32 * control_gap;
+            let controls_left = label_rect.right() - controls_width - 7.0;
+            let label_hit_rect = Rect::from_min_max(
+                label_rect.left_top(),
+                Pos2::new(controls_left.max(label_rect.left()), label_rect.bottom()),
+            )
+            .intersect(label_viewport);
             let selected = self.editor.selection.track_ids.contains(&track.id);
-            let track_muted = track.muted && track.track_type != TrackType::Marker;
-            let track_color = if track_muted {
+            let visual_output_disabled =
+                track.track_type == TrackType::Video && !track.visual_output_enabled();
+            let audio_muted = track.track_type != TrackType::Marker && track.is_audio_muted();
+            let track_inactive =
+                visual_output_disabled || (track.track_type == TrackType::Audio && audio_muted);
+            let track_color = if track_inactive {
                 track_color(track.track_type).gamma_multiply(0.45)
             } else {
                 track_color(track.track_type)
@@ -482,10 +500,37 @@ impl LatentSlateApp {
                 self.track_insert_menu(ui, row, false);
                 if track.track_type != TrackType::Marker {
                     ui.separator();
-                    let label = if track.muted {
-                        "Unmute Track"
+                    if track.track_type == TrackType::Video {
+                        let label = if track.visual_output_enabled() {
+                            "Disable Video Output"
+                        } else {
+                            "Enable Video Output"
+                        };
+                        if automation_button(ui.button(label), label).clicked() {
+                            if let Some(project_track) = self
+                                .editor
+                                .project
+                                .tracks
+                                .iter_mut()
+                                .find(|candidate| candidate.id == track.id)
+                            {
+                                let next = !project_track.visual_output_enabled();
+                                project_track.set_visual_output_enabled(next);
+                                self.editor.preview_dirty = true;
+                                self.editor.status = format!(
+                                    "{} video output for {}",
+                                    if next { "Enabled" } else { "Disabled" },
+                                    project_track.name
+                                );
+                            }
+                            ui.close();
+                        }
+                    }
+
+                    let label = if track.is_audio_muted() {
+                        "Unmute Audio"
                     } else {
-                        "Mute Track"
+                        "Mute Audio"
                     };
                     if automation_button(ui.button(label), label).clicked() {
                         if let Some(project_track) = self
@@ -495,16 +540,45 @@ impl LatentSlateApp {
                             .iter_mut()
                             .find(|candidate| candidate.id == track.id)
                         {
-                            project_track.muted = !project_track.muted;
+                            let next = !project_track.is_audio_muted();
+                            project_track.set_audio_muted(next);
                             self.editor.preview_dirty = true;
-                            self.editor.status = if project_track.muted {
-                                format!("Muted {}", project_track.name)
+                            self.editor.status = if next {
+                                format!("Muted audio on {}", project_track.name)
                             } else {
-                                format!("Unmuted {}", project_track.name)
+                                format!("Unmuted audio on {}", project_track.name)
                             };
                         }
                         self.refresh_audio_playback_items();
                         ui.close();
+                    }
+                    if track.track_type == TrackType::Video {
+                        ui.separator();
+                        let disabled = !track.visual_output_enabled() && track.is_audio_muted();
+                        let label = if disabled {
+                            "Enable Track Output"
+                        } else {
+                            "Disable Track Output"
+                        };
+                        if automation_button(ui.button(label), label).clicked() {
+                            if let Some(project_track) = self
+                                .editor
+                                .project
+                                .tracks
+                                .iter_mut()
+                                .find(|candidate| candidate.id == track.id)
+                            {
+                                project_track.set_track_disabled(!disabled);
+                                self.editor.preview_dirty = true;
+                                self.editor.status = format!(
+                                    "{} track output for {}",
+                                    if disabled { "Enabled" } else { "Disabled" },
+                                    project_track.name
+                                );
+                            }
+                            self.refresh_audio_playback_items();
+                            ui.close();
+                        }
                     }
                 }
                 ui.separator();
@@ -541,22 +615,6 @@ impl LatentSlateApp {
                     egui::StrokeKind::Inside,
                 );
             }
-            if row + 1 < tracks.len() {
-                label_painter.line_segment(
-                    [
-                        Pos2::new(outer.left(), row_rect.bottom()),
-                        Pos2::new(rects.tracks.left(), row_rect.bottom()),
-                    ],
-                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
-                );
-                track_painter.line_segment(
-                    [
-                        Pos2::new(rects.tracks.left(), row_rect.bottom()),
-                        Pos2::new(rects.tracks.right(), row_rect.bottom()),
-                    ],
-                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
-                );
-            }
             label_painter.rect_filled(
                 Rect::from_min_size(
                     Pos2::new(label_rect.left() + 12.0, row_rect.center().y - 8.0),
@@ -570,21 +628,91 @@ impl LatentSlateApp {
                 egui::Align2::LEFT_CENTER,
                 &track.name,
                 FontId::proportional(12.5),
-                if track_muted {
+                if track_inactive {
                     kit::TEXT_DIM
                 } else {
                     kit::TEXT
                 },
             );
-            if track_muted {
-                label_painter.text(
-                    label_rect.right_center() - Vec2::new(14.0, 0.0),
-                    egui::Align2::CENTER_CENTER,
-                    "M",
-                    FontId::monospace(10.0),
-                    kit::TEXT_DIM,
+            if track.track_type != TrackType::Marker {
+                let mute_rect = Rect::from_center_size(
+                    Pos2::new(label_rect.right() - 16.0, row_rect.center().y),
+                    Vec2::splat(control_size),
                 );
+                let mute_response = timeline_track_mute_button(
+                    ui,
+                    &label_painter,
+                    mute_rect,
+                    track.id,
+                    audio_muted,
+                );
+                if !timeline_input_frozen && mute_response.clicked() {
+                    if let Some(project_track) = self
+                        .editor
+                        .project
+                        .tracks
+                        .iter_mut()
+                        .find(|candidate| candidate.id == track.id)
+                    {
+                        let next = !project_track.is_audio_muted();
+                        project_track.set_audio_muted(next);
+                        self.editor.preview_dirty = true;
+                        self.editor.status = if next {
+                            format!("Muted audio on {}", project_track.name)
+                        } else {
+                            format!("Unmuted audio on {}", project_track.name)
+                        };
+                    }
+                    self.refresh_audio_playback_items();
+                }
+                if track.track_type == TrackType::Video {
+                    let visual_rect = Rect::from_center_size(
+                        Pos2::new(controls_left + control_size * 0.5, row_rect.center().y),
+                        Vec2::splat(control_size),
+                    );
+                    let visibility_response = timeline_track_visibility_button(
+                        ui,
+                        &label_painter,
+                        visual_rect,
+                        track.id,
+                        track.visual_output_enabled(),
+                    );
+                    if !timeline_input_frozen && visibility_response.clicked() {
+                        if let Some(project_track) = self
+                            .editor
+                            .project
+                            .tracks
+                            .iter_mut()
+                            .find(|candidate| candidate.id == track.id)
+                        {
+                            let next = !project_track.visual_output_enabled();
+                            project_track.set_visual_output_enabled(next);
+                            self.editor.preview_dirty = true;
+                            self.editor.status = format!(
+                                "{} video output for {}",
+                                if next { "Enabled" } else { "Disabled" },
+                                project_track.name
+                            );
+                        }
+                    }
+                }
             }
+        }
+
+        // Paint separators after every row background. Drawing them inside the
+        // row loop lets the next row's fill cover the previous separator.
+        for row in 0..tracks.len().saturating_sub(1) {
+            let row_rect = timeline_row_rect(rects, row);
+            if row_rect.bottom() < rects.tracks.top() || row_rect.top() > rects.tracks.bottom() {
+                continue;
+            }
+            painter.line_segment(
+                [
+                    Pos2::new(rects.outer.left(), row_rect.bottom()),
+                    Pos2::new(rects.tracks.right(), row_rect.bottom()),
+                ],
+                Stroke::new(1.0_f32, Color32::from_rgb(42, 44, 50)),
+            );
         }
 
         self.paint_timeline_grid_overlay(&track_stack_painter, rects, duration, zoom);
@@ -595,8 +723,12 @@ impl LatentSlateApp {
             if row_rect.bottom() < rects.tracks.top() || row_rect.top() > rects.tracks.bottom() {
                 continue;
             }
-            let track_muted = track.muted && track.track_type != TrackType::Marker;
-            let track_color = if track_muted {
+            let visual_output_disabled =
+                track.track_type == TrackType::Video && !track.visual_output_enabled();
+            let audio_muted = track.track_type != TrackType::Marker && track.is_audio_muted();
+            let track_inactive =
+                visual_output_disabled || (track.track_type == TrackType::Audio && audio_muted);
+            let track_color = if track_inactive {
                 track_color(track.track_type).gamma_multiply(0.45)
             } else {
                 track_color(track.track_type)
@@ -650,11 +782,11 @@ impl LatentSlateApp {
                     rects.tracks.left(),
                 );
             }
-            if track_muted {
+            if visual_output_disabled {
                 track_painter.rect_filled(
                     row_rect,
                     0.0,
-                    Color32::from_rgba_unmultiplied(3, 4, 6, 96),
+                    Color32::from_rgba_unmultiplied(3, 4, 6, 132),
                 );
             }
 
@@ -1690,7 +1822,7 @@ impl LatentSlateApp {
         rect: Rect,
         accent: Color32,
         selected: bool,
-        thumbnail_tiles: &[TimelineThumbTile],
+        thumbnail_tiles: &[Option<TimelineThumbTile>],
         waveform: Option<&PeakCache>,
         cache_buckets: Option<&[bool]>,
         contextual_keyframe_label: bool,
@@ -1725,7 +1857,7 @@ impl LatentSlateApp {
             type_stroke
         };
         painter.rect_filled(rect, 4.0, fill);
-        if !thumbnail_tiles.is_empty() {
+        if thumbnail_tiles.iter().any(Option::is_some) {
             paint_clip_thumbnail_strip(painter, rect, thumbnail_tiles);
             if selected {
                 painter.rect_filled(rect, 4.0, Color32::from_rgba_unmultiplied(20, 90, 54, 44));
@@ -1784,7 +1916,7 @@ impl LatentSlateApp {
         rect: Rect,
         accent: Color32,
         selected: bool,
-        thumbnail_tiles: &[TimelineThumbTile],
+        thumbnail_tiles: &[Option<TimelineThumbTile>],
         show_label: bool,
     ) {
         let anchor_x = rect.left() + 4.0;
@@ -1837,7 +1969,7 @@ impl LatentSlateApp {
             egui::StrokeKind::Inside,
         );
 
-        if let Some(tile) = thumbnail_tiles.first() {
+        if let Some(tile) = thumbnail_tiles.iter().flatten().next() {
             let clip_painter = painter.with_clip_rect(thumb_rect);
             let scale = (thumb_rect.width() / tile.size.x)
                 .max(thumb_rect.height() / tile.size.y)
@@ -2138,16 +2270,24 @@ impl LatentSlateApp {
                     | Some(TimelineDrag::Playhead) => egui::CursorIcon::ResizeHorizontal,
                     Some(TimelineDrag::ClipMove { .. })
                     | Some(TimelineDrag::TrackReorder { .. }) => egui::CursorIcon::Grabbing,
-                    None => match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
-                        TimelineHit::ClipLeftEdge(_)
-                        | TimelineHit::ClipRightEdge(_)
-                        | TimelineHit::Marker(_)
-                        | TimelineHit::Ruler => egui::CursorIcon::ResizeHorizontal,
-                        TimelineHit::ClipBody(_) | TimelineHit::TrackLabel(_) => {
-                            egui::CursorIcon::Grab
+                    None => {
+                        if timeline_track_output_control_hit(pos, rects, tracks) {
+                            egui::CursorIcon::PointingHand
+                        } else {
+                            match timeline_hit(pos, rects, tracks, clip_geoms, marker_geoms) {
+                                TimelineHit::ClipLeftEdge(_)
+                                | TimelineHit::ClipRightEdge(_)
+                                | TimelineHit::Marker(_)
+                                | TimelineHit::Ruler => egui::CursorIcon::ResizeHorizontal,
+                                TimelineHit::ClipBody(_) | TimelineHit::TrackLabel(_) => {
+                                    egui::CursorIcon::Grab
+                                }
+                                TimelineHit::EmptyTrack | TimelineHit::Empty => {
+                                    egui::CursorIcon::Default
+                                }
+                            }
                         }
-                        TimelineHit::EmptyTrack | TimelineHit::Empty => egui::CursorIcon::Default,
-                    },
+                    }
                 }
             };
             ui.ctx().set_cursor_icon(cursor);
@@ -2720,4 +2860,149 @@ fn timeline_track_type_label(track_type: TrackType) -> &'static str {
         TrackType::Audio => "Audio",
         TrackType::Marker => "Marker",
     }
+}
+
+fn timeline_track_output_control_hit(
+    pos: Pos2,
+    rects: TimelineRects,
+    tracks: &[crate::state::Track],
+) -> bool {
+    if pos.x < rects.outer.left() || pos.x >= rects.tracks.left() {
+        return false;
+    }
+    let Some(track) = timeline_track_row_at_pos(pos, rects, tracks) else {
+        return false;
+    };
+    let control_count: usize = match track.track_type {
+        TrackType::Video => 2,
+        TrackType::Audio => 1,
+        TrackType::Marker => 0,
+    };
+    if control_count == 0 {
+        return false;
+    }
+    let control_size = 18.0;
+    let control_gap = 3.0;
+    let controls_width =
+        control_count as f32 * control_size + control_count.saturating_sub(1) as f32 * control_gap;
+    let controls_rect = Rect::from_min_max(
+        Pos2::new(
+            rects.tracks.left() - controls_width - 7.0,
+            rects.tracks.top(),
+        ),
+        Pos2::new(rects.tracks.left() - 7.0, rects.tracks.bottom()),
+    );
+    controls_rect.contains(pos)
+}
+
+fn timeline_track_control_chrome(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    id: egui::Id,
+    active: bool,
+    active_color: Color32,
+) -> (egui::Response, Color32) {
+    let response = ui.interact(rect, id, Sense::click());
+    let fill = if response.is_pointer_button_down_on() {
+        active_color.gamma_multiply(if active { 0.30 } else { 0.16 })
+    } else if response.hovered() {
+        active_color.gamma_multiply(if active { 0.23 } else { 0.12 })
+    } else if active {
+        active_color.gamma_multiply(0.16)
+    } else {
+        kit::PANEL_RAISED
+    };
+    let icon_color = if active { active_color } else { kit::TEXT_DIM };
+    painter.rect_filled(rect, 3.0, fill);
+    painter.rect_stroke(
+        rect,
+        3.0,
+        Stroke::new(
+            1.0_f32,
+            icon_color.gamma_multiply(if active { 0.65 } else { 0.42 }),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    (response, icon_color)
+}
+
+fn timeline_track_mute_button(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    track_id: uuid::Uuid,
+    muted: bool,
+) -> egui::Response {
+    let (response, color) = timeline_track_control_chrome(
+        ui,
+        painter,
+        rect,
+        ui.id().with(("timeline-track-audio-mute", track_id)),
+        muted,
+        kit::DANGER,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "M",
+        FontId::monospace(10.0),
+        color,
+    );
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if muted {
+            "Unmute audio for this track. Video output remains visible."
+        } else {
+            "Mute audio for this track. Video output remains visible."
+        })
+}
+
+fn timeline_track_visibility_button(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    rect: Rect,
+    track_id: uuid::Uuid,
+    enabled: bool,
+) -> egui::Response {
+    let (response, color) = timeline_track_control_chrome(
+        ui,
+        painter,
+        rect,
+        ui.id().with(("timeline-track-video-output", track_id)),
+        enabled,
+        kit::VIDEO,
+    );
+    let center = rect.center();
+    let half_w = rect.width() * 0.31;
+    let half_h = rect.height() * 0.20;
+    painter.add(egui::Shape::closed_line(
+        vec![
+            Pos2::new(center.x - half_w, center.y),
+            Pos2::new(center.x - half_w * 0.42, center.y - half_h),
+            Pos2::new(center.x + half_w * 0.42, center.y - half_h),
+            Pos2::new(center.x + half_w, center.y),
+            Pos2::new(center.x + half_w * 0.42, center.y + half_h),
+            Pos2::new(center.x - half_w * 0.42, center.y + half_h),
+        ],
+        Stroke::new(1.0_f32, color),
+    ));
+    if enabled {
+        painter.circle_filled(center, 2.2, color);
+    } else {
+        painter.line_segment(
+            [
+                Pos2::new(center.x - half_w, center.y + half_h),
+                Pos2::new(center.x + half_w, center.y - half_h),
+            ],
+            Stroke::new(1.4_f32, color),
+        );
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if enabled {
+            "Disable video output for this track. Audio remains audible."
+        } else {
+            "Enable video output for this track."
+        })
 }

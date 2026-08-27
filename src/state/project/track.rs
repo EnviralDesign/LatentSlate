@@ -24,9 +24,15 @@ pub struct Track {
     /// Track volume (applies to audio playback for audio/video clips).
     #[serde(default = "default_volume")]
     pub volume: f32,
-    /// Whether this track is muted. Video tracks hide visual clips and silence embedded audio.
+    /// Whether visual clips on this track appear in preview and export output.
+    #[serde(default = "default_visual_enabled")]
+    pub visual_enabled: bool,
+    /// Whether audio carried by clips on this track is silenced in playback and export.
     #[serde(default)]
-    pub muted: bool,
+    pub audio_muted: bool,
+    /// Legacy combined mute state. It is read from older project files and migrated on load.
+    #[serde(default, rename = "muted", skip_serializing)]
+    legacy_muted: bool,
 }
 
 impl Track {
@@ -37,8 +43,47 @@ impl Track {
             name: name.into(),
             track_type,
             volume: 1.0,
-            muted: false,
+            visual_enabled: true,
+            audio_muted: false,
+            legacy_muted: false,
         }
+    }
+
+    /// Whether this track contributes visual output.
+    pub fn visual_output_enabled(&self) -> bool {
+        self.visual_enabled
+    }
+
+    /// Whether this track's audio is silenced.
+    pub fn is_audio_muted(&self) -> bool {
+        self.audio_muted
+    }
+
+    /// Enable or disable this track's visual output.
+    pub fn set_visual_output_enabled(&mut self, enabled: bool) {
+        self.visual_enabled = enabled;
+    }
+
+    /// Mute or unmute this track's audio output.
+    pub fn set_audio_muted(&mut self, muted: bool) {
+        self.audio_muted = muted;
+    }
+
+    /// Enable or disable all output from this track.
+    pub fn set_track_disabled(&mut self, disabled: bool) {
+        self.visual_enabled = !disabled;
+        self.audio_muted = disabled;
+    }
+
+    /// Apply the pre-output-split `muted` state from an older project file.
+    pub(crate) fn migrate_legacy_mute(&mut self) -> bool {
+        if !self.legacy_muted {
+            return false;
+        }
+
+        self.set_track_disabled(true);
+        self.legacy_muted = false;
+        true
     }
 
     /// Create a numbered video track.
@@ -59,4 +104,33 @@ impl Track {
 
 fn default_volume() -> f32 {
     1.0
+}
+
+fn default_visual_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_muted_track_disables_both_outputs() {
+        let mut track: Track = serde_json::from_str(
+            r#"{
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Video 1",
+                "track_type": "Video",
+                "muted": true
+            }"#,
+        )
+        .expect("legacy track parses");
+
+        assert!(track.migrate_legacy_mute());
+        assert!(!track.visual_output_enabled());
+        assert!(track.is_audio_muted());
+        assert!(!serde_json::to_string(&track)
+            .expect("track serializes")
+            .contains("\"muted\""));
+    }
 }

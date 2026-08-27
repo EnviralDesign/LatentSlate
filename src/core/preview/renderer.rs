@@ -321,6 +321,8 @@ impl PreviewRenderer {
                 clip_id: None,
                 texture_key: plate_texture_key(canvas_w, canvas_h),
                 image: plate_fill,
+                source_width: canvas_w,
+                source_height: canvas_h,
                 placement,
             });
             // NOTE: The UI draws the preview border in screen space, not as a texture layer.
@@ -342,6 +344,8 @@ impl PreviewRenderer {
                     clip_id: Some(layer.clip_id),
                     texture_key: layer.texture_key,
                     image: layer.image,
+                    source_width: layer.source_width,
+                    source_height: layer.source_height,
                     placement,
                 });
             }
@@ -374,7 +378,7 @@ impl PreviewRenderer {
         let mut track_order: HashMap<uuid::Uuid, usize> = HashMap::new();
         let mut video_tracks = 0;
         for track in project.tracks.iter() {
-            if track.track_type == TrackType::Video && !track.muted {
+            if track.track_type == TrackType::Video && track.visual_output_enabled() {
                 track_order.insert(track.id, video_tracks);
                 video_tracks += 1;
             }

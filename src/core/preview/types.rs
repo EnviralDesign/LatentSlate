@@ -80,6 +80,8 @@ pub struct PreviewLayerGpu {
     pub clip_id: Option<Uuid>,
     pub texture_key: u64,
     pub image: Arc<RgbaImage>,
+    pub source_width: u32,
+    pub source_height: u32,
     pub placement: PreviewLayerPlacement,
 }
 

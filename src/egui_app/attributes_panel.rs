@@ -3749,7 +3749,7 @@ impl LatentSlateApp {
     }
 
     pub(super) fn track_attributes(&mut self, ui: &mut Ui, track_id: Uuid) {
-        let mut track_mute_changed = false;
+        let mut audio_mute_changed = false;
         let mut preview_dirty = false;
         let mut delete_track = false;
         if let Some(track) = self
@@ -3767,10 +3767,21 @@ impl LatentSlateApp {
                 inspector_meta_row(ui, "Type", format!("{:?}", track.track_type));
                 if track.track_type != TrackType::Marker {
                     ui.add_space(kit::FORM_ROW_GAP);
-                    let before = track.muted;
-                    automation_checkbox(ui, &mut track.muted, "Muted");
-                    if track.muted != before {
-                        track_mute_changed = true;
+                    if track.track_type == TrackType::Video {
+                        let mut visual_enabled = track.visual_output_enabled();
+                        automation_checkbox(ui, &mut visual_enabled, "Video output");
+                        if visual_enabled != track.visual_output_enabled() {
+                            track.set_visual_output_enabled(visual_enabled);
+                            preview_dirty = true;
+                        }
+                        ui.add_space(kit::FORM_ROW_GAP);
+                    }
+
+                    let mut audio_muted = track.is_audio_muted();
+                    automation_checkbox(ui, &mut audio_muted, "Mute audio");
+                    if audio_muted != track.is_audio_muted() {
+                        track.set_audio_muted(audio_muted);
+                        audio_mute_changed = true;
                         preview_dirty = true;
                     }
                     ui.add_space(kit::FORM_ROW_GAP);
@@ -3790,7 +3801,7 @@ impl LatentSlateApp {
         if preview_dirty {
             self.editor.preview_dirty = true;
         }
-        if track_mute_changed {
+        if audio_mute_changed {
             self.refresh_audio_playback_items();
         }
     }

@@ -1342,11 +1342,11 @@ fn build_audio_playback_items(
 ) -> (Vec<PlaybackItem>, Vec<Uuid>) {
     let mut track_types = HashMap::new();
     let mut track_volumes = HashMap::new();
-    let mut track_mutes = HashMap::new();
+    let mut audio_muted_tracks = HashMap::new();
     for track in project.tracks.iter() {
         track_types.insert(track.id, track.track_type);
         track_volumes.insert(track.id, track.volume);
-        track_mutes.insert(track.id, track.muted);
+        audio_muted_tracks.insert(track.id, track.is_audio_muted());
     }
 
     let sample_rate = engine.sample_rate() as f64;
@@ -1361,7 +1361,11 @@ fn build_audio_playback_items(
         if *track_type != TrackType::Audio && *track_type != TrackType::Video {
             continue;
         }
-        if track_mutes.get(&clip.track_id).copied().unwrap_or(false) {
+        if audio_muted_tracks
+            .get(&clip.track_id)
+            .copied()
+            .unwrap_or(false)
+        {
             continue;
         }
         let Some(asset) = project.find_asset(clip.asset_id) else {
@@ -1450,10 +1454,10 @@ fn audio_decode_targets_for_project(
     project_root: &Path,
 ) -> Vec<(Uuid, PathBuf)> {
     let mut track_types = HashMap::new();
-    let mut track_mutes = HashMap::new();
+    let mut audio_muted_tracks = HashMap::new();
     for track in project.tracks.iter() {
         track_types.insert(track.id, track.track_type);
-        track_mutes.insert(track.id, track.muted);
+        audio_muted_tracks.insert(track.id, track.is_audio_muted());
     }
 
     let mut seen = HashSet::new();
@@ -1465,7 +1469,11 @@ fn audio_decode_targets_for_project(
         if *track_type != TrackType::Audio && *track_type != TrackType::Video {
             continue;
         }
-        if track_mutes.get(&clip.track_id).copied().unwrap_or(false) {
+        if audio_muted_tracks
+            .get(&clip.track_id)
+            .copied()
+            .unwrap_or(false)
+        {
             continue;
         }
         let Some(asset) = project.find_asset(clip.asset_id) else {

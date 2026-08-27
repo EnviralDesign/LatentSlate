@@ -64,6 +64,7 @@ Important rules:
 - `Audio` tracks hold audio clips and audio generative clips.
 - `Marker` tracks hold point-in-time markers.
 - New projects start with three video tracks above one audio track and one marker track: `Video 3`, `Video 2`, `Video 1`, `Audio 1`, `Markers` from top to bottom.
+- Video tracks keep visual output and embedded-audio mute as separate states. Video output affects preview and export compositing; audio mute affects playback and export mixdown.
 - Clips are range-based with start time and duration.
 - Time-based clips default to `crop` time mapping. Video clips can use `stretch` to map remaining source media across the visible clip duration.
 - Timeline bridge clips are generated video clips with a `bridge` link to left/right source clips. They are anchored to those clips, reflow when source clips move, and expose edge resizing as left/right bridge frame counts instead of free timeline movement.

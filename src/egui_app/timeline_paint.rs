@@ -7,14 +7,17 @@ use crate::state::Clip;
 pub(super) fn paint_clip_thumbnail_strip(
     painter: &egui::Painter,
     rect: Rect,
-    tiles: &[TimelineThumbTile],
+    tiles: &[Option<TimelineThumbTile>],
 ) {
-    if tiles.is_empty() {
+    if tiles.is_empty() || tiles.iter().all(Option::is_none) {
         return;
     }
     let clip_painter = painter.with_clip_rect(rect.shrink(1.0));
     let tile_w = (rect.width() / tiles.len() as f32).max(1.0);
     for (index, tile) in tiles.iter().enumerate() {
+        let Some(tile) = tile else {
+            continue;
+        };
         let x = rect.left() + index as f32 * tile_w;
         if x > rect.right() {
             break;
@@ -37,23 +40,27 @@ pub(super) fn paint_clip_thumbnail_strip(
 }
 
 pub(super) fn paint_clip_cache_buckets(painter: &egui::Painter, rect: Rect, buckets: &[bool]) {
-    if buckets.is_empty() || rect.width() <= 2.0 {
+    if buckets.is_empty() || rect.width() <= 8.0 || rect.height() <= 10.0 {
         return;
     }
-    let y = rect.bottom() - 4.0;
+
+    // Keep the cache diagnostic clear of the clip's selection border. In particular,
+    // selected clips use the application's green focus color, so a green cache strip
+    // at the bottom edge was too easy to read as selection chrome.
+    let rail_left = rect.left() + 3.0;
+    let rail_right = rect.right() - 3.0;
+    let y = rect.bottom() - 7.0;
     let strip_rect = Rect::from_min_max(
-        Pos2::new(rect.left(), y),
-        Pos2::new(rect.right(), rect.bottom() - 1.0),
+        Pos2::new(rail_left, y),
+        Pos2::new(rail_right, rect.bottom() - 2.0),
     );
     let clip_painter = painter.with_clip_rect(rect.shrink(1.0));
-    clip_painter.rect_filled(
-        strip_rect,
-        0.0,
-        Color32::from_rgba_unmultiplied(95, 58, 42, 85),
-    );
+    clip_painter.rect_filled(strip_rect, 1.0, Color32::from_rgb(133, 75, 42));
 
     let bucket_count = buckets.len() as f32;
-    let cached_color = Color32::from_rgba_unmultiplied(45, 220, 165, 175);
+    // Blue means cached; the amber rail behind it means frames still need decoding.
+    // These colors deliberately avoid the green selection accent.
+    let cached_color = Color32::from_rgb(72, 190, 255);
     let mut run_start: Option<usize> = None;
     for (index, cached) in buckets
         .iter()
@@ -64,15 +71,15 @@ pub(super) fn paint_clip_cache_buckets(painter: &egui::Painter, rect: Rect, buck
         match (cached, run_start) {
             (true, None) => run_start = Some(index),
             (false, Some(start)) => {
-                let x0 = rect.left() + rect.width() * start as f32 / bucket_count;
-                let x1 = rect.left() + rect.width() * index as f32 / bucket_count;
+                let x0 = rail_left + strip_rect.width() * start as f32 / bucket_count;
+                let x1 = rail_left + strip_rect.width() * index as f32 / bucket_count;
                 if x1 > x0 {
                     clip_painter.rect_filled(
                         Rect::from_min_max(
                             Pos2::new(x0, y),
-                            Pos2::new(x1.min(rect.right()), rect.bottom() - 1.0),
+                            Pos2::new(x1.min(rail_right), rect.bottom() - 2.0),
                         ),
-                        0.0,
+                        1.0,
                         cached_color,
                     );
                 }

@@ -47,6 +47,9 @@ impl Project {
         let project_file = folder.join("project.json");
         let json = fs::read_to_string(&project_file)?;
         let mut project: Project = serde_json::from_str(&json)?;
+        for track in &mut project.tracks {
+            track.migrate_legacy_mute();
+        }
         project.project_path = Some(folder.to_path_buf());
         project.load_generative_configs();
         project.ensure_generative_video_durations();

@@ -555,9 +555,13 @@ impl LatentSlateApp {
             else {
                 continue;
             };
+            let source_size = Vec2::new(
+                layer.source_width.max(1) as f32,
+                layer.source_height.max(1) as f32,
+            );
             let half_size = Vec2::new(
-                (layer.placement.scaled_w / preview_scale).max(1.0) * 0.5,
-                (layer.placement.scaled_h / preview_scale).max(1.0) * 0.5,
+                source_size.x * clip.transform.scale_x.max(0.01) * 0.5,
+                source_size.y * clip.transform.scale_y.max(0.01) * 0.5,
             );
             let center =
                 project_center + Vec2::new(clip.transform.position_x, clip.transform.position_y);
@@ -574,6 +578,7 @@ impl LatentSlateApp {
             });
             geometries.push(PreviewObjectGeometry {
                 clip_id,
+                source_size,
                 project_rect,
                 screen_corners,
                 screen_center: preview_project_to_screen(
@@ -616,7 +621,7 @@ impl LatentSlateApp {
                 self.editor
                     .project
                     .find_track(clip.track_id)
-                    .is_some_and(|track| !track.muted)
+                    .is_some_and(|track| track.visual_output_enabled())
             })
             .filter_map(|clip| {
                 let asset = self.editor.project.find_asset(clip.asset_id)?;
@@ -698,13 +703,6 @@ impl LatentSlateApp {
         objects: &[PreviewObjectGeometry],
     ) {
         let painter = ui.painter().with_clip_rect(rect);
-        for guide in self.preview_snap_guides.iter() {
-            painter.line_segment(
-                [guide.start, guide.end],
-                Stroke::new(1.0_f32, Color32::from_rgb(229, 187, 47)),
-            );
-        }
-
         let Some(selected_clip_id) = self.editor.selection.primary_clip() else {
             if !matches!(self.preview_drag, Some(PreviewTransformDrag::Pan { .. })) {
                 self.preview_drag = None;
@@ -712,7 +710,7 @@ impl LatentSlateApp {
             }
             return;
         };
-        let Some(selected) = objects
+        let Some(mut selected) = objects
             .iter()
             .find(|object| object.clip_id == selected_clip_id)
             .cloned()
@@ -725,6 +723,30 @@ impl LatentSlateApp {
         };
 
         self.apply_preview_transform_drag(ui, canvas_rect, layers, objects, &selected);
+
+        if let Some(clip) = self
+            .editor
+            .project
+            .clips
+            .iter()
+            .find(|clip| clip.id == selected.clip_id)
+        {
+            selected = preview_geometry_for_clip(
+                &self.editor.project,
+                clip,
+                selected.source_size,
+                canvas_rect,
+                layers,
+                canvas_rect.width() / layers.canvas_width.max(1) as f32,
+            );
+        }
+
+        for guide in self.preview_snap_guides.iter() {
+            painter.line_segment(
+                [guide.start, guide.end],
+                Stroke::new(1.0_f32, Color32::from_rgb(229, 187, 47)),
+            );
+        }
 
         let stroke = Stroke::new(1.0_f32, kit::BORDER_FOCUS);
         for index in 0..4 {

@@ -826,10 +826,9 @@ impl LatentSlateApp {
         if let Some(thumbnail) = self.timeline_thumbnails.get(&key) {
             return Some((thumbnail.texture.id(), thumbnail.size));
         }
-        if self.timeline_thumbnail_misses.contains(&key) {
-            return self.asset_thumbnail(ctx, asset);
-        }
-
+        // A thumbnail job can finish after this bucket was first requested.
+        // Recheck known misses so a zoom does not leave a random, permanent
+        // pattern of empty timeline stamps until the project is reopened.
         let Some(path) = self
             .editor
             .thumbnailer
@@ -844,6 +843,7 @@ impl LatentSlateApp {
                 TextureOptions::LINEAR,
             );
             let texture_id = texture.id();
+            self.timeline_thumbnail_misses.remove(&key);
             self.timeline_thumbnails
                 .insert(key, AssetThumbnail { texture, size });
             return Some((texture_id, size));
@@ -860,7 +860,7 @@ impl LatentSlateApp {
         clip: &Clip,
         clip_rect: Rect,
         zoom: f32,
-    ) -> Vec<TimelineThumbTile> {
+    ) -> Vec<Option<TimelineThumbTile>> {
         if !asset.is_visual() || clip_rect.width() <= 8.0 {
             return Vec::new();
         }
@@ -875,16 +875,22 @@ impl LatentSlateApp {
         }
         let tile_count = (clip_rect.width() / tile_w).ceil().max(1.0) as usize;
         let tile_time = tile_w as f64 / zoom.max(TIMELINE_MIN_ZOOM_FLOOR) as f64;
-        let mut tiles = Vec::with_capacity(tile_count);
+        // Keep the tile grid stable while a background thumbnail job is
+        // populating the cache. Dropping an unavailable slot used to stretch
+        // all following samples across it, making the strip appear to flicker
+        // and shuffle during zooming.
+        let mut tiles = vec![None; tile_count];
 
         for index in 0..tile_count {
-            let time_in_clip = (index as f64 * tile_time).min(clip.duration.max(0.0));
+            let tile_start = index as f64 * tile_time;
+            let tile_end = (tile_start + tile_time).min(clip.duration.max(0.0));
+            let time_in_clip = ((tile_start + tile_end) * 0.5).min(clip.duration.max(0.0));
             let source_time = clip.source_time_for_local(time_in_clip, asset.duration_seconds);
             let tile = self
                 .timeline_thumbnail(ctx, asset, source_time)
                 .or(fallback);
             if let Some((texture_id, size)) = tile {
-                tiles.push(TimelineThumbTile { texture_id, size });
+                tiles[index] = Some(TimelineThumbTile { texture_id, size });
             }
         }
 
