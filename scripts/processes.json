@@ -41,7 +41,7 @@
     {
       "id": "b13c4969-3a45-4586-b294-067cf2ea1772",
       "name": "Latentslate Engine",
-      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\repos\\LatentSlate-Engine\\scripts\\engine.ps1 serve --host 127.0.0.1 --port 8765",
+      "command": "\"C:\\repos\\LatentSlate-Engine\\.venv\\Scripts\\python.exe\" -m latentslate_engine.service --host 127.0.0.1 --port 8765",
       "working_directory": "C:\\repos\\LatentSlate-Engine",
       "process_type": "Process",
       "auto_start": false,
