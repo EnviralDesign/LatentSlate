@@ -1149,6 +1149,7 @@ impl ProviderBuilderState {
             timeline_bridge,
             inputs: provider_inputs,
             canvas: None,
+            timing: None,
             connection: ProviderConnection::ComfyUi {
                 base_url: base_url.to_string(),
                 workflow_path: Some(workflow_path_string),
@@ -2947,6 +2948,7 @@ mod tests {
             timeline_bridge: None,
             inputs: Vec::new(),
             canvas: None,
+            timing: None,
             connection: ProviderConnection::ComfyUi {
                 base_url: "http://127.0.0.1:8188".to_string(),
                 workflow_path: Some(workflow_path_string),

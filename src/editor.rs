@@ -12,7 +12,10 @@ use crate::core::audio::cache::peak_cache_path;
 use crate::core::automation::{
     AutomationCommand, AutomationResponse, ClipMoveMode, ClipMoveTarget, SequencePlacementItem,
 };
-use crate::core::generation::{migrate_legacy_size_input, semantic_reference_slot};
+use crate::core::generation::{
+    migrate_legacy_size_input, migrate_wan_rev1_frame_count, migrate_wan_rev1_frame_count_inputs,
+    semantic_reference_slot,
+};
 use crate::core::media::{probe_missing_duration, resolve_asset_duration_seconds};
 use crate::core::provider_store::{
     default_openai_image_provider_entry, default_provider_entry, default_xai_image_provider_entry,
@@ -22,13 +25,27 @@ use crate::core::provider_store::{
 use crate::core::thumbnailer::Thumbnailer;
 use crate::core::timeline_bridge::{provider_is_timeline_bridge, resolve_timeline_bridge_clip};
 use crate::state::{
-    generative_video_frames_for_duration, next_generative_index, normalize_generative_video_fps,
-    Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole, InputValue, Project,
-    ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout, ProviderConnection,
-    ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
+    generative_video_frames_for_duration, input_value_as_f64, next_generative_index,
+    normalize_generative_video_fps, Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole,
+    InputValue, Project, ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout,
+    ProviderConnection, ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
     DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS, DEFAULT_GENERATIVE_VIDEO_FPS,
     DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
+
+fn persisted_creative_duration_for_wan_migration(asset: &Asset) -> Option<f64> {
+    let duration = asset
+        .duration_seconds
+        .filter(|duration| duration.is_finite() && *duration > 0.0)?;
+    let AssetKind::GenerativeVideo {
+        fps, frame_count, ..
+    } = asset.kind
+    else {
+        return Some(duration);
+    };
+    let legacy_native_duration = frame_count as f64 / fps.max(1.0);
+    ((duration - legacy_native_duration).abs() > 1e-6).then_some(duration)
+}
 
 #[derive(Clone, Debug)]
 pub struct EditorLayout {
@@ -221,6 +238,18 @@ impl EditorState {
             .map(|provider| (provider.id, provider))
             .collect();
         let mut changed_assets = Vec::new();
+        let mut timing_updates = Vec::new();
+        let creative_durations: std::collections::HashMap<Uuid, Option<f64>> = self
+            .project
+            .assets
+            .iter()
+            .map(|asset| {
+                (
+                    asset.id,
+                    persisted_creative_duration_for_wan_migration(asset),
+                )
+            })
+            .collect();
         for (asset_id, config) in self.project.generative_configs.iter_mut() {
             let Some(provider_id) = config.provider_id else {
                 continue;
@@ -228,9 +257,56 @@ impl EditorState {
             let Some(provider) = providers.get(&provider_id) else {
                 continue;
             };
-            if migrate_legacy_size_input(config, provider) {
+            let mut changed = migrate_legacy_size_input(config, provider);
+            changed |= migrate_wan_rev1_frame_count(
+                config,
+                provider,
+                creative_durations.get(asset_id).copied().flatten(),
+            );
+            if let Some(fps) = crate::core::generation::provider_fixed_fps(provider) {
+                let duration = provider
+                    .inputs
+                    .iter()
+                    .find(|input| input.role == Some(InputRole::DurationSeconds))
+                    .and_then(|input| config.inputs.get(&input.name))
+                    .and_then(|value| match value {
+                        InputValue::Literal { value } => input_value_as_f64(value),
+                        _ => None,
+                    })
+                    .or_else(|| creative_durations.get(asset_id).copied().flatten());
+                if let Some(duration) = duration {
+                    if let Some(frames) =
+                        crate::core::generation::delivered_frame_count(duration, fps)
+                    {
+                        timing_updates.push((*asset_id, fps, frames));
+                    }
+                }
+            }
+            for node in &mut config.lab_graph.nodes {
+                if let Some(node_provider) = node
+                    .provider_id
+                    .and_then(|provider_id| providers.get(&provider_id))
+                {
+                    changed |=
+                        migrate_wan_rev1_frame_count_inputs(&mut node.inputs, node_provider, None);
+                }
+            }
+            for record in &mut config.versions {
+                if let Some(record_provider) = providers.get(&record.provider_id) {
+                    changed |= migrate_wan_rev1_frame_count_inputs(
+                        &mut record.inputs_snapshot,
+                        record_provider,
+                        None,
+                    );
+                }
+            }
+            if changed {
                 changed_assets.push(*asset_id);
             }
+        }
+        for (asset_id, fps, frames) in timing_updates {
+            self.project
+                .set_generative_video_timing(asset_id, fps, frames);
         }
         for asset_id in changed_assets {
             if let Err(err) = self.project.save_generative_config(asset_id) {
@@ -242,6 +318,10 @@ impl EditorState {
     /// Reconciles retired provider inputs after a config restore, before its
     /// caller persists the restored config.
     pub fn reconcile_generative_config_dimensions(&mut self, asset_id: Uuid) -> bool {
+        let creative_duration = self
+            .project
+            .find_asset(asset_id)
+            .and_then(persisted_creative_duration_for_wan_migration);
         let Some(provider) = self
             .project
             .generative_config(asset_id)
@@ -258,6 +338,7 @@ impl EditorState {
         let mut changed = false;
         self.project.update_generative_config(asset_id, |config| {
             changed = migrate_legacy_size_input(config, &provider);
+            changed |= migrate_wan_rev1_frame_count(config, &provider, creative_duration);
         });
         changed
     }
@@ -2929,8 +3010,8 @@ pub(crate) fn compact_generation_job_json(job: &GenerationJob) -> Value {
         "job_id": job.id,
         "created_at": job.created_at,
         "status": job.status,
-        "progress_overall": job.progress_overall,
-        "progress_node": job.progress_node,
+        "progress": job.progress_overall.as_ref().map(|lane| lane.progress),
+        "stage": job.progress_stage,
         "provider_id": job.provider.id,
         "provider_name": job.provider.name,
         "output_type": job.output_type,
@@ -3405,6 +3486,88 @@ mod tests {
             config.inputs.get("height"),
             Some(&InputValue::Literal { value: json!(540) })
         );
+    }
+
+    #[test]
+    fn provider_refresh_persists_wan_rev1_duration_and_delivered_timing() {
+        let mut editor = EditorState::new();
+        editor.project = Project::new("wan-migration");
+        let mut provider = ProviderEntry::new(
+            "Wan T2V",
+            ProviderOutputType::Video,
+            ProviderConnection::LatentSlateEngine {
+                base_url: "http://localhost:8765".to_string(),
+                api_key: None,
+                tool_key: "wan2214b_turbo.text_to_video".to_string(),
+                schema_revision: 2,
+                schema_hash:
+                    "sha256:4556b1e1b1ae9483ce25f2a90b45f0a3b709bff6e46b34b0b835507f81ef4f8e"
+                        .to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        provider.id = Uuid::parse_str("34e57585-95a3-4bb6-b3de-fca5dd924ba6").expect("Wan id");
+        provider.inputs = vec![ProviderInputField {
+            name: "duration_seconds".to_string(),
+            label: "Duration".to_string(),
+            description: None,
+            input_type: ProviderInputType::Number,
+            required: true,
+            default: Some(json!(1.0)),
+            role: Some(InputRole::DurationSeconds),
+            ui: Some(crate::state::InputUi {
+                min: Some(1.0),
+                max: Some(5.0),
+                step: Some(0.25),
+                ..crate::state::InputUi::default()
+            }),
+        }];
+        provider.timing = Some(crate::state::ProviderTiming {
+            fps: Some(crate::state::ProviderFpsTiming {
+                mode: "fixed".to_string(),
+                value: Some(16.0),
+            }),
+            duration_seconds: Some(crate::state::ProviderDurationTiming {
+                min: 1.0,
+                max: 5.0,
+                step: 0.25,
+            }),
+        });
+        let provider_id = provider.id;
+        editor.provider_entries = vec![provider];
+        let asset_id = editor.project.add_asset(Asset::new_generative_video(
+            "legacy Wan",
+            PathBuf::from("generated/video/wan"),
+            16.0,
+            81,
+        ));
+        editor.project.update_generative_config(asset_id, |config| {
+            config.provider_id = Some(provider_id);
+            config.inputs.insert(
+                "frame_count".to_string(),
+                InputValue::Literal { value: json!(81) },
+            );
+        });
+
+        editor.reconcile_generative_dimension_configs();
+
+        let config = editor.project.generative_config(asset_id).expect("config");
+        assert_eq!(
+            config.inputs.get("duration_seconds"),
+            Some(&InputValue::Literal { value: json!(5.0) })
+        );
+        assert!(!config.inputs.contains_key("frame_count"));
+        let asset = editor.project.find_asset(asset_id).expect("asset");
+        assert_eq!(asset.duration_seconds, Some(5.0));
+        assert!(matches!(
+            asset.kind,
+            AssetKind::GenerativeVideo {
+                fps: 16.0,
+                frame_count: 80,
+                ..
+            }
+        ));
     }
 
     #[test]

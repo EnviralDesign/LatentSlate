@@ -14,10 +14,13 @@ use uuid::Uuid;
 
 use crate::state::{
     CanvasContract, InputRole, InputUi, ProviderConnection, ProviderEntry, ProviderInputField,
-    ProviderInputType, ProviderOutputType, ProviderWorkflowKind,
+    ProviderInputType, ProviderOutputType, ProviderTiming, ProviderWorkflowKind,
 };
 
-use super::{ProviderExecutionError, ProviderOutput, ProviderProgress};
+use super::{
+    ProviderExecutionError, ProviderOutput, ProviderProgress, ProviderProgressLane,
+    ProviderProgressStage,
+};
 
 const DEFAULT_ENGINE_URL: &str = "http://127.0.0.1:8765";
 const DEFAULT_CONNECTION_NAME: &str = "LatentSlate Engine";
@@ -497,6 +500,7 @@ fn tool_to_provider(
         timeline_bridge: None,
         inputs,
         canvas,
+        timing: tool.timing.clone(),
         connection: ProviderConnection::LatentSlateEngine {
             base_url: settings.base_url.clone(),
             api_key: settings.api_key.clone(),
@@ -684,9 +688,9 @@ pub async fn generate_output(
             );
             logged_transition = Some(next_transition);
         }
-        if let Some(progress) = job.progress {
-            if let Some(tx) = progress_tx.as_ref() {
-                let _ = tx.send(ProviderProgress::overall(progress.clamp(0.0, 1.0) as f32));
+        if let Some(tx) = progress_tx.as_ref() {
+            if let Some(progress) = engine_job_provider_progress(&job) {
+                let _ = tx.send(progress);
             }
         }
         match job.status.as_str() {
@@ -1067,7 +1071,10 @@ fn engine_job_poll_changed(previous: &EngineJob, next: &EngineJob) -> bool {
         (None, None) => false,
         _ => true,
     };
-    previous.status != next.status || previous.message != next.message || progress_changed
+    previous.status != next.status
+        || previous.message != next.message
+        || previous.stage != next.stage
+        || progress_changed
 }
 
 /// A privacy-safe, low-volume view of an Engine job update for process logging.
@@ -1253,6 +1260,8 @@ struct EngineTool {
     inputs: Vec<EngineInput>,
     #[serde(default)]
     canvas: Option<CanvasContract>,
+    #[serde(default)]
+    timing: Option<ProviderTiming>,
     #[serde(default = "default_true")]
     available: bool,
     #[serde(default)]
@@ -1328,11 +1337,39 @@ struct EngineJob {
     #[serde(default)]
     progress: Option<f64>,
     #[serde(default)]
+    stage: Option<EngineJobStage>,
+    #[serde(default)]
     message: Option<String>,
     #[serde(default)]
     artifacts: Vec<EngineArtifact>,
     #[serde(default)]
     error: Option<EngineErrorBody>,
+}
+
+fn engine_job_provider_progress(job: &EngineJob) -> Option<ProviderProgress> {
+    let progress = ProviderProgress {
+        overall: job.progress.map(|progress| ProviderProgressLane {
+            label: "Overall".to_string(),
+            progress: progress.clamp(0.0, 1.0) as f32,
+        }),
+        stage: job.stage.as_ref().map(|stage| ProviderProgressStage {
+            label: stage.label.clone(),
+            progress: stage
+                .progress
+                .map(|progress| progress.clamp(0.0, 1.0) as f32),
+            detail: stage.detail.clone(),
+        }),
+    };
+    (progress.overall.is_some() || progress.stage.is_some()).then_some(progress)
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct EngineJobStage {
+    label: String,
+    #[serde(default)]
+    progress: Option<f64>,
+    #[serde(default)]
+    detail: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1542,6 +1579,7 @@ mod tests {
             id: Uuid::nil(),
             status: status.to_string(),
             progress,
+            stage: None,
             message: message.map(str::to_string),
             artifacts: Vec::new(),
             error: None,
@@ -1692,6 +1730,26 @@ mod tests {
     }
 
     #[test]
+    fn engine_progress_supports_overall_only_and_optional_stage_detail() {
+        let overall = engine_job_provider_progress(&test_engine_job("running", Some(0.45), None))
+            .expect("overall progress");
+        assert_eq!(overall.overall.expect("lane").progress, 0.45);
+        assert!(overall.stage.is_none());
+
+        let mut staged = test_engine_job("running", Some(0.45), None);
+        staged.stage = Some(EngineJobStage {
+            label: "Low-noise sampling".to_string(),
+            progress: Some(0.5),
+            detail: Some("Step 1 of 2".to_string()),
+        });
+        let staged = engine_job_provider_progress(&staged).expect("staged progress");
+        let stage = staged.stage.expect("stage");
+        assert_eq!(stage.label, "Low-noise sampling");
+        assert_eq!(stage.progress, Some(0.5));
+        assert_eq!(stage.detail.as_deref(), Some("Step 1 of 2"));
+    }
+
+    #[test]
     fn engine_job_log_snapshot_classifies_safe_phase_messages_without_retaining_them() {
         let snapshot = engine_job_log_snapshot(&test_engine_job(
             "running",
@@ -1791,6 +1849,10 @@ mod tests {
                     { "key": "steps", "label": "Steps", "type": "integer", "required": true, "default": 20 }
                 ],
                 "canvas": { "alignment": 32, "min_side": 64, "max_pixels": 1032192, "max_aspect": 4.0 },
+                "timing": {
+                    "fps": { "mode": "fixed", "value": 16.0 },
+                    "duration_seconds": { "min": 1.0, "max": 5.0, "step": 0.25 }
+                },
                 "available": true
             }]
         }))
@@ -1819,6 +1881,17 @@ mod tests {
                 max_aspect: Some(4.0),
             })
         );
+        let timing = provider.timing.as_ref().expect("timing");
+        assert_eq!(timing.fps.as_ref().expect("fps").mode, "fixed");
+        assert_eq!(timing.fps.as_ref().expect("fps").value, Some(16.0));
+        assert_eq!(
+            timing.duration_seconds,
+            Some(crate::state::ProviderDurationTiming {
+                min: 1.0,
+                max: 5.0,
+                step: 0.25,
+            })
+        );
         assert!(matches!(
             provider.inputs[5].input_type,
             ProviderInputType::Integer
@@ -1828,6 +1901,115 @@ mod tests {
             &provider.connection,
             ProviderConnection::LatentSlateEngine { .. }
         ));
+    }
+
+    #[test]
+    fn established_engine_schema_identities_remain_usable() {
+        let identities = [
+            (
+                "46bdb57c-3b19-5397-8949-4e20ffe757c9",
+                "ltx23.text_to_video",
+                2,
+                "sha256:94f9397a5ff16d5101e81f62396c5c744f045799bcdbdf961b036ee8f0ac2c78",
+                "text_to_video",
+                "video",
+            ),
+            (
+                "5d6e2d6f-216c-5f35-a4ec-1565d6e56ee7",
+                "ltx23.image_to_video",
+                2,
+                "sha256:8364fcc55ec44ae780d49d9c9404768c81a5680783106934f9a17bd990be7efa",
+                "image_to_video",
+                "video",
+            ),
+            (
+                "1a8f9c0b-410e-56e4-90de-23bcb9d644ca",
+                "ltx23.first_last_frame_to_video",
+                2,
+                "sha256:aa624d8d8fe060dcc39c15623e4b4b07eb405305051ebdd5fd2caf8368d8acd9",
+                "first_frame_last_frame_video",
+                "video",
+            ),
+            (
+                "e7dcbbde-d58f-4354-ad36-b684b5c236f3",
+                "flux2_klein9b.text_to_image",
+                1,
+                "sha256:2e94d609c2db43e883da19fb0c73faa1bef7f3459c916760079f7cedd212c6b3",
+                "text_to_image",
+                "image",
+            ),
+            (
+                "a7489e73-3bb9-4bb9-888f-fa592c8f4430",
+                "flux2_klein9b.two_image_to_image",
+                1,
+                "sha256:d756bc62e593edd29f3c2c909f3c92fd22d10cb2fb44a2b51bdd93afdb605ed8",
+                "image_to_image",
+                "image",
+            ),
+            (
+                "34e57585-95a3-4bb6-b3de-fca5dd924ba6",
+                "wan2214b_turbo.text_to_video",
+                2,
+                "sha256:4556b1e1b1ae9483ce25f2a90b45f0a3b709bff6e46b34b0b835507f81ef4f8e",
+                "text_to_video",
+                "video",
+            ),
+            (
+                "aac35e26-08e7-400b-bf9b-dc389809ddd5",
+                "wan2214b_turbo.image_to_video",
+                2,
+                "sha256:8c2c935669909fa6e010369137025cbffff321e4789b2966a31d761303d48426",
+                "image_to_video",
+                "video",
+            ),
+            (
+                "d0c202bf-7dd5-4df8-b116-f7633dc94cfe",
+                "wan2214b_turbo.first_last_frame_to_video",
+                2,
+                "sha256:9cf28f66f4a51f1631f4f527d26081bf72ba9644d453b1e6f65b34acbcf5601a",
+                "first_frame_last_frame_video",
+                "video",
+            ),
+        ];
+        let tools: Vec<Value> = identities
+            .iter()
+            .map(|(id, key, revision, hash, workflow, output)| {
+                json!({
+                    "id": id,
+                    "key": key,
+                    "schema_revision": revision,
+                    "schema_hash": hash,
+                    "name": key,
+                    "workflow_kind": workflow,
+                    "output": { "type": output },
+                    "inputs": [],
+                    "available": true
+                })
+            })
+            .collect();
+        let catalog: EngineCatalog = serde_json::from_value(json!({
+            "protocol_version": "1.0",
+            "engine_version": "0.1.0",
+            "tools": tools
+        }))
+        .expect("catalog identities");
+        let providers = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
+            .expect("providers");
+        assert_eq!(providers.len(), identities.len());
+        for (provider, (id, key, revision, hash, _, _)) in providers.iter().zip(identities.iter()) {
+            assert_eq!(provider.id, Uuid::parse_str(id).expect("id"));
+            assert!(matches!(
+                &provider.connection,
+                ProviderConnection::LatentSlateEngine {
+                    tool_key,
+                    schema_revision,
+                    schema_hash,
+                    ..
+                } if tool_key == key
+                    && schema_revision == revision
+                    && schema_hash == hash
+            ));
+        }
     }
 
     #[test]
@@ -1877,6 +2059,7 @@ mod tests {
         let entries = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
             .expect("providers");
         assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|provider| provider.timing.is_none()));
 
         let text = &entries[0];
         assert_eq!(text.name, "Text to Image");

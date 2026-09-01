@@ -21,24 +21,48 @@ pub struct ProviderOutput {
     pub extension: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProviderProgress {
-    pub overall: Option<f32>,
-    pub node: Option<f32>,
+    pub overall: Option<ProviderProgressLane>,
+    pub stage: Option<ProviderProgressStage>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderProgressLane {
+    pub label: String,
+    pub progress: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderProgressStage {
+    pub label: String,
+    pub progress: Option<f32>,
+    pub detail: Option<String>,
 }
 
 impl ProviderProgress {
     pub fn overall(value: f32) -> Self {
+        Self::labeled_overall("Overall", value)
+    }
+
+    pub fn labeled_overall(label: impl Into<String>, value: f32) -> Self {
         Self {
-            overall: Some(value),
-            node: None,
+            overall: Some(ProviderProgressLane {
+                label: label.into(),
+                progress: value,
+            }),
+            stage: None,
         }
     }
 
-    pub fn node(value: f32) -> Self {
+    pub fn stage(label: impl Into<String>, progress: Option<f32>, detail: Option<String>) -> Self {
         Self {
             overall: None,
-            node: Some(value),
+            stage: Some(ProviderProgressStage {
+                label: label.into(),
+                progress,
+                detail,
+            }),
         }
     }
 }

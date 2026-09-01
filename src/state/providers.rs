@@ -120,6 +120,29 @@ pub struct CanvasContract {
     pub max_aspect: Option<f64>,
 }
 
+/// Additive output-timing metadata published by a provider catalog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<ProviderFpsTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<ProviderDurationTiming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderFpsTiming {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDurationTiming {
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+}
+
 /// Input types supported by provider schemas.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -236,6 +259,9 @@ pub struct ProviderEntry {
     /// Exact width/height grid published by LatentSlate Engine, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<CanvasContract>,
+    /// Output timing is presentation metadata, not part of request-schema identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<ProviderTiming>,
     pub connection: ProviderConnection,
 }
 
@@ -254,6 +280,7 @@ impl ProviderEntry {
             timeline_bridge: None,
             inputs: Vec::new(),
             canvas: None,
+            timing: None,
             connection,
         }
     }

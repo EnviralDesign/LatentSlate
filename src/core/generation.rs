@@ -21,8 +21,8 @@ use crate::core::timeline_bridge::{
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
     Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, MediaBindingSpec, Project,
-    ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType, ResolvedMediaInput,
-    SourceFrameReference,
+    ProviderConnection, ProviderDurationTiming, ProviderEntry, ProviderInputField,
+    ProviderInputType, ResolvedMediaInput, SourceFrameReference,
 };
 
 #[derive(Debug, Clone)]
@@ -34,6 +34,464 @@ pub struct ResolvedInputs {
     pub input_errors: Vec<String>,
     pub media_bindings_snapshot: HashMap<String, MediaBindingSpec>,
     pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationControlSection {
+    Provider,
+    Variation,
+    Canvas,
+    Timing,
+    Inputs,
+    Media,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerationPreflightIssue {
+    pub section: GenerationControlSection,
+    pub message: String,
+}
+
+pub struct GenerationControlInputs<'a> {
+    pub variation: Vec<&'a ProviderInputField>,
+    pub timing: Vec<&'a ProviderInputField>,
+    pub normal: Vec<&'a ProviderInputField>,
+    pub advanced: Vec<&'a ProviderInputField>,
+}
+
+/// Shared semantic grouping for the two generation-control surfaces.
+pub fn generation_control_inputs(provider: &ProviderEntry) -> GenerationControlInputs<'_> {
+    let dimensions = crate::core::canvas::dimension_pair(provider)
+        .map(|(width, height)| (width.name.as_str(), height.name.as_str()));
+    let mut result = GenerationControlInputs {
+        variation: Vec::new(),
+        timing: Vec::new(),
+        normal: Vec::new(),
+        advanced: Vec::new(),
+    };
+    for input in &provider.inputs {
+        if dimensions.is_some_and(|(width, height)| input.name == width || input.name == height) {
+            continue;
+        }
+        if input.role == Some(InputRole::Seed) {
+            result.variation.push(input);
+        } else if is_timing_role(input.role) {
+            result.timing.push(input);
+        } else if input.ui.as_ref().is_some_and(|ui| ui.advanced) {
+            result.advanced.push(input);
+        } else {
+            result.normal.push(input);
+        }
+    }
+    result
+}
+
+pub fn is_timing_role(role: Option<InputRole>) -> bool {
+    matches!(
+        role,
+        Some(InputRole::DurationSeconds | InputRole::Fps | InputRole::FrameCount)
+    )
+}
+
+pub fn provider_fixed_fps(provider: &ProviderEntry) -> Option<f64> {
+    let fps = provider.timing.as_ref()?.fps.as_ref()?;
+    (fps.mode == "fixed")
+        .then_some(fps.value?)
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+pub fn provider_duration_timing(provider: &ProviderEntry) -> Option<ProviderDurationTiming> {
+    if let Some(duration) = provider
+        .timing
+        .as_ref()
+        .and_then(|timing| timing.duration_seconds)
+    {
+        return Some(duration);
+    }
+    let input = provider
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(InputRole::DurationSeconds))?;
+    let ui = input.ui.as_ref()?;
+    Some(ProviderDurationTiming {
+        min: ui.min?,
+        max: ui.max?,
+        step: ui.step?,
+    })
+}
+
+pub fn delivered_frame_count(duration_seconds: f64, fps: f64) -> Option<u32> {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 || !fps.is_finite() || fps <= 0.0 {
+        return None;
+    }
+    let frames = (duration_seconds * fps).round();
+    (frames >= 1.0 && frames <= u32::MAX as f64).then_some(frames as u32)
+}
+
+pub fn reconcile_video_timing_for_provider(
+    duration_seconds: f64,
+    current_fps: f64,
+    provider: &ProviderEntry,
+) -> (f64, f64, u32) {
+    let fps = provider_fixed_fps(provider).unwrap_or(current_fps.max(1.0));
+    let frame_count = delivered_frame_count(duration_seconds, fps).unwrap_or(1);
+    (duration_seconds, fps, frame_count)
+}
+
+/// Preserve shared creative-role literals while retiring inputs the new provider does not own.
+pub fn reconcile_provider_switch_inputs(
+    inputs: &mut HashMap<String, InputValue>,
+    previous: Option<&ProviderEntry>,
+    next: &ProviderEntry,
+) {
+    let preserved: HashMap<InputRole, InputValue> = previous
+        .into_iter()
+        .flat_map(|provider| provider.inputs.iter())
+        .filter_map(|input| {
+            let role = input.role?;
+            matches!(
+                role,
+                InputRole::Width | InputRole::Height | InputRole::DurationSeconds | InputRole::Seed
+            )
+            .then(|| inputs.get(&input.name).cloned().map(|value| (role, value)))?
+        })
+        .collect();
+    let names: HashSet<&str> = next
+        .inputs
+        .iter()
+        .map(|input| input.name.as_str())
+        .collect();
+    inputs.retain(|name, _| names.contains(name.as_str()));
+    for input in &next.inputs {
+        let Some(role) = input.role else {
+            continue;
+        };
+        if inputs.contains_key(&input.name) {
+            continue;
+        }
+        if let Some(value) = preserved.get(&role) {
+            inputs.insert(input.name.clone(), value.clone());
+        }
+    }
+}
+
+const WAN_REV2_IDS: [&str; 3] = [
+    "34e57585-95a3-4bb6-b3de-fca5dd924ba6",
+    "aac35e26-08e7-400b-bf9b-dc389809ddd5",
+    "d0c202bf-7dd5-4df8-b116-f7633dc94cfe",
+];
+
+/// Bounded migration for the one public Wan schema evolution.
+pub fn migrate_wan_rev1_frame_count(
+    config: &mut GenerativeConfig,
+    provider: &ProviderEntry,
+    creative_duration: Option<f64>,
+) -> bool {
+    migrate_wan_rev1_frame_count_inputs(&mut config.inputs, provider, creative_duration)
+}
+
+pub fn migrate_wan_rev1_frame_count_inputs(
+    inputs: &mut HashMap<String, InputValue>,
+    provider: &ProviderEntry,
+    creative_duration: Option<f64>,
+) -> bool {
+    let ProviderConnection::LatentSlateEngine {
+        schema_revision,
+        tool_key,
+        ..
+    } = &provider.connection
+    else {
+        return false;
+    };
+    if *schema_revision != 2
+        || !tool_key.starts_with("wan2214b_turbo.")
+        || !WAN_REV2_IDS.iter().any(|id| provider.id.to_string() == *id)
+    {
+        return false;
+    }
+    let Some(retired) = inputs.remove("frame_count") else {
+        return false;
+    };
+    let duration_input = provider
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(InputRole::DurationSeconds));
+    if let Some(duration_input) = duration_input {
+        if !inputs.contains_key(&duration_input.name) {
+            let old_frame_count = match retired {
+                InputValue::Literal { value } => crate::state::input_value_as_f64(&value),
+                _ => None,
+            };
+            let duration = creative_duration
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .or_else(|| old_frame_count.map(|frames| (frames - 1.0) / 16.0));
+            if let Some(duration) = duration.and_then(serde_json::Number::from_f64) {
+                inputs.insert(
+                    duration_input.name.clone(),
+                    InputValue::Literal {
+                        value: Value::Number(duration),
+                    },
+                );
+            }
+        }
+    }
+    true
+}
+
+/// Pure, non-materializing validation shared by both UIs and enqueue.
+pub fn preflight_provider_config(
+    project: &Project,
+    target_asset_id: Option<Uuid>,
+    context_clip_id: Option<Uuid>,
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
+) -> Vec<GenerationPreflightIssue> {
+    let mut config = config.clone();
+    migrate_legacy_size_input(&mut config, provider);
+    let source_dimensions = has_missing_dimension(provider, &config)
+        .then(|| image_to_image_source_dimensions(project, context_clip_id, provider, &config))
+        .flatten();
+    let mut values = HashMap::new();
+    let mut issues = Vec::new();
+
+    for input in &provider.inputs {
+        if matches!(
+            input.input_type,
+            ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio
+        ) {
+            let bridge_role = provider_is_timeline_bridge(provider)
+                && matches!(
+                    input.role,
+                    Some(InputRole::LeftVideo | InputRole::RightVideo)
+                );
+            let valid = if bridge_role {
+                asset_input_value(project, context_clip_id, provider, &config, input)
+                    .and_then(|value| asset_ref_path(project, &value, input, provider, &config))
+                    .is_some()
+            } else if let Some(spec) = lookup_media_binding(&config, input, project) {
+                resolve_media_binding(
+                    MediaResolveContext {
+                        project,
+                        target_asset_id,
+                        context_clip_id,
+                        field: input,
+                        provider: Some(provider),
+                        config: Some(&config),
+                    },
+                    &spec,
+                )
+                .is_ok()
+            } else {
+                false
+            };
+            if input.required && !valid {
+                issues.push(GenerationPreflightIssue {
+                    section: GenerationControlSection::Media,
+                    message: format!("{}: choose a source.", input.label),
+                });
+            }
+            continue;
+        }
+
+        let mut value =
+            effective_dimension_input_value(project, &config, provider, input, source_dimensions)
+                .or_else(|| literal_input_value(&config, &input.name))
+                .or_else(|| input.default.clone());
+        if value.is_none()
+            && matches!(
+                input.input_type,
+                ProviderInputType::Integer | ProviderInputType::Number
+            )
+        {
+            value = infer_frame_input_from_reference(project, &config, input);
+        }
+        let Some(value) = value else {
+            if input.required {
+                issues.push(GenerationPreflightIssue {
+                    section: section_for_input(input),
+                    message: format!("{} is required.", input.label),
+                });
+            }
+            continue;
+        };
+        values.insert(input.name.clone(), value.clone());
+        if let Some(message) = validate_simple_input(input, &value) {
+            issues.push(GenerationPreflightIssue {
+                section: section_for_input(input),
+                message,
+            });
+        }
+    }
+
+    if let (Some(canvas), Some((width_input, height_input))) = (
+        canvas_from_provider(provider),
+        crate::core::canvas::dimension_pair(provider),
+    ) {
+        let width = values.get(&width_input.name).and_then(json_dimension);
+        let height = values.get(&height_input.name).and_then(json_dimension);
+        if let (Some(width), Some(height)) = (width, height) {
+            if let Err(message) = validate_canvas(&canvas, width, height) {
+                if has_any_explicit_dimension(provider, &config) {
+                    issues.push(GenerationPreflightIssue {
+                        section: GenerationControlSection::Canvas,
+                        message: sentence_case_validation(message),
+                    });
+                }
+            }
+        }
+    }
+
+    if let Some(duration_contract) = provider_duration_timing(provider) {
+        if let Some(duration_input) = provider
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::DurationSeconds))
+        {
+            if let Some(duration) = values
+                .get(&duration_input.name)
+                .and_then(crate::state::input_value_as_f64)
+            {
+                if duration < duration_contract.min - 1e-9
+                    || duration > duration_contract.max + 1e-9
+                {
+                    issues.push(GenerationPreflightIssue {
+                        section: GenerationControlSection::Timing,
+                        message: format!(
+                            "Duration must be between {} and {} seconds.",
+                            duration_contract.min, duration_contract.max
+                        ),
+                    });
+                } else if !value_uses_step(duration, duration_contract.min, duration_contract.step)
+                {
+                    issues.push(GenerationPreflightIssue {
+                        section: GenerationControlSection::Timing,
+                        message: format!(
+                            "Duration must use {}-second increments.",
+                            duration_contract.step
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    if let Some(fixed_fps) = provider_fixed_fps(provider) {
+        if let Some(fps_input) = provider
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::Fps))
+        {
+            if let Some(fps) = values
+                .get(&fps_input.name)
+                .and_then(crate::state::input_value_as_f64)
+            {
+                if (fps - fixed_fps).abs() > 1e-6 {
+                    issues.push(GenerationPreflightIssue {
+                        section: GenerationControlSection::Timing,
+                        message: format!("FPS is fixed at {fixed_fps}."),
+                    });
+                }
+            }
+        }
+    }
+
+    issues.dedup();
+    issues
+}
+
+fn section_for_input(input: &ProviderInputField) -> GenerationControlSection {
+    match input.role {
+        Some(InputRole::Seed) => GenerationControlSection::Variation,
+        Some(InputRole::Width | InputRole::Height) => GenerationControlSection::Canvas,
+        role if is_timing_role(role) => GenerationControlSection::Timing,
+        _ => GenerationControlSection::Inputs,
+    }
+}
+
+fn validate_simple_input(input: &ProviderInputField, value: &Value) -> Option<String> {
+    let invalid_type = || Some(format!("{} has an invalid value.", input.label));
+    match &input.input_type {
+        ProviderInputType::Text => {
+            let Some(text) = value.as_str() else {
+                return invalid_type();
+            };
+            if input.required && text.trim().is_empty() {
+                return Some(format!("{} is required.", input.label));
+            }
+        }
+        ProviderInputType::Integer => {
+            let Some(number) = value.as_i64().map(|value| value as f64).or_else(|| {
+                value
+                    .as_u64()
+                    .filter(|value| *value <= i64::MAX as u64)
+                    .map(|value| value as f64)
+            }) else {
+                return invalid_type();
+            };
+            return validate_numeric_input(input, number);
+        }
+        ProviderInputType::Number => {
+            let Some(number) = value.as_f64().filter(|value| value.is_finite()) else {
+                return invalid_type();
+            };
+            return validate_numeric_input(input, number);
+        }
+        ProviderInputType::Boolean => {
+            if !value.is_boolean() {
+                return invalid_type();
+            }
+        }
+        ProviderInputType::Enum { options } => {
+            let Some(choice) = value.as_str() else {
+                return invalid_type();
+            };
+            if !options.iter().any(|option| option == choice) {
+                return Some(format!("{} must use a supported choice.", input.label));
+            }
+        }
+        ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {}
+    }
+    None
+}
+
+fn validate_numeric_input(input: &ProviderInputField, value: f64) -> Option<String> {
+    let ui = input.ui.as_ref();
+    if let Some(min) = ui.and_then(|ui| ui.min) {
+        if value < min - 1e-9 {
+            return Some(format!("{} must be at least {min}.", input.label));
+        }
+    }
+    if let Some(max) = ui.and_then(|ui| ui.max) {
+        if value > max + 1e-9 {
+            return Some(format!("{} must be at most {max}.", input.label));
+        }
+    }
+    if let Some(step) = ui.and_then(|ui| ui.step).filter(|step| *step > 0.0) {
+        let origin = ui.and_then(|ui| ui.min).unwrap_or(0.0);
+        if !value_uses_step(value, origin, step) {
+            return Some(format!("{} must use increments of {step}.", input.label));
+        }
+    }
+    None
+}
+
+fn value_uses_step(value: f64, origin: f64, step: f64) -> bool {
+    if !value.is_finite() || !origin.is_finite() || !step.is_finite() || step <= 0.0 {
+        return false;
+    }
+    let units = (value - origin) / step;
+    (units - units.round()).abs() <= 1e-6
+}
+
+fn sentence_case_validation(message: String) -> String {
+    let mut chars = message.chars();
+    match chars.next() {
+        Some(first) => format!(
+            "{}{}.",
+            first.to_uppercase(),
+            chars.as_str().trim_end_matches('.')
+        ),
+        None => message,
+    }
 }
 
 /// Returns every Asset Lab step that depends on `node_id`, either through
@@ -1649,5 +2107,302 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(project.project_path.expect("test root"));
+    }
+
+    fn timed_engine_provider(
+        id: &str,
+        key: &str,
+        fps: f64,
+        duration: ProviderDurationTiming,
+    ) -> ProviderEntry {
+        let mut provider = ProviderEntry::new(
+            "Timed video",
+            ProviderOutputType::Video,
+            ProviderConnection::LatentSlateEngine {
+                base_url: "http://127.0.0.1:8765".to_string(),
+                api_key: None,
+                tool_key: key.to_string(),
+                schema_revision: 2,
+                schema_hash: "sha256:test".to_string(),
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        provider.id = Uuid::parse_str(id).expect("provider id");
+        provider.inputs = vec![
+            ProviderInputField {
+                name: "prompt".to_string(),
+                label: "Prompt".to_string(),
+                description: None,
+                input_type: ProviderInputType::Text,
+                required: true,
+                default: Some(json!("a prompt")),
+                role: None,
+                ui: None,
+            },
+            dimension_input("width", InputRole::Width, 512),
+            dimension_input("height", InputRole::Height, 512),
+            ProviderInputField {
+                name: "duration_seconds".to_string(),
+                label: "Duration".to_string(),
+                description: None,
+                input_type: ProviderInputType::Number,
+                required: true,
+                default: Some(json!(5.0)),
+                role: Some(InputRole::DurationSeconds),
+                ui: Some(crate::state::InputUi {
+                    min: Some(duration.min),
+                    max: Some(duration.max),
+                    step: Some(duration.step),
+                    unit: Some("seconds".to_string()),
+                    ..crate::state::InputUi::default()
+                }),
+            },
+            ProviderInputField {
+                name: "seed".to_string(),
+                label: "Seed".to_string(),
+                description: None,
+                input_type: ProviderInputType::Integer,
+                required: true,
+                default: Some(json!(0)),
+                role: Some(InputRole::Seed),
+                ui: Some(crate::state::InputUi {
+                    advanced: true,
+                    ..crate::state::InputUi::default()
+                }),
+            },
+        ];
+        provider.canvas = Some(CanvasContract {
+            alignment: 16,
+            min_side: 480,
+            max_side: None,
+            max_pixels: Some(921_600),
+            max_aspect: Some(16.0 / 9.0),
+        });
+        provider.timing = Some(crate::state::ProviderTiming {
+            fps: Some(crate::state::ProviderFpsTiming {
+                mode: "fixed".to_string(),
+                value: Some(fps),
+            }),
+            duration_seconds: Some(duration),
+        });
+        provider
+    }
+
+    fn wan_provider() -> ProviderEntry {
+        timed_engine_provider(
+            WAN_REV2_IDS[0],
+            "wan2214b_turbo.text_to_video",
+            16.0,
+            ProviderDurationTiming {
+                min: 1.0,
+                max: 5.0,
+                step: 0.25,
+            },
+        )
+    }
+
+    #[test]
+    fn seed_is_shared_variation_even_when_schema_marks_it_advanced() {
+        let provider = wan_provider();
+        let sections = generation_control_inputs(&provider);
+        assert_eq!(sections.variation.len(), 1);
+        assert_eq!(sections.variation[0].role, Some(InputRole::Seed));
+        assert!(sections
+            .advanced
+            .iter()
+            .all(|input| input.role != Some(InputRole::Seed)));
+    }
+
+    #[test]
+    fn fixed_provider_switches_preserve_duration_and_rederive_display_frames() {
+        let wan = wan_provider();
+        assert_eq!(
+            reconcile_video_timing_for_provider(5.0, 30.0, &wan),
+            (5.0, 16.0, 80)
+        );
+        let ltx = timed_engine_provider(
+            "46bdb57c-3b19-5397-8949-4e20ffe757c9",
+            "ltx23.text_to_video",
+            30.0,
+            ProviderDurationTiming {
+                min: 1.0,
+                max: 10.0,
+                step: 0.5,
+            },
+        );
+        assert_eq!(
+            reconcile_video_timing_for_provider(5.0, 16.0, &ltx),
+            (5.0, 30.0, 150)
+        );
+
+        let mut previous = ltx.clone();
+        let duration_input = previous
+            .inputs
+            .iter_mut()
+            .find(|input| input.role == Some(InputRole::DurationSeconds))
+            .expect("duration input");
+        duration_input.name = "duration".to_string();
+        let mut inputs = HashMap::from([(
+            "duration".to_string(),
+            InputValue::Literal { value: json!(5.0) },
+        )]);
+        reconcile_provider_switch_inputs(&mut inputs, Some(&previous), &wan);
+        assert_eq!(
+            inputs.get("duration_seconds"),
+            Some(&InputValue::Literal { value: json!(5.0) })
+        );
+        assert!(!inputs.contains_key("duration"));
+    }
+
+    #[test]
+    fn illegal_duration_is_preserved_and_reported_by_preflight() {
+        let provider = wan_provider();
+        let mut config = GenerativeConfig {
+            provider_id: Some(provider.id),
+            ..GenerativeConfig::default()
+        };
+        config.inputs.insert(
+            "duration_seconds".to_string(),
+            InputValue::Literal { value: json!(5.25) },
+        );
+        let project = Project::new("preflight");
+        let issues = preflight_provider_config(&project, None, None, &provider, &config);
+        assert_eq!(
+            config.inputs.get("duration_seconds"),
+            Some(&InputValue::Literal { value: json!(5.25) })
+        );
+        assert!(issues.iter().any(|issue| {
+            issue.section == GenerationControlSection::Timing
+                && issue.message.contains("between 1 and 5")
+        }));
+    }
+
+    #[test]
+    fn wan_rev1_frame_count_migrates_to_half_open_duration_only_for_wan() {
+        let provider = wan_provider();
+        let mut config = GenerativeConfig {
+            provider_id: Some(provider.id),
+            ..GenerativeConfig::default()
+        };
+        config.inputs.insert(
+            "frame_count".to_string(),
+            InputValue::Literal { value: json!(81) },
+        );
+        assert!(migrate_wan_rev1_frame_count(&mut config, &provider, None));
+        assert_eq!(
+            config.inputs.get("duration_seconds"),
+            Some(&InputValue::Literal { value: json!(5.0) })
+        );
+        assert_ne!(
+            config.inputs.get("duration_seconds"),
+            Some(&InputValue::Literal {
+                value: json!(5.0625)
+            })
+        );
+        assert!(!config.inputs.contains_key("frame_count"));
+
+        let mut creative = GenerativeConfig::default();
+        creative.inputs.insert(
+            "frame_count".to_string(),
+            InputValue::Literal { value: json!(81) },
+        );
+        assert!(migrate_wan_rev1_frame_count(
+            &mut creative,
+            &provider,
+            Some(4.75)
+        ));
+        assert_eq!(
+            creative.inputs.get("duration_seconds"),
+            Some(&InputValue::Literal { value: json!(4.75) })
+        );
+
+        let mut valid_rev2 = GenerativeConfig {
+            provider_id: Some(provider.id),
+            ..GenerativeConfig::default()
+        };
+        valid_rev2.inputs.insert(
+            "duration_seconds".to_string(),
+            InputValue::Literal { value: json!(4.0) },
+        );
+        valid_rev2.inputs.insert(
+            "frame_count".to_string(),
+            InputValue::Literal { value: json!(81) },
+        );
+        assert!(migrate_wan_rev1_frame_count(
+            &mut valid_rev2,
+            &provider,
+            None
+        ));
+        assert_eq!(
+            valid_rev2.inputs.get("duration_seconds"),
+            Some(&InputValue::Literal { value: json!(4.0) })
+        );
+
+        let unrelated = dimensions_provider();
+        let mut unrelated_config = GenerativeConfig::default();
+        unrelated_config.inputs.insert(
+            "frame_count".to_string(),
+            InputValue::Literal { value: json!(81) },
+        );
+        assert!(!migrate_wan_rev1_frame_count(
+            &mut unrelated_config,
+            &unrelated,
+            None
+        ));
+        assert!(unrelated_config.inputs.contains_key("frame_count"));
+    }
+
+    #[test]
+    fn preflight_reports_canvas_and_clears_when_corrected() {
+        let provider = wan_provider();
+        let project = Project::new("preflight");
+        let mut config = GenerativeConfig {
+            provider_id: Some(provider.id),
+            ..GenerativeConfig::default()
+        };
+        config.inputs.insert(
+            "width".to_string(),
+            InputValue::Literal { value: json!(481) },
+        );
+        config.inputs.insert(
+            "height".to_string(),
+            InputValue::Literal { value: json!(512) },
+        );
+        let invalid = preflight_provider_config(&project, None, None, &provider, &config);
+        assert!(invalid
+            .iter()
+            .any(|issue| issue.section == GenerationControlSection::Canvas));
+        config.inputs.insert(
+            "width".to_string(),
+            InputValue::Literal { value: json!(512) },
+        );
+        let valid = preflight_provider_config(&project, None, None, &provider, &config);
+        assert!(valid
+            .iter()
+            .all(|issue| issue.section != GenerationControlSection::Canvas));
+    }
+
+    #[test]
+    fn attributes_and_asset_lab_configs_share_preflight_results() {
+        let provider = wan_provider();
+        let project = Project::new("shared controls");
+        let mut attributes = GenerativeConfig {
+            provider_id: Some(provider.id),
+            ..GenerativeConfig::default()
+        };
+        attributes.inputs.insert(
+            "duration_seconds".to_string(),
+            InputValue::Literal { value: json!(5.25) },
+        );
+        let mut asset_lab = GenerativeConfig {
+            provider_id: Some(provider.id),
+            ..GenerativeConfig::default()
+        };
+        asset_lab.inputs = attributes.inputs.clone();
+        assert_eq!(
+            preflight_provider_config(&project, None, None, &provider, &attributes),
+            preflight_provider_config(&project, None, None, &provider, &asset_lab)
+        );
     }
 }

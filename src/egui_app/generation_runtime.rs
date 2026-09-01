@@ -1,11 +1,11 @@
 use super::*;
-use crate::state::AssetLabNode;
+use crate::state::{AssetLabNode, GenerationProgressLane, GenerationProgressStage};
 #[derive(Debug)]
 pub(super) enum GenerationEvent {
     Progress {
         job_id: Uuid,
-        overall: Option<f32>,
-        node: Option<f32>,
+        overall: Option<crate::providers::ProviderProgressLane>,
+        stage: Option<crate::providers::ProviderProgressStage>,
     },
     Finished {
         job_id: Uuid,
@@ -121,8 +121,8 @@ impl LatentSlateApp {
         let job = {
             let entry = &mut self.editor.generation_queue[index];
             entry.status = GenerationJobStatus::Running;
-            entry.progress_overall = Some(0.0);
-            entry.progress_node = Some(0.0);
+            entry.progress_overall = None;
+            entry.progress_stage = None;
             entry.error = None;
             entry.version = Some(version.clone());
             entry.clone()
@@ -143,7 +143,7 @@ impl LatentSlateApp {
                     let _ = progress_events.send(GenerationEvent::Progress {
                         job_id: progress_job_id,
                         overall: progress.overall,
-                        node: progress.node,
+                        stage: progress.stage,
                     });
                 }
             });
@@ -160,7 +160,7 @@ impl LatentSlateApp {
             GenerationEvent::Progress {
                 job_id,
                 overall,
-                node,
+                stage,
             } => {
                 if let Some(job) = self
                     .editor
@@ -168,12 +168,22 @@ impl LatentSlateApp {
                     .iter_mut()
                     .find(|job| job.id == job_id)
                 {
-                    if job.status == GenerationJobStatus::Running {
+                    if matches!(
+                        job.status,
+                        GenerationJobStatus::Running | GenerationJobStatus::Canceling
+                    ) {
                         if let Some(overall) = overall {
-                            job.progress_overall = Some(overall.clamp(0.0, 1.0));
+                            job.progress_overall = Some(GenerationProgressLane {
+                                label: overall.label,
+                                progress: overall.progress.clamp(0.0, 1.0),
+                            });
                         }
-                        if let Some(node) = node {
-                            job.progress_node = Some(node.clamp(0.0, 1.0));
+                        if let Some(stage) = stage {
+                            job.progress_stage = Some(GenerationProgressStage {
+                                label: stage.label,
+                                progress: stage.progress.map(|value| value.clamp(0.0, 1.0)),
+                                detail: stage.detail,
+                            });
                         }
                     }
                 }
@@ -236,8 +246,14 @@ impl LatentSlateApp {
                             {
                                 entry.status = GenerationJobStatus::Succeeded;
                                 entry.version = Some(output.version.clone());
-                                entry.progress_overall = Some(1.0);
-                                entry.progress_node = Some(1.0);
+                                entry.progress_overall = Some(GenerationProgressLane {
+                                    label: entry
+                                        .progress_overall
+                                        .as_ref()
+                                        .map(|lane| lane.label.clone())
+                                        .unwrap_or_else(|| "Overall".to_string()),
+                                    progress: 1.0,
+                                });
                                 entry.error = None;
                             }
                             self.finish_generation_success(job.clone(), output);
@@ -268,7 +284,7 @@ impl LatentSlateApp {
                         {
                             entry.status = GenerationJobStatus::Failed;
                             entry.progress_overall = None;
-                            entry.progress_node = None;
+                            entry.progress_stage = None;
                             entry.error = Some(technical_detail);
                         }
                         let label = job_snapshot
@@ -303,7 +319,7 @@ impl LatentSlateApp {
         {
             entry.status = status;
             entry.progress_overall = None;
-            entry.progress_node = None;
+            entry.progress_stage = None;
             entry.error = Some(message.clone());
         }
         self.editor.status = if status == GenerationJobStatus::Failed {
@@ -485,7 +501,9 @@ impl LatentSlateApp {
                 GenerationJobStatus::Running => {
                     let pct = job
                         .progress_overall
-                        .or(job.progress_node)
+                        .as_ref()
+                        .map(|lane| lane.progress)
+                        .or_else(|| job.progress_stage.as_ref().and_then(|stage| stage.progress))
                         .map(|value| format!(" {:.0}%", value * 100.0))
                         .unwrap_or_default();
                     format!("Generating{pct}")
@@ -528,6 +546,21 @@ impl LatentSlateApp {
         }
         if provider.output_type == ProviderOutputType::Audio {
             return Err("Audio generation is not supported in the queue yet.".to_string());
+        }
+
+        let preflight = crate::core::generation::preflight_provider_config(
+            &self.editor.project,
+            Some(asset_id),
+            context_clip_id,
+            &provider,
+            &config_snapshot,
+        );
+        if !preflight.is_empty() {
+            return Err(preflight
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect::<Vec<_>>()
+                .join("\n"));
         }
 
         let resolved = resolve_provider_inputs(
@@ -708,7 +741,7 @@ impl LatentSlateApp {
                 created_at: chrono::Utc::now(),
                 status: GenerationJobStatus::Queued,
                 progress_overall: None,
-                progress_node: None,
+                progress_stage: None,
                 attempts: 0,
                 next_attempt_at: None,
                 provider: provider.clone(),
@@ -808,7 +841,7 @@ fn request_generation_cancellation(
         GenerationJobStatus::Canceled
     };
     job.progress_overall = None;
-    job.progress_node = None;
+    job.progress_stage = None;
     job.error = Some(if was_running {
         "Canceling; waiting for provider to stop or finish.".to_string()
     } else {
@@ -878,8 +911,15 @@ mod cancellation_tests {
             id: Uuid::new_v4(),
             created_at: chrono::Utc::now(),
             status,
-            progress_overall: Some(0.5),
-            progress_node: Some(0.5),
+            progress_overall: Some(GenerationProgressLane {
+                label: "Overall".to_string(),
+                progress: 0.5,
+            }),
+            progress_stage: Some(GenerationProgressStage {
+                label: "Sampling".to_string(),
+                progress: Some(0.5),
+                detail: Some("Step 2 of 4".to_string()),
+            }),
             attempts: 0,
             next_attempt_at: None,
             provider,

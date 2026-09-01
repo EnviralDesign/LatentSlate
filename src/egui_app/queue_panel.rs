@@ -228,13 +228,11 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
 
     match job.status {
         GenerationJobStatus::Running => {
-            let workflow = job.progress_overall.unwrap_or(0.0).clamp(0.0, 1.0);
-            let node = job.progress_node.unwrap_or(0.0).clamp(0.0, 1.0);
             let progress_rect = Rect::from_min_max(
                 Pos2::new(content.left(), content.top() + 44.0),
                 Pos2::new(content.right() - 60.0, content.bottom()),
             );
-            queue_progress_rows(ui, progress_rect, workflow, node);
+            queue_progress_rows(ui, progress_rect, job);
         }
         GenerationJobStatus::Canceling => {
             let cancel_rect = Rect::from_min_size(
@@ -309,25 +307,63 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
     cancel_clicked
 }
 
-fn queue_progress_rows(ui: &mut Ui, rect: Rect, workflow: f32, node: f32) {
+fn queue_progress_rows(ui: &mut Ui, rect: Rect, job: &GenerationJob) {
     let row_h = 26.0;
-    queue_progress_row(
-        ui,
-        Rect::from_min_size(rect.min, Vec2::new(rect.width(), row_h)),
-        "Workflow",
-        workflow,
-        kit::PRIMARY,
-    );
-    queue_progress_row(
-        ui,
-        Rect::from_min_size(
-            Pos2::new(rect.left(), rect.top() + row_h),
+    let mut row = 0usize;
+    if let Some(overall) = job.progress_overall.as_ref() {
+        queue_progress_row(
+            ui,
+            Rect::from_min_size(
+                Pos2::new(rect.left(), rect.top() + row as f32 * row_h),
+                Vec2::new(rect.width(), row_h),
+            ),
+            &overall.label,
+            overall.progress,
+            kit::PRIMARY,
+        );
+        row += 1;
+    }
+    if let Some(stage) = job.progress_stage.as_ref() {
+        let stage_rect = Rect::from_min_size(
+            Pos2::new(rect.left(), rect.top() + row as f32 * row_h),
             Vec2::new(rect.width(), row_h),
-        ),
-        "Node",
-        node,
-        kit::MARKER,
-    );
+        );
+        if let Some(progress) = stage.progress {
+            let label = stage
+                .detail
+                .as_deref()
+                .map(|detail| format!("{} · {detail}", stage.label))
+                .unwrap_or_else(|| stage.label.clone());
+            queue_progress_row(ui, stage_rect, &label, progress, kit::MARKER);
+        } else {
+            queue_running_detail(ui, stage_rect, &stage.label, stage.detail.as_deref());
+        }
+        row += 1;
+    }
+    if row == 0 {
+        queue_running_detail(ui, rect, "Running…", None);
+    }
+}
+
+#[cfg(test)]
+fn queue_determinate_lane_count(job: &GenerationJob) -> usize {
+    usize::from(job.progress_overall.is_some())
+        + usize::from(
+            job.progress_stage
+                .as_ref()
+                .is_some_and(|stage| stage.progress.is_some()),
+        )
+}
+
+fn queue_running_detail(ui: &mut Ui, rect: Rect, label: &str, detail: Option<&str>) {
+    queue_clipped_label(ui, rect, label, kit::TEXT_MUTED, 10.0, false);
+    if let Some(detail) = detail {
+        let detail_rect = Rect::from_min_size(
+            Pos2::new(rect.left(), rect.top() + 14.0),
+            Vec2::new(rect.width(), 12.0),
+        );
+        queue_clipped_label(ui, detail_rect, detail, kit::TEXT_DIM, 8.5, false);
+    }
 }
 
 fn queue_progress_row(ui: &mut Ui, rect: Rect, label: &str, progress: f32, color: Color32) {
@@ -446,7 +482,7 @@ mod operation_mapping_tests {
             created_at: Utc::now(),
             status,
             progress_overall: None,
-            progress_node: None,
+            progress_stage: None,
             attempts: 0,
             next_attempt_at: None,
             provider: crate::state::ProviderEntry::new(
@@ -511,6 +547,23 @@ mod operation_mapping_tests {
             assert_eq!(presentation.phase, phase);
             assert_eq!(presentation.severity, severity);
         }
+    }
+
+    #[test]
+    fn running_jobs_render_only_progress_that_is_known() {
+        let mut running = job(GenerationJobStatus::Running, None);
+        assert_eq!(queue_determinate_lane_count(&running), 0);
+        running.progress_overall = Some(crate::state::GenerationProgressLane {
+            label: "Overall".to_string(),
+            progress: 0.4,
+        });
+        assert_eq!(queue_determinate_lane_count(&running), 1);
+        running.progress_stage = Some(crate::state::GenerationProgressStage {
+            label: "Sampling".to_string(),
+            progress: Some(0.5),
+            detail: Some("Step 2 of 4".to_string()),
+        });
+        assert_eq!(queue_determinate_lane_count(&running), 2);
     }
 
     #[test]

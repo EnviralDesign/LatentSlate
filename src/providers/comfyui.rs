@@ -651,7 +651,10 @@ async fn listen_progress_ws(
                             continue;
                         }
                     }
-                    if progress_tx.send(ProviderProgress::node(ratio)).is_err() {
+                    if progress_tx
+                        .send(ProviderProgress::stage("Node", Some(ratio), None))
+                        .is_err()
+                    {
                         break;
                     }
                     last_node = Some(ratio);
@@ -664,7 +667,10 @@ async fn listen_progress_ws(
                             continue;
                         }
                     }
-                    if progress_tx.send(ProviderProgress::overall(ratio)).is_err() {
+                    if progress_tx
+                        .send(ProviderProgress::labeled_overall("Workflow", ratio))
+                        .is_err()
+                    {
                         break;
                     }
                     last_overall = Some(ratio);
@@ -1050,5 +1056,15 @@ mod tests {
         });
 
         assert!(extract_history_error(&payload, "abc").is_none());
+    }
+
+    #[test]
+    fn comfy_progress_keeps_workflow_and_node_semantics() {
+        let workflow = ProviderProgress::labeled_overall("Workflow", 0.63);
+        let node = ProviderProgress::stage("Node", Some(0.42), None);
+        assert_eq!(workflow.overall.expect("workflow").label, "Workflow");
+        let node = node.stage.expect("node");
+        assert_eq!(node.label, "Node");
+        assert_eq!(node.progress, Some(0.42));
     }
 }

@@ -60,7 +60,30 @@ impl LatentSlateApp {
         } else {
             None
         };
+        let header_preflight_error =
+            header_generate_target
+                .as_ref()
+                .and_then(|(asset_id, context_clip_id)| {
+                    let config = self.editor.project.generative_config(*asset_id)?;
+                    let provider = config.provider_id.and_then(|provider_id| {
+                        self.editor
+                            .provider_entries
+                            .iter()
+                            .find(|provider| provider.id == provider_id)
+                    })?;
+                    crate::core::generation::preflight_provider_config(
+                        &self.editor.project,
+                        Some(*asset_id),
+                        *context_clip_id,
+                        provider,
+                        config,
+                    )
+                    .into_iter()
+                    .next()
+                    .map(|issue| issue.message)
+                });
         let header_can_generate = !self.provider_resource_release_in_flight
+            && header_preflight_error.is_none()
             && header_generate_target
                 .as_ref()
                 .is_some_and(|(asset_id, _)| {
@@ -95,9 +118,9 @@ impl LatentSlateApp {
                 if header_generate_target.is_some() {
                     ui.add_enabled_ui(header_can_generate, |ui| {
                         if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H)
-                            .on_hover_text(
+                            .on_hover_text(header_preflight_error.as_deref().unwrap_or(
                                 "Generate with the current settings. Ctrl+Enter works while editing Attributes.",
-                            )
+                            ))
                             .clicked()
                         {
                             header_generate_clicked = true;
@@ -2178,7 +2201,7 @@ impl LatentSlateApp {
             }
 
             ui.add_space(kit::ACTION_GAP);
-            kit::field_label(ui, "Variations");
+            kit::field_label(ui, "Batch");
             ui.add_space(kit::FORM_ROW_GAP);
             if inspector_drag_i64(
                 ui,
@@ -2248,6 +2271,26 @@ impl LatentSlateApp {
             selected_provider.clone(),
             &config_snapshot,
         ));
+        if let Some(provider) = selected_provider.as_ref() {
+            let issues = crate::core::generation::preflight_provider_config(
+                &self.editor.project,
+                Some(asset_id),
+                context_clip_id,
+                provider,
+                &config_snapshot,
+            );
+            if !issues.is_empty() {
+                ui.add_space(kit::FORM_ROW_GAP);
+                inspector_card(ui, "Needs Attention", |ui| {
+                    for (index, issue) in issues.iter().enumerate() {
+                        if index > 0 {
+                            ui.add_space(kit::FIELD_LABEL_GAP);
+                        }
+                        ui.label(RichText::new(&issue.message).color(kit::MARKER).size(11.0));
+                    }
+                });
+            }
+        }
 
         let mut config_dirty = false;
         let mut preview_dirty = false;
@@ -2305,11 +2348,41 @@ impl LatentSlateApp {
                 .project
                 .set_generative_provider_id(asset_id, next_provider_id);
             if let Some(provider) = next_provider {
+                let creative_duration = generative_video_timing(&self.editor.project, asset_id)
+                    .map(|(duration, _, _)| duration);
+                if output_type == ProviderOutputType::Video {
+                    if let Some((duration, fps, _)) =
+                        generative_video_timing(&self.editor.project, asset_id)
+                    {
+                        let (_, next_fps, next_frames) =
+                            crate::core::generation::reconcile_video_timing_for_provider(
+                                duration, fps, provider,
+                            );
+                        self.editor.project.set_generative_video_timing(
+                            asset_id,
+                            next_fps,
+                            next_frames,
+                        );
+                    }
+                }
                 self.editor
                     .project
                     .update_generative_config(asset_id, |config| {
+                        crate::core::generation::reconcile_provider_switch_inputs(
+                            &mut config.inputs,
+                            selected_provider.as_ref(),
+                            provider,
+                        );
                         migrate_legacy_size_input(config, provider);
+                        crate::core::generation::migrate_wan_rev1_frame_count(
+                            config,
+                            provider,
+                            creative_duration,
+                        );
                     });
+                if output_type == ProviderOutputType::Video {
+                    self.sync_generative_video_timing_inputs(asset_id);
+                }
             }
             self.apply_timeline_bridge_provider_change(asset_id, context_clip_id, next_provider);
             config_dirty = true;
@@ -2409,6 +2482,14 @@ impl LatentSlateApp {
         }
 
         inspector_card(ui, "Output", |ui| {
+            if selected_provider
+                .as_ref()
+                .and_then(crate::core::canvas::dimension_pair)
+                .is_some()
+            {
+                kit::field_label(ui, "Canvas");
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
             let drew_canvas = selected_provider.as_ref().is_some_and(|provider| {
                 self.provider_canvas_controls(ui, asset_id, provider, config_snapshot, &mut updates)
             });
@@ -2523,8 +2604,9 @@ impl LatentSlateApp {
             return;
         };
         let bounds = provider_duration_bounds(selected_provider);
+        let fixed_fps = selected_provider.and_then(crate::core::generation::provider_fixed_fps);
         let mut next_duration = duration;
-        let mut next_fps = fps;
+        let mut next_fps = fixed_fps.unwrap_or(fps);
         let mut next_frame_count = frame_count as i64;
         let mut duration_changed = false;
         let mut fps_changed = false;
@@ -2534,19 +2616,37 @@ impl LatentSlateApp {
             ui,
             "Seconds",
             &mut next_duration,
-            0.05,
+            bounds.step.unwrap_or(0.05),
             ui.available_width(),
         );
         ui.add_space(kit::FORM_ROW_GAP);
-        fps_changed |= inspector_drag_f64(ui, "FPS", &mut next_fps, 1.0, ui.available_width());
-        ui.add_space(kit::FORM_ROW_GAP);
-        frames_changed |= inspector_drag_i64(
-            ui,
-            "Frames",
-            &mut next_frame_count,
-            1.0,
-            ui.available_width(),
-        );
+        if let Some(fixed_fps) = fixed_fps {
+            kit::field_label(ui, "FPS");
+            kit::readonly_value_box(
+                ui,
+                format!("{fixed_fps} (fixed)"),
+                Vec2::new(ui.available_width(), kit::FIELD_H),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::field_label(ui, "Display Frames");
+            kit::readonly_value_box(
+                ui,
+                crate::core::generation::delivered_frame_count(next_duration, fixed_fps)
+                    .unwrap_or(1)
+                    .to_string(),
+                Vec2::new(ui.available_width(), kit::FIELD_H),
+            );
+        } else {
+            fps_changed |= inspector_drag_f64(ui, "FPS", &mut next_fps, 1.0, ui.available_width());
+            ui.add_space(kit::FORM_ROW_GAP);
+            frames_changed |= inspector_drag_i64(
+                ui,
+                "Frames",
+                &mut next_frame_count,
+                1.0,
+                ui.available_width(),
+            );
+        }
         if bounds.min.is_some() || bounds.max.is_some() {
             ui.add_space(kit::FORM_ROW_GAP);
             ui.label(kit::caption(provider_duration_bounds_label(bounds)));
@@ -2602,36 +2702,13 @@ impl LatentSlateApp {
         let Some((_, fps, _)) = generative_video_timing(&self.editor.project, asset_id) else {
             return;
         };
-        let provider = self
-            .editor
-            .project
-            .generative_config(asset_id)
-            .and_then(|config| config.provider_id)
-            .and_then(|provider_id| {
-                self.editor
-                    .provider_entries
-                    .iter()
-                    .find(|provider| provider.id == provider_id)
-            });
-        let target_duration =
-            clamp_provider_duration(clip_duration, provider_duration_bounds(provider));
+        let target_duration = clip_duration.max(1.0 / fps);
         let frame_count = (target_duration.max(1.0 / fps) * fps).round().max(1.0) as u32;
         if self
             .editor
             .project
             .set_generative_video_timing(asset_id, fps, frame_count)
         {
-            if (target_duration - clip_duration).abs() > f64::EPSILON {
-                if let Some(clip) = self
-                    .editor
-                    .project
-                    .clips
-                    .iter_mut()
-                    .find(|clip| clip.id == clip_id)
-                {
-                    clip.duration = target_duration.max(0.1);
-                }
-            }
             self.sync_generative_video_timing_inputs(asset_id);
         }
     }
@@ -2902,39 +2979,47 @@ impl LatentSlateApp {
                 ui.label(kit::caption("No inputs defined."));
                 return;
             }
-            let dimension_names = crate::core::canvas::dimension_pair(&provider)
-                .map(|(width, height)| (width.name.clone(), height.name.clone()));
-            let visible_inputs: Vec<&ProviderInputField> = provider
-                .inputs
-                .iter()
-                .filter(|input| {
-                    let is_dimension =
-                        dimension_names
-                            .as_ref()
-                            .is_some_and(|(width_name, height_name)| {
-                                input.name == *width_name || input.name == *height_name
-                            });
-                    let is_hidden_timing = is_timing_role(input.role)
-                        && !(crate::core::timeline_bridge::provider_is_timeline_bridge(&provider)
-                            && input.role == Some(InputRole::Fps));
-                    !is_dimension && !is_hidden_timing
-                })
-                .collect();
-            let standard_inputs: Vec<&ProviderInputField> = visible_inputs
-                .iter()
-                .copied()
-                .filter(|input| !provider_input_is_advanced(input))
-                .collect();
-            let advanced_inputs: Vec<&ProviderInputField> = visible_inputs
-                .iter()
-                .copied()
-                .filter(|input| provider_input_is_advanced(input))
-                .collect();
+            let sections = crate::core::generation::generation_control_inputs(&provider);
+            let variation_inputs = sections.variation;
+            let mut standard_inputs = sections.normal;
+            if crate::core::timeline_bridge::provider_is_timeline_bridge(&provider) {
+                standard_inputs.extend(
+                    sections
+                        .timing
+                        .iter()
+                        .copied()
+                        .filter(|input| input.role == Some(InputRole::Fps)),
+                );
+            }
+            let advanced_inputs = sections.advanced;
 
             self.media_binding_context_picker(ui, asset_id, context_clip_id);
-            if standard_inputs.is_empty() && advanced_inputs.is_empty() {
+            if variation_inputs.is_empty()
+                && standard_inputs.is_empty()
+                && advanced_inputs.is_empty()
+            {
                 ui.label(kit::caption("No additional inputs for this provider."));
                 return;
+            }
+            if !variation_inputs.is_empty() {
+                kit::field_label(ui, "Variation");
+                ui.add_space(kit::FORM_ROW_GAP);
+                self.provider_input_controls(
+                    ui,
+                    asset_id,
+                    context_clip_id,
+                    &provider,
+                    config_snapshot,
+                    &variation_inputs,
+                    &mut updates,
+                );
+                if !standard_inputs.is_empty() || !advanced_inputs.is_empty() {
+                    ui.add_space(kit::ACTION_GAP);
+                    ui.separator();
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    kit::field_label(ui, "Inputs");
+                    ui.add_space(kit::FORM_ROW_GAP);
+                }
             }
             self.provider_input_controls(
                 ui,
@@ -3835,6 +3920,7 @@ fn generative_video_timing(project: &Project, asset_id: Uuid) -> Option<(f64, f6
 struct ProviderDurationBounds {
     min: Option<f64>,
     max: Option<f64>,
+    step: Option<f64>,
 }
 
 fn provider_duration_bounds(provider: Option<&ProviderEntry>) -> ProviderDurationBounds {
@@ -3847,11 +3933,20 @@ fn provider_duration_bounds(provider: Option<&ProviderEntry>) -> ProviderDuratio
         return ProviderDurationBounds {
             min: None,
             max: None,
+            step: None,
         };
     };
+    if let Some(timing) = provider.and_then(crate::core::generation::provider_duration_timing) {
+        return ProviderDurationBounds {
+            min: Some(timing.min),
+            max: Some(timing.max),
+            step: Some(timing.step),
+        };
+    }
     ProviderDurationBounds {
         min: input.ui.as_ref().and_then(|ui| ui.min),
         max: input.ui.as_ref().and_then(|ui| ui.max),
+        step: input.ui.as_ref().and_then(|ui| ui.step),
     }
 }
 
@@ -3871,7 +3966,9 @@ fn initial_context_video_timing(
     project_fps: f64,
     duration_hint: Option<f64>,
 ) -> (f64, f64, u32) {
-    let fps = provider_numeric_default(provider, InputRole::Fps)
+    let fps = provider
+        .and_then(crate::core::generation::provider_fixed_fps)
+        .or_else(|| provider_numeric_default(provider, InputRole::Fps))
         .unwrap_or_else(|| normalize_generative_video_fps(project_fps))
         .clamp(1.0, 240.0);
     let bounds = provider_duration_bounds(provider);
@@ -3935,7 +4032,7 @@ fn seed_provider_timing_inputs(
 }
 
 fn provider_duration_bounds_label(bounds: ProviderDurationBounds) -> String {
-    match (bounds.min, bounds.max) {
+    let range = match (bounds.min, bounds.max) {
         (Some(min), Some(max)) => format!(
             "Provider duration range {} - {}",
             format_duration(min),
@@ -3944,6 +4041,10 @@ fn provider_duration_bounds_label(bounds: ProviderDurationBounds) -> String {
         (Some(min), None) => format!("Provider minimum duration {}", format_duration(min)),
         (None, Some(max)) => format!("Provider maximum duration {}", format_duration(max)),
         (None, None) => String::new(),
+    };
+    match (range.is_empty(), bounds.step) {
+        (false, Some(step)) => format!("{range} · {step} sec increments"),
+        _ => range,
     }
 }
 
@@ -3969,7 +4070,6 @@ fn provider_timing_role_value(
         | InputRole::RightReplaceFrames
         | InputRole::EdgeBlendFrames => return None,
     };
-    let raw = clamp_provider_input_number(raw, input);
     match input.input_type {
         ProviderInputType::Integer => Some(serde_json::Value::Number((raw.round() as i64).into())),
         ProviderInputType::Number => {
@@ -3977,21 +4077,6 @@ fn provider_timing_role_value(
         }
         _ => None,
     }
-}
-
-pub(super) fn is_timing_role(role: Option<InputRole>) -> bool {
-    matches!(
-        role,
-        Some(InputRole::DurationSeconds | InputRole::Fps | InputRole::FrameCount)
-    )
-}
-
-pub(super) fn provider_input_is_advanced(input: &ProviderInputField) -> bool {
-    input
-        .ui
-        .as_ref()
-        .is_some_and(|presentation| presentation.advanced)
-        || input.role == Some(InputRole::Seed)
 }
 
 fn clamp_provider_input_number(value: f64, input: &ProviderInputField) -> f64 {

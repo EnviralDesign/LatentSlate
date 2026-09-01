@@ -507,12 +507,25 @@ pub struct GenerationSeedAdvance {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GenerationProgressLane {
+    pub label: String,
+    pub progress: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GenerationProgressStage {
+    pub label: String,
+    pub progress: Option<f32>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GenerationJob {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
     pub status: GenerationJobStatus,
-    pub progress_overall: Option<f32>,
-    pub progress_node: Option<f32>,
+    pub progress_overall: Option<GenerationProgressLane>,
+    pub progress_stage: Option<GenerationProgressStage>,
     pub attempts: u8,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub provider: ProviderEntry,

@@ -4286,6 +4286,22 @@ impl LatentSlateApp {
                         )
                 })
                 .map(|job| job.status);
+            let preflight_error = selected_provider.as_ref().and_then(|provider| {
+                let mut preflight_config = GenerativeConfig::default();
+                preflight_config.provider_id = Some(provider.id);
+                preflight_config.inputs = display_node.inputs.clone();
+                preflight_config.media_bindings = display_node.media_bindings.clone();
+                crate::core::generation::preflight_provider_config(
+                    &self.editor.project,
+                    Some(asset.id),
+                    None,
+                    provider,
+                    &preflight_config,
+                )
+                .into_iter()
+                .next()
+                .map(|issue| issue.message)
+            });
             if self.asset_lab.compare.is_some() {
                 self.asset_lab_compare_inspector_summary(ui, asset, config, action);
                 ui.add_space(kit::ACTION_GAP);
@@ -4318,6 +4334,7 @@ impl LatentSlateApp {
                 selected_provider.as_ref(),
                 staged_or_ungenerated,
                 pending_job_status,
+                preflight_error.as_deref(),
                 generate_shortcut_requested,
                 action,
             );
@@ -4396,68 +4413,72 @@ impl LatentSlateApp {
                     if let Some(provider) = selected_provider.as_ref() {
                         let dimension_names = crate::core::canvas::dimension_pair(provider)
                             .map(|(width, height)| (width.name.clone(), height.name.clone()));
-                        let timing_inputs: Vec<&ProviderInputField> = provider
-                            .inputs
-                            .iter()
-                            .filter(|input| super::attributes_panel::is_timing_role(input.role))
+                        let sections = crate::core::generation::generation_control_inputs(provider);
+                        let variation_inputs = sections.variation;
+                        let fixed_fps =
+                            crate::core::generation::provider_fixed_fps(provider).is_some();
+                        let timing_inputs: Vec<&ProviderInputField> = sections
+                            .timing
+                            .into_iter()
+                            .filter(|input| !(fixed_fps && input.role == Some(InputRole::Fps)))
                             .collect();
-                        let is_dimension = |input: &&ProviderInputField| {
-                            dimension_names
-                                .as_ref()
-                                .is_some_and(|(width_name, height_name)| {
-                                    input.name == *width_name || input.name == *height_name
-                                })
-                        };
-                        let standard_inputs: Vec<&ProviderInputField> = provider
-                            .inputs
-                            .iter()
-                            .filter(|input| {
-                                !is_dimension(input)
-                                    && !super::attributes_panel::is_timing_role(input.role)
-                                    && !super::attributes_panel::provider_input_is_advanced(input)
-                            })
-                            .collect();
-                        let advanced_inputs: Vec<&ProviderInputField> = provider
-                            .inputs
-                            .iter()
-                            .filter(|input| {
-                                !is_dimension(input)
-                                    && !super::attributes_panel::is_timing_role(input.role)
-                                    && super::attributes_panel::provider_input_is_advanced(input)
-                            })
-                            .collect();
+                        let standard_inputs = sections.normal;
+                        let advanced_inputs = sections.advanced;
 
-                        if dimension_names.is_some() || !timing_inputs.is_empty() {
+                        if dimension_names.is_some()
+                            || !timing_inputs.is_empty()
+                            || provider.timing.is_some()
+                        {
                             ui.add_space(kit::ACTION_GAP);
                             ui.separator();
                             ui.add_space(kit::FORM_ROW_GAP);
                             kit::field_label(ui, "Output");
                             ui.add_space(kit::FORM_ROW_GAP);
                             if dimension_names.is_some() {
+                                ui.label(kit::caption("Canvas"));
+                                ui.add_space(kit::FORM_ROW_GAP);
                                 self.asset_lab_canvas_field(ui, &display_node, provider, action);
                             }
-                            if !timing_inputs.is_empty() {
+                            if !timing_inputs.is_empty() || provider.timing.is_some() {
                                 if dimension_names.is_some() {
                                     ui.add_space(kit::ACTION_GAP);
                                     ui.separator();
                                     ui.add_space(kit::FORM_ROW_GAP);
-                                    ui.label(kit::caption("Timing"));
-                                    ui.add_space(kit::FORM_ROW_GAP);
                                 }
-                                self.asset_lab_node_input_list(
-                                    ui,
-                                    asset,
-                                    &display_node,
-                                    versions,
-                                    &timing_inputs,
-                                    action,
-                                );
+                                ui.label(kit::caption("Timing"));
+                                ui.add_space(kit::FORM_ROW_GAP);
+                                if !timing_inputs.is_empty() {
+                                    self.asset_lab_node_input_list(
+                                        ui,
+                                        asset,
+                                        &display_node,
+                                        versions,
+                                        &timing_inputs,
+                                        action,
+                                    );
+                                }
+                                self.asset_lab_fixed_timing_summary(ui, &display_node, provider);
                             }
                         }
 
                         ui.add_space(kit::ACTION_GAP);
                         ui.separator();
                         ui.add_space(kit::FORM_ROW_GAP);
+                        if !variation_inputs.is_empty() {
+                            kit::field_label(ui, "Variation");
+                            ui.add_space(kit::FORM_ROW_GAP);
+                            self.asset_lab_node_input_list(
+                                ui,
+                                asset,
+                                &display_node,
+                                versions,
+                                &variation_inputs,
+                                action,
+                            );
+                            ui.add_space(kit::ACTION_GAP);
+                            ui.separator();
+                            ui.add_space(kit::FORM_ROW_GAP);
+                        }
                         kit::field_label(ui, "Inputs");
                         ui.add_space(kit::FORM_ROW_GAP);
                         if standard_inputs.is_empty() {
@@ -4563,6 +4584,48 @@ impl LatentSlateApp {
         }
     }
 
+    fn asset_lab_fixed_timing_summary(
+        &self,
+        ui: &mut Ui,
+        node: &AssetLabNode,
+        provider: &ProviderEntry,
+    ) {
+        let Some(fps) = crate::core::generation::provider_fixed_fps(provider) else {
+            return;
+        };
+        let duration = provider
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::DurationSeconds))
+            .and_then(|input| {
+                node.inputs
+                    .get(&input.name)
+                    .and_then(|value| match value {
+                        InputValue::Literal { value } => input_value_as_f64(value),
+                        _ => None,
+                    })
+                    .or_else(|| input.default.as_ref().and_then(input_value_as_f64))
+            });
+        ui.add_space(kit::FORM_ROW_GAP);
+        kit::field_label(ui, "FPS");
+        kit::readonly_value_box(
+            ui,
+            format!("{fps} (fixed)"),
+            Vec2::new(ui.available_width(), kit::FIELD_H),
+        );
+        if let Some(frames) = duration
+            .and_then(|duration| crate::core::generation::delivered_frame_count(duration, fps))
+        {
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::field_label(ui, "Display Frames");
+            kit::readonly_value_box(
+                ui,
+                frames.to_string(),
+                Vec2::new(ui.available_width(), kit::FIELD_H),
+            );
+        }
+    }
+
     fn asset_lab_run_batch(&self, provider: Option<&ProviderEntry>) -> BatchSettings {
         let has_seed = provider.and_then(resolve_seed_field).is_some();
         BatchSettings {
@@ -4588,6 +4651,7 @@ impl LatentSlateApp {
         provider: Option<&ProviderEntry>,
         variant_ready: bool,
         pending_job_status: Option<GenerationJobStatus>,
+        preflight_error: Option<&str>,
         generate_shortcut_requested: bool,
         action: &mut Option<AssetLabAction>,
     ) {
@@ -4604,6 +4668,7 @@ impl LatentSlateApp {
             && !provider
                 .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
             && provider.is_some_and(provider_is_available_for_generation)
+            && preflight_error.is_none()
             && pending_job_status.is_none();
         let generate_label = pending_job_status
             .map(|status| match status {
@@ -4636,6 +4701,8 @@ impl LatentSlateApp {
                                 "This step already has generation work in progress."
                             } else if !variant_ready {
                                 "Change a setting to stage a variant for generation."
+                            } else if let Some(error) = preflight_error {
+                                error
                             } else {
                                 "Choose an available in-scope provider before generating."
                             };
@@ -4651,6 +4718,10 @@ impl LatentSlateApp {
                         });
                     });
                 });
+                if let Some(error) = preflight_error {
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    ui.label(RichText::new(error).color(kit::MARKER).size(11.0));
+                }
                 ui.add_space(kit::FORM_ROW_GAP);
 
                 let mut batch_count = self
@@ -6182,6 +6253,31 @@ impl LatentSlateApp {
             self.editor.status = "Asset not found.".to_string();
             return;
         };
+        let previous_provider_id = self
+            .asset_lab
+            .draft_source_node_id
+            .filter(|draft_node_id| *draft_node_id == node_id)
+            .and(self.asset_lab.draft_provider_id)
+            .or_else(|| {
+                self.editor
+                    .project
+                    .generative_config(asset_id)
+                    .and_then(|config| {
+                        config
+                            .lab_graph
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == node_id)
+                            .and_then(|node| node.provider_id)
+                    })
+            });
+        let previous_provider = previous_provider_id.and_then(|provider_id| {
+            self.editor
+                .provider_entries
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+        });
         let provider: Option<ProviderEntry> = match provider_id {
             Some(provider_id) => {
                 let Some(provider) = self
@@ -6217,7 +6313,17 @@ impl LatentSlateApp {
         if self.ensure_asset_lab_draft(asset_id, node_id) {
             self.asset_lab.draft_provider_id = provider_id;
             if let Some(provider) = provider.as_ref() {
+                crate::core::generation::reconcile_provider_switch_inputs(
+                    &mut self.asset_lab.draft_inputs,
+                    previous_provider.as_ref(),
+                    provider,
+                );
                 retain_node_inputs_for_provider(&mut self.asset_lab.draft_inputs, provider);
+                crate::core::generation::migrate_wan_rev1_frame_count_inputs(
+                    &mut self.asset_lab.draft_inputs,
+                    provider,
+                    None,
+                );
                 if let Some(version) = self.asset_lab.draft_base_version.as_deref() {
                     fill_missing_asset_lab_media_inputs_from_version(
                         &asset,
@@ -6263,7 +6369,17 @@ impl LatentSlateApp {
                     let node = &mut config.lab_graph.nodes[node_index];
                     node.provider_id = provider_id;
                     if let Some(provider) = provider.as_ref() {
+                        crate::core::generation::reconcile_provider_switch_inputs(
+                            &mut node.inputs,
+                            previous_provider.as_ref(),
+                            provider,
+                        );
                         retain_node_inputs_for_provider(&mut node.inputs, provider);
+                        crate::core::generation::migrate_wan_rev1_frame_count_inputs(
+                            &mut node.inputs,
+                            provider,
+                            None,
+                        );
                         if let Some(version) = source_version.as_deref() {
                             fill_missing_asset_lab_media_inputs_from_version(
                                 &asset,
