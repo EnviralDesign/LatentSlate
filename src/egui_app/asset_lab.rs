@@ -997,6 +997,11 @@ fn asset_lab_input_value_valid_for_field(value: &InputValue, input: &ProviderInp
     match value {
         InputValue::Literal { value } => match &input.input_type {
             ProviderInputType::Text => value.is_string(),
+            ProviderInputType::Number | ProviderInputType::Integer
+                if input.role == Some(InputRole::Seed) =>
+            {
+                input_value_as_u64(value).is_some()
+            }
             ProviderInputType::Number => input_value_as_f64(value).is_some(),
             ProviderInputType::Integer => input_value_as_i64(value).is_some(),
             ProviderInputType::Boolean => input_value_as_bool(value).is_some(),
@@ -1071,9 +1076,9 @@ fn asset_lab_node_represents_version(
         })
 }
 
-fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &str) -> Option<i64> {
+fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &str) -> Option<u64> {
     node.inputs.get(seed_field).and_then(|input| match input {
-        InputValue::Literal { value } => input_value_as_i64(value),
+        InputValue::Literal { value } => input_value_as_u64(value),
         InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
     })
 }
@@ -1124,7 +1129,7 @@ fn asset_lab_seed_preview(
 
     match seed_strategy {
         SeedStrategy::Increment => {
-            let last_seed = seed.saturating_add(batch_count as i64 - 1);
+            let last_seed = increment_seed(seed, batch_count - 1);
             format!("Seeds {seed}-{last_seed}")
         }
         SeedStrategy::Random => format!("{batch_count} random seeds"),
@@ -4947,6 +4952,23 @@ impl LatentSlateApp {
                     });
                 }
             }
+            ProviderInputType::Number if input.role == Some(InputRole::Seed) => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_u64)
+                    .unwrap_or(0);
+                let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
+                let width = ui.available_width();
+                if provider_input_drag_u64(ui, &label, input, &mut value, step, width) {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal {
+                            value: serde_json::Value::Number(value.into()),
+                        },
+                    });
+                }
+            }
             ProviderInputType::Number => {
                 let mut value = current_value
                     .as_ref()
@@ -4964,6 +4986,23 @@ impl LatentSlateApp {
                             },
                         });
                     }
+                }
+            }
+            ProviderInputType::Integer if input.role == Some(InputRole::Seed) => {
+                let mut value = current_value
+                    .as_ref()
+                    .and_then(input_value_as_u64)
+                    .unwrap_or(0);
+                let step = input.ui.as_ref().and_then(|ui| ui.step).unwrap_or(1.0);
+                let width = ui.available_width();
+                if provider_input_drag_u64(ui, &label, input, &mut value, step, width) {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal {
+                            value: serde_json::Value::Number(value.into()),
+                        },
+                    });
                 }
             }
             ProviderInputType::Integer => {

@@ -361,6 +361,13 @@ pub fn input_value_as_i64(value: &serde_json::Value) -> Option<i64> {
         .or_else(|| value.as_f64().map(|v| v.round() as i64))
 }
 
+/// Reads an exact non-negative JSON integer without passing through floating point.
+pub fn input_value_as_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
+}
+
 pub fn input_value_as_f64(value: &serde_json::Value) -> Option<f64> {
     value
         .as_f64()

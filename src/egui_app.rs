@@ -27,9 +27,9 @@ use crate::core::export::{
 };
 use crate::core::generation::{
     asset_source_available_for_provider_input, compatible_asset_for_provider_input,
-    displayed_dimension_input_value, migrate_legacy_size_input, next_version_label,
-    random_seed_i64, resolve_provider_inputs, resolve_seed_field, semantic_reference_slot,
-    update_seed_inputs,
+    displayed_dimension_input_value, increment_seed, migrate_legacy_size_input, next_version_label,
+    random_seed_u64, resolve_provider_inputs, resolve_seed_field, seed_input_value,
+    semantic_reference_slot, update_seed_inputs,
 };
 use crate::core::media::{probe_duration_seconds, probe_video_metadata};
 use crate::core::preview::{
@@ -49,8 +49,8 @@ use crate::providers::ProviderProgress;
 use crate::state::{
     asset_display_name, default_new_generative_video_timing, delete_generative_version_files,
     generation_record_source_inputs, input_value_as_bool, input_value_as_f64, input_value_as_i64,
-    input_value_as_string, parse_version_index, Asset, AssetKind, Clip, ClipBridgeLink,
-    ClipImageMode, ClipTimeMode, ClipTransform, GenerationJob, GenerationJobStatus,
+    input_value_as_string, input_value_as_u64, parse_version_index, Asset, AssetKind, Clip,
+    ClipBridgeLink, ClipImageMode, ClipTimeMode, ClipTransform, GenerationJob, GenerationJobStatus,
     GenerationRecord, GenerationSeedAdvance, GenerativeConfig, InputRole, InputValue, Project,
     ProjectSettings, ProviderConnection, ProviderEntry, ProviderInputField, ProviderInputType,
     ProviderOutputType, ProviderWorkflowKind, SeedStrategy, SourceFrameReference, TrackType,
@@ -1816,6 +1816,26 @@ fn provider_input_drag_i64(
         .and_then(|ui| ui.max)
         .map(|value| value.round() as i64);
     kit::integer_step_drag(ui, value, width, step, min, max)
+}
+
+fn provider_input_drag_u64(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    value: &mut u64,
+    speed: f64,
+    width: f32,
+) -> bool {
+    provider_input_field_label(ui, label, input);
+    let rect = inspector_numeric_rect(ui, width);
+    inspector_numeric_field(ui, rect, |ui, width| {
+        ui.add_sized(
+            [width, INSPECTOR_NUMERIC_H],
+            egui::DragValue::new(value)
+                .speed(speed.max(1.0))
+                .max_decimals(0),
+        )
+    })
 }
 
 fn provider_input_labeled_combo_field<R>(

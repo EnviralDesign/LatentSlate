@@ -409,6 +409,17 @@ fn section_for_input(input: &ProviderInputField) -> GenerationControlSection {
 
 fn validate_simple_input(input: &ProviderInputField, value: &Value) -> Option<String> {
     let invalid_type = || Some(format!("{} has an invalid value.", input.label));
+    if input.role == Some(InputRole::Seed)
+        && matches!(
+            input.input_type,
+            ProviderInputType::Integer | ProviderInputType::Number
+        )
+    {
+        return crate::state::input_value_as_u64(value)
+            .is_none()
+            .then(invalid_type)
+            .flatten();
+    }
     match &input.input_type {
         ProviderInputType::Text => {
             let Some(text) = value.as_str() else {
@@ -1749,11 +1760,11 @@ pub fn update_seed_inputs(
     values: &HashMap<String, Value>,
     snapshot: &HashMap<String, InputValue>,
     seed_field: &str,
-    seed: i64,
+    seed: u64,
 ) -> (HashMap<String, Value>, HashMap<String, InputValue>) {
     let mut values = values.clone();
     let mut snapshot = snapshot.clone();
-    let seed_value = Value::Number(seed.into());
+    let seed_value = seed_input_value(seed);
     values.insert(seed_field.to_string(), seed_value.clone());
     snapshot.insert(
         seed_field.to_string(),
@@ -1762,10 +1773,19 @@ pub fn update_seed_inputs(
     (values, snapshot)
 }
 
-/// Generate a random seed suitable for numeric seed inputs.
-pub fn random_seed_i64() -> i64 {
-    let raw = Uuid::new_v4().as_u128();
-    (raw % i64::MAX as u128) as i64
+/// Converts a seed to its exact unsigned JSON representation.
+pub fn seed_input_value(seed: u64) -> Value {
+    Value::Number(seed.into())
+}
+
+/// Advances a seed for an incrementing batch, saturating at the u64 boundary.
+pub fn increment_seed(seed: u64, offset: u32) -> u64 {
+    seed.saturating_add(u64::from(offset))
+}
+
+/// Generate a random seed using the full unsigned seed representation.
+pub fn random_seed_u64() -> u64 {
+    Uuid::new_v4().as_u128() as u64
 }
 
 fn is_seed_compatible_type(input: &ProviderInputField) -> bool {
@@ -1779,7 +1799,8 @@ fn is_seed_compatible_type(input: &ProviderInputField) -> bool {
 mod tests {
     use super::*;
     use crate::state::{
-        CanvasContract, ProviderConnection, ProviderOutputType, ProviderWorkflowKind,
+        input_value_as_u64, CanvasContract, ProviderConnection, ProviderOutputType,
+        ProviderWorkflowKind,
     };
     use serde_json::json;
 
@@ -2212,6 +2233,116 @@ mod tests {
             .advanced
             .iter()
             .all(|input| input.role != Some(InputRole::Seed)));
+    }
+
+    #[test]
+    fn seed_preflight_and_resolution_preserve_the_full_u64_domain() {
+        let provider = wan_provider();
+        let project = Project::new("seed domain");
+
+        for seed in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+            let mut config = GenerativeConfig {
+                provider_id: Some(provider.id),
+                ..GenerativeConfig::default()
+            };
+            config.inputs.insert(
+                "seed".to_string(),
+                InputValue::Literal {
+                    value: seed_input_value(seed),
+                },
+            );
+
+            assert!(
+                preflight_provider_config(&project, None, None, &provider, &config).is_empty(),
+                "seed {seed} should be valid"
+            );
+            let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+            assert_eq!(
+                resolved.values.get("seed").and_then(input_value_as_u64),
+                Some(seed)
+            );
+            assert_eq!(
+                resolved.snapshot.get("seed"),
+                Some(&InputValue::Literal {
+                    value: seed_input_value(seed),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn seed_preflight_rejects_negative_values() {
+        let provider = wan_provider();
+        let project = Project::new("seed domain");
+        let mut config = GenerativeConfig::default();
+        config
+            .inputs
+            .insert("seed".to_string(), InputValue::Literal { value: json!(-1) });
+
+        assert!(
+            preflight_provider_config(&project, None, None, &provider, &config)
+                .iter()
+                .any(|issue| issue.section == GenerationControlSection::Variation)
+        );
+    }
+
+    #[test]
+    fn non_seed_integers_keep_the_signed_preflight_contract() {
+        let mut provider = dimensions_provider();
+        provider.inputs.push(ProviderInputField {
+            name: "steps".to_string(),
+            label: "Steps".to_string(),
+            description: None,
+            input_type: ProviderInputType::Integer,
+            required: true,
+            default: None,
+            role: None,
+            ui: None,
+        });
+        let project = Project::new("signed integer");
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "steps".to_string(),
+            InputValue::Literal {
+                value: seed_input_value(i64::MAX as u64),
+            },
+        );
+        assert!(preflight_provider_config(&project, None, None, &provider, &config).is_empty());
+
+        config.inputs.insert(
+            "steps".to_string(),
+            InputValue::Literal {
+                value: seed_input_value(i64::MAX as u64 + 1),
+            },
+        );
+        assert!(
+            preflight_provider_config(&project, None, None, &provider, &config)
+                .iter()
+                .any(|issue| issue.section == GenerationControlSection::Inputs)
+        );
+    }
+
+    #[test]
+    fn seed_updates_and_incrementing_batches_saturate_at_u64_max() {
+        let values = HashMap::new();
+        let snapshot = HashMap::new();
+        let (values, snapshot) = update_seed_inputs(&values, &snapshot, "seed", u64::MAX);
+        assert_eq!(
+            values.get("seed").and_then(input_value_as_u64),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            snapshot.get("seed"),
+            Some(&InputValue::Literal {
+                value: seed_input_value(u64::MAX),
+            })
+        );
+        assert_eq!(increment_seed(u64::MAX - 1, 1), u64::MAX);
+        assert_eq!(increment_seed(u64::MAX, 1), u64::MAX);
+        assert_eq!(increment_seed(u64::MAX, u32::MAX), u64::MAX);
+
+        let random = random_seed_u64();
+        assert_eq!(input_value_as_u64(&seed_input_value(random)), Some(random));
     }
 
     #[test]

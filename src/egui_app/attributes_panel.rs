@@ -3143,6 +3143,26 @@ impl LatentSlateApp {
                         ));
                     }
                 }
+                ProviderInputType::Number if input.role == Some(InputRole::Seed) => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_u64)
+                        .unwrap_or(0);
+                    let step = input
+                        .ui
+                        .as_ref()
+                        .and_then(|presentation| presentation.step)
+                        .unwrap_or(1.0);
+                    let width = ui.available_width();
+                    if provider_input_drag_u64(ui, &label, input, &mut value, step, width) {
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::Number(value.into()),
+                            },
+                        ));
+                    }
+                }
                 ProviderInputType::Number => {
                     let mut value = current_value
                         .as_ref()
@@ -3163,6 +3183,26 @@ impl LatentSlateApp {
                                 },
                             ));
                         }
+                    }
+                }
+                ProviderInputType::Integer if input.role == Some(InputRole::Seed) => {
+                    let mut value = current_value
+                        .as_ref()
+                        .and_then(input_value_as_u64)
+                        .unwrap_or(0);
+                    let step = input
+                        .ui
+                        .as_ref()
+                        .and_then(|presentation| presentation.step)
+                        .unwrap_or(1.0);
+                    let width = ui.available_width();
+                    if provider_input_drag_u64(ui, &label, input, &mut value, step, width) {
+                        updates.push((
+                            input.name.clone(),
+                            InputValue::Literal {
+                                value: serde_json::Value::Number(value.into()),
+                            },
+                        ));
                     }
                 }
                 ProviderInputType::Integer => {

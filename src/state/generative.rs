@@ -503,7 +503,7 @@ pub enum GenerationJobStatus {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GenerationSeedAdvance {
     pub field: String,
-    pub next_seed: i64,
+    pub next_seed: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

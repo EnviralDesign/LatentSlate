@@ -340,27 +340,15 @@ impl LatentSlateApp {
             return Ok(());
         }
 
-        let next_seed_value = serde_json::Value::Number(seed_advance.next_seed.into());
         self.editor
             .project
             .update_generative_config(job.asset_id, |config| {
-                let next_input = InputValue::Literal {
-                    value: next_seed_value,
-                };
-                if let Some(node_id) = job.lab_node_id {
-                    if let Some(node) = config
-                        .lab_graph
-                        .nodes
-                        .iter_mut()
-                        .find(|node| node.id == node_id)
-                    {
-                        node.inputs
-                            .insert(seed_advance.field.clone(), next_input.clone());
-                    }
-                }
-                if job.activate_on_success || job.lab_node_id.is_none() {
-                    config.inputs.insert(seed_advance.field.clone(), next_input);
-                }
+                apply_generation_seed_advance(
+                    config,
+                    seed_advance,
+                    job.lab_node_id,
+                    job.activate_on_success,
+                );
             });
 
         self.editor
@@ -595,7 +583,7 @@ impl LatentSlateApp {
         let mut seed_base = seed_field
             .as_ref()
             .and_then(|field| resolved.values.get(field))
-            .and_then(input_value_as_i64);
+            .and_then(input_value_as_u64);
         if let Some(field) = seed_field.as_ref() {
             seed_base = self.reserved_seed_base(asset_id, field, seed_base);
         }
@@ -604,7 +592,7 @@ impl LatentSlateApp {
             && seed_field.is_some()
             && batch.seed_strategy == SeedStrategy::Increment
         {
-            seed_base = Some(random_seed_i64());
+            seed_base = Some(random_seed_u64());
             seed_base_randomized = true;
         }
 
@@ -648,7 +636,7 @@ impl LatentSlateApp {
                         (resolved.values.clone(), resolved.snapshot.clone(), None)
                     }
                     (SeedStrategy::Increment, Some(field)) => {
-                        let seed = seed_base.unwrap_or(0) + index as i64;
+                        let seed = increment_seed(seed_base.unwrap_or(0), index);
                         let (inputs, inputs_snapshot) =
                             update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed);
                         (
@@ -656,12 +644,12 @@ impl LatentSlateApp {
                             inputs_snapshot,
                             Some(GenerationSeedAdvance {
                                 field: field.clone(),
-                                next_seed: seed.saturating_add(1),
+                                next_seed: increment_seed(seed, 1),
                             }),
                         )
                     }
                     (SeedStrategy::Random, Some(field)) => {
-                        let seed = random_seed_i64();
+                        let seed = random_seed_u64();
                         let (inputs, inputs_snapshot) =
                             update_seed_inputs(&resolved.values, &resolved.snapshot, field, seed);
                         (inputs, inputs_snapshot, None)
@@ -792,8 +780,8 @@ impl LatentSlateApp {
         &self,
         asset_id: Uuid,
         seed_field: &str,
-        config_seed_base: Option<i64>,
-    ) -> Option<i64> {
+        config_seed_base: Option<u64>,
+    ) -> Option<u64> {
         self.editor
             .generation_queue
             .iter()
@@ -817,6 +805,31 @@ impl LatentSlateApp {
             .fold(config_seed_base, |base, reserved_next| {
                 Some(base.map_or(reserved_next, |base| base.max(reserved_next)))
             })
+    }
+}
+
+fn apply_generation_seed_advance(
+    config: &mut GenerativeConfig,
+    seed_advance: &GenerationSeedAdvance,
+    lab_node_id: Option<Uuid>,
+    activate_on_success: bool,
+) {
+    let next_input = InputValue::Literal {
+        value: seed_input_value(seed_advance.next_seed),
+    };
+    if let Some(node_id) = lab_node_id {
+        if let Some(node) = config
+            .lab_graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == node_id)
+        {
+            node.inputs
+                .insert(seed_advance.field.clone(), next_input.clone());
+        }
+    }
+    if activate_on_success || lab_node_id.is_none() {
+        config.inputs.insert(seed_advance.field.clone(), next_input);
     }
 }
 
@@ -980,6 +993,31 @@ mod cancellation_tests {
         cleanup_unpublished_output(&unpublished_output.expect("late output"))
             .expect("remove unbound output");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn persisted_seed_advance_keeps_the_exact_unsigned_value() {
+        let mut config = GenerativeConfig::default();
+        let advance = GenerationSeedAdvance {
+            field: "seed".to_string(),
+            next_seed: u64::MAX,
+        };
+
+        apply_generation_seed_advance(&mut config, &advance, None, true);
+
+        assert_eq!(
+            config.inputs.get("seed"),
+            Some(&InputValue::Literal {
+                value: seed_input_value(u64::MAX),
+            })
+        );
+        assert_eq!(
+            config.inputs.get("seed").and_then(|value| match value {
+                InputValue::Literal { value } => input_value_as_u64(value),
+                InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
+            }),
+            Some(u64::MAX)
+        );
     }
 
     #[test]
