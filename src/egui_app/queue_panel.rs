@@ -291,8 +291,11 @@ fn queue_job_card(ui: &mut Ui, job: &GenerationJob) -> bool {
         GenerationJobStatus::Queued | GenerationJobStatus::Running
     ) {
         let cancel_rect = Rect::from_min_size(
-            Pos2::new(content.right() - 52.0, content.bottom() - 20.0),
-            Vec2::new(52.0, 18.0),
+            Pos2::new(
+                content.right() - 52.0,
+                content.bottom() - kit::POPOVER_BUTTON_H,
+            ),
+            Vec2::new(52.0, kit::POPOVER_BUTTON_H),
         );
         let mut cancel_ui = ui.new_child(
             egui::UiBuilder::new()

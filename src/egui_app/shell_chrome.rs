@@ -376,7 +376,13 @@ impl LatentSlateApp {
             self.agent_api_panel(ctx);
         }
         if self.editor.overlays.providers {
+            if !self.providers_modal_was_open {
+                self.prepare_provider_modal_open();
+            }
+            self.providers_modal_was_open = true;
             self.providers_modal(ctx);
+        } else {
+            self.providers_modal_was_open = false;
         }
         if self.editor.overlays.asset_lab {
             self.asset_lab_modal(ctx);

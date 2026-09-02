@@ -12,7 +12,7 @@ use crate::core::media_binding::{frozen_origin_from_plan, MediaBindingError, Med
 use crate::state::{BoundMediaType, MediaBindingSource, MediaBindingSpec, Project};
 
 /// Bump when materializer command/filter behavior changes so cache keys miss.
-pub const MEDIA_MATERIALIZER_REVISION: u32 = 1;
+pub const MEDIA_MATERIALIZER_REVISION: u32 = 2;
 
 pub fn materialize_plan(
     project: &Project,
@@ -368,6 +368,12 @@ fn sanitize_name(value: &str) -> String {
 }
 
 fn temp_sibling(path: &Path) -> PathBuf {
+    if let Some(extension) = path.extension() {
+        let mut temp_extension = std::ffi::OsString::from("tmp.");
+        temp_extension.push(extension);
+        return path.with_extension(temp_extension);
+    }
+
     let mut tmp = path.as_os_str().to_os_string();
     tmp.push(".tmp");
     PathBuf::from(tmp)

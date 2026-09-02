@@ -256,9 +256,18 @@ impl LatentSlateApp {
             self.selected_provider = Some(ProviderModalSelection::Engine(connection.id));
             self.engine_connection_draft =
                 Some(EngineConnectionDraft::from_connection(&connection));
+            self.engine_inspector_tab = self.preferred_engine_inspector_tab(connection.id);
         } else {
             self.selected_provider = None;
             self.engine_connection_draft = None;
+        }
+    }
+
+    pub(super) fn prepare_provider_modal_open(&mut self) {
+        self.ensure_provider_modal_selection();
+        if let Some(ProviderModalSelection::Engine(connection_id)) = self.selected_provider.as_ref()
+        {
+            self.engine_inspector_tab = self.preferred_engine_inspector_tab(*connection_id);
         }
     }
 
@@ -277,6 +286,7 @@ impl LatentSlateApp {
                     .iter()
                     .find(|connection| connection.id == *id)
                     .map(EngineConnectionDraft::from_connection);
+                self.engine_inspector_tab = self.preferred_engine_inspector_tab(*id);
                 self.engine_catalog_search.clear();
             }
             ProviderModalSelection::LocalFile(_) => {
@@ -285,6 +295,22 @@ impl LatentSlateApp {
         }
         self.selected_provider = Some(selection);
         changed
+    }
+
+    fn preferred_engine_inspector_tab(&self, connection_id: Uuid) -> EngineInspectorTab {
+        let has_catalog = self
+            .editor
+            .engine_connections
+            .iter()
+            .find(|connection| connection.id == connection_id)
+            .is_some_and(|connection| {
+                !engine_tools_for_connection(connection, &self.editor.provider_entries).is_empty()
+            });
+        if has_catalog {
+            EngineInspectorTab::Catalog
+        } else {
+            EngineInspectorTab::Connection
+        }
     }
 
     fn persist_engine_connection_draft(&mut self) -> Result<bool, String> {
@@ -396,13 +422,132 @@ impl LatentSlateApp {
             .iter()
             .filter(|provider| provider_is_available_for_generation(provider))
             .count();
+        let catalog_operation = if self.provider_refresh_state.is_in_flight() {
+            kit::OperationPresentation::new(
+                kit::OperationPhase::Running,
+                kit::OperationSeverity::Informational,
+                "Refreshing catalog.",
+            )
+            .detail("Provider tools will update when the refresh completes.")
+        } else {
+            engine_catalog_operation_with_report(connection.enabled, &tools, load_report.as_ref())
+        };
+
+        let mut refresh_clicked = false;
         ui.horizontal(|ui| {
-            ui.label(kit::section_label("Connection"));
+            ui.label(
+                RichText::new(&connection.name)
+                    .color(kit::TEXT)
+                    .strong()
+                    .size(14.0),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if kit::secondary_button(ui, "Refresh", 76.0).clicked() {
+                    refresh_clicked = true;
+                }
+                ui.add_space(kit::FIELD_COMPOUND_GAP);
                 engine_state_badge(ui, state);
+                ui.add_space(kit::FIELD_COMPOUND_GAP);
+                let mut catalog_status_hover = catalog_operation.title.clone();
+                if let Some(detail) = catalog_operation.detail.as_deref() {
+                    catalog_status_hover.push_str("\n");
+                    catalog_status_hover.push_str(detail);
+                }
+                if let Some(detail) = catalog_operation.technical_detail.as_deref() {
+                    catalog_status_hover.push_str("\n\n");
+                    catalog_status_hover.push_str(detail);
+                }
+                kit::operation_status_pill(ui, catalog_operation.phase, catalog_operation.severity)
+                    .on_hover_text(catalog_status_hover);
             });
         });
         ui.add_space(kit::FORM_ROW_GAP);
+
+        ui.horizontal(|ui| {
+            let catalog_label = format!("Catalog ({})", tools.len());
+            if kit::timeline_tool_text_button(
+                ui,
+                &catalog_label,
+                104.0,
+                self.engine_inspector_tab == EngineInspectorTab::Catalog,
+            )
+            .clicked()
+            {
+                self.engine_inspector_tab = EngineInspectorTab::Catalog;
+            }
+            if kit::timeline_tool_text_button(
+                ui,
+                "Connection",
+                104.0,
+                self.engine_inspector_tab == EngineInspectorTab::Connection,
+            )
+            .clicked()
+            {
+                self.engine_inspector_tab = EngineInspectorTab::Connection;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(kit::caption(format!(
+                    "{} discovered  ·  {} available",
+                    tools.len(),
+                    available_count
+                )));
+            });
+        });
+        ui.add_space(kit::ACTION_GAP);
+        ui.separator();
+        ui.add_space(kit::ACTION_GAP);
+
+        let (save_clicked, delete_clicked) = match self.engine_inspector_tab {
+            EngineInspectorTab::Catalog => {
+                self.engine_catalog_tab(ui, connection_id, &tools, state);
+                (false, false)
+            }
+            EngineInspectorTab::Connection => self.engine_connection_tab(
+                ui,
+                connection_id,
+                &connection,
+                &tools,
+                load_report.as_ref(),
+            ),
+        };
+
+        if save_clicked || refresh_clicked {
+            match self.persist_engine_connection_draft() {
+                Ok(changed) => {
+                    if changed {
+                        self.launch_pending_provider_refresh(ui.ctx());
+                    } else {
+                        self.start_provider_refresh(ui.ctx());
+                    }
+                    if save_clicked {
+                        self.engine_inspector_tab = EngineInspectorTab::Catalog;
+                    }
+                    self.editor.status = if refresh_clicked {
+                        "Refreshing LatentSlate Engine catalog…".to_string()
+                    } else {
+                        "Saved Engine backend; refreshing catalog…".to_string()
+                    };
+                }
+                Err(_) => {
+                    // The transactional persistence helper already installed
+                    // the exact failure status and left in-memory settings
+                    // aligned with the last successfully saved configuration.
+                }
+            }
+        }
+        if delete_clicked {
+            self.delete_engine_connection(connection_id);
+        }
+    }
+
+    fn engine_connection_tab(
+        &mut self,
+        ui: &mut Ui,
+        connection_id: Uuid,
+        connection: &crate::providers::latentslate_engine::EngineConnectionSettings,
+        tools: &[ProviderEntry],
+        load_report: Option<&crate::providers::latentslate_engine::EngineCatalogLoadReport>,
+    ) -> (bool, bool) {
         let connection_operation = if let Some(operation) =
             engine_connection_save_failure_operation(self.engine_connection_save_error.as_deref())
         {
@@ -415,11 +560,7 @@ impl LatentSlateApp {
             )
             .detail("The existing catalog remains visible while the endpoint is checked.")
         } else {
-            engine_connection_operation_with_report(
-                connection.enabled,
-                &tools,
-                load_report.as_ref(),
-            )
+            engine_connection_operation_with_report(connection.enabled, &tools, load_report)
         };
         let response = kit::compact_operation_banner(
             ui,
@@ -432,7 +573,6 @@ impl LatentSlateApp {
         ui.add_space(kit::FORM_ROW_GAP);
 
         let mut save_clicked = false;
-        let mut refresh_clicked = false;
         let mut delete_clicked = false;
         if let Some(draft) = self.engine_connection_draft.as_mut() {
             kit::field_grid_row(ui, &[1.0, 1.6], |ui, index| match index {
@@ -456,47 +596,20 @@ impl LatentSlateApp {
                     if kit::primary_button(ui, "Save", 72.0).clicked() {
                         save_clicked = true;
                     }
-                    if kit::secondary_button(ui, "Refresh", 76.0).clicked() {
-                        refresh_clicked = true;
-                    }
                 });
             });
         }
 
-        ui.add_space(kit::ACTION_GAP);
-        ui.separator();
-        ui.add_space(kit::ACTION_GAP);
+        (save_clicked, delete_clicked)
+    }
 
-        ui.horizontal(|ui| {
-            ui.label(kit::section_label("Catalog"));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(kit::caption(format!(
-                    "{} discovered  ·  {} available",
-                    tools.len(),
-                    available_count
-                )));
-            });
-        });
-        ui.add_space(kit::FORM_ROW_GAP);
-        let catalog_operation = if self.provider_refresh_state.is_in_flight() {
-            kit::OperationPresentation::new(
-                kit::OperationPhase::Running,
-                kit::OperationSeverity::Informational,
-                "Refreshing catalog.",
-            )
-            .detail("Provider tools will update when the refresh completes.")
-        } else {
-            engine_catalog_operation_with_report(connection.enabled, &tools, load_report.as_ref())
-        };
-        let response = kit::compact_operation_banner(
-            ui,
-            ("engine_catalog", connection_id),
-            &catalog_operation,
-        );
-        if response.technical_detail_copied {
-            self.editor.status = "Copied Engine catalog details.".to_string();
-        }
-        ui.add_space(kit::FORM_ROW_GAP);
+    fn engine_catalog_tab(
+        &mut self,
+        ui: &mut Ui,
+        connection_id: Uuid,
+        tools: &[ProviderEntry],
+        state: EngineProviderState,
+    ) {
         kit::field_label(ui, "Search");
         ui.add_space(kit::FIELD_LABEL_GAP);
         kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, row_width| {
@@ -543,7 +656,7 @@ impl LatentSlateApp {
                 .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
         });
 
-        kit::scroll_body(ui, |ui| {
+        kit::clipped_scroll_body(ui, ("engine_catalog", connection_id), |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
             if filtered.is_empty() {
                 kit::empty_state(
@@ -608,31 +721,6 @@ impl LatentSlateApp {
                     });
             }
         });
-
-        if save_clicked || refresh_clicked {
-            match self.persist_engine_connection_draft() {
-                Ok(changed) => {
-                    if changed {
-                        self.launch_pending_provider_refresh(ui.ctx());
-                    } else {
-                        self.start_provider_refresh(ui.ctx());
-                    }
-                    self.editor.status = if refresh_clicked {
-                        "Refreshing LatentSlate Engine catalog…".to_string()
-                    } else {
-                        "Saved Engine backend; refreshing catalog…".to_string()
-                    };
-                }
-                Err(_) => {
-                    // The transactional persistence helper already installed
-                    // the exact failure status and left in-memory settings
-                    // aligned with the last successfully saved configuration.
-                }
-            }
-        }
-        if delete_clicked {
-            self.delete_engine_connection(connection_id);
-        }
     }
 
     fn start_provider_refresh(&mut self, ctx: &Context) {

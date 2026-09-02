@@ -50,6 +50,13 @@ pub(super) enum ProviderModalSelection {
     LocalFile(PathBuf),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum EngineInspectorTab {
+    #[default]
+    Catalog,
+    Connection,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct EngineConnectionDraft {
     pub id: Uuid,

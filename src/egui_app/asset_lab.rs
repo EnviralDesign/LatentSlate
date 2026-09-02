@@ -3581,19 +3581,48 @@ impl LatentSlateApp {
                         kit::MARKER,
                     );
                 }
-                let pending_job = self.editor.generation_queue.iter().rev().any(|job| {
-                    job.lab_node_id == Some(ghost.parent_node_id)
-                        && matches!(
-                            job.status,
-                            GenerationJobStatus::Queued
-                                | GenerationJobStatus::Running
-                                | GenerationJobStatus::Canceling
-                        )
+                let pending_job_status =
+                    self.editor.generation_queue.iter().rev().find_map(|job| {
+                        (job.lab_node_id == Some(ghost.parent_node_id)
+                            && matches!(
+                                job.status,
+                                GenerationJobStatus::Queued
+                                    | GenerationJobStatus::Running
+                                    | GenerationJobStatus::Canceling
+                            ))
+                        .then_some(job.status)
+                    });
+                let draft_node = nodes
+                    .iter()
+                    .find(|node| node.id == ghost.parent_node_id)
+                    .cloned()
+                    .map(|mut node| {
+                        node.provider_id = self.asset_lab.draft_provider_id;
+                        node.inputs = self.asset_lab.draft_inputs.clone();
+                        node.output_version = None;
+                        node
+                    });
+                let draft_provider = draft_node.as_ref().and_then(|node| {
+                    node.provider_id.and_then(|provider_id| {
+                        self.editor
+                            .provider_entries
+                            .iter()
+                            .find(|provider| provider.id == provider_id)
+                            .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
+                    })
                 });
-                let can_generate = asset.is_generative()
-                    && self.asset_lab.draft_source_node_id == Some(ghost.parent_node_id)
-                    && self.asset_lab.draft_provider_id.is_some()
-                    && !pending_job;
+                let draft_preflight_error = draft_node.as_ref().and_then(|node| {
+                    self.asset_lab_node_preflight_error(asset, node, draft_provider)
+                });
+                let can_generate = draft_node.as_ref().is_some_and(|_| {
+                    self.asset_lab_can_generate_variant(
+                        asset,
+                        draft_provider,
+                        self.asset_lab.draft_source_node_id == Some(ghost.parent_node_id),
+                        pending_job_status,
+                        draft_preflight_error.as_deref(),
+                    )
+                });
                 if zoom >= 0.72 {
                     let button_size =
                         Vec2::new((ghost_rect.width() - 28.0).clamp(104.0, 148.0), 34.0);
@@ -4005,9 +4034,22 @@ impl LatentSlateApp {
                             _ => "Generate",
                         })
                         .unwrap_or("Generate");
-                    let can_generate = asset.is_generative()
-                        && node.provider_id.is_some()
-                        && pending_job_status.is_none();
+                    let provider = node.provider_id.and_then(|provider_id| {
+                        self.editor
+                            .provider_entries
+                            .iter()
+                            .find(|provider| provider.id == provider_id)
+                            .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
+                    });
+                    let preflight_error =
+                        self.asset_lab_node_preflight_error(asset, node, provider);
+                    let can_generate = self.asset_lab_can_generate_variant(
+                        asset,
+                        provider,
+                        true,
+                        pending_job_status,
+                        preflight_error.as_deref(),
+                    );
                     if asset_lab_node_text_button(
                         ui,
                         generate_rect,
@@ -4291,22 +4333,11 @@ impl LatentSlateApp {
                         )
                 })
                 .map(|job| job.status);
-            let preflight_error = selected_provider.as_ref().and_then(|provider| {
-                let mut preflight_config = GenerativeConfig::default();
-                preflight_config.provider_id = Some(provider.id);
-                preflight_config.inputs = display_node.inputs.clone();
-                preflight_config.media_bindings = display_node.media_bindings.clone();
-                crate::core::generation::preflight_provider_config(
-                    &self.editor.project,
-                    Some(asset.id),
-                    None,
-                    provider,
-                    &preflight_config,
-                )
-                .into_iter()
-                .next()
-                .map(|issue| issue.message)
-            });
+            let preflight_error = self.asset_lab_node_preflight_error(
+                asset,
+                &display_node,
+                selected_provider.as_ref(),
+            );
             if self.asset_lab.compare.is_some() {
                 self.asset_lab_compare_inspector_summary(ui, asset, config, action);
                 ui.add_space(kit::ACTION_GAP);
@@ -4416,6 +4447,20 @@ impl LatentSlateApp {
                     }
 
                     if let Some(provider) = selected_provider.as_ref() {
+                        if provider.inputs.iter().any(|input| {
+                            matches!(
+                                input.input_type,
+                                ProviderInputType::Image
+                                    | ProviderInputType::Video
+                                    | ProviderInputType::Audio
+                            )
+                        }) {
+                            self.media_binding_context_picker(
+                                ui,
+                                asset.id,
+                                self.editor.selected_clip_id(),
+                            );
+                        }
                         let dimension_names = crate::core::canvas::dimension_pair(provider)
                             .map(|(width, height)| (width.name.clone(), height.name.clone()));
                         let sections = crate::core::generation::generation_control_inputs(provider);
@@ -4648,6 +4693,65 @@ impl LatentSlateApp {
         }
     }
 
+    fn asset_lab_node_preflight_error(
+        &self,
+        asset: &Asset,
+        node: &AssetLabNode,
+        provider: Option<&ProviderEntry>,
+    ) -> Option<String> {
+        let provider = provider?;
+        let mut preflight_config = GenerativeConfig::default();
+        preflight_config.provider_id = Some(provider.id);
+        preflight_config.inputs = node.inputs.clone();
+        preflight_config.media_bindings = node.media_bindings.clone();
+        let context_clip_id = match crate::core::media_binding::resolve_generation_context(
+            &self.editor.project,
+            asset.id,
+            self.editor.selected_clip_id(),
+            self.generation_context_by_asset.get(&asset.id).copied(),
+        ) {
+            Ok(context_clip_id) => context_clip_id,
+            Err(err)
+                if preflight_config.media_bindings.values().any(|spec| {
+                    matches!(
+                        spec.source,
+                        crate::state::MediaBindingSource::FollowTimeline { .. }
+                    )
+                }) =>
+            {
+                return Some(err.message("Generate"));
+            }
+            Err(_) => None,
+        };
+        crate::core::generation::preflight_provider_config(
+            &self.editor.project,
+            Some(asset.id),
+            context_clip_id,
+            provider,
+            &preflight_config,
+        )
+        .into_iter()
+        .next()
+        .map(|issue| issue.message)
+    }
+
+    fn asset_lab_can_generate_variant(
+        &self,
+        asset: &Asset,
+        provider: Option<&ProviderEntry>,
+        variant_ready: bool,
+        pending_job_status: Option<GenerationJobStatus>,
+        preflight_error: Option<&str>,
+    ) -> bool {
+        variant_ready
+            && asset.is_generative()
+            && provider.is_some()
+            && !provider.is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
+            && provider.is_some_and(provider_is_available_for_generation)
+            && preflight_error.is_none()
+            && pending_job_status.is_none()
+    }
+
     fn asset_lab_run_header(
         &mut self,
         ui: &mut Ui,
@@ -4667,14 +4771,13 @@ impl LatentSlateApp {
             self.asset_lab.run_batch_count,
             self.asset_lab_run_batch(provider).seed_strategy,
         );
-        let can_generate = variant_ready
-            && asset.is_generative()
-            && provider.is_some()
-            && !provider
-                .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
-            && provider.is_some_and(provider_is_available_for_generation)
-            && preflight_error.is_none()
-            && pending_job_status.is_none();
+        let can_generate = self.asset_lab_can_generate_variant(
+            asset,
+            provider,
+            variant_ready,
+            pending_job_status,
+            preflight_error,
+        );
         let generate_label = pending_job_status
             .map(|status| match status {
                 GenerationJobStatus::Queued => "Queued",
