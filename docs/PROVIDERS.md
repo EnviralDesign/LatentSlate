@@ -1,9 +1,8 @@
 # Providers
 
 LatentSlate is built around user-owned generation backends. ComfyUI remains the
-primary bring-your-own workflow path. LatentSlate Engine is the experimental
-first-party path for a small, opinionated catalog of automatically described
-tools.
+bring-your-own workflow path. LatentSlate Engine provides a fixed catalog of
+eight native image and video tools.
 
 Both paths normalize into the same provider-facing model inside LatentSlate:
 output type, creative workflow kind, semantic inputs, progress, and generated
@@ -14,7 +13,7 @@ providers, while the Engine publishes its own tool catalog.
 
 | Adapter | Status | Notes |
 |---|---|---|
-| LatentSlate Engine | Experimental | Discovers versioned tools from `/v1/catalog`, uploads media, submits/polls jobs, and downloads outputs over HTTP. |
+| LatentSlate Engine | Implemented | Discovers versioned tools from `/v1/catalog`, uploads media, submits/polls jobs, and downloads outputs over HTTP. |
 | ComfyUI | Implemented | API workflow JSON plus embedded manifest bindings. Supports image/video/audio output detection by file extension. |
 | OpenAI image | Experimental | Stores `connection.api_key` in provider JSON. |
 | xAI image | Experimental | Stores `connection.api_key` in provider JSON. |
@@ -56,26 +55,18 @@ catalog on the right. When an Engine is reachable, its tools appear automaticall
 in provider pickers and generation forms. There is no provider JSON to export,
 bind, or repair for Engine tools.
 
-For a local source checkout, initialize the portable Engine data root, inspect
-it, validate its resources/variants, and start the service:
+Run the Engine with its model files and Python/CUDA dependencies configured.
+Its service entry point is `python -m latentslate_engine.service --host 127.0.0.1 --port 8765`
+with `src` on `PYTHONPATH`. Use the local Process Manager when working in the
+managed development stack.
 
-```powershell
-cd C:\repos\LatentSlate-Engine
-uv sync
-uv run latentslate-engine data init
-uv run latentslate-engine data path
-uv run latentslate-engine resources list
-uv run latentslate-engine variants validate
-uv run latentslate-engine serve --host 127.0.0.1 --port 8765
-```
-
-`LATENTSLATE_ENGINE_HOME` owns the portable `models/`, `loras/`, `variants/`,
-`cache/`, and `jobs/` trees. A local model or LoRA is added by placing it under
-the matching family directory with its inspectable TOML sidecar, then placing
-or editing a variant TOML that selects it. Restart the Engine to rebuild the
-catalog; reload providers or restart LatentSlate to consume the refreshed
-schemas. Unsupported or incomplete artifacts remain visible in Engine
-diagnostics but are not advertised as runnable tools.
+`LATENTSLATE_ENGINE_HOME` selects the Engine data root (default:
+`LatentSlateEngineData` in the Engine checkout). The current service uses fixed
+family model paths under `models/`, with optional `LATENTSLATE_KLEIN9B_VAE` and
+`LATENTSLATE_WAN_MODEL_ROOT` overrides. HTTP uploads and outputs live under
+`runtime/http/`. Model selection and inference policy belong to the Engine;
+there is no user-authored variant catalog in this service. Check `/v1/health`
+and `/v1/catalog` for service health and per-tool availability.
 
 The machine-level connection can be changed with environment variables:
 
@@ -139,18 +130,30 @@ schema changes may require manually repairing affected generative configs.
 
 ### Current Engine Tools
 
-The built-in catalog covers H3 and LTX video, Wan video, and Klein 4B/9B image
-families. Data-defined variants become normal catalog tools only when their
-selected resources and runtime contracts validate. This includes the locally
-proven Klein 4B Comfy-native stored-FP8 text-to-image and one-to-three-reference
-image-edit paths, plus the staged native Wan 2.2 14B I2V recipe when all required
-Comfy-aligned components are present.
+The current catalog contains exactly eight tools:
 
-H3 and LTX complete BF16 repositories are pinned and validated before loading;
-their full target-hardware output acceptance remains part of hands-on testing.
-The Engine owns model loading, stored-precision contracts, optimization profiles,
-residency, and model-family eviction. LatentSlate consumes the same catalog,
-schema, queue, upload, and artifact contract for every image/video variant.
+| Family | Operations | Output timing |
+|---|---|---|
+| LTX 2.3 | Text to video, image to video, first/last-frame video | 30 fps; nominal requests of 1-10 seconds in 0.5-second increments; native frame mapping; synchronized audio |
+| FLUX.2 Klein 9B | Text to image, two-image generation | Still image |
+| Wan 2.2 14B Turbo | Text to video, image to video, first/last-frame video | 16 fps; 1-5 seconds in 0.25-second increments |
+
+Klein two-image generation requires both Image 1 and Image 2. All eight tools
+publish required width/height inputs, seed, and their canvas constraints.
+LTX image-conditioned operations additionally require source dimensions to
+match the output canvas. Klein and Wan accept independently sized references.
+
+LTX's duration input is a model request, not an exact media length. Catalog
+`timing.duration_seconds.output_frame_counts` declares all 19 legal requests:
+1 second produces 25 frames (0.833 seconds), and 5 produces 145 (4.833 seconds).
+The controls show the next request and predicted Output Frames/Output Duration.
+Completed assets retain their actual media extent when editing the next request
+or switching providers. Wan uses the ordinary duration-times-FPS mapping.
+
+The Engine owns model loading, fixed product policies, inference, and GPU worker
+lifecycle. LatentSlate owns project media, input binding, generation controls,
+queue presentation, and version insertion. ComfyUI remains a separate adapter
+for user-authored API workflows and manifests.
 
 ## ComfyUI Setup
 
@@ -218,7 +221,7 @@ Minimal shape:
     {
       "name": "prompt",
       "label": "Prompt",
-      "input_type": "text",
+      "input_type": { "type": "text" },
       "required": true,
       "ui": { "multiline": true, "group": "Prompt" },
       "bind": {
@@ -257,21 +260,18 @@ LatentSlate currently renders:
 - `video`
 - `audio`
 
-The Engine protocol reserves a `resource` type for future model, LoRA, and style
-catalogs. LatentSlate conservatively skips tools that require it until a native
-resource picker exists.
-
 Inputs can declare semantic roles. Width, height, and seed roles support existing
 setup and batching behavior. I2V providers should mark their source image as
 `start_image`; first/last-frame video providers should use `start_image` and
 `end_image`. Video providers can additionally mark `duration_seconds`, `fps`, or
-`frame_count`; LatentSlate syncs those fields from the generative video's target
-timing before generation.
+`frame_count`. These fields describe the next request. For generated assets they
+remain independent of actual media timing; hollow assets use predicted output
+extent, with ordinary target-timing sync for providers without a duration map.
 
 Engine image and video tools use integer `width` and `height` roles rather than a
 single size preset. New generation requests default to the project canvas size;
-an explicit config (including continuation dimensions) wins, and image-to-image
-uses a bound source image's dimensions when no explicit dimensions are present.
+an explicit config (including continuation dimensions) wins. The current eight
+tools use a legal project-derived canvas when no explicit pair is stored.
 The shared canvas picker keeps the submitted width/height pair as the resolved
 output while offering `Aspect + MP`, `Exact dimensions`, and `Project scale`
 input modes. Its output readout reports the effective resolution, megapixels,
@@ -279,10 +279,6 @@ aspect, and provider pixel grid so grid-adjusted results are never presented as
 the literal requested target. `Project scale` rounds up to a legal output that
 meets the scaled project's pixel area; scale choices beyond the provider's hard
 canvas limits are disabled.
-An Engine image-to-image descriptor with an optional, default-free width/height
-pair uses source mode: with a bound source and no explicit pair, LatentSlate
-omits both fields so Engine can apply source-mode EXIF transpose and its
-floor-to-16 alignment itself. Klein currently uses this contract.
 Legacy `size: "WIDTHxHEIGHT"` configs are migrated for a refreshed Engine tool,
 while stale `size` is omitted from the submitted request.
 
@@ -321,7 +317,7 @@ Automatic Comfy workflow drift repair is not implemented.
 ## Troubleshooting
 
 - **Engine tools do not appear:** start the Engine, check `LATENTSLATE_ENGINE_URL` or `LatentSlateData/engine.json`, then reload providers or restart LatentSlate.
-- **Engine tool says unavailable:** install the required Engine bundle/dependencies; the V0 H3 tools require the Engine `h3` extra and `h3-basic` bundle.
+- **Engine tool says unavailable:** inspect its catalog reason and verify the current family model files and runtime dependencies on that Engine host.
 - **Engine schema mismatch:** refresh the catalog by restarting/reloading, then inspect the affected generative config before changing stored values.
 - **Missing inputs:** fill required fields in the Attributes panel or asset/provider editor.
 - **Workflow missing node_id:** the Comfy manifest references a node that no longer exists; re-save through Provider Builder.
@@ -330,6 +326,6 @@ Automatic Comfy workflow drift repair is not implemented.
 
 ## Example Workflows
 
-Tracked Comfy examples live in [../workflows](../workflows). Personal workflows
-are intentionally ignored by default unless they are sanitized and useful to
-contributors.
+No runnable Comfy workflow examples are bundled in this checkout. Export a
+working API workflow from your own ComfyUI installation; personal workflows are
+ignored by default.

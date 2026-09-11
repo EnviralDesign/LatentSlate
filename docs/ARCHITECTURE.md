@@ -90,10 +90,14 @@ generation references that asset. A generative asset with no active version is
 intentionally hollow; the preview and provider-input paths do not scan its folder
 for arbitrary leftover files.
 
-Generative video assets store target timing as duration, FPS, and frame count. For
-a hollow generative video used by one clip, resizing the clip updates that target
-timing. After a version exists, clip resizing is treated as timeline editing;
-target timing remains an explicit asset setting for future generations.
+Generative video assets store media extent as FPS, frame count, and derived
+duration. Hollow assets use predicted next-output timing; generated assets retain
+actual media timing. Config timing inputs describe the next request independently.
+Editing that request or switching providers does not retime existing output.
+Providers may publish a discrete request-duration-to-output-frame mapping; LTX
+uses this to distinguish nominal duration from its native encoded extent.
+Ordinary hollow single-clip timing sync remains available for unmapped providers;
+clip resizing after generation is timeline editing.
 
 ## Provider And Tool Model
 
@@ -124,7 +128,7 @@ source segments from the project timeline.
 
 Current runtime adapters:
 
-- LatentSlate Engine image/video/audio contract over HTTP; its catalog exposes built-in and data-defined H3, LTX, Wan, and Klein tools through the same schema-driven provider model.
+- LatentSlate Engine over HTTP: eight fixed tools across LTX 2.3, Klein 9B, and Wan 2.2 14B Turbo. The Engine owns inference and GPU worker lifecycle; the app owns project media and generation/version editing.
 - ComfyUI image/video/audio through workflow API JSON plus manifest bindings.
 - OpenAI image.
 - xAI image.
@@ -152,8 +156,8 @@ revision/hash contract are the framework for that later work.
 
 All providers enter the existing shared queue:
 
-1. Resolve provider and current input values.
-2. Resolve media inputs from project assets and timeline context.
+1. Resolve provider and current input values, with local preflight diagnostics.
+2. Resolve/materialize media inputs from project assets and timeline context; validate declared image/canvas requirements before submission.
 3. Execute the adapter.
 4. Save the returned bytes as the next project-local version.
 5. Update config, active version, thumbnails, metadata, and preview state.
