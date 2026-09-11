@@ -1210,6 +1210,9 @@ async fn execute_generation_job_async(
     )
     .await
     .map_err(|err| match err {
+        crate::providers::ProviderExecutionError::RefreshRequired(err) => {
+            GenerationFailure::RefreshRequired(err)
+        }
         crate::providers::ProviderExecutionError::Offline(err) => GenerationFailure::Offline(err),
         crate::providers::ProviderExecutionError::Error(err) => GenerationFailure::Error(err),
         crate::providers::ProviderExecutionError::Canceled(_) => GenerationFailure::Canceled,
@@ -1244,6 +1247,7 @@ async fn execute_generation_job_async(
     }
 
     Ok(GenerationOutput {
+        engine_execution: output.engine_execution,
         version,
         path: output_path,
     })
@@ -1820,6 +1824,59 @@ fn provider_input_drag_i64(
         .and_then(|ui| ui.max)
         .map(|value| value.round() as i64);
     kit::integer_step_drag(ui, value, width, step, min, max)
+}
+
+fn provider_input_ordered_numbers(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    current: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    provider_input_field_label(ui, label, input);
+    let Some(values) = current.and_then(serde_json::Value::as_array) else {
+        ui.label(kit::caption(
+            "This input requires an ordered list of numbers.",
+        ));
+        let width = ui.available_width();
+        return kit::field_button(ui, "Use provider default", width)
+            .clicked()
+            .then(|| input.default.clone())
+            .flatten();
+    };
+    if values.is_empty() {
+        ui.label(kit::caption("No values"));
+    }
+    let mut updated = values.clone();
+    let mut changed = false;
+    for (index, value) in updated.iter_mut().enumerate() {
+        ui.push_id((&input.name, index), |ui| {
+            kit::field_label(ui, &format!("Value {}", index + 1));
+            let draft_id = ui.id().with("ordered_number_draft");
+            let mut text = ui
+                .data_mut(|data| data.get_temp::<(serde_json::Value, String)>(draft_id))
+                .filter(|(saved, _)| saved == value)
+                .map(|(_, text)| text)
+                .unwrap_or_else(|| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                });
+            let width = ui.available_width();
+            if kit::singleline_text_field(ui, &mut text, width).changed() {
+                *value = text
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or_else(|| serde_json::Value::String(text.clone()));
+                changed = true;
+            }
+            ui.data_mut(|data| data.insert_temp(draft_id, (value.clone(), text)));
+        });
+    }
+    changed.then_some(serde_json::Value::Array(updated))
 }
 
 fn provider_input_drag_u64(

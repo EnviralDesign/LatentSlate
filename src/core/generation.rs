@@ -114,6 +114,8 @@ pub fn provider_duration_timing(provider: &ProviderEntry) -> Option<ProviderDura
         .find(|input| input.role == Some(InputRole::DurationSeconds))?;
     let ui = input.ui.as_ref()?;
     Some(ProviderDurationTiming {
+        mode: None,
+        value: None,
         min: ui.min?,
         max: ui.max?,
         step: ui.step?,
@@ -135,7 +137,23 @@ pub fn provider_request_duration(
     provider: &ProviderEntry,
     inputs: &HashMap<String, InputValue>,
 ) -> Option<f64> {
-    provider_request_number(provider, inputs, InputRole::DurationSeconds)
+    provider_fixed_duration(provider)
+        .or_else(|| provider_request_number(provider, inputs, InputRole::DurationSeconds))
+}
+
+/// Resolve a duration owned by the catalog rather than an exposed request input.
+pub fn provider_fixed_duration(provider: &ProviderEntry) -> Option<f64> {
+    if provider
+        .inputs
+        .iter()
+        .any(|input| input.role == Some(InputRole::DurationSeconds))
+    {
+        return None;
+    }
+    let duration = provider.timing.as_ref()?.duration_seconds.as_ref()?;
+    (duration.mode.as_deref() == Some("fixed"))
+        .then_some(duration.value?)
+        .filter(|value| value.is_finite() && *value > 0.0)
 }
 
 /// Resolve a numeric request role from config or its provider default.
@@ -144,6 +162,14 @@ pub fn provider_request_number(
     inputs: &HashMap<String, InputValue>,
     role: InputRole,
 ) -> Option<f64> {
+    let fixed = provider.canvas.as_ref().and_then(|canvas| match role {
+        InputRole::Width => canvas.fixed_width,
+        InputRole::Height => canvas.fixed_height,
+        _ => None,
+    });
+    if let Some(value) = fixed {
+        return Some(value as f64);
+    }
     let input = provider
         .inputs
         .iter()
@@ -203,6 +229,7 @@ pub fn reconcile_video_timing_for_provider(
     current_fps: f64,
     provider: &ProviderEntry,
 ) -> (f64, f64, u32) {
+    let duration_seconds = provider_fixed_duration(provider).unwrap_or(duration_seconds);
     let fps = provider_fixed_fps(provider).unwrap_or(current_fps.max(1.0));
     let predicted = predicted_output_timing(provider, duration_seconds);
     let frame_count = predicted
@@ -406,20 +433,19 @@ pub fn preflight_provider_config(
         }
     }
 
-    if let (Some(canvas), Some((width_input, height_input))) = (
+    if let (Some(canvas), Some((width, height))) = (
         canvas_from_provider(provider),
-        crate::core::canvas::dimension_pair(provider),
+        effective_canvas_dimensions(provider, &values),
     ) {
-        let width = values.get(&width_input.name).and_then(json_dimension);
-        let height = values.get(&height_input.name).and_then(json_dimension);
-        if let (Some(width), Some(height)) = (width, height) {
-            if let Err(message) = validate_canvas(&canvas, width, height) {
-                if has_any_explicit_dimension(provider, &config) {
-                    issues.push(GenerationPreflightIssue {
-                        section: GenerationControlSection::Canvas,
-                        message: sentence_case_validation(message),
-                    });
-                }
+        if let Err(message) = validate_canvas(&canvas, width, height) {
+            if has_any_explicit_dimension(provider, &config)
+                || canvas.fixed_width.is_some()
+                || canvas.fixed_height.is_some()
+            {
+                issues.push(GenerationPreflightIssue {
+                    section: GenerationControlSection::Canvas,
+                    message: sentence_case_validation(message),
+                });
             }
         }
     }
@@ -525,7 +551,18 @@ fn section_for_input(input: &ProviderInputField) -> GenerationControlSection {
     }
 }
 
-fn validate_simple_input(input: &ProviderInputField, value: &Value) -> Option<String> {
+pub fn validate_simple_input(input: &ProviderInputField, value: &Value) -> Option<String> {
+    if input.ordered_collection {
+        let Some(values) = value.as_array() else {
+            return Some(format!("{} must be an ordered list.", input.label));
+        };
+        let mut scalar = input.clone();
+        scalar.ordered_collection = false;
+        return values.iter().enumerate().find_map(|(index, value)| {
+            validate_simple_input(&scalar, value)
+                .map(|message| format!("Item {}: {message}", index + 1))
+        });
+    }
     let invalid_type = || Some(format!("{} has an invalid value.", input.label));
     if input.role == Some(InputRole::Seed)
         && matches!(
@@ -840,34 +877,32 @@ pub fn resolve_provider_inputs(
     }
 
     if let Some(canvas) = canvas_from_provider(provider) {
-        if let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider) {
-            let width = values.get(&width_input.name).and_then(json_dimension);
-            let height = values.get(&height_input.name).and_then(json_dimension);
-            if let (Some(width), Some(height)) = (width, height) {
-                if let Err(message) = validate_canvas(&canvas, width, height) {
-                    if has_any_explicit_dimension(provider, config) {
-                        input_errors.push(message);
-                    } else {
-                        let (width, height) = nearest_legal_canvas(
-                            &canvas,
-                            width.max(0) as u32,
-                            height.max(0) as u32,
-                        );
-                        values.insert(width_input.name.clone(), Value::Number(width.into()));
-                        values.insert(height_input.name.clone(), Value::Number(height.into()));
-                        snapshot.insert(
-                            width_input.name.clone(),
-                            InputValue::Literal {
-                                value: Value::Number(width.into()),
-                            },
-                        );
-                        snapshot.insert(
-                            height_input.name.clone(),
-                            InputValue::Literal {
-                                value: Value::Number(height.into()),
-                            },
-                        );
-                    }
+        if let Some((width, height)) = effective_canvas_dimensions(provider, &values) {
+            if let Err(message) = validate_canvas(&canvas, width, height) {
+                if has_any_explicit_dimension(provider, config)
+                    || canvas.fixed_width.is_some()
+                    || canvas.fixed_height.is_some()
+                {
+                    input_errors.push(message);
+                } else if let Some((width_input, height_input)) =
+                    crate::core::canvas::dimension_pair(provider)
+                {
+                    let (width, height) =
+                        nearest_legal_canvas(&canvas, width.max(0) as u32, height.max(0) as u32);
+                    values.insert(width_input.name.clone(), Value::Number(width.into()));
+                    values.insert(height_input.name.clone(), Value::Number(height.into()));
+                    snapshot.insert(
+                        width_input.name.clone(),
+                        InputValue::Literal {
+                            value: Value::Number(width.into()),
+                        },
+                    );
+                    snapshot.insert(
+                        height_input.name.clone(),
+                        InputValue::Literal {
+                            value: Value::Number(height.into()),
+                        },
+                    );
                 }
             }
         }
@@ -923,15 +958,48 @@ fn image_canvas_error(
             input.label
         ));
     }
-    let (width_input, height_input) = crate::core::canvas::dimension_pair(provider)?;
-    let width = values.get(&width_input.name).and_then(json_dimension)?;
-    let height = values.get(&height_input.name).and_then(json_dimension)?;
+    let (width, height) = effective_canvas_dimensions(provider, values)?;
     (dimensions != (width as u32, height as u32)).then(|| {
         format!(
             "{}: source is {}×{}; it must match the {}×{} output canvas.",
             input.label, dimensions.0, dimensions.1, width, height
         )
     })
+}
+
+/// Resolve fixed catalog dimensions and exposed role values in the same canvas.
+pub fn effective_canvas_dimensions(
+    provider: &ProviderEntry,
+    values: &HashMap<String, Value>,
+) -> Option<(i64, i64)> {
+    let dimension = |role, fixed: Option<u32>| {
+        fixed.map(i64::from).or_else(|| {
+            let input = provider
+                .inputs
+                .iter()
+                .find(|input| input.role == Some(role))?;
+            values
+                .get(&input.name)
+                .or(input.default.as_ref())
+                .and_then(json_dimension)
+        })
+    };
+    Some((
+        dimension(
+            InputRole::Width,
+            provider
+                .canvas
+                .as_ref()
+                .and_then(|canvas| canvas.fixed_width),
+        )?,
+        dimension(
+            InputRole::Height,
+            provider
+                .canvas
+                .as_ref()
+                .and_then(|canvas| canvas.fixed_height),
+        )?,
+    ))
 }
 
 /// Migrates retired provider inputs when a refreshed provider schema replaces
@@ -1974,6 +2042,7 @@ mod tests {
 
     fn dimension_input(name: &str, role: InputRole, default: u32) -> ProviderInputField {
         ProviderInputField {
+            ordered_collection: false,
             image_dimensions: None,
             name: name.to_string(),
             label: name.to_string(),
@@ -2005,6 +2074,8 @@ mod tests {
 
     fn ltx_dev_canvas() -> CanvasContract {
         CanvasContract {
+            fixed_width: None,
+            fixed_height: None,
             alignment: 64,
             min_side: 64,
             max_side: None,
@@ -2024,6 +2095,7 @@ mod tests {
             "Source mode image to image",
             ProviderOutputType::Image,
             ProviderConnection::LatentSlateEngine {
+                recipe: None,
                 base_url: "http://localhost:8765".to_string(),
                 api_key: None,
                 tool_key: "private.my_edit_recipe".to_string(),
@@ -2036,6 +2108,7 @@ mod tests {
         provider.workflow_kind = ProviderWorkflowKind::ImageToImage;
         provider.inputs = vec![
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "source_image".to_string(),
                 label: "Source Image".to_string(),
@@ -2047,6 +2120,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
@@ -2058,6 +2132,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
@@ -2077,6 +2152,7 @@ mod tests {
             "H3",
             ProviderOutputType::Video,
             ProviderConnection::LatentSlateEngine {
+                recipe: None,
                 base_url: "http://localhost:8765".to_string(),
                 api_key: None,
                 tool_key: "h3.first_last_frame_video".to_string(),
@@ -2091,6 +2167,7 @@ mod tests {
             dimension_input("width", InputRole::Width, 960),
             dimension_input("height", InputRole::Height, 544),
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "steps".to_string(),
                 label: "Steps".to_string(),
@@ -2358,6 +2435,7 @@ mod tests {
             "Timed video",
             ProviderOutputType::Video,
             ProviderConnection::LatentSlateEngine {
+                recipe: None,
                 base_url: "http://127.0.0.1:8765".to_string(),
                 api_key: None,
                 tool_key: key.to_string(),
@@ -2370,6 +2448,7 @@ mod tests {
         provider.id = Uuid::parse_str(id).expect("provider id");
         provider.inputs = vec![
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "prompt".to_string(),
                 label: "Prompt".to_string(),
@@ -2383,6 +2462,7 @@ mod tests {
             dimension_input("width", InputRole::Width, 512),
             dimension_input("height", InputRole::Height, 512),
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "duration_seconds".to_string(),
                 label: "Duration".to_string(),
@@ -2400,6 +2480,7 @@ mod tests {
                 }),
             },
             ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: None,
                 name: "seed".to_string(),
                 label: "Seed".to_string(),
@@ -2415,6 +2496,8 @@ mod tests {
             },
         ];
         provider.canvas = Some(CanvasContract {
+            fixed_width: None,
+            fixed_height: None,
             alignment: 16,
             min_side: 480,
             max_side: None,
@@ -2437,6 +2520,8 @@ mod tests {
             "wan2214b_turbo.text_to_video",
             16.0,
             ProviderDurationTiming {
+                mode: None,
+                value: None,
                 min: 1.0,
                 max: 5.0,
                 step: 0.25,
@@ -2512,6 +2597,7 @@ mod tests {
     fn non_seed_integers_keep_the_signed_preflight_contract() {
         let mut provider = dimensions_provider();
         provider.inputs.push(ProviderInputField {
+            ordered_collection: false,
             image_dimensions: None,
             name: "steps".to_string(),
             label: "Steps".to_string(),
@@ -2580,6 +2666,8 @@ mod tests {
             "ltx23.text_to_video",
             30.0,
             ProviderDurationTiming {
+                mode: None,
+                value: None,
                 min: 1.0,
                 max: 10.0,
                 step: 0.5,

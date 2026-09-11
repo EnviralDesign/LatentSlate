@@ -1,8 +1,8 @@
 # Providers
 
 LatentSlate is built around user-owned generation backends. ComfyUI remains the
-bring-your-own workflow path. LatentSlate Engine provides a fixed catalog of
-eight native image and video tools.
+bring-your-own workflow path. LatentSlate Engine publishes eight built-in native
+image/video tools plus enabled user recipes.
 
 Both paths normalize into the same provider-facing model inside LatentSlate:
 output type, creative workflow kind, semantic inputs, progress, and generated
@@ -49,6 +49,12 @@ checks still-image dimensions during preflight and checks actual materialized im
 choose a matching canvas or prepare a matching source. Missing constraints preserve
 existing behavior for ComfyUI, Klein, and Wan.
 
+User tools may fix either canvas dimension and the request duration in catalog
+metadata. These values participate in preflight and output prediction without
+creating hidden project inputs. Attributes and Asset Lab support ordered numeric
+lists such as adapter strengths; unsupported collection shapes skip the whole tool
+with a diagnostic.
+
 LatentSlate treats each Engine as a backend in **AI Providers**. Add one or more
 Engine connections from the Add Provider dropdown, then inspect that backend's
 catalog on the right. When an Engine is reachable, its tools appear automatically
@@ -65,7 +71,7 @@ managed development stack.
 family model paths under `models/`, with optional `LATENTSLATE_KLEIN9B_VAE` and
 `LATENTSLATE_WAN_MODEL_ROOT` overrides. HTTP uploads and outputs live under
 `runtime/http/`. Model selection and inference policy belong to the Engine;
-there is no user-authored variant catalog in this service. Check `/v1/health`
+use Engine Recipe Studio to author and enable user recipes. Check `/v1/health`
 and `/v1/catalog` for service health and per-tool availability.
 
 The machine-level connection can be changed with environment variables:
@@ -119,9 +125,16 @@ an explicit `schema_mismatch` rather than being silently reinterpreted.
 Engine-derived tools are read-only in LatentSlate. **AI Providers** lists Engine
 backends alongside local provider JSON files. Selecting an Engine backend edits
 the connection and shows its discovered catalog; it does not create editable
-provider JSON for those tools. Change an Engine tool schema in the Engine
-repository; the next catalog refresh becomes the single source of truth for its
-UI.
+provider JSON for those tools. Edit user recipes in Engine Recipe Studio; normal
+catalog refresh is the sole freshness mechanism in the desktop. Hidden-only
+recipe changes preserve current inputs. Schema changes retire removed inputs and
+retain shared creative-role values for preflight to check. Disabling a recipe
+makes new generation unavailable without substituting another provider.
+
+User-tool jobs submit the exact catalog recipe identity. A stale 409 fails the
+attempt and refreshes providers; submit again after reviewing the refreshed inputs.
+Saved generation records keep the Engine's accepted tool/schema/recipe identity,
+including after later recipe edits and project reopen.
 
 Project-level schema snapshots and the reconciliation screen for older Engine
 schemas are not implemented yet. The revision/hash contract and stable IDs are in
@@ -130,7 +143,7 @@ schema changes may require manually repairing affected generative configs.
 
 ### Current Engine Tools
 
-The current catalog contains exactly eight tools:
+The built-in catalog contains eight tools:
 
 | Family | Operations | Output timing |
 |---|---|---|

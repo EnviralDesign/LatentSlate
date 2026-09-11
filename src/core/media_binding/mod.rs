@@ -466,6 +466,7 @@ fn placeholder_input(name: &str) -> ProviderInputField {
         _ => (ProviderInputType::Image, None),
     };
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: name.to_string(),
         label: name.to_string(),

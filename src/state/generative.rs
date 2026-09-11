@@ -127,6 +127,8 @@ fn default_batch_count() -> u32 {
 /// A single generation record for a generative asset.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_execution: Option<crate::state::EngineExecutionProvenance>,
     pub version: String,
     pub timestamp: DateTime<Utc>,
     pub provider_id: Uuid,

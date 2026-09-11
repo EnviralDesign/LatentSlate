@@ -138,6 +138,8 @@ pub fn canvas_from_dimension_ui(
         .filter(|max| *max >= 1.0)
         .map(|max| max.round() as u32);
     Some(CanvasContract {
+        fixed_width: None,
+        fixed_height: None,
         alignment,
         min_side,
         max_side,
@@ -584,6 +586,8 @@ mod tests {
 
     fn ltx_dev() -> CanvasContract {
         CanvasContract {
+            fixed_width: None,
+            fixed_height: None,
             alignment: 64,
             min_side: 64,
             max_side: None,
@@ -594,6 +598,8 @@ mod tests {
 
     fn h3() -> CanvasContract {
         CanvasContract {
+            fixed_width: None,
+            fixed_height: None,
             alignment: 32,
             min_side: 64,
             max_side: None,

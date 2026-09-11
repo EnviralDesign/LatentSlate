@@ -216,6 +216,7 @@ fn text_input(
     required: bool,
 ) -> ProviderInputField {
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: name.to_string(),
         label: label.to_string(),
@@ -239,6 +240,7 @@ fn enum_input(
     default: Option<&str>,
 ) -> ProviderInputField {
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: name.to_string(),
         label: label.to_string(),
@@ -261,6 +263,7 @@ fn integer_input(
     max: Option<f64>,
 ) -> ProviderInputField {
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: name.to_string(),
         label: label.to_string(),

@@ -88,7 +88,11 @@ pub async fn parse_image_response(
             .decode(encoded.as_bytes())
             .map_err(|err| format!("{provider_name} returned invalid image base64: {err}"))?;
         let extension = detect_image_extension(&bytes).unwrap_or_else(|| fallback_extension.into());
-        return Ok(ProviderOutput { bytes, extension });
+        return Ok(ProviderOutput {
+            bytes,
+            extension,
+            engine_execution: None,
+        });
     }
 
     if let Some(url) = item.get("url").and_then(|value| value.as_str()) {
@@ -104,7 +108,11 @@ pub async fn parse_image_response(
             .map_err(|err| format!("{provider_name} image bytes read failed: {err}"))?
             .to_vec();
         let extension = detect_image_extension(&bytes).unwrap_or_else(|| fallback_extension.into());
-        return Ok(ProviderOutput { bytes, extension });
+        return Ok(ProviderOutput {
+            bytes,
+            extension,
+            engine_execution: None,
+        });
     }
 
     Err(format!(

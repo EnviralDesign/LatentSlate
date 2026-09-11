@@ -2527,6 +2527,8 @@ impl LatentSlateApp {
         .and_then(input_value_as_i64)
         .unwrap_or(0);
         let canvas = canvas.unwrap_or(crate::state::CanvasContract {
+            fixed_width: None,
+            fixed_height: None,
             alignment: 1,
             min_side: 1,
             max_side: None,
@@ -2575,6 +2577,8 @@ impl LatentSlateApp {
         };
         let bounds = provider_duration_bounds(selected_provider);
         let fixed_fps = selected_provider.and_then(crate::core::generation::provider_fixed_fps);
+        let fixed_duration =
+            selected_provider.and_then(crate::core::generation::provider_fixed_duration);
         let mapped =
             selected_provider.is_some_and(crate::core::generation::provider_has_duration_mapping);
         let has_output = self
@@ -2582,7 +2586,7 @@ impl LatentSlateApp {
             .project
             .generative_config(asset_id)
             .is_some_and(GenerativeConfig::has_generated_output);
-        let request_owned = mapped || has_output;
+        let request_owned = mapped || has_output || fixed_duration.is_some();
         let mut next_duration = if request_owned {
             selected_provider
                 .and_then(|provider| {
@@ -2633,13 +2637,22 @@ impl LatentSlateApp {
         let mut fps_changed = false;
         let mut frames_changed = false;
 
-        duration_changed |= inspector_drag_f64(
-            ui,
-            "Seconds",
-            &mut next_duration,
-            bounds.step.unwrap_or(0.05),
-            ui.available_width(),
-        );
+        if let Some(duration) = fixed_duration {
+            kit::field_label(ui, "Seconds");
+            kit::readonly_value_box(
+                ui,
+                format!("{duration} (fixed)"),
+                Vec2::new(ui.available_width(), kit::FIELD_H),
+            );
+        } else {
+            duration_changed |= inspector_drag_f64(
+                ui,
+                "Seconds",
+                &mut next_duration,
+                bounds.step.unwrap_or(0.05),
+                ui.available_width(),
+            );
+        }
         ui.add_space(kit::FORM_ROW_GAP);
         if let Some(fixed_fps) = fixed_fps {
             kit::field_label(ui, "FPS");
@@ -3150,6 +3163,14 @@ impl LatentSlateApp {
             )
             .or_else(|| literal_config_input(config_snapshot, &input.name))
             .or_else(|| input.default.clone());
+            if input.ordered_collection {
+                if let Some(value) =
+                    provider_input_ordered_numbers(ui, &label, input, current_value.as_ref())
+                {
+                    updates.push((input.name.clone(), InputValue::Literal { value }));
+                }
+                continue;
+            }
             match &input.input_type {
                 ProviderInputType::Text => {
                     let mut value = current_value

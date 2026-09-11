@@ -17,6 +17,7 @@ pub mod xai;
 
 #[derive(Debug, Clone)]
 pub struct ProviderOutput {
+    pub engine_execution: Option<crate::state::EngineExecutionProvenance>,
     pub bytes: Vec<u8>,
     pub extension: String,
 }
@@ -69,6 +70,7 @@ impl ProviderProgress {
 
 #[derive(Debug)]
 pub enum ProviderExecutionError {
+    RefreshRequired(String),
     Offline(String),
     Error(String),
     Canceled(String),
@@ -405,6 +407,7 @@ pub async fn execute_generation(
             .await
             {
                 Ok(output) => Ok(ProviderOutput {
+                    engine_execution: None,
                     bytes: output.bytes,
                     extension: output.extension,
                 }),

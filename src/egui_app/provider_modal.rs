@@ -723,7 +723,7 @@ impl LatentSlateApp {
         });
     }
 
-    fn start_provider_refresh(&mut self, ctx: &Context) {
+    pub(super) fn start_provider_refresh(&mut self, ctx: &Context) {
         if let Some(revision) = self.provider_refresh_state.request() {
             self.launch_provider_refresh(ctx, revision);
         }
@@ -1942,6 +1942,7 @@ mod provider_refresh_tests {
             "Engine Tool",
             ProviderOutputType::Video,
             ProviderConnection::LatentSlateEngine {
+                recipe: None,
                 base_url: base_url.to_string(),
                 api_key: api_key.map(str::to_string),
                 tool_key: "video.generate".to_string(),

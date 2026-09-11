@@ -507,6 +507,7 @@ fn tool_to_provider(
             tool_key: tool.key.clone(),
             schema_revision: tool.schema_revision,
             schema_hash: tool.schema_hash.clone(),
+            recipe: tool.recipe.clone(),
             available: tool.available,
             unavailable_reason: tool.unavailable_reason.clone(),
         },
@@ -514,6 +515,15 @@ fn tool_to_provider(
 }
 
 fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
+    if input.nullable
+        || input.collection != input.ordered
+        || (input.collection && (input.r#type != "number" || input.role.is_some()))
+    {
+        return Err(format!(
+            "unsupported contract for input {}: nullable={}, collection={}, ordered={}, type={}",
+            input.key, input.nullable, input.collection, input.ordered, input.r#type
+        ));
+    }
     let input_type = match input.r#type.as_str() {
         "image" => ProviderInputType::Image,
         "video" => ProviderInputType::Video,
@@ -545,6 +555,7 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
         ));
     }
     Ok(ProviderInputField {
+        ordered_collection: input.collection,
         image_dimensions: input.image_dimensions,
         name: input.key.clone(),
         label: input.label.clone(),
@@ -669,13 +680,22 @@ pub async fn generate_output(
     )
     .await?;
     check_canceled(cancel_token.as_deref())?;
+    let mut body = json!({
+        "tool_id": provider.id,
+        "schema_revision": schema_revision,
+        "schema_hash": schema_hash,
+        "inputs": prepared_inputs,
+    });
+    if let ProviderConnection::LatentSlateEngine {
+        recipe: Some(recipe),
+        ..
+    } = &provider.connection
+    {
+        body["recipe"] =
+            serde_json::to_value(recipe).expect("Engine recipe identity is serializable");
+    }
     let response = send_with_auth(client.post(endpoint(base_url, "/v1/jobs")), api_key)
-        .json(&json!({
-            "tool_id": provider.id,
-            "schema_revision": schema_revision,
-            "schema_hash": schema_hash,
-            "inputs": prepared_inputs,
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(|err| offline("LatentSlate Engine job submission", err))?;
@@ -815,6 +835,18 @@ pub async fn generate_output(
     }
 
     check_canceled(cancel_token.as_deref())?;
+    if matches!(
+        &provider.connection,
+        ProviderConnection::LatentSlateEngine {
+            recipe: Some(_),
+            ..
+        }
+    ) && job.provenance.is_none()
+    {
+        return Err(ProviderExecutionError::Error(
+            "LatentSlate Engine completed the recipe without accepted execution provenance.".into(),
+        ));
+    }
     let artifact = job
         .artifacts
         .iter()
@@ -849,7 +881,11 @@ pub async fn generate_output(
             ProviderOutputType::Audio => "wav",
         })
         .to_string();
-    Ok(ProviderOutput { bytes, extension })
+    Ok(ProviderOutput {
+        bytes,
+        extension,
+        engine_execution: job.provenance,
+    })
 }
 
 async fn prepare_inputs(
@@ -1028,6 +1064,11 @@ async fn ensure_success(
         .map(|payload| payload.error.message)
         .filter(|message| !message.is_empty())
         .unwrap_or(text);
+    if status == reqwest::StatusCode::CONFLICT {
+        return Err(ProviderExecutionError::RefreshRequired(format!(
+            "{context}: provider refresh required ({status}): {message}. Review the refreshed inputs and submit again."
+        )));
+    }
     Err(ProviderExecutionError::Error(format!(
         "{context} failed ({status}): {message}"
     )))
@@ -1036,6 +1077,7 @@ async fn ensure_success(
 fn provider_error_message(error: ProviderExecutionError) -> String {
     match error {
         ProviderExecutionError::Offline(message)
+        | ProviderExecutionError::RefreshRequired(message)
         | ProviderExecutionError::Error(message)
         | ProviderExecutionError::Canceled(message) => message,
     }
@@ -1258,6 +1300,8 @@ struct EngineTool {
     key: String,
     schema_revision: u32,
     schema_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recipe: Option<crate::state::EngineRecipeIdentity>,
     name: String,
     #[serde(default)]
     description: Option<String>,
@@ -1287,6 +1331,12 @@ struct EngineOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EngineInput {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    collection: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ordered: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    nullable: bool,
     key: String,
     label: String,
     #[serde(rename = "type")]
@@ -1341,6 +1391,8 @@ struct EngineAsset {
 
 #[derive(Debug, Deserialize)]
 struct EngineJob {
+    #[serde(flatten)]
+    provenance: Option<crate::state::EngineExecutionProvenance>,
     id: Uuid,
     status: String,
     #[serde(default)]
@@ -1411,6 +1463,7 @@ mod tests {
             ProviderOutputType::Image,
             ProviderConnection::LatentSlateEngine {
                 base_url,
+                recipe: None,
                 api_key: Some("unit-token".to_string()),
                 tool_key: "unit.test".to_string(),
                 schema_revision: 1,
@@ -1473,6 +1526,509 @@ mod tests {
             )
             .await
             .expect("write mock response");
+    }
+
+    fn user_recipe_catalog() -> EngineCatalog {
+        serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-user-catalog-d8a5979.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn published_recipe_catalog_consumes_all_eight_operations_and_fixed_contracts() {
+        use crate::core::generation::{
+            effective_canvas_dimensions, predicted_output_timing, provider_request_duration,
+        };
+        let catalog = user_recipe_catalog();
+        let providers =
+            catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap();
+        assert_eq!(providers.len(), 10);
+        for (tool, provider) in catalog.tools.iter().zip(&providers) {
+            assert_eq!(provider.id, tool.id);
+            assert!(
+                matches!(&provider.connection, ProviderConnection::LatentSlateEngine { recipe, .. } if recipe == &tool.recipe && recipe.is_some())
+            );
+            assert_eq!(
+                serde_json::from_value::<ProviderEntry>(serde_json::to_value(provider).unwrap())
+                    .unwrap(),
+                *provider
+            );
+        }
+        let fixed = &providers[8];
+        assert!(!fixed.inputs.iter().any(|input| matches!(
+            input.role,
+            Some(InputRole::Width | InputRole::Height | InputRole::DurationSeconds)
+        )));
+        assert_eq!(
+            effective_canvas_dimensions(fixed, &HashMap::new()),
+            Some((256, 256))
+        );
+        let duration = provider_request_duration(fixed, &HashMap::new()).unwrap();
+        assert_eq!(duration, 2.0);
+        let timing = predicted_output_timing(fixed, duration).unwrap();
+        assert_eq!((timing.frame_count, timing.fps), (57, Some(30.0)));
+
+        let mut mixed = fixed.clone();
+        mixed.canvas.as_mut().unwrap().fixed_height = None;
+        let mut height = providers[1]
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::Height))
+            .unwrap()
+            .clone();
+        height.default = Some(json!(320));
+        mixed.inputs.push(height.clone());
+        assert_eq!(
+            effective_canvas_dimensions(&mixed, &HashMap::new()),
+            Some((256, 320))
+        );
+        assert_eq!(
+            effective_canvas_dimensions(&mixed, &HashMap::from([(height.name, json!(512))])),
+            Some((256, 512))
+        );
+
+        let field = providers[9]
+            .inputs
+            .iter()
+            .find(|field| field.ordered_collection)
+            .unwrap();
+        assert_eq!(field.default, Some(json!([0.5, 0.25])));
+        assert!(
+            crate::core::generation::validate_simple_input(field, &json!([0.25, 0.75])).is_none()
+        );
+        assert!(
+            crate::core::generation::validate_simple_input(field, &json!([0.25, 1.5])).is_some()
+        );
+        assert!(crate::core::generation::validate_simple_input(field, &json!(0.25)).is_some());
+    }
+
+    #[test]
+    fn unsupported_collection_contract_skips_the_whole_tool() {
+        let original = user_recipe_catalog();
+        for (kind, collection, ordered, nullable) in [
+            ("image", true, true, false),
+            ("number", true, false, false),
+            ("number", false, true, false),
+            ("number", true, true, true),
+            ("text", true, true, false),
+        ] {
+            let mut catalog = original.clone();
+            let input = catalog.tools[9]
+                .inputs
+                .iter_mut()
+                .find(|input| input.collection)
+                .unwrap();
+            input.r#type = kind.to_string();
+            input.collection = collection;
+            input.ordered = ordered;
+            input.nullable = nullable;
+            assert!(
+                tool_to_provider(&catalog.tools[9], &EngineConnectionSettings::default())
+                    .unwrap_err()
+                    .contains("unsupported contract")
+            );
+            let providers =
+                catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
+                    .unwrap();
+            assert_eq!(providers.len(), 9);
+            assert!(!providers
+                .iter()
+                .any(|provider| provider.id == catalog.tools[9].id));
+        }
+    }
+
+    #[test]
+    fn recipe_refresh_reconciles_schema_preserves_media_and_round_trips_provenance() {
+        use crate::state::{Asset, AssetLabNode, GenerationRecord, InputValue, Project};
+        let root = std::env::temp_dir().join(format!("ls-recipe-refresh-{}", Uuid::new_v4()));
+        let mut catalog = user_recipe_catalog();
+        catalog.tools[9].available = true;
+        let original =
+            tool_to_provider(&catalog.tools[9], &EngineConnectionSettings::default()).unwrap();
+        let provenance = crate::state::EngineExecutionProvenance {
+            tool_id: original.id,
+            schema_revision: catalog.tools[9].schema_revision,
+            schema_hash: catalog.tools[9].schema_hash.clone(),
+            recipe: catalog.tools[9].recipe.clone(),
+        };
+        let mut editor = crate::editor::EditorState::new();
+        editor.project = Project::new("recipe refresh");
+        editor.project.project_path = Some(root.clone());
+        editor.provider_entries = vec![original.clone()];
+        let asset_id = editor.project.add_asset(Asset::new_generative_video(
+            "Shot",
+            "generated/video/shot".into(),
+            30.0,
+            57,
+        ));
+        let inputs = HashMap::from([
+            (
+                "prompt".into(),
+                InputValue::Literal {
+                    value: json!("A waterfall"),
+                },
+            ),
+            ("width".into(), InputValue::Literal { value: json!(512) }),
+            ("height".into(), InputValue::Literal { value: json!(512) }),
+            (
+                "duration_seconds".into(),
+                InputValue::Literal { value: json!(2.0) },
+            ),
+            (
+                "transformer_adapter_strengths".into(),
+                InputValue::Literal {
+                    value: json!([0.75, 0.125]),
+                },
+            ),
+        ]);
+        editor.project.update_generative_config(asset_id, |config| {
+            config.provider_id = Some(original.id);
+            config.inputs = inputs.clone();
+            config.active_version = Some("v1".into());
+            let mut node = AssetLabNode::new(Some(original.id));
+            node.inputs = inputs.clone();
+            config.lab_graph.nodes.push(node);
+            config.versions.push(GenerationRecord {
+                version: "v1".into(),
+                timestamp: chrono::Utc::now(),
+                provider_id: original.id,
+                inputs_snapshot: inputs.clone(),
+                media_bindings_snapshot: HashMap::new(),
+                resolved_media_inputs: HashMap::new(),
+                lab_node_id: None,
+                engine_execution: Some(provenance.clone()),
+            });
+        });
+        let before_timing =
+            serde_json::to_value(editor.project.find_asset(asset_id).unwrap()).unwrap();
+        let mut compatible = original.clone();
+        if let ProviderConnection::LatentSlateEngine {
+            recipe: Some(recipe),
+            ..
+        } = &mut compatible.connection
+        {
+            recipe.revision += 5;
+            recipe.definition_hash = "sha256:new-hidden-value".into();
+        }
+        editor.apply_provider_refresh(vec![compatible.clone()], vec![], vec![], vec![]);
+        assert_eq!(
+            editor.project.generative_config(asset_id).unwrap().inputs,
+            inputs
+        );
+        assert_eq!(
+            serde_json::to_value(editor.project.find_asset(asset_id).unwrap()).unwrap(),
+            before_timing
+        );
+        assert_eq!(editor.provider_entries[0], compatible);
+
+        let mut changed = compatible.clone();
+        if let ProviderConnection::LatentSlateEngine {
+            schema_revision,
+            schema_hash,
+            ..
+        } = &mut changed.connection
+        {
+            *schema_revision += 1;
+            *schema_hash = "sha256:new-surface".into();
+        }
+        changed
+            .inputs
+            .retain(|field| field.role != Some(InputRole::Height));
+        changed.canvas.as_mut().unwrap().fixed_height = Some(256);
+        let width = changed
+            .inputs
+            .iter_mut()
+            .find(|field| field.role == Some(InputRole::Width))
+            .unwrap();
+        width.name = "new_width".into();
+        width.ui.as_mut().unwrap().max = Some(256.0);
+        editor.apply_provider_refresh(vec![changed.clone()], vec![], vec![], vec![]);
+        let config = editor.project.generative_config(asset_id).unwrap();
+        assert!(!config.inputs.contains_key("width") && !config.inputs.contains_key("height"));
+        assert_eq!(
+            config.inputs["new_width"],
+            InputValue::Literal { value: json!(512) }
+        );
+        assert_eq!(config.lab_graph.nodes[0].inputs, config.inputs);
+        assert!(crate::core::generation::preflight_provider_config(
+            &editor.project,
+            Some(asset_id),
+            None,
+            &changed,
+            config
+        )
+        .iter()
+        .any(|issue| issue.message.contains("at most 256")));
+        assert_eq!(
+            serde_json::to_value(editor.project.find_asset(asset_id).unwrap()).unwrap(),
+            before_timing
+        );
+        assert_eq!(
+            config.versions[0].engine_execution,
+            Some(provenance.clone())
+        );
+        assert_eq!(config.versions[0].inputs_snapshot, inputs);
+
+        let config_before_disabled = config.clone();
+        editor.apply_provider_refresh(vec![], vec![], vec![], vec![]);
+        assert_eq!(
+            editor.project.generative_config(asset_id).unwrap(),
+            &config_before_disabled
+        );
+        assert!(editor.provider_entries.is_empty());
+        editor.apply_provider_refresh(vec![changed], vec![], vec![], vec![]);
+        assert_eq!(editor.provider_entries[0].id, original.id);
+        editor.project.save().unwrap();
+        let reopened = Project::load(&root).unwrap();
+        let saved = reopened.generative_config(asset_id).unwrap();
+        assert_eq!(saved.versions[0].engine_execution, Some(provenance));
+        assert_eq!(
+            saved.inputs["transformer_adapter_strengths"],
+            inputs["transformer_adapter_strengths"]
+        );
+        assert_eq!(saved.versions[0].inputs_snapshot, inputs);
+        let mut old_record = serde_json::to_value(&saved.versions[0]).unwrap();
+        old_record
+            .as_object_mut()
+            .unwrap()
+            .remove("engine_execution");
+        assert!(serde_json::from_value::<GenerationRecord>(old_record)
+            .unwrap()
+            .engine_execution
+            .is_none());
+
+        mark_cached_catalog_unavailable(&mut catalog);
+        let cached =
+            catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap();
+        assert!(cached
+            .iter()
+            .all(|provider| !provider_is_available(provider)));
+        assert!(matches!(
+            &cached[9].connection,
+            ProviderConnection::LatentSlateEngine {
+                recipe: Some(_),
+                ..
+            }
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fixed_canvas_preflight_and_materialization_do_not_invent_hidden_inputs() {
+        use crate::core::generation::{preflight_provider_config, resolve_provider_inputs};
+        use crate::state::{
+            Asset, GenerativeConfig, InputValue, MediaBindingSource, MediaBindingSpec, Project,
+        };
+        let root = std::env::temp_dir().join(format!("ls-fixed-media-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        image::RgbImage::new(256, 256)
+            .save(root.join("source.png"))
+            .unwrap();
+        let mut project = Project::new("fixed media");
+        project.project_path = Some(root.clone());
+        let source_id = project.add_asset(Asset::new_image("Source", "source.png".into()));
+        let mut catalog = user_recipe_catalog();
+        catalog.tools[8].available = true;
+        let provider =
+            tool_to_provider(&catalog.tools[8], &EngineConnectionSettings::default()).unwrap();
+        let image_input = provider
+            .inputs
+            .iter()
+            .find(|field| field.input_type == ProviderInputType::Image)
+            .unwrap();
+        let mut config = GenerativeConfig::default();
+        config.provider_id = Some(provider.id);
+        config.inputs.insert(
+            "prompt".into(),
+            InputValue::Literal {
+                value: json!("Waterfall"),
+            },
+        );
+        config.media_bindings.insert(
+            image_input.name.clone(),
+            MediaBindingSpec {
+                source: MediaBindingSource::ProjectAsset {
+                    asset_id: source_id,
+                    version: None,
+                },
+                ..Default::default()
+            },
+        );
+        assert!(preflight_provider_config(&project, None, None, &provider, &config).is_empty());
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert!(
+            resolved.media_errors.is_empty(),
+            "{:?}",
+            resolved.media_errors
+        );
+        assert!(resolved.input_errors.is_empty());
+        assert_eq!(
+            image::image_dimensions(resolved.values[&image_input.name].as_str().unwrap()).unwrap(),
+            (256, 256)
+        );
+        for key in ["width", "height", "duration_seconds"] {
+            assert!(
+                !resolved.values.contains_key(key)
+                    && !resolved.snapshot.contains_key(key)
+                    && !config.inputs.contains_key(key)
+            );
+        }
+        image::RgbImage::new(512, 256)
+            .save(root.join("source.png"))
+            .unwrap();
+        assert!(
+            preflight_provider_config(&project, None, None, &provider, &config)
+                .iter()
+                .any(|issue| issue.message.contains("256×256 output canvas"))
+        );
+        assert_eq!(
+            resolve_provider_inputs(&project, None, None, &provider, &config)
+                .media_errors
+                .len(),
+            1
+        );
+        let mut mixed = provider.clone();
+        mixed.canvas.as_mut().unwrap().fixed_height = None;
+        let height = user_recipe_catalog().tools[0]
+            .inputs
+            .iter()
+            .find(|input| input.role.as_deref() == Some("height"))
+            .unwrap()
+            .clone();
+        mixed.inputs.push(convert_input(&height).unwrap());
+        config.inputs.insert(
+            height.key.clone(),
+            InputValue::Literal { value: json!(320) },
+        );
+        image::RgbImage::new(256, 320)
+            .save(root.join("source.png"))
+            .unwrap();
+        assert!(preflight_provider_config(&project, None, None, &mixed, &config).is_empty());
+        let resolved = resolve_provider_inputs(&project, None, None, &mixed, &config);
+        assert!(
+            resolved.media_errors.is_empty(),
+            "{:?}",
+            resolved.media_errors
+        );
+        assert!(
+            resolved.input_errors.is_empty(),
+            "{:?}",
+            resolved.input_errors
+        );
+        assert_eq!(resolved.values[&height.key], json!(320));
+        assert!(!resolved.values.contains_key("width"));
+        assert_eq!(
+            image::image_dimensions(resolved.values[&image_input.name].as_str().unwrap()).unwrap(),
+            (256, 320)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_submission_preserves_order_recipe_and_accepted_provenance() {
+        for user_recipe in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut provider = test_engine_provider(format!("http://{address}"));
+            let recipe =
+                user_recipe.then(|| user_recipe_catalog().tools[9].recipe.clone().unwrap());
+            if let ProviderConnection::LatentSlateEngine {
+                recipe: current, ..
+            } = &mut provider.connection
+            {
+                *current = recipe.clone();
+            }
+            let expected = recipe
+                .clone()
+                .map(|recipe| crate::state::EngineExecutionProvenance {
+                    tool_id: provider.id,
+                    schema_revision: 1,
+                    schema_hash: "sha256:unit".into(),
+                    recipe: Some(recipe),
+                });
+            let returned = expected.clone();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_mock_request(&mut stream).await;
+                let body: Value =
+                    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                let mut status = json!({"id":Uuid::new_v4(),"status":"succeeded","artifacts":[{"role":"primary","filename":"result.png","download_url":"/result.png"}]});
+                if let Some(provenance) = returned {
+                    status.as_object_mut().unwrap().extend(
+                        serde_json::to_value(provenance)
+                            .unwrap()
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+                write_mock_json(&mut stream, 200, status).await;
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert!(read_mock_request(&mut stream)
+                    .await
+                    .starts_with("GET /result.png "));
+                write_mock_json(&mut stream, 200, json!("artifact bytes")).await;
+                body
+            });
+            let inputs =
+                HashMap::from([("transformer_adapter_strengths".into(), json!([0.75, 0.125]))]);
+            let output = crate::providers::execute_generation(
+                &provider,
+                &inputs,
+                ProviderOutputType::Image,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(output.engine_execution, expected);
+            let body = server.await.unwrap();
+            let mut expected_body = json!({"tool_id":provider.id,"schema_revision":1,"schema_hash":"sha256:unit","inputs":inputs});
+            if let Some(recipe) = recipe {
+                expected_body["recipe"] = serde_json::to_value(recipe).unwrap();
+            }
+            assert_eq!(body, expected_body);
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_recipe_submission_fails_without_resubmission() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut provider = test_engine_provider(format!("http://{address}"));
+        if let ProviderConnection::LatentSlateEngine { recipe, .. } = &mut provider.connection {
+            *recipe = user_recipe_catalog().tools[9].recipe.clone();
+        }
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(read_mock_request(&mut stream)
+                .await
+                .starts_with("POST /v1/jobs "));
+            write_mock_json(
+                &mut stream,
+                409,
+                json!({"error":{"message":"Recipe revision changed"}}),
+            )
+            .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(250), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let result = crate::providers::execute_generation(
+            &provider,
+            &HashMap::new(),
+            ProviderOutputType::Image,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ProviderExecutionError::RefreshRequired(message)) if message.contains("submit again"))
+        );
+        server.await.unwrap();
     }
 
     async fn spawn_cancel_mock(
@@ -1589,6 +2145,7 @@ mod tests {
 
     fn test_engine_job(status: &str, progress: Option<f64>, message: Option<&str>) -> EngineJob {
         EngineJob {
+            provenance: None,
             id: Uuid::nil(),
             status: status.to_string(),
             progress,
@@ -1888,6 +2445,8 @@ mod tests {
         assert_eq!(
             provider.canvas,
             Some(CanvasContract {
+                fixed_width: None,
+                fixed_height: None,
                 alignment: 32,
                 min_side: 64,
                 max_side: None,
@@ -1901,6 +2460,8 @@ mod tests {
         assert_eq!(
             timing.duration_seconds,
             Some(crate::state::ProviderDurationTiming {
+                mode: None,
+                value: None,
                 min: 1.0,
                 max: 5.0,
                 step: 0.25,

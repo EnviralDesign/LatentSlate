@@ -96,6 +96,7 @@ pub async fn generate_video(
     cloud::send_progress(&progress_tx, 1.0);
 
     Ok(ProviderOutput {
+        engine_execution: None,
         bytes,
         extension: extension_from_url(&video_url).unwrap_or_else(|| "mp4".to_string()),
     })

@@ -15,12 +15,14 @@ pub(super) enum GenerationEvent {
 
 #[derive(Debug)]
 pub(super) struct GenerationOutput {
+    pub(super) engine_execution: Option<crate::state::EngineExecutionProvenance>,
     pub(super) version: String,
     pub(super) path: PathBuf,
 }
 
 #[derive(Debug)]
 pub(super) enum GenerationFailure {
+    RefreshRequired(String),
     Offline(String),
     Error(String),
     Canceled,
@@ -71,7 +73,7 @@ impl LatentSlateApp {
 
     pub(super) fn service_generation_queue(&mut self, ctx: &Context) {
         while let Ok(event) = self.generation_events_rx.try_recv() {
-            self.handle_generation_event(event);
+            self.handle_generation_event(ctx, event);
         }
 
         if generation_queue_slot_available(self.generation_active) {
@@ -155,7 +157,7 @@ impl LatentSlateApp {
         });
     }
 
-    pub(super) fn handle_generation_event(&mut self, event: GenerationEvent) {
+    pub(super) fn handle_generation_event(&mut self, ctx: &Context, event: GenerationEvent) {
         match event {
             GenerationEvent::Progress {
                 job_id,
@@ -265,6 +267,10 @@ impl LatentSlateApp {
                     }
                     Err(err) => {
                         let mut technical_detail = match err {
+                            GenerationFailure::RefreshRequired(err) => {
+                                self.start_provider_refresh(ctx);
+                                err
+                            }
                             GenerationFailure::Offline(err) => format!("Provider offline: {err}"),
                             GenerationFailure::Error(err) => err,
                             GenerationFailure::Canceled => "Generation cancelled.".to_string(),
@@ -368,6 +374,7 @@ impl LatentSlateApp {
 
         let version = output.version.clone();
         let record = GenerationRecord {
+            engine_execution: output.engine_execution,
             version: version.clone(),
             timestamp: chrono::Utc::now(),
             provider_id: job.provider.id,
@@ -890,7 +897,7 @@ fn resolve_canceling_completion(
             ),
             None,
         ),
-        Err(GenerationFailure::Error(err)) => (
+        Err(GenerationFailure::Error(err) | GenerationFailure::RefreshRequired(err)) => (
             GenerationJobStatus::Failed,
             format!("Canceling generation could not complete: {err}"),
             None,
@@ -974,6 +981,7 @@ mod cancellation_tests {
         let path = PathBuf::from("C:/ignored/late-success.png");
         let (status, message, unpublished_output) =
             resolve_canceling_completion(Ok(GenerationOutput {
+                engine_execution: None,
                 version: "v1".to_string(),
                 path: path.clone(),
             }));
@@ -987,6 +995,7 @@ mod cancellation_tests {
         let path = std::env::temp_dir().join(format!("latentslate-cancel-{}.png", Uuid::new_v4()));
         std::fs::write(&path, b"unbound output").expect("create test output");
         let (_, _, unpublished_output) = resolve_canceling_completion(Ok(GenerationOutput {
+            engine_execution: None,
             version: "v1".to_string(),
             path: path.clone(),
         }));

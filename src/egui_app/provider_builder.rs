@@ -1098,6 +1098,7 @@ impl ProviderBuilderState {
                 },
             });
             provider_inputs.push(ProviderInputField {
+                ordered_collection: false,
                 image_dimensions: input.image_dimensions,
                 name: input.name.clone(),
                 label: input.label.clone(),

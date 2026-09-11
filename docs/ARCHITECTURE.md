@@ -81,7 +81,7 @@ Generative config tracks:
 - selected provider ID
 - provider input values and asset references
 - batch/seed settings
-- generation records
+- generation records, including optional accepted Engine tool/schema/recipe provenance
 - active version
 - Asset Lab node lineage
 
@@ -128,7 +128,7 @@ source segments from the project timeline.
 
 Current runtime adapters:
 
-- LatentSlate Engine over HTTP: eight fixed tools across LTX 2.3, Klein 9B, and Wan 2.2 14B Turbo. The Engine owns inference and GPU worker lifecycle; the app owns project media and generation/version editing.
+- LatentSlate Engine over HTTP: eight built-in tools and enabled user recipes across LTX 2.3, Klein 9B, and Wan 2.2 14B Turbo. The Engine owns inference and GPU worker lifecycle; the app owns project media and generation/version editing.
 - ComfyUI image/video/audio through workflow API JSON plus manifest bindings.
 - OpenAI image.
 - xAI image.
@@ -147,10 +147,13 @@ The last successful Engine catalog is cached. If the Engine is offline at app
 startup, cached tools remain inspectable and selectable, but execution still
 requires a reachable compatible Engine.
 
-Every Engine job includes the catalog's schema revision and hash. The Engine
-rejects stale requests explicitly. Project-level schema snapshots and a
-reconciliation screen are not implemented yet; the stable identities and
-revision/hash contract are the framework for that later work.
+Every Engine job includes the catalog's schema revision/hash and, for user tools,
+the exact recipe revision/hash. A 409 fails the attempt and refreshes providers;
+it never resubmits automatically. A changed schema reconciles current asset and
+Asset Lab inputs, preserving shared creative roles without repairing invalid
+values. Compatible recipe refreshes retain inputs. Existing generated media and
+accepted execution provenance remain unchanged. Project-level schema snapshots
+and a reconciliation screen are not implemented.
 
 ## Generation Flow
 

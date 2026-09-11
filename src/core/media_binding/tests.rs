@@ -14,6 +14,7 @@ fn uid(n: u128) -> Uuid {
 
 fn image_field(role: Option<InputRole>) -> ProviderInputField {
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: match role {
             Some(InputRole::EndImage) => "end_image".into(),
@@ -34,6 +35,7 @@ fn image_field(role: Option<InputRole>) -> ProviderInputField {
 
 fn audio_field() -> ProviderInputField {
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: "audio".into(),
         label: "Audio".into(),
@@ -48,6 +50,7 @@ fn audio_field() -> ProviderInputField {
 
 fn video_field() -> ProviderInputField {
     ProviderInputField {
+        ordered_collection: false,
         image_dimensions: None,
         name: "video".into(),
         label: "Video".into(),

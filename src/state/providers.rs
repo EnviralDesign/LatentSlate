@@ -110,6 +110,10 @@ pub const DEFAULT_TIMELINE_BRIDGE_MAX_VISIBLE_FRAMES: u32 = 80;
 /// requested canvas: off-grid or over-budget geometry is rejected at submit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CanvasContract {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_height: Option<u32>,
     pub alignment: u32,
     pub min_side: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,6 +149,10 @@ pub struct ProviderDurationFrameCount {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderDurationTiming {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
     pub min: f64,
     pub max: f64,
     pub step: f64,
@@ -195,6 +203,8 @@ pub enum ImageDimensionsRequirement {
 /// Schema field describing a single provider input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderInputField {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ordered_collection: bool,
     pub name: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +261,8 @@ pub enum ProviderConnection {
         tool_key: String,
         schema_revision: u32,
         schema_hash: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recipe: Option<EngineRecipeIdentity>,
         available: bool,
         #[serde(default)]
         unavailable_reason: Option<String>,
@@ -259,6 +271,24 @@ pub enum ProviderConnection {
         base_url: String,
         api_key: Option<String>,
     },
+}
+
+/// Immutable recipe revision selected from the Engine catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineRecipeIdentity {
+    pub id: Uuid,
+    pub revision: u64,
+    pub definition_hash: String,
+}
+
+/// Identity reported by Engine for the accepted generation job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineExecutionProvenance {
+    pub tool_id: Uuid,
+    pub schema_revision: u32,
+    pub schema_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<EngineRecipeIdentity>,
 }
 
 /// A configured provider entry stored on disk.
@@ -623,6 +653,7 @@ mod tests {
         );
         provider.description = Some("Use this for still keyframes.".to_string());
         provider.inputs.push(ProviderInputField {
+            ordered_collection: false,
             image_dimensions: None,
             name: "prompt".to_string(),
             label: "Prompt".to_string(),

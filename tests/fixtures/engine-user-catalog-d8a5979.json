@@ -1,0 +1,1270 @@
+{
+  "protocol_version": "1.0",
+  "engine_version": "0.1.0",
+  "bundles": [],
+  "tools": [
+    {
+      "id": "67f2727f-73c1-5f02-9022-ac40b7c2bb5d",
+      "key": "user_recipe.ad70fb92-ffd5-5b37-aa70-5e69343ba00b",
+      "schema_revision": 1,
+      "name": "Default ltx23.t2v",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "text_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 64
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 64
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 64,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:ddc76992707f92fc61322f7dd8f8f84c00543c5aa284aad90a368da4e49dc69c",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
+        }
+      },
+      "recipe": {
+        "id": "ad70fb92-ffd5-5b37-aa70-5e69343ba00b",
+        "revision": 1,
+        "definition_hash": "677d1aa6c5f5e28b6e62066ac414a8a35cc13d97871ebf5c69bf4ea6166cbfb8"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "2b35a38f-f1f1-550e-8e80-ae48efbcd994",
+      "key": "user_recipe.bffae194-60d3-5ae1-b96b-82efd5fa414c",
+      "schema_revision": 1,
+      "name": "Default ltx23.i2v",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "image_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "start_image",
+          "type": "image",
+          "required": true,
+          "role": "start_image",
+          "label": "Start Image",
+          "image_dimensions": "match_output_canvas"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 64
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 64
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 64,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:9c75c4fd763f8d569e0b372a59a76f8ba1e480e6aa39334236c26398e5675e60",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
+        }
+      },
+      "recipe": {
+        "id": "bffae194-60d3-5ae1-b96b-82efd5fa414c",
+        "revision": 1,
+        "definition_hash": "312ea818c891ff8fdc37da06dc78791629ce6c1e38a5c073c778787c79114c78"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "c9cc1cca-6c34-537e-ba8a-f72317efdc6f",
+      "key": "user_recipe.3a64dd17-e8da-543c-881a-59b234c9b435",
+      "schema_revision": 1,
+      "name": "Default ltx23.flf",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "first_frame_last_frame_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "start_image",
+          "type": "image",
+          "required": true,
+          "role": "start_image",
+          "label": "First Frame",
+          "image_dimensions": "match_output_canvas"
+        },
+        {
+          "key": "end_image",
+          "type": "image",
+          "required": true,
+          "role": "end_image",
+          "label": "Last Frame",
+          "image_dimensions": "match_output_canvas"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 32
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 32
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 32,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:b8a519dd7fb7221503353fcbe839c86338c0d0146ca626d4f62d0cb94960afe6",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
+        }
+      },
+      "recipe": {
+        "id": "3a64dd17-e8da-543c-881a-59b234c9b435",
+        "revision": 1,
+        "definition_hash": "53f6b4dd1042c078e8dd69f90b65b92112e1e8da9ecf2bfb3d02cf90b0d52505"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "26418d18-3046-5c01-a519-39950d97358c",
+      "key": "user_recipe.21828b21-2f11-5ef3-b918-4191f678fe55",
+      "schema_revision": 1,
+      "name": "Default flux2_klein9b.t2i",
+      "description": "Generate an image with FLUX.2 Klein 9B distilled.",
+      "workflow_kind": "text_to_image",
+      "output": {
+        "type": "image"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 768,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 256,
+            "max": 4096,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 768,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 256,
+            "max": 4096,
+            "step": 16
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 256,
+        "max_pixels": 1048576,
+        "max_aspect": 4.0
+      },
+      "schema_hash": "sha256:63cda25eade92d6ecb7c4d71a42bc404256807433cd94adf4501af03e3c79de5",
+      "recipe": {
+        "id": "21828b21-2f11-5ef3-b918-4191f678fe55",
+        "revision": 1,
+        "definition_hash": "9eb3a84c98e4bbf61c861a53fa01e5e648f395b03a373b53b9e52b627b4c7bf2"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "bc06c029-5551-509f-8ed1-74a66cd1c42a",
+      "key": "user_recipe.fb49c952-d092-5a3b-a02b-1e2439596bee",
+      "schema_revision": 1,
+      "name": "Default flux2_klein9b.two_image",
+      "description": "Generate an image with FLUX.2 Klein 9B distilled.",
+      "workflow_kind": "image_to_image",
+      "output": {
+        "type": "image"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "image_1",
+          "type": "image",
+          "required": true,
+          "role": "start_image",
+          "label": "Image 1"
+        },
+        {
+          "key": "image_2",
+          "type": "image",
+          "required": true,
+          "role": "end_image",
+          "label": "Image 2"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 768,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 256,
+            "max": 4096,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 768,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 256,
+            "max": 4096,
+            "step": 16
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 256,
+        "max_pixels": 1048576,
+        "max_aspect": 4.0
+      },
+      "schema_hash": "sha256:3ca7abec1d5ccdb3f253ea0c2836492d3c9a18f8149ec35d3e3420fe583349fb",
+      "recipe": {
+        "id": "fb49c952-d092-5a3b-a02b-1e2439596bee",
+        "revision": 1,
+        "definition_hash": "ae03b1757ef1d8150a33d9daba96ae006dd324808776bdc5db622ebfdf192c91"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "2436b845-9a11-5d64-aa00-11aca7d373d9",
+      "key": "user_recipe.1590c93a-329f-5716-b9a5-8d7171513790",
+      "schema_revision": 1,
+      "name": "Default wan2214b.t2v",
+      "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+      "workflow_kind": "text_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 480,
+            "max": 1920,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 480,
+            "max": 1920,
+            "step": 16
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 5.0,
+            "step": 0.25
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 480,
+        "max_pixels": 921600,
+        "max_aspect": 1.7777777777777777
+      },
+      "schema_hash": "sha256:dba8118d421581b81d0b16a2f2043318dcbb38ab6fea2d6ef3ae38ccf7799c5f",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 16.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 5.0,
+          "step": 0.25
+        }
+      },
+      "recipe": {
+        "id": "1590c93a-329f-5716-b9a5-8d7171513790",
+        "revision": 1,
+        "definition_hash": "e76a3838bbf062408554938458e74abd6c796f13f0080f73025500492458c7c6"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "605f0897-65a7-5487-9393-cb0928f08285",
+      "key": "user_recipe.b30f52e9-631c-5f27-888c-438ed51e18b4",
+      "schema_revision": 1,
+      "name": "Default wan2214b.i2v",
+      "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+      "workflow_kind": "image_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "start_image",
+          "type": "image",
+          "required": true,
+          "role": "start_image",
+          "label": "Start Image"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 480,
+            "max": 1920,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 480,
+            "max": 1920,
+            "step": 16
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 5.0,
+            "step": 0.25
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 480,
+        "max_pixels": 921600,
+        "max_aspect": 1.7777777777777777
+      },
+      "schema_hash": "sha256:30709aa12251f78405e911a50c480e5c27dc92078b0a098f0ca28e70a034c121",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 16.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 5.0,
+          "step": 0.25
+        }
+      },
+      "recipe": {
+        "id": "b30f52e9-631c-5f27-888c-438ed51e18b4",
+        "revision": 1,
+        "definition_hash": "da7dac47b0d1f89c0b17c20c55c077b396ef83d87afa739f64b141593f866664"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "7e9862c2-43f8-5835-a45c-474dc0cbbf7a",
+      "key": "user_recipe.966406f3-c29a-5453-be02-78f70ef874e9",
+      "schema_revision": 1,
+      "name": "Default wan2214b.flf",
+      "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+      "workflow_kind": "first_frame_last_frame_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "start_image",
+          "type": "image",
+          "required": true,
+          "role": "start_image",
+          "label": "First Frame"
+        },
+        {
+          "key": "end_image",
+          "type": "image",
+          "required": true,
+          "role": "end_image",
+          "label": "Last Frame"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 480,
+            "max": 1920,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 480,
+            "max": 1920,
+            "step": 16
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 5.0,
+            "step": 0.25
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 480,
+        "max_pixels": 921600,
+        "max_aspect": 1.7777777777777777
+      },
+      "schema_hash": "sha256:2b41f6768600e39f063fac42040535e1ed611f03b83d51e282b4de5630bde056",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 16.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 5.0,
+          "step": 0.25
+        }
+      },
+      "recipe": {
+        "id": "966406f3-c29a-5453-be02-78f70ef874e9",
+        "revision": 1,
+        "definition_hash": "bbeb484c395a9fb6e4830665d52e6e31b198198102d53a64d60c8455819c7870"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "f7f9f814-3268-5622-ac4b-a4830f507aa7",
+      "key": "user_recipe.598c20e3-a236-5fdb-b0b3-800c2cd8758f",
+      "schema_revision": 1,
+      "name": "Fixed LTX I2V",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "image_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "start_image",
+          "type": "image",
+          "required": true,
+          "role": "start_image",
+          "label": "Start Image",
+          "image_dimensions": "match_output_canvas"
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 64,
+        "min_side": 64,
+        "max_pixels": 942080,
+        "fixed_width": 256,
+        "fixed_height": 256
+      },
+      "schema_hash": "sha256:46a5d073a103a8e5aa6d479410b42a7545185d326d4c578cc7bbffc9872acf15",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 2.0,
+          "max": 2.0,
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            }
+          ],
+          "mode": "fixed",
+          "value": 2.0
+        }
+      },
+      "recipe": {
+        "id": "598c20e3-a236-5fdb-b0b3-800c2cd8758f",
+        "revision": 1,
+        "definition_hash": "875167258e2b80d5166509559a76bb771ebab75b9a0027bd71f2c27c23d45419"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    },
+    {
+      "id": "d41a8e82-163b-5b5b-aeb7-f90deae69be6",
+      "key": "user_recipe.e2ae7d7c-62d1-55e2-b0d7-4eae3c5eb9fc",
+      "schema_revision": 1,
+      "name": "Ordered LTX T2V",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "text_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "transformer_adapter_strengths",
+          "type": "number",
+          "required": false,
+          "default": [
+            0.5,
+            0.25
+          ],
+          "collection": true,
+          "ordered": true,
+          "label": "Transformer Adapter Strengths",
+          "ui": {
+            "min": 0.0,
+            "max": 1.0
+          }
+        },
+        {
+          "key": "prompt",
+          "type": "text",
+          "required": true,
+          "label": "Prompt"
+        },
+        {
+          "key": "width",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "width",
+          "label": "Width",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 64
+          }
+        },
+        {
+          "key": "height",
+          "type": "integer",
+          "required": false,
+          "default": 512,
+          "role": "height",
+          "label": "Height",
+          "ui": {
+            "min": 64,
+            "max": 14720,
+            "step": 64
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "type": "number",
+          "required": false,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "label": "Duration",
+          "ui": {
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 0,
+          "role": "seed",
+          "label": "Seed",
+          "ui": {
+            "min": 0,
+            "max": 18446744073709551615
+          }
+        }
+      ],
+      "canvas": {
+        "alignment": 64,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:3399f5dc23639c98f55a8c0a720b3ce51f7552aa552b61fda58d27043e5caff2",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
+        }
+      },
+      "recipe": {
+        "id": "e2ae7d7c-62d1-55e2-b0d7-4eae3c5eb9fc",
+        "revision": 1,
+        "definition_hash": "724a0e6a29d73d9675ce5b53b3ed8de3ac82e6fa1a7ec9c7836a3413b1d0254e"
+      },
+      "available": false,
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+    }
+  ]
+}

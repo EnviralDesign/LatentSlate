@@ -994,6 +994,9 @@ fn retain_node_inputs_for_provider(
 }
 
 fn asset_lab_input_value_valid_for_field(value: &InputValue, input: &ProviderInputField) -> bool {
+    if input.ordered_collection {
+        return matches!(value, InputValue::Literal { value } if value.is_array());
+    }
     match value {
         InputValue::Literal { value } => match &input.input_type {
             ProviderInputType::Text => value.is_string(),
@@ -4653,19 +4656,15 @@ impl LatentSlateApp {
         let Some(fps) = crate::core::generation::provider_fixed_fps(provider) else {
             return;
         };
-        let duration = provider
-            .inputs
-            .iter()
-            .find(|input| input.role == Some(InputRole::DurationSeconds))
-            .and_then(|input| {
-                node.inputs
-                    .get(&input.name)
-                    .and_then(|value| match value {
-                        InputValue::Literal { value } => input_value_as_f64(value),
-                        _ => None,
-                    })
-                    .or_else(|| input.default.as_ref().and_then(input_value_as_f64))
-            });
+        let duration = crate::core::generation::provider_request_duration(provider, &node.inputs);
+        if let Some(duration) = crate::core::generation::provider_fixed_duration(provider) {
+            kit::field_label(ui, "Seconds");
+            kit::readonly_value_box(
+                ui,
+                format!("{duration} (fixed)"),
+                Vec2::new(ui.available_width(), kit::FIELD_H),
+            );
+        }
         ui.add_space(kit::FORM_ROW_GAP);
         kit::field_label(ui, "FPS");
         kit::readonly_value_box(
@@ -4961,6 +4960,8 @@ impl LatentSlateApp {
                 )
             })
             .unwrap_or(crate::state::CanvasContract {
+                fixed_width: None,
+                fixed_height: None,
                 alignment: 1,
                 min_side: 1,
                 max_side: None,
@@ -5055,6 +5056,18 @@ impl LatentSlateApp {
             })
             .or_else(|| input.default.clone());
 
+        if input.ordered_collection {
+            if let Some(value) =
+                provider_input_ordered_numbers(ui, &label, input, current_value.as_ref())
+            {
+                *action = Some(AssetLabAction::UpdateNodeInput {
+                    node_id: node.id,
+                    input_name: input.name.clone(),
+                    value: InputValue::Literal { value },
+                });
+            }
+            return;
+        }
         match &input.input_type {
             ProviderInputType::Text => {
                 let mut value = current_value
@@ -7241,6 +7254,7 @@ impl LatentSlateApp {
         }
 
         let new_record = GenerationRecord {
+            engine_execution: source_record.engine_execution,
             version: new_version.clone(),
             timestamp: chrono::Utc::now(),
             provider_id: source_record.provider_id,
@@ -8320,6 +8334,7 @@ mod asset_lab_compare_tests {
         ]
         .into_iter()
         .map(|(name, role)| ProviderInputField {
+            ordered_collection: false,
             image_dimensions: None,
             name: name.to_string(),
             label: name.to_string(),
@@ -8341,6 +8356,7 @@ mod asset_lab_compare_tests {
         node_id: Option<Uuid>,
     ) -> GenerationRecord {
         GenerationRecord {
+            engine_execution: None,
             version: version.to_string(),
             timestamp: chrono::Utc::now(),
             provider_id,

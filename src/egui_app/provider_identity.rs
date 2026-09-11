@@ -733,6 +733,7 @@ mod provider_identity_tests {
             canvas: None,
             timing: None,
             connection: ProviderConnection::LatentSlateEngine {
+                recipe: None,
                 base_url: "http://127.0.0.1:8765".to_string(),
                 api_key: None,
                 tool_key: "video.text_to_video".to_string(),
