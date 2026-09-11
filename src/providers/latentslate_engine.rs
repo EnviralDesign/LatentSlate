@@ -1422,6 +1422,10 @@ mod tests {
     }
 
     async fn read_mock_request(stream: &mut TcpStream) -> String {
+        String::from_utf8(read_mock_request_bytes(stream).await).expect("UTF-8 HTTP request")
+    }
+
+    async fn read_mock_request_bytes(stream: &mut TcpStream) -> Vec<u8> {
         let mut bytes = Vec::new();
         let header_end = loop {
             let mut chunk = [0_u8; 1024];
@@ -1447,7 +1451,7 @@ mod tests {
             );
             bytes.extend_from_slice(&chunk[..count]);
         }
-        String::from_utf8(bytes).expect("UTF-8 HTTP request")
+        bytes
     }
 
     async fn write_mock_json(stream: &mut TcpStream, status: u16, body: Value) {
@@ -2210,6 +2214,155 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn canonical_tools_preserve_inputs_through_http_and_primary_download() {
+        use crate::core::generation::resolve_provider_inputs;
+        use crate::state::{
+            Asset, GenerativeConfig, InputValue, MediaBindingSource, MediaBindingSpec, Project,
+        };
+        let catalog: EngineCatalog = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-catalog-b0ece51.json"
+        ))
+        .unwrap();
+        let providers =
+            catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap();
+        let root = std::env::temp_dir().join(format!("latentslate-http-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project = Project::new("HTTP contract");
+        project.project_path = Some(root.clone());
+        project.settings.width = 512;
+        project.settings.height = 512;
+        for (name, color) in [("first.png", [255_u8, 0, 0]), ("last.png", [0_u8, 0, 255])] {
+            image::RgbImage::from_pixel(512, 512, image::Rgb(color))
+                .save(root.join(name))
+                .unwrap();
+            project.assets.push(Asset::new_image(name, name.into()));
+        }
+        for provider in providers {
+            let mut config = GenerativeConfig::default();
+            config.inputs.insert(
+                "prompt".into(),
+                InputValue::Literal {
+                    value: json!("contract prompt"),
+                },
+            );
+            for (index, input) in provider
+                .inputs
+                .iter()
+                .filter(|input| input.input_type == ProviderInputType::Image)
+                .enumerate()
+            {
+                config.media_bindings.insert(
+                    input.name.clone(),
+                    MediaBindingSpec {
+                        source: MediaBindingSource::ProjectAsset {
+                            asset_id: project.assets[index].id,
+                            version: None,
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
+            let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+            assert!(resolved.media_errors.is_empty());
+            let mut expected_inputs = resolved.values.clone();
+            let uploads: Vec<_> = provider
+                .inputs
+                .iter()
+                .filter(|input| input.input_type == ProviderInputType::Image)
+                .map(|input| {
+                    let bytes =
+                        std::fs::read(resolved.values[&input.name].as_str().unwrap()).unwrap();
+                    let id = Uuid::new_v4();
+                    expected_inputs
+                        .insert(input.name.clone(), json!({"type":"asset", "asset_id":id}));
+                    (bytes, id)
+                })
+                .collect();
+            let ProviderConnection::LatentSlateEngine {
+                schema_revision,
+                schema_hash,
+                ..
+            } = &provider.connection
+            else {
+                unreachable!()
+            };
+            let expected = json!({"tool_id":provider.id,"schema_revision":schema_revision,"schema_hash":schema_hash,"inputs":expected_inputs});
+            let extension = if provider.output_type == ProviderOutputType::Image {
+                "png"
+            } else {
+                "mp4"
+            };
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                for (bytes, id) in uploads {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let request = read_mock_request_bytes(&mut stream).await;
+                    assert!(request.starts_with(b"POST /v1/assets HTTP/1.1"));
+                    assert!(request.windows(bytes.len()).any(|window| window == bytes));
+                    assert!(String::from_utf8_lossy(&request)
+                        .contains("authorization: Bearer unit-token"));
+                    write_mock_json(&mut stream, 200, json!({"id":id})).await;
+                }
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = read_mock_request(&mut stream).await;
+                assert!(request.starts_with("POST /v1/jobs HTTP/1.1"));
+                assert_eq!(
+                    serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1)
+                        .unwrap(),
+                    expected
+                );
+                let job = Uuid::new_v4();
+                write_mock_json(
+                    &mut stream,
+                    200,
+                    json!({"id":job,"status":"running","progress":0.25}),
+                )
+                .await;
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert!(read_mock_request(&mut stream)
+                    .await
+                    .starts_with(&format!("GET /v1/jobs/{job} HTTP/1.1")));
+                write_mock_json(&mut stream,200,json!({"id":job,"status":"succeeded","progress":1.0,"artifacts":[{"role":"preview","filename":"preview.png","download_url":"/wrong"},{"role":"primary","filename":format!("result.{extension}"),"download_url":"/primary"}]})).await;
+                let (mut stream, _) = listener.accept().await.unwrap();
+                assert!(read_mock_request(&mut stream)
+                    .await
+                    .starts_with("GET /primary HTTP/1.1"));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\ndone",
+                    )
+                    .await
+                    .unwrap();
+            });
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let output = tokio::time::timeout(
+                Duration::from_secs(10),
+                generate_output(
+                    &provider,
+                    &url,
+                    Some("unit-token"),
+                    *schema_revision,
+                    schema_hash,
+                    true,
+                    None,
+                    &resolved.values,
+                    Some(tx),
+                    None,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            server.await.unwrap();
+            assert_eq!(output.bytes, b"done");
+            assert_eq!(output.extension, extension);
+            assert!(rx.try_recv().is_ok());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn historical_catalog_and_optional_image_constraint_round_trip() {
         let catalog: EngineCatalog = serde_json::from_str(include_str!(
@@ -2322,6 +2475,17 @@ mod tests {
         let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
         assert_eq!(resolved.media_errors.len(), 1);
         assert!(resolved.media_errors[0].starts_with(&images[1].label));
+        let first_binding = config.media_bindings[&images[0].name].clone();
+        let last_binding = config.media_bindings[&images[1].name].clone();
+        config
+            .media_bindings
+            .insert(images[0].name.clone(), last_binding);
+        config
+            .media_bindings
+            .insert(images[1].name.clone(), first_binding);
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert_eq!(resolved.media_errors.len(), 1);
+        assert!(resolved.media_errors[0].starts_with(&images[0].label));
         provider.connection = ProviderConnection::ComfyUi {
             base_url: "http://unused".into(),
             workflow_path: None,
