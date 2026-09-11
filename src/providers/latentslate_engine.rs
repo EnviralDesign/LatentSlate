@@ -1663,11 +1663,12 @@ mod tests {
         let provider = test_engine_provider(base_url);
 
         let result = run_test_generation(&provider, cancel).await;
+        let status = reqwest::StatusCode::from_u16(delete_status).expect("mock status");
 
         assert!(matches!(
             result,
             Err(ProviderExecutionError::Error(message))
-                if message.contains(&format!("failed ({delete_status})"))
+                if message.contains(&format!("failed ({status})"))
                     && message.contains("mock delete failure")
         ));
         assert_eq!(server.await.expect("mock server").len(), 3);
