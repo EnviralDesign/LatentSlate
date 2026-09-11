@@ -2561,6 +2561,7 @@ pub(super) fn build_provider_input_ui(input: &ProviderBuilderInput) -> Option<In
         || input.ui_step.is_some()
     {
         Some(InputUi {
+            choices: None,
             min: input.ui_min,
             max: input.ui_max,
             step: input.ui_step,

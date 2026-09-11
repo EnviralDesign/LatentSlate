@@ -4517,7 +4517,27 @@ impl LatentSlateApp {
                             kit::field_label(ui, "Output");
                             ui.add_space(kit::FORM_ROW_GAP);
                             if dimension_names.is_some() {
-                                self.asset_lab_canvas_field(ui, &display_node, provider, action);
+                                let (width, height) =
+                                    crate::core::canvas::dimension_pair(provider).unwrap();
+                                if [width, height].iter().any(|input| {
+                                    input.ui.as_ref().is_some_and(|ui| ui.choices.is_some())
+                                }) {
+                                    self.asset_lab_node_input_list(
+                                        ui,
+                                        asset,
+                                        &display_node,
+                                        versions,
+                                        &[width, height],
+                                        action,
+                                    );
+                                } else {
+                                    self.asset_lab_canvas_field(
+                                        ui,
+                                        &display_node,
+                                        provider,
+                                        action,
+                                    );
+                                }
                             }
                             if !timing_inputs.is_empty() || provider.timing.is_some() {
                                 if dimension_names.is_some() {
@@ -5069,6 +5089,23 @@ impl LatentSlateApp {
             return;
         }
         match &input.input_type {
+            ProviderInputType::Number | ProviderInputType::Integer
+                if input.ui.as_ref().is_some_and(|ui| ui.choices.is_some()) =>
+            {
+                if let Some(value) = provider_input_numeric_choice(
+                    ui,
+                    &label,
+                    input,
+                    ("asset_lab_numeric_choice", node.id, &input.name),
+                    current_value.as_ref(),
+                ) {
+                    *action = Some(AssetLabAction::UpdateNodeInput {
+                        node_id: node.id,
+                        input_name: input.name.clone(),
+                        value: InputValue::Literal { value },
+                    });
+                }
+            }
             ProviderInputType::Text => {
                 let mut value = current_value
                     .as_ref()

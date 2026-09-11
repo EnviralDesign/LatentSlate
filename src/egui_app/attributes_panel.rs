@@ -2498,6 +2498,21 @@ impl LatentSlateApp {
         else {
             return false;
         };
+        if [width_input, height_input]
+            .iter()
+            .any(|input| input.ui.as_ref().is_some_and(|ui| ui.choices.is_some()))
+        {
+            self.provider_input_controls(
+                ui,
+                asset_id,
+                None,
+                provider,
+                config_snapshot,
+                &[width_input, height_input],
+                updates,
+            );
+            return true;
+        }
         let canvas = crate::core::canvas::canvas_from_provider(provider).or_else(|| {
             crate::core::canvas::canvas_from_dimension_ui(
                 width_input.ui.as_ref(),
@@ -2579,6 +2594,12 @@ impl LatentSlateApp {
         let fixed_fps = selected_provider.and_then(crate::core::generation::provider_fixed_fps);
         let fixed_duration =
             selected_provider.and_then(crate::core::generation::provider_fixed_duration);
+        let duration_choices = selected_provider.and_then(|provider| {
+            provider.inputs.iter().find(|input| {
+                input.role == Some(InputRole::DurationSeconds)
+                    && input.ui.as_ref().is_some_and(|ui| ui.choices.is_some())
+            })
+        });
         let mapped =
             selected_provider.is_some_and(crate::core::generation::provider_has_duration_mapping);
         let has_output = self
@@ -2586,7 +2607,8 @@ impl LatentSlateApp {
             .project
             .generative_config(asset_id)
             .is_some_and(GenerativeConfig::has_generated_output);
-        let request_owned = mapped || has_output || fixed_duration.is_some();
+        let request_owned =
+            mapped || has_output || fixed_duration.is_some() || duration_choices.is_some();
         let mut next_duration = if request_owned {
             selected_provider
                 .and_then(|provider| {
@@ -2644,6 +2666,23 @@ impl LatentSlateApp {
                 format!("{duration} (fixed)"),
                 Vec2::new(ui.available_width(), kit::FIELD_H),
             );
+        } else if let Some(input) = duration_choices {
+            let current = self
+                .editor
+                .project
+                .generative_config(asset_id)
+                .and_then(|config| literal_config_input(config, &input.name))
+                .or_else(|| input.default.clone());
+            if let Some(value) = provider_input_numeric_choice(
+                ui,
+                "Seconds",
+                input,
+                ("provider_duration_choice", asset_id),
+                current.as_ref(),
+            ) {
+                next_duration = value.as_f64().unwrap_or(next_duration);
+                duration_changed = true;
+            }
         } else {
             duration_changed |= inspector_drag_f64(
                 ui,
@@ -3172,6 +3211,19 @@ impl LatentSlateApp {
                 continue;
             }
             match &input.input_type {
+                ProviderInputType::Number | ProviderInputType::Integer
+                    if input.ui.as_ref().is_some_and(|ui| ui.choices.is_some()) =>
+                {
+                    if let Some(value) = provider_input_numeric_choice(
+                        ui,
+                        &label,
+                        input,
+                        ("provider_numeric_choice", asset_id, &input.name),
+                        current_value.as_ref(),
+                    ) {
+                        updates.push((input.name.clone(), InputValue::Literal { value }));
+                    }
+                }
                 ProviderInputType::Text => {
                     let mut value = current_value
                         .as_ref()

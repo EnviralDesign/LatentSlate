@@ -499,6 +499,8 @@ pub struct ManifestInput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InputUi {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
@@ -519,6 +521,7 @@ pub struct InputUi {
 impl Default for InputUi {
     fn default() -> Self {
         Self {
+            choices: None,
             min: None,
             max: None,
             step: None,

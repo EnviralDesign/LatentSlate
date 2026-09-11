@@ -515,6 +515,20 @@ fn tool_to_provider(
 }
 
 fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
+    if let Some(choices) = input.ui.as_ref().and_then(|ui| ui.choices.as_ref()) {
+        let supported = !choices.is_empty()
+            && choices.iter().all(|choice| match input.r#type.as_str() {
+                "number" => choice.is_number(),
+                "integer" => choice.as_i64().is_some() || choice.as_u64().is_some(),
+                _ => false,
+            });
+        if !supported {
+            return Err(format!(
+                "unsupported contract for input {}: unsupported numeric choices",
+                input.key
+            ));
+        }
+    }
     if input.nullable
         || input.collection != input.ordered
         || (input.collection && (input.r#type != "number" || input.role.is_some()))
@@ -565,6 +579,7 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
         default: input.default.clone(),
         role: input.role.as_deref().and_then(parse_input_role),
         ui: input.ui.as_ref().map(|ui| InputUi {
+            choices: ui.choices.clone(),
             min: ui.min,
             max: ui.max,
             step: ui.step,
@@ -1366,6 +1381,8 @@ struct EngineChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EngineInputUi {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    choices: Option<Vec<Value>>,
     #[serde(default)]
     min: Option<f64>,
     #[serde(default)]
@@ -1635,6 +1652,183 @@ mod tests {
             assert!(!providers
                 .iter()
                 .any(|provider| provider.id == catalog.tools[9].id));
+        }
+    }
+
+    #[test]
+    fn wan_numeric_choices_survive_catalog_provider_and_offline_cache_round_trips() {
+        use crate::core::generation::{preflight_provider_config, validate_simple_input};
+        use crate::state::{GenerativeConfig, InputValue, Project};
+        let tool: EngineTool = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-wan-choices-d8a5979.json"
+        ))
+        .unwrap();
+        let mut catalog = user_recipe_catalog();
+        catalog.tools = vec![tool];
+        let mut cached: EngineCatalog =
+            serde_json::from_str(&serde_json::to_string(&catalog).unwrap()).unwrap();
+        mark_cached_catalog_unavailable(&mut cached);
+        let provider =
+            tool_to_provider(&cached.tools[0], &EngineConnectionSettings::default()).unwrap();
+        let provider: ProviderEntry =
+            serde_json::from_str(&serde_json::to_string(&provider).unwrap()).unwrap();
+        assert!(!provider_is_available(&provider));
+        for (key, choice) in [
+            ("steps", json!(4)),
+            ("split_step", json!(2)),
+            ("cfg", json!(1.0)),
+            ("shift", json!(5.000000000000001)),
+        ] {
+            let field = provider
+                .inputs
+                .iter()
+                .find(|field| field.name == key)
+                .unwrap();
+            assert_eq!(
+                field.ui.as_ref().unwrap().choices,
+                Some(vec![choice.clone()])
+            );
+            assert!(validate_simple_input(field, &choice).is_none());
+            assert!(validate_simple_input(field, &json!(99))
+                .unwrap()
+                .contains("supported choice"));
+        }
+        let mut config = GenerativeConfig::default();
+        config
+            .inputs
+            .insert("steps".into(), InputValue::Literal { value: json!(5) });
+        let issues =
+            preflight_provider_config(&Project::new("choices"), None, None, &provider, &config);
+        assert!(issues.iter().any(|issue| issue
+            .message
+            .contains("Steps must use a supported choice (4)")));
+        let shift = provider
+            .inputs
+            .iter()
+            .find(|field| field.name == "shift")
+            .unwrap();
+        assert!(validate_simple_input(shift, &json!(5.0)).is_some());
+    }
+
+    #[test]
+    fn numeric_choice_refresh_preserves_invalid_carried_values_for_preflight() {
+        use crate::state::{Asset, AssetLabNode, InputValue, Project};
+        let root = std::env::temp_dir().join(format!("ls-choice-refresh-{}", Uuid::new_v4()));
+        let tool: EngineTool = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-wan-choices-d8a5979.json"
+        ))
+        .unwrap();
+        let mut next = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
+        let mut previous = next.clone();
+        previous
+            .inputs
+            .iter_mut()
+            .find(|input| input.name == "steps")
+            .unwrap()
+            .ui
+            .as_mut()
+            .unwrap()
+            .choices = None;
+        if let ProviderConnection::LatentSlateEngine {
+            schema_revision,
+            schema_hash,
+            ..
+        } = &mut next.connection
+        {
+            *schema_revision += 1;
+            *schema_hash = "sha256:narrowed-choices".into();
+        }
+        let mut editor = crate::editor::EditorState::new();
+        editor.project = Project::new("choice refresh");
+        editor.project.project_path = Some(root.clone());
+        editor.provider_entries = vec![previous];
+        let id = editor.project.add_asset(Asset::new_generative_video(
+            "shot",
+            "generated/video/shot".into(),
+            16.0,
+            32,
+        ));
+        editor.project.update_generative_config(id, |config| {
+            config.provider_id = Some(next.id);
+            config
+                .inputs
+                .insert("steps".into(), InputValue::Literal { value: json!(5) });
+            let mut node = AssetLabNode::new(Some(next.id));
+            node.inputs = config.inputs.clone();
+            config.lab_graph.nodes.push(node);
+        });
+        editor.apply_provider_refresh(vec![next.clone()], vec![], vec![], vec![]);
+        let config = editor.project.generative_config(id).unwrap();
+        assert_eq!(
+            config.inputs["steps"],
+            InputValue::Literal { value: json!(5) }
+        );
+        assert_eq!(
+            config.lab_graph.nodes[0].inputs["steps"],
+            config.inputs["steps"]
+        );
+        assert!(crate::core::generation::preflight_provider_config(
+            &editor.project,
+            Some(id),
+            None,
+            &next,
+            config
+        )
+        .iter()
+        .any(|issue| issue
+            .message
+            .contains("Steps must use a supported choice (4)")));
+        editor.project.save().unwrap();
+        assert_eq!(
+            Project::load(&root)
+                .unwrap()
+                .generative_config(id)
+                .unwrap()
+                .inputs["steps"],
+            config.inputs["steps"]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ordered_numeric_choices_validate_every_item_and_unsupported_choices_fail_closed() {
+        let mut tool = user_recipe_catalog().tools[9].clone();
+        let field = tool
+            .inputs
+            .iter_mut()
+            .find(|input| input.key == "transformer_adapter_strengths")
+            .unwrap();
+        field.ui = Some(serde_json::from_value(json!({"choices":[0.25,0.75]})).unwrap());
+        let provider = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
+        let input = provider
+            .inputs
+            .iter()
+            .find(|input| input.name == "transformer_adapter_strengths")
+            .unwrap();
+        assert!(
+            crate::core::generation::validate_simple_input(input, &json!([0.75, 0.25])).is_none()
+        );
+        for (values, item) in [
+            (json!([0.5, 0.25]), "Item 1"),
+            (json!([0.75, 0.5]), "Item 2"),
+        ] {
+            let error = crate::core::generation::validate_simple_input(input, &values).unwrap();
+            assert!(error.contains(item) && error.contains("supported choice"));
+        }
+        for choices in [json!(["0.25"]), json!([])] {
+            tool.inputs
+                .iter_mut()
+                .find(|input| input.key == "transformer_adapter_strengths")
+                .unwrap()
+                .ui
+                .as_mut()
+                .unwrap()
+                .choices = Some(serde_json::from_value(choices).unwrap());
+            assert!(
+                tool_to_provider(&tool, &EngineConnectionSettings::default())
+                    .unwrap_err()
+                    .contains("unsupported")
+            );
         }
     }
 

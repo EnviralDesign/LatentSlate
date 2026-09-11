@@ -1,0 +1,143 @@
+{
+  "id": "2689e339-66b8-50b5-b98a-b45f5c6ff4e5",
+  "key": "user_recipe.8fc022b0-952f-59c2-a31e-88d129fed7ca",
+  "schema_revision": 1,
+  "name": "Wan numeric choices fixture",
+  "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+  "workflow_kind": "text_to_video",
+  "output": {
+    "type": "video"
+  },
+  "inputs": [
+    {
+      "key": "shift",
+      "type": "number",
+      "required": false,
+      "default": 5.000000000000001,
+      "label": "Shift",
+      "ui": {
+        "choices": [
+          5.000000000000001
+        ]
+      }
+    },
+    {
+      "key": "steps",
+      "type": "integer",
+      "required": false,
+      "default": 4,
+      "label": "Steps",
+      "ui": {
+        "choices": [
+          4
+        ]
+      }
+    },
+    {
+      "key": "split_step",
+      "type": "integer",
+      "required": false,
+      "default": 2,
+      "label": "Split Step",
+      "ui": {
+        "choices": [
+          2
+        ]
+      }
+    },
+    {
+      "key": "cfg",
+      "type": "number",
+      "required": false,
+      "default": 1.0,
+      "label": "Cfg",
+      "ui": {
+        "choices": [
+          1.0
+        ]
+      }
+    },
+    {
+      "key": "prompt",
+      "type": "text",
+      "required": true,
+      "label": "Prompt"
+    },
+    {
+      "key": "width",
+      "type": "integer",
+      "required": false,
+      "default": 512,
+      "role": "width",
+      "label": "Width",
+      "ui": {
+        "min": 480,
+        "max": 1920,
+        "step": 16
+      }
+    },
+    {
+      "key": "height",
+      "type": "integer",
+      "required": false,
+      "default": 512,
+      "role": "height",
+      "label": "Height",
+      "ui": {
+        "min": 480,
+        "max": 1920,
+        "step": 16
+      }
+    },
+    {
+      "key": "duration_seconds",
+      "type": "number",
+      "required": false,
+      "default": 5.0,
+      "role": "duration_seconds",
+      "label": "Duration",
+      "ui": {
+        "min": 1.0,
+        "max": 5.0,
+        "step": 0.25
+      }
+    },
+    {
+      "key": "seed",
+      "type": "integer",
+      "required": false,
+      "default": 0,
+      "role": "seed",
+      "label": "Seed",
+      "ui": {
+        "min": 0,
+        "max": 18446744073709551615
+      }
+    }
+  ],
+  "canvas": {
+    "alignment": 16,
+    "min_side": 480,
+    "max_pixels": 921600,
+    "max_aspect": 1.7777777777777777
+  },
+  "schema_hash": "sha256:48f227456e1a009a2b18c978f0f5ee39c3886a027ecaecd709009de6fb3380af",
+  "timing": {
+    "fps": {
+      "mode": "fixed",
+      "value": 16.0
+    },
+    "duration_seconds": {
+      "min": 1.0,
+      "max": 5.0,
+      "step": 0.25
+    }
+  },
+  "recipe": {
+    "id": "8fc022b0-952f-59c2-a31e-88d129fed7ca",
+    "revision": 2,
+    "definition_hash": "51b96d3cabd74fe52ee3de76c2ec44d689ff6d07060b5dd50734d87bb73a570b"
+  },
+  "available": false,
+  "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+}

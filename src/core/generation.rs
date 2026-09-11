@@ -564,6 +564,24 @@ pub fn validate_simple_input(input: &ProviderInputField, value: &Value) -> Optio
         });
     }
     let invalid_type = || Some(format!("{} has an invalid value.", input.label));
+    if let Some(choices) = input.ui.as_ref().and_then(|ui| ui.choices.as_ref()) {
+        if !choices.iter().any(|choice| {
+            choice == value
+                || ((choice.is_f64() || value.is_f64())
+                    && value.is_number()
+                    && choice.as_f64() == value.as_f64())
+        }) {
+            return Some(format!(
+                "{} must use a supported choice ({}).",
+                input.label,
+                choices
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
     if input.role == Some(InputRole::Seed)
         && matches!(
             input.input_type,

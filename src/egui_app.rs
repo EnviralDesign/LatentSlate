@@ -1826,6 +1826,33 @@ fn provider_input_drag_i64(
     kit::integer_step_drag(ui, value, width, step, min, max)
 }
 
+fn provider_input_numeric_choice(
+    ui: &mut Ui,
+    label: &str,
+    input: &ProviderInputField,
+    id_salt: impl std::hash::Hash,
+    current: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let choices = input.ui.as_ref()?.choices.as_ref()?;
+    let mut selected = current.cloned().unwrap_or(serde_json::Value::Null);
+    let before = selected.clone();
+    provider_input_labeled_combo_field(
+        ui,
+        label,
+        input,
+        id_salt,
+        current
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "—".into()),
+        |ui| {
+            for choice in choices {
+                automation_selectable_value(ui, &mut selected, choice.clone(), &choice.to_string());
+            }
+        },
+    );
+    (selected != before).then_some(selected)
+}
+
 fn provider_input_ordered_numbers(
     ui: &mut Ui,
     label: &str,
@@ -1850,6 +1877,19 @@ fn provider_input_ordered_numbers(
     let mut changed = false;
     for (index, value) in updated.iter_mut().enumerate() {
         ui.push_id((&input.name, index), |ui| {
+            if input.ui.as_ref().is_some_and(|ui| ui.choices.is_some()) {
+                if let Some(selected) = provider_input_numeric_choice(
+                    ui,
+                    &format!("Value {}", index + 1),
+                    input,
+                    "ordered_numeric_choice",
+                    Some(value),
+                ) {
+                    *value = selected;
+                    changed = true;
+                }
+                return;
+            }
             kit::field_label(ui, &format!("Value {}", index + 1));
             let draft_id = ui.id().with("ordered_number_draft");
             let mut text = ui
