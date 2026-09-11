@@ -4486,6 +4486,24 @@ impl LatentSlateApp {
                         let standard_inputs = sections.normal;
                         let advanced_inputs = sections.advanced;
 
+                        ui.add_space(kit::ACTION_GAP);
+                        ui.separator();
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        kit::field_label(ui, "Inputs");
+                        ui.add_space(kit::FORM_ROW_GAP);
+                        if standard_inputs.is_empty() {
+                            ui.label(kit::caption("No additional inputs for this provider."));
+                        } else {
+                            self.asset_lab_node_input_list(
+                                ui,
+                                asset,
+                                &display_node,
+                                versions,
+                                &standard_inputs,
+                                action,
+                            );
+                        }
+
                         if dimension_names.is_some()
                             || !timing_inputs.is_empty()
                             || provider.timing.is_some()
@@ -4496,8 +4514,6 @@ impl LatentSlateApp {
                             kit::field_label(ui, "Output");
                             ui.add_space(kit::FORM_ROW_GAP);
                             if dimension_names.is_some() {
-                                ui.label(kit::caption("Canvas"));
-                                ui.add_space(kit::FORM_ROW_GAP);
                                 self.asset_lab_canvas_field(ui, &display_node, provider, action);
                             }
                             if !timing_inputs.is_empty() || provider.timing.is_some() {
@@ -4522,10 +4538,10 @@ impl LatentSlateApp {
                             }
                         }
 
-                        ui.add_space(kit::ACTION_GAP);
-                        ui.separator();
-                        ui.add_space(kit::FORM_ROW_GAP);
                         if !variation_inputs.is_empty() {
+                            ui.add_space(kit::ACTION_GAP);
+                            ui.separator();
+                            ui.add_space(kit::FORM_ROW_GAP);
                             kit::field_label(ui, "Variation");
                             ui.add_space(kit::FORM_ROW_GAP);
                             self.asset_lab_node_input_list(
@@ -4534,23 +4550,6 @@ impl LatentSlateApp {
                                 &display_node,
                                 versions,
                                 &variation_inputs,
-                                action,
-                            );
-                            ui.add_space(kit::ACTION_GAP);
-                            ui.separator();
-                            ui.add_space(kit::FORM_ROW_GAP);
-                        }
-                        kit::field_label(ui, "Inputs");
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        if standard_inputs.is_empty() {
-                            ui.label(kit::caption("No additional inputs for this provider."));
-                        } else {
-                            self.asset_lab_node_input_list(
-                                ui,
-                                asset,
-                                &display_node,
-                                versions,
-                                &standard_inputs,
                                 action,
                             );
                         }

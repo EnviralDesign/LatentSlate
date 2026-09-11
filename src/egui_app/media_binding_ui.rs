@@ -437,7 +437,13 @@ impl LatentSlateApp {
 
             ui.add_space(kit::FORM_ROW_GAP);
             let stability = spec.stability();
-            ui.horizontal(|ui| {
+            let narrow = ui.available_width() < 340.0;
+            let row_layout = if narrow {
+                egui::Layout::top_down(egui::Align::Min)
+            } else {
+                egui::Layout::left_to_right(egui::Align::Center)
+            };
+            ui.with_layout(row_layout, |ui| {
                 ui.spacing_mut().item_spacing.x = kit::FORM_ROW_GAP;
                 ui.label(
                     RichText::new(stability.label())
@@ -448,7 +454,12 @@ impl LatentSlateApp {
                         })
                         .size(11.5),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let actions_layout = if narrow {
+                    egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)
+                } else {
+                    egui::Layout::right_to_left(egui::Align::Center)
+                };
+                ui.with_layout(actions_layout, |ui| {
                     ui.spacing_mut().item_spacing.x = kit::FORM_ROW_GAP;
                     let plan_ok = plan.as_ref().is_some_and(|plan| plan.is_ok());
                     if matches!(stability, MediaBindingStability::FreezeInput) {
@@ -624,7 +635,7 @@ impl LatentSlateApp {
         if media_fields.len() < 2 {
             return;
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if kit::field_button(ui, "Lock all resolved", 140.0).clicked() {
                 self.bulk_lock_media_bindings(asset_id, context_clip_id, provider, config);
             }

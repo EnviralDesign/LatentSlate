@@ -129,6 +129,10 @@ impl LatentSlateApp {
                 }
             });
         });
+        if let Some(message) = header_preflight_error.as_deref() {
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            ui.label(RichText::new(message).color(kit::MARKER).size(11.0));
+        }
         ui.add_space(8.0);
 
         kit::scroll_body(ui, |ui| {
@@ -2253,18 +2257,25 @@ impl LatentSlateApp {
         });
 
         ui.add_space(kit::FORM_ROW_GAP);
-        let mut input_updates = self.provider_output_card(
+        let mut input_updates = self.provider_inputs_card(
             ui,
             asset_id,
             context_clip_id,
-            output_type,
             selected_provider.clone(),
             &config_snapshot,
         );
         if self.should_show_provider_output_card(output_type, selected_provider.as_ref()) {
             ui.add_space(kit::FORM_ROW_GAP);
         }
-        input_updates.extend(self.provider_inputs_card(
+        input_updates.extend(self.provider_output_card(
+            ui,
+            asset_id,
+            context_clip_id,
+            output_type,
+            selected_provider.clone(),
+            &config_snapshot,
+        ));
+        input_updates.extend(self.provider_variation_card(
             ui,
             asset_id,
             context_clip_id,
@@ -2482,14 +2493,6 @@ impl LatentSlateApp {
         }
 
         inspector_card(ui, "Output", |ui| {
-            if selected_provider
-                .as_ref()
-                .and_then(crate::core::canvas::dimension_pair)
-                .is_some()
-            {
-                kit::field_label(ui, "Canvas");
-                ui.add_space(kit::FORM_ROW_GAP);
-            }
             let drew_canvas = selected_provider.as_ref().is_some_and(|provider| {
                 self.provider_canvas_controls(ui, asset_id, provider, config_snapshot, &mut updates)
             });
@@ -2980,7 +2983,6 @@ impl LatentSlateApp {
                 return;
             }
             let sections = crate::core::generation::generation_control_inputs(&provider);
-            let variation_inputs = sections.variation;
             let mut standard_inputs = sections.normal;
             if crate::core::timeline_bridge::provider_is_timeline_bridge(&provider) {
                 standard_inputs.extend(
@@ -2991,35 +2993,10 @@ impl LatentSlateApp {
                         .filter(|input| input.role == Some(InputRole::Fps)),
                 );
             }
-            let advanced_inputs = sections.advanced;
 
             self.media_binding_context_picker(ui, asset_id, context_clip_id);
-            if variation_inputs.is_empty()
-                && standard_inputs.is_empty()
-                && advanced_inputs.is_empty()
-            {
+            if standard_inputs.is_empty() {
                 ui.label(kit::caption("No additional inputs for this provider."));
-                return;
-            }
-            if !variation_inputs.is_empty() {
-                kit::field_label(ui, "Variation");
-                ui.add_space(kit::FORM_ROW_GAP);
-                self.provider_input_controls(
-                    ui,
-                    asset_id,
-                    context_clip_id,
-                    &provider,
-                    config_snapshot,
-                    &variation_inputs,
-                    &mut updates,
-                );
-                if !standard_inputs.is_empty() || !advanced_inputs.is_empty() {
-                    ui.add_space(kit::ACTION_GAP);
-                    ui.separator();
-                    ui.add_space(kit::FORM_ROW_GAP);
-                    kit::field_label(ui, "Inputs");
-                    ui.add_space(kit::FORM_ROW_GAP);
-                }
             }
             self.provider_input_controls(
                 ui,
@@ -3037,32 +3014,58 @@ impl LatentSlateApp {
                 &provider,
                 config_snapshot,
             );
-
-            if !advanced_inputs.is_empty() {
-                if !standard_inputs.is_empty() {
-                    ui.add_space(kit::ACTION_GAP);
-                    ui.separator();
-                    ui.add_space(kit::FORM_ROW_GAP);
-                }
-                egui::CollapsingHeader::new(
-                    RichText::new("Advanced").color(kit::TEXT_MUTED).size(11.0),
-                )
-                .id_salt(("provider_inputs_advanced", asset_id, provider.id))
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.add_space(kit::FORM_ROW_GAP);
-                    self.provider_input_controls(
-                        ui,
-                        asset_id,
-                        context_clip_id,
-                        &provider,
-                        config_snapshot,
-                        &advanced_inputs,
-                        &mut updates,
-                    );
-                });
-            }
         });
+        updates
+    }
+
+    fn provider_variation_card(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        selected_provider: Option<ProviderEntry>,
+        config_snapshot: &GenerativeConfig,
+    ) -> Vec<(String, InputValue)> {
+        let mut updates = Vec::new();
+        let Some(provider) = selected_provider else {
+            return updates;
+        };
+        let sections = crate::core::generation::generation_control_inputs(&provider);
+        if !sections.variation.is_empty() {
+            ui.add_space(kit::FORM_ROW_GAP);
+            inspector_card(ui, "Variation", |ui| {
+                self.provider_input_controls(
+                    ui,
+                    asset_id,
+                    context_clip_id,
+                    &provider,
+                    config_snapshot,
+                    &sections.variation,
+                    &mut updates,
+                );
+            });
+        }
+        let advanced_inputs = sections.advanced;
+        if !advanced_inputs.is_empty() {
+            ui.add_space(kit::ACTION_GAP);
+            egui::CollapsingHeader::new(
+                RichText::new("Advanced").color(kit::TEXT_MUTED).size(11.0),
+            )
+            .id_salt(("provider_inputs_advanced", asset_id, provider.id))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add_space(kit::FORM_ROW_GAP);
+                self.provider_input_controls(
+                    ui,
+                    asset_id,
+                    context_clip_id,
+                    &provider,
+                    config_snapshot,
+                    &advanced_inputs,
+                    &mut updates,
+                );
+            });
+        }
         updates
     }
 
