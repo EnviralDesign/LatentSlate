@@ -176,6 +176,11 @@ impl AssetLabNode {
 }
 
 impl GenerativeConfig {
+    /// Whether timing belongs to generated media rather than a hollow target.
+    pub fn has_generated_output(&self) -> bool {
+        self.active_version.is_some() || !self.versions.is_empty()
+    }
+
     pub fn normalize_lab_graph_lineage(&mut self) {
         let existing_ids: HashSet<Uuid> = self.lab_graph.nodes.iter().map(|node| node.id).collect();
         let outputs_by_version: HashMap<String, Uuid> = self

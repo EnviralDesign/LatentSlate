@@ -136,11 +136,20 @@ pub struct ProviderFpsTiming {
     pub value: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// Predicted encoded frame count for one legal duration request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDurationFrameCount {
+    pub duration_seconds: f64,
+    pub frame_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderDurationTiming {
     pub min: f64,
     pub max: f64,
     pub step: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_frame_counts: Vec<ProviderDurationFrameCount>,
 }
 
 /// Input types supported by provider schemas.

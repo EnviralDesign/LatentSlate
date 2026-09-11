@@ -1,6 +1,6 @@
 {
   "source_repository": "EnviralDesign/LatentSlate-Engine",
-  "source_commit": "b0ece5152b8f35c0213ad41f2de1ae937bb55d56",
+  "source_commit": "0ba2c6624fe7d4b3c73e7072edbf486bf35917f3",
   "capture": "Static service.TOOLS with availability set true for consumer tests; no model execution or live availability claim.",
   "protocol_version": "1.0",
   "engine_version": "0.1.0",
@@ -88,7 +88,85 @@
         "duration_seconds": {
           "min": 1.0,
           "max": 10.0,
-          "step": 0.5
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
         }
       },
       "available": true
@@ -183,7 +261,85 @@
         "duration_seconds": {
           "min": 1.0,
           "max": 10.0,
-          "step": 0.5
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
         }
       },
       "available": true
@@ -286,7 +442,85 @@
         "duration_seconds": {
           "min": 1.0,
           "max": 10.0,
-          "step": 0.5
+          "step": 0.5,
+          "output_frame_counts": [
+            {
+              "duration_seconds": 1.0,
+              "frame_count": 25
+            },
+            {
+              "duration_seconds": 1.5,
+              "frame_count": 41
+            },
+            {
+              "duration_seconds": 2.0,
+              "frame_count": 57
+            },
+            {
+              "duration_seconds": 2.5,
+              "frame_count": 73
+            },
+            {
+              "duration_seconds": 3.0,
+              "frame_count": 89
+            },
+            {
+              "duration_seconds": 3.5,
+              "frame_count": 105
+            },
+            {
+              "duration_seconds": 4.0,
+              "frame_count": 121
+            },
+            {
+              "duration_seconds": 4.5,
+              "frame_count": 129
+            },
+            {
+              "duration_seconds": 5.0,
+              "frame_count": 145
+            },
+            {
+              "duration_seconds": 5.5,
+              "frame_count": 161
+            },
+            {
+              "duration_seconds": 6.0,
+              "frame_count": 177
+            },
+            {
+              "duration_seconds": 6.5,
+              "frame_count": 193
+            },
+            {
+              "duration_seconds": 7.0,
+              "frame_count": 209
+            },
+            {
+              "duration_seconds": 7.5,
+              "frame_count": 225
+            },
+            {
+              "duration_seconds": 8.0,
+              "frame_count": 241
+            },
+            {
+              "duration_seconds": 8.5,
+              "frame_count": 249
+            },
+            {
+              "duration_seconds": 9.0,
+              "frame_count": 265
+            },
+            {
+              "duration_seconds": 9.5,
+              "frame_count": 281
+            },
+            {
+              "duration_seconds": 10.0,
+              "frame_count": 297
+            }
+          ]
         }
       },
       "available": true

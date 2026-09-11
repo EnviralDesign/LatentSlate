@@ -2359,15 +2359,43 @@ impl LatentSlateApp {
                 .project
                 .set_generative_provider_id(asset_id, next_provider_id);
             if let Some(provider) = next_provider {
-                let creative_duration = generative_video_timing(&self.editor.project, asset_id)
-                    .map(|(duration, _, _)| duration);
-                if output_type == ProviderOutputType::Video {
+                let has_output = self
+                    .editor
+                    .project
+                    .generative_config(asset_id)
+                    .is_some_and(GenerativeConfig::has_generated_output);
+                let creative_duration = if has_output
+                    || selected_provider
+                        .as_ref()
+                        .is_some_and(crate::core::generation::provider_has_duration_mapping)
+                {
+                    selected_provider.as_ref().and_then(|previous| {
+                        self.editor
+                            .project
+                            .generative_config(asset_id)
+                            .and_then(|config| {
+                                crate::core::generation::provider_request_duration(
+                                    previous,
+                                    &config.inputs,
+                                )
+                            })
+                    })
+                } else {
+                    generative_video_timing(&self.editor.project, asset_id)
+                        .map(|(duration, _, _)| duration)
+                };
+                if output_type == ProviderOutputType::Video
+                    && !has_output
+                    && !crate::core::generation::provider_has_duration_mapping(provider)
+                {
                     if let Some((duration, fps, _)) =
                         generative_video_timing(&self.editor.project, asset_id)
                     {
                         let (_, next_fps, next_frames) =
                             crate::core::generation::reconcile_video_timing_for_provider(
-                                duration, fps, provider,
+                                creative_duration.unwrap_or(duration),
+                                fps,
+                                provider,
                             );
                         self.editor.project.set_generative_video_timing(
                             asset_id,
@@ -2391,6 +2419,27 @@ impl LatentSlateApp {
                             creative_duration,
                         );
                     });
+                if crate::core::generation::provider_has_duration_mapping(provider) {
+                    let request =
+                        self.editor
+                            .project
+                            .generative_config(asset_id)
+                            .and_then(|config| {
+                                crate::core::generation::provider_request_duration(
+                                    provider,
+                                    &config.inputs,
+                                )
+                            });
+                    if let Some(request) = request {
+                        if let Err(err) = self
+                            .editor
+                            .set_generation_duration_request(asset_id, request)
+                        {
+                            self.editor.status =
+                                format!("Failed to update duration request: {err}");
+                        }
+                    }
+                }
                 if output_type == ProviderOutputType::Video {
                     self.sync_generative_video_timing_inputs(asset_id);
                 }
@@ -2608,9 +2657,60 @@ impl LatentSlateApp {
         };
         let bounds = provider_duration_bounds(selected_provider);
         let fixed_fps = selected_provider.and_then(crate::core::generation::provider_fixed_fps);
-        let mut next_duration = duration;
-        let mut next_fps = fixed_fps.unwrap_or(fps);
-        let mut next_frame_count = frame_count as i64;
+        let mapped =
+            selected_provider.is_some_and(crate::core::generation::provider_has_duration_mapping);
+        let has_output = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .is_some_and(GenerativeConfig::has_generated_output);
+        let request_owned = mapped || has_output;
+        let mut next_duration = if request_owned {
+            selected_provider
+                .and_then(|provider| {
+                    self.editor
+                        .project
+                        .generative_config(asset_id)
+                        .and_then(|config| {
+                            crate::core::generation::provider_request_duration(
+                                provider,
+                                &config.inputs,
+                            )
+                        })
+                })
+                .unwrap_or(0.0)
+        } else {
+            duration
+        };
+        let request_number = |role| {
+            selected_provider.and_then(|provider| {
+                self.editor
+                    .project
+                    .generative_config(asset_id)
+                    .and_then(|config| {
+                        crate::core::generation::provider_request_number(
+                            provider,
+                            &config.inputs,
+                            role,
+                        )
+                    })
+            })
+        };
+        let mut next_fps = fixed_fps.unwrap_or_else(|| {
+            if request_owned {
+                request_number(InputRole::Fps).unwrap_or(self.editor.project.settings.fps)
+            } else {
+                fps
+            }
+        });
+        let mut next_frame_count = if request_owned {
+            request_number(InputRole::FrameCount)
+                .unwrap_or(next_duration * next_fps)
+                .round()
+                .max(1.0) as i64
+        } else {
+            frame_count as i64
+        };
         let mut duration_changed = false;
         let mut fps_changed = false;
         let mut frames_changed = false;
@@ -2631,14 +2731,26 @@ impl LatentSlateApp {
                 Vec2::new(ui.available_width(), kit::FIELD_H),
             );
             ui.add_space(kit::FORM_ROW_GAP);
-            kit::field_label(ui, "Display Frames");
+            kit::field_label(ui, "Output Frames");
+            let predicted = selected_provider.and_then(|provider| {
+                crate::core::generation::predicted_output_timing(provider, next_duration)
+            });
             kit::readonly_value_box(
                 ui,
-                crate::core::generation::delivered_frame_count(next_duration, fixed_fps)
-                    .unwrap_or(1)
-                    .to_string(),
+                predicted
+                    .map(|timing| timing.frame_count.to_string())
+                    .unwrap_or_else(|| "—".to_string()),
                 Vec2::new(ui.available_width(), kit::FIELD_H),
             );
+            if let Some(seconds) = predicted.and_then(|timing| timing.duration_seconds) {
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::field_label(ui, "Output Duration");
+                kit::readonly_value_box(
+                    ui,
+                    format!("{seconds:.3} s"),
+                    Vec2::new(ui.available_width(), kit::FIELD_H),
+                );
+            }
         } else {
             fps_changed |= inspector_drag_f64(ui, "FPS", &mut next_fps, 1.0, ui.available_width());
             ui.add_space(kit::FORM_ROW_GAP);
@@ -2656,6 +2768,15 @@ impl LatentSlateApp {
         }
 
         if !(duration_changed || fps_changed || frames_changed) {
+            return;
+        }
+        if request_owned && duration_changed {
+            if let Err(err) = self.editor.set_generation_duration_request(
+                asset_id,
+                clamp_provider_duration(next_duration, bounds),
+            ) {
+                self.editor.status = format!("Failed to update duration request: {err}");
+            }
             return;
         }
 
@@ -2682,6 +2803,25 @@ impl LatentSlateApp {
         }
 
         let next_frame_count = next_frame_count.clamp(1, 1_000_000) as u32;
+        if has_output {
+            if let Some(provider) = selected_provider {
+                self.editor
+                    .project
+                    .update_generative_config(asset_id, |config| {
+                        seed_provider_timing_inputs(
+                            config,
+                            provider,
+                            next_duration,
+                            next_fps,
+                            next_frame_count,
+                        );
+                    });
+                if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+                    self.editor.status = format!("Failed to save timing request: {err}");
+                }
+            }
+            return;
+        }
         if self
             .editor
             .project
@@ -2700,6 +2840,21 @@ impl LatentSlateApp {
         clip_duration: f64,
     ) {
         if !self.hollow_generative_video_single_clip(asset_id, Some(clip_id)) {
+            return;
+        }
+        if self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .and_then(|config| config.provider_id)
+            .and_then(|id| {
+                self.editor
+                    .provider_entries
+                    .iter()
+                    .find(|provider| provider.id == id)
+            })
+            .is_some_and(crate::core::generation::provider_has_duration_mapping)
+        {
             return;
         }
         let Some((_, fps, _)) = generative_video_timing(&self.editor.project, asset_id) else {
@@ -2810,6 +2965,14 @@ impl LatentSlateApp {
             .project
             .update_generative_config(asset_id, |config| {
                 for input in provider.inputs.iter() {
+                    if config.has_generated_output() {
+                        continue;
+                    }
+                    if input.role == Some(InputRole::DurationSeconds)
+                        && crate::core::generation::provider_has_duration_mapping(&provider)
+                    {
+                        continue;
+                    }
                     let Some(value) = provider_timing_role_value(input, duration, fps, frame_count)
                     else {
                         continue;
@@ -4020,11 +4183,24 @@ fn initial_context_video_timing(
         .map(|frames| frames.round().clamp(1.0, 1_000_000.0) as u32);
 
     let hinted_duration = duration_hint.filter(|duration| duration.is_finite() && *duration > 0.0);
-    if let Some(duration) = hinted_duration.or(duration_default) {
+    let initial_duration =
+        if provider.is_some_and(crate::core::generation::provider_has_duration_mapping) {
+            duration_default.or(hinted_duration)
+        } else {
+            hinted_duration.or(duration_default)
+        };
+    if let Some(duration) = initial_duration {
         let duration = clamp_provider_duration(duration, bounds);
-        let frame_count = frames_from_seconds(duration, fps)
-            .round()
-            .clamp(1.0, 1_000_000.0) as u32;
+        let frame_count = provider
+            .and_then(|provider| {
+                crate::core::generation::predicted_output_timing(provider, duration)
+            })
+            .map(|timing| timing.frame_count)
+            .unwrap_or_else(|| {
+                frames_from_seconds(duration, fps)
+                    .round()
+                    .clamp(1.0, 1_000_000.0) as u32
+            });
         return (duration, fps, frame_count);
     }
 

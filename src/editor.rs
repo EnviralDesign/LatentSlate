@@ -274,11 +274,17 @@ impl EditorState {
                         _ => None,
                     })
                     .or_else(|| creative_durations.get(asset_id).copied().flatten());
-                if let Some(duration) = duration {
-                    if let Some(frames) =
-                        crate::core::generation::delivered_frame_count(duration, fps)
+                let mapped = crate::core::generation::provider_has_duration_mapping(provider);
+                let duration = if mapped {
+                    crate::core::generation::provider_request_duration(provider, &config.inputs)
+                } else {
+                    duration
+                };
+                if let Some(duration) = duration.filter(|_| !config.has_generated_output()) {
+                    if let Some(timing) =
+                        crate::core::generation::predicted_output_timing(provider, duration)
                     {
-                        timing_updates.push((*asset_id, fps, frames));
+                        timing_updates.push((*asset_id, fps, timing.frame_count));
                     }
                 }
             }
@@ -313,6 +319,94 @@ impl EditorState {
                 println!("Failed to persist provider input migration for {asset_id}: {err}");
             }
         }
+    }
+
+    /// Edit a provider's next duration request while preserving any generated media extent.
+    pub fn set_generation_duration_request(
+        &mut self,
+        asset_id: Uuid,
+        duration: f64,
+    ) -> Result<(), String> {
+        let config = self
+            .project
+            .generative_config(asset_id)
+            .ok_or("Generative config not found")?;
+        let provider = config
+            .provider_id
+            .and_then(|id| self.provider_entries.iter().find(|p| p.id == id))
+            .ok_or("Provider not found")?;
+        let fps = crate::core::generation::provider_fixed_fps(provider)
+            .or_else(|| {
+                provider
+                    .inputs
+                    .iter()
+                    .find(|input| input.role == Some(InputRole::Fps))
+                    .and_then(|input| {
+                        config
+                            .inputs
+                            .get(&input.name)
+                            .and_then(|value| match value {
+                                InputValue::Literal { value } => input_value_as_f64(value),
+                                _ => None,
+                            })
+                            .or_else(|| input.default.as_ref().and_then(input_value_as_f64))
+                    })
+            })
+            .unwrap_or(self.project.settings.fps);
+        let predicted = crate::core::generation::predicted_output_timing(provider, duration)
+            .or_else(|| {
+                (!crate::core::generation::provider_has_duration_mapping(provider))
+                    .then(|| crate::core::generation::delivered_frame_count(duration, fps))
+                    .flatten()
+                    .map(
+                        |frame_count| crate::core::generation::PredictedOutputTiming {
+                            frame_count,
+                            fps: Some(fps),
+                            duration_seconds: Some(frame_count as f64 / fps),
+                        },
+                    )
+            });
+        let updates: Vec<_> = provider
+            .inputs
+            .iter()
+            .filter_map(|input| {
+                let value = match input.role {
+                    Some(InputRole::DurationSeconds) => json!(duration),
+                    Some(InputRole::Fps) => json!(fps),
+                    Some(InputRole::FrameCount) => json!(predicted?.frame_count),
+                    _ => return None,
+                };
+                Some((input.name.clone(), InputValue::Literal { value }))
+            })
+            .collect();
+        let hollow = !config.has_generated_output();
+        self.project.update_generative_config(asset_id, |config| {
+            config.inputs.extend(updates);
+        });
+        if hollow {
+            if let Some(timing) = predicted {
+                if let Some(fps) = timing.fps {
+                    self.project
+                        .set_generative_video_timing(asset_id, fps, timing.frame_count);
+                    let clips: Vec<_> = self
+                        .project
+                        .clips
+                        .iter_mut()
+                        .filter(|clip| clip.asset_id == asset_id)
+                        .collect();
+                    if clips.len() == 1 {
+                        for clip in clips {
+                            clip.duration = timing.duration_seconds.unwrap().max(0.1);
+                        }
+                    }
+                }
+            }
+        }
+        self.project
+            .save_generative_config(asset_id)
+            .map_err(|err| err.to_string())?;
+        self.preview_dirty = true;
+        Ok(())
     }
 
     /// Reconciles retired provider inputs after a config restore, before its
@@ -1306,6 +1400,30 @@ impl EditorState {
                 duration_seconds,
                 frame_count,
             } => {
+                if let Some(duration) = duration_seconds.filter(|_| frame_count.is_none()) {
+                    let request_owned =
+                        self.project
+                            .generative_config(*asset_id)
+                            .is_some_and(|config| {
+                                config.has_generated_output()
+                                    || config
+                                        .provider_id
+                                        .and_then(|id| {
+                                            self.provider_entries.iter().find(|p| p.id == id)
+                                        })
+                                        .is_some_and(
+                                            crate::core::generation::provider_has_duration_mapping,
+                                        )
+                            });
+                    if request_owned {
+                        return match self.set_generation_duration_request(*asset_id, duration) {
+                            Ok(()) => AutomationResponse::ok(
+                                json!({"asset_id": asset_id, "duration_seconds": duration}),
+                            ),
+                            Err(err) => AutomationResponse::conflict(err),
+                        };
+                    }
+                }
                 let Some(asset) = self.project.find_asset(*asset_id) else {
                     return AutomationResponse::not_found("Asset not found.");
                 };
@@ -3206,6 +3324,14 @@ fn sync_generative_video_timing_inputs(
     let mut changed = false;
     project.update_generative_config(asset_id, |config| {
         for input in provider.inputs.iter() {
+            if config.has_generated_output() {
+                continue;
+            }
+            if input.role == Some(InputRole::DurationSeconds)
+                && crate::core::generation::provider_has_duration_mapping(&provider)
+            {
+                continue;
+            }
             let Some(value) = provider_timing_role_value(input, duration, fps, frame_count) else {
                 continue;
             };
@@ -3536,6 +3662,7 @@ mod tests {
                 min: 1.0,
                 max: 5.0,
                 step: 0.25,
+                output_frame_counts: Vec::new(),
             }),
         });
         let provider_id = provider.id;
@@ -3993,6 +4120,187 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mapped_duration_survives_output_sync_refresh_and_next_request_edit() {
+        let dir = std::env::temp_dir().join(format!("ls-request-timing-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut editor = EditorState::new();
+        editor.project = Project::new("request-timing");
+        editor.project.project_path = Some(dir.clone());
+        let mut provider = ProviderEntry::new(
+            "Mapped",
+            ProviderOutputType::Video,
+            ProviderConnection::CustomHttp {
+                base_url: "http://127.0.0.1".into(),
+                api_key: None,
+            },
+        );
+        provider.inputs = vec![ProviderInputField {
+            image_dimensions: None,
+            name: "duration_seconds".into(),
+            label: "Duration".into(),
+            description: None,
+            input_type: ProviderInputType::Number,
+            required: true,
+            default: Some(json!(5.0)),
+            role: Some(InputRole::DurationSeconds),
+            ui: None,
+        }];
+        provider.timing = Some(
+            serde_json::from_value(json!({
+                "fps":{"mode":"fixed","value":30.0},
+                "duration_seconds":{"min":1.0,"max":10.0,"step":0.5,"output_frame_counts":[
+                    {"duration_seconds":1.0,"frame_count":25},
+                    {"duration_seconds":1.5,"frame_count":41},
+                    {"duration_seconds":5.0,"frame_count":145}
+                ]}
+            }))
+            .unwrap(),
+        );
+        editor.provider_entries = vec![provider.clone()];
+        for (request, frames) in [(1.0, 25), (5.0, 145)] {
+            let id = editor.project.add_asset(Asset::new_generative_video(
+                "output",
+                PathBuf::from(format!("generated/video/{request}")),
+                30.0,
+                150,
+            ));
+            editor
+                .project
+                .update_generative_config(id, |config| config.provider_id = Some(provider.id));
+            editor.set_generation_duration_request(id, request).unwrap();
+            assert_eq!(
+                editor.project.find_asset(id).unwrap().duration_seconds,
+                Some(frames as f64 / 30.0)
+            );
+            // The successful writer/probe boundary replaces media extent, not the request.
+            editor.project.set_generative_video_timing(id, 30.0, frames);
+            editor
+                .project
+                .update_generative_config(id, |config| config.active_version = Some("v1".into()));
+            sync_generative_video_timing_inputs(&mut editor.project, &editor.provider_entries, id)
+                .unwrap();
+            editor.reconcile_generative_dimension_configs();
+            let config = editor.project.generative_config(id).unwrap();
+            assert_eq!(
+                crate::core::generation::provider_request_duration(&provider, &config.inputs),
+                Some(request)
+            );
+            assert!(crate::core::generation::preflight_provider_config(
+                &editor.project,
+                Some(id),
+                None,
+                &provider,
+                config
+            )
+            .is_empty());
+            assert_eq!(
+                editor.project.find_asset(id).unwrap().duration_seconds,
+                Some(frames as f64 / 30.0)
+            );
+            let response =
+                editor.apply_automation_command(&AutomationCommand::SetGenerativeVideoTiming {
+                    asset_id: id,
+                    fps: None,
+                    duration_seconds: Some(1.5),
+                    frame_count: None,
+                });
+            assert!(response.ok, "{response:?}");
+            assert_eq!(
+                editor.project.find_asset(id).unwrap().duration_seconds,
+                Some(frames as f64 / 30.0)
+            );
+            let config = editor.project.generative_config(id).unwrap();
+            assert_eq!(
+                crate::core::generation::provider_request_duration(&provider, &config.inputs),
+                Some(1.5)
+            );
+        }
+        let mut wan = provider.clone();
+        wan.id = Uuid::new_v4();
+        wan.name = "Unmapped 16fps".into();
+        wan.timing = Some(
+            serde_json::from_value(json!({
+                "fps":{"mode":"fixed","value":16.0},
+                "duration_seconds":{"min":1.0,"max":5.0,"step":0.25}
+            }))
+            .unwrap(),
+        );
+        let mut other = wan.clone();
+        other.id = Uuid::new_v4();
+        other.timing.as_mut().unwrap().fps.as_mut().unwrap().value = Some(24.0);
+        editor.provider_entries = vec![provider.clone(), wan.clone(), other.clone()];
+        for (previous, next) in [(&provider, &wan), (&wan, &provider), (&wan, &other)] {
+            for generated in [false, true] {
+                let actual =
+                    crate::core::generation::predicted_output_timing(previous, 1.0).unwrap();
+                let id = editor.project.add_asset(Asset::new_generative_video(
+                    "switch",
+                    PathBuf::from(format!("generated/video/{}", Uuid::new_v4())),
+                    actual.fps.unwrap(),
+                    actual.frame_count,
+                ));
+                editor.project.update_generative_config(id, |config| {
+                    config.provider_id = Some(previous.id);
+                    config.inputs.insert(
+                        "duration_seconds".into(),
+                        InputValue::Literal { value: json!(1.0) },
+                    );
+                    if generated {
+                        config.active_version = Some("v1".into());
+                    }
+                    crate::core::generation::reconcile_provider_switch_inputs(
+                        &mut config.inputs,
+                        Some(previous),
+                        next,
+                    );
+                    config.provider_id = Some(next.id);
+                });
+                editor.reconcile_generative_dimension_configs();
+                sync_generative_video_timing_inputs(
+                    &mut editor.project,
+                    &editor.provider_entries,
+                    id,
+                )
+                .unwrap();
+                let predicted =
+                    crate::core::generation::predicted_output_timing(next, 1.0).unwrap();
+                let expected = if generated { actual } else { predicted };
+                let asset = editor.project.find_asset(id).unwrap();
+                assert!(
+                    matches!(asset.kind,AssetKind::GenerativeVideo{fps,frame_count,..} if Some(fps)==expected.fps && frame_count==expected.frame_count)
+                );
+                let config = editor.project.generative_config(id).unwrap();
+                assert_eq!(
+                    crate::core::generation::provider_request_duration(next, &config.inputs),
+                    Some(1.0)
+                );
+                if generated && next.id == wan.id {
+                    editor.set_generation_duration_request(id, 6.0).unwrap();
+                    editor.reconcile_generative_dimension_configs();
+                    let config = editor.project.generative_config(id).unwrap();
+                    assert_eq!(
+                        crate::core::generation::provider_request_duration(next, &config.inputs),
+                        Some(6.0)
+                    );
+                    assert!(!crate::core::generation::preflight_provider_config(
+                        &editor.project,
+                        Some(id),
+                        None,
+                        next,
+                        config
+                    )
+                    .is_empty());
+                    assert_eq!(
+                        editor.project.find_asset(id).unwrap().duration_seconds,
+                        actual.duration_seconds
+                    );
+                }
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

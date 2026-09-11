@@ -4673,16 +4673,25 @@ impl LatentSlateApp {
             format!("{fps} (fixed)"),
             Vec2::new(ui.available_width(), kit::FIELD_H),
         );
-        if let Some(frames) = duration
-            .and_then(|duration| crate::core::generation::delivered_frame_count(duration, fps))
-        {
+        if let Some(timing) = duration.and_then(|duration| {
+            crate::core::generation::predicted_output_timing(provider, duration)
+        }) {
             ui.add_space(kit::FORM_ROW_GAP);
-            kit::field_label(ui, "Display Frames");
+            kit::field_label(ui, "Output Frames");
             kit::readonly_value_box(
                 ui,
-                frames.to_string(),
+                timing.frame_count.to_string(),
                 Vec2::new(ui.available_width(), kit::FIELD_H),
             );
+            if let Some(seconds) = timing.duration_seconds {
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::field_label(ui, "Output Duration");
+                kit::readonly_value_box(
+                    ui,
+                    format!("{seconds:.3} s"),
+                    Vec2::new(ui.available_width(), kit::FIELD_H),
+                );
+            }
         }
     }
 

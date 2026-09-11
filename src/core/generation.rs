@@ -104,7 +104,7 @@ pub fn provider_duration_timing(provider: &ProviderEntry) -> Option<ProviderDura
     if let Some(duration) = provider
         .timing
         .as_ref()
-        .and_then(|timing| timing.duration_seconds)
+        .and_then(|timing| timing.duration_seconds.clone())
     {
         return Some(duration);
     }
@@ -117,6 +117,76 @@ pub fn provider_duration_timing(provider: &ProviderEntry) -> Option<ProviderDura
         min: ui.min?,
         max: ui.max?,
         step: ui.step?,
+        output_frame_counts: Vec::new(),
+    })
+}
+
+/// Whether request duration has an explicit, non-identity output contract.
+pub fn provider_has_duration_mapping(provider: &ProviderEntry) -> bool {
+    provider
+        .timing
+        .as_ref()
+        .and_then(|timing| timing.duration_seconds.as_ref())
+        .is_some_and(|duration| !duration.output_frame_counts.is_empty())
+}
+
+/// Resolve the nominal request without inferring it from delivered media.
+pub fn provider_request_duration(
+    provider: &ProviderEntry,
+    inputs: &HashMap<String, InputValue>,
+) -> Option<f64> {
+    provider_request_number(provider, inputs, InputRole::DurationSeconds)
+}
+
+/// Resolve a numeric request role from config or its provider default.
+pub fn provider_request_number(
+    provider: &ProviderEntry,
+    inputs: &HashMap<String, InputValue>,
+    role: InputRole,
+) -> Option<f64> {
+    let input = provider
+        .inputs
+        .iter()
+        .find(|input| input.role == Some(role))?;
+    match inputs.get(&input.name) {
+        Some(InputValue::Literal { value }) => value.as_f64(),
+        Some(_) => None,
+        None => input.default.as_ref().and_then(Value::as_f64),
+    }
+}
+
+/// Output extent predicted by a provider's request timing contract.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PredictedOutputTiming {
+    pub frame_count: u32,
+    pub fps: Option<f64>,
+    pub duration_seconds: Option<f64>,
+}
+
+/// Predict output timing; an unmatched explicit mapping never falls back to identity.
+pub fn predicted_output_timing(
+    provider: &ProviderEntry,
+    duration: f64,
+) -> Option<PredictedOutputTiming> {
+    let fps = provider_fixed_fps(provider);
+    let mapping = provider
+        .timing
+        .as_ref()
+        .and_then(|timing| timing.duration_seconds.as_ref())
+        .map(|timing| timing.output_frame_counts.as_slice())
+        .unwrap_or_default();
+    let frame_count = if mapping.is_empty() {
+        delivered_frame_count(duration, fps?)?
+    } else {
+        mapping
+            .iter()
+            .find(|row| (row.duration_seconds - duration).abs() <= 1e-9)?
+            .frame_count
+    };
+    (frame_count > 0).then_some(PredictedOutputTiming {
+        frame_count,
+        fps,
+        duration_seconds: fps.map(|fps| frame_count as f64 / fps),
     })
 }
 
@@ -134,8 +204,21 @@ pub fn reconcile_video_timing_for_provider(
     provider: &ProviderEntry,
 ) -> (f64, f64, u32) {
     let fps = provider_fixed_fps(provider).unwrap_or(current_fps.max(1.0));
-    let frame_count = delivered_frame_count(duration_seconds, fps).unwrap_or(1);
-    (duration_seconds, fps, frame_count)
+    let predicted = predicted_output_timing(provider, duration_seconds);
+    let frame_count = predicted
+        .map(|timing| timing.frame_count)
+        .or_else(|| {
+            (!provider_has_duration_mapping(provider))
+                .then(|| delivered_frame_count(duration_seconds, fps))
+                .flatten()
+        })
+        .unwrap_or(1);
+    let output_duration = if provider_has_duration_mapping(provider) {
+        frame_count as f64 / fps
+    } else {
+        duration_seconds
+    };
+    (output_duration, fps, frame_count)
 }
 
 /// Preserve shared creative-role literals while retiring inputs the new provider does not own.
@@ -2220,6 +2303,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(project.project_path.expect("test root"));
     }
 
+    #[test]
+    fn catalog_duration_predictions_preserve_native_lattice_and_legacy_json() {
+        let catalog: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-catalog-0ba2c66.json"
+        ))
+        .unwrap();
+        let expected = [
+            25, 41, 57, 73, 89, 105, 121, 129, 145, 161, 177, 193, 209, 225, 241, 249, 265, 281,
+            297,
+        ];
+        for tool in &catalog["tools"].as_array().unwrap()[..3] {
+            let timing: crate::state::ProviderTiming =
+                serde_json::from_value(tool["timing"].clone()).unwrap();
+            let provider = timed_engine_provider(
+                tool["id"].as_str().unwrap(),
+                "mapped",
+                30.0,
+                timing.duration_seconds.unwrap(),
+            );
+            for (index, frames) in expected.into_iter().enumerate() {
+                let request = 1.0 + index as f64 / 2.0;
+                let predicted = predicted_output_timing(&provider, request).unwrap();
+                assert_eq!(predicted.frame_count, frames);
+                assert_eq!(predicted.fps, Some(30.0));
+                assert_eq!(predicted.duration_seconds, Some(frames as f64 / 30.0));
+            }
+            for invalid in [0.833333333, 1.25, 10.5, f64::NAN] {
+                assert_eq!(predicted_output_timing(&provider, invalid), None);
+            }
+        }
+        let old = json!({"min":1.0,"max":10.0,"step":0.5});
+        let timing: ProviderDurationTiming = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&timing).unwrap(), old);
+        let provider = timed_engine_provider(
+            "46bdb57c-3b19-5397-8949-4e20ffe757c9",
+            "legacy",
+            30.0,
+            timing,
+        );
+        assert_eq!(
+            predicted_output_timing(&provider, 1.0).unwrap().frame_count,
+            30
+        );
+    }
+
     fn timed_engine_provider(
         id: &str,
         key: &str,
@@ -2312,6 +2440,7 @@ mod tests {
                 min: 1.0,
                 max: 5.0,
                 step: 0.25,
+                output_frame_counts: Vec::new(),
             },
         )
     }
@@ -2454,6 +2583,7 @@ mod tests {
                 min: 1.0,
                 max: 10.0,
                 step: 0.5,
+                output_frame_counts: Vec::new(),
             },
         );
         assert_eq!(

@@ -1904,6 +1904,7 @@ mod tests {
                 min: 1.0,
                 max: 5.0,
                 step: 0.25,
+                output_frame_counts: Vec::new(),
             })
         );
         assert!(matches!(
@@ -1986,7 +1987,7 @@ mod tests {
             ),
         ];
         let oracle: Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/engine-catalog-b0ece51.json"
+            "../../tests/fixtures/engine-catalog-0ba2c66.json"
         ))
         .expect("frozen producer catalog");
         let catalog: EngineCatalog = serde_json::from_value(oracle.clone()).expect("catalog");
@@ -2076,7 +2077,15 @@ mod tests {
                     crate::core::generation::reconcile_video_timing_for_provider(
                         5.0, 24.0, provider
                     ),
-                    (5.0, fps, (5.0 * fps) as u32)
+                    (
+                        if key.starts_with("ltx23.") {
+                            145.0 / 30.0
+                        } else {
+                            5.0
+                        },
+                        fps,
+                        if key.starts_with("ltx23.") { 145 } else { 80 }
+                    )
                 );
             } else {
                 assert!(controls.timing.is_empty());
@@ -2104,7 +2113,7 @@ mod tests {
         };
 
         let catalog: EngineCatalog = serde_json::from_str(include_str!(
-            "../../tests/fixtures/engine-catalog-b0ece51.json"
+            "../../tests/fixtures/engine-catalog-0ba2c66.json"
         ))
         .unwrap();
         let providers =
@@ -2221,7 +2230,7 @@ mod tests {
             Asset, GenerativeConfig, InputValue, MediaBindingSource, MediaBindingSpec, Project,
         };
         let catalog: EngineCatalog = serde_json::from_str(include_str!(
-            "../../tests/fixtures/engine-catalog-b0ece51.json"
+            "../../tests/fixtures/engine-catalog-0ba2c66.json"
         ))
         .unwrap();
         let providers =
@@ -2402,7 +2411,7 @@ mod tests {
             Asset, GenerativeConfig, InputValue, MediaBindingSource, MediaBindingSpec, Project,
         };
         let catalog: EngineCatalog = serde_json::from_str(include_str!(
-            "../../tests/fixtures/engine-catalog-b0ece51.json"
+            "../../tests/fixtures/engine-catalog-0ba2c66.json"
         ))
         .unwrap();
         let mut provider = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap().into_iter().find(|provider| matches!(&provider.connection, ProviderConnection::LatentSlateEngine {tool_key,..} if tool_key == "ltx23.first_last_frame_to_video")).unwrap();
