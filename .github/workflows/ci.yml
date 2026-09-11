@@ -7,7 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  VCPKG_ROOT: C:\vcpkg
+  VCPKG_COMMIT: 39ec37c17d122da0c98c3279e6a6b0f4efb75c4a
+  VCPKG_ROOT: ${{ github.workspace }}\.ci-vcpkg
   VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\.vcpkg-binary-cache
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}\\.vcpkg-binary-cache,readwrite"
 
@@ -19,6 +20,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Checkout pinned vcpkg (FFmpeg 8.1.2)
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: .ci-vcpkg
+
+      - name: Bootstrap pinned vcpkg
+        shell: pwsh
+        run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -32,9 +44,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ env.VCPKG_COMMIT }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-${{ env.VCPKG_COMMIT }}-
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -43,15 +55,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: ${{ runner.os }}-vcpkg-ffmpeg-x64-windows-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: ${{ runner.os }}-vcpkg-ffmpeg-x64-windows-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            ${{ runner.os }}-vcpkg-ffmpeg-x64-windows-
+            ${{ runner.os }}-vcpkg-ffmpeg-x64-windows-${{ env.VCPKG_COMMIT }}-
 
       - name: Install FFmpeg development libraries
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          vcpkg install ffmpeg:x64-windows
+          & "$env:VCPKG_ROOT\vcpkg.exe" install ffmpeg:x64-windows
 
       - name: Cargo check
         run: cargo check --locked
