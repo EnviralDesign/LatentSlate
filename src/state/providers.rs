@@ -175,6 +175,14 @@ pub enum InputRole {
     EdgeBlendFrames,
 }
 
+/// Required pixel geometry of an image supplied to a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageDimensionsRequirement {
+    /// The supplied image must have the effective output width and height.
+    MatchOutputCanvas,
+}
+
 /// Schema field describing a single provider input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderInputField {
@@ -191,6 +199,8 @@ pub struct ProviderInputField {
     pub role: Option<InputRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<InputUi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_dimensions: Option<ImageDimensionsRequirement>,
 }
 
 /// Connection configuration for a provider entry.
@@ -442,6 +452,8 @@ pub struct ManifestInput {
     pub role: Option<InputRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<InputUi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_dimensions: Option<ImageDimensionsRequirement>,
     pub bind: InputBinding,
 }
 
@@ -602,6 +614,7 @@ mod tests {
         );
         provider.description = Some("Use this for still keyframes.".to_string());
         provider.inputs.push(ProviderInputField {
+            image_dimensions: None,
             name: "prompt".to_string(),
             label: "Prompt".to_string(),
             description: Some("Describe the image content.".to_string()),
@@ -635,6 +648,7 @@ mod tests {
                 workflow_hash: None,
             },
             inputs: vec![ManifestInput {
+                image_dimensions: None,
                 name: "prompt".to_string(),
                 label: "Prompt".to_string(),
                 description: Some("Positive prompt text.".to_string()),

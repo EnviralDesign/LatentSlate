@@ -8235,6 +8235,7 @@ mod asset_lab_compare_tests {
         ]
         .into_iter()
         .map(|(name, role)| ProviderInputField {
+            image_dimensions: None,
             name: name.to_string(),
             label: name.to_string(),
             description: None,

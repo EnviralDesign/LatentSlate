@@ -394,6 +394,41 @@ pub fn preflight_provider_config(
         }
     }
 
+    for input in &provider.inputs {
+        if input.image_dimensions.is_none() {
+            continue;
+        }
+        if let Some(spec) = lookup_media_binding(&config, input, project) {
+            let plan = resolve_media_binding(
+                MediaResolveContext {
+                    project,
+                    target_asset_id,
+                    context_clip_id,
+                    field: input,
+                    provider: Some(provider),
+                    config: Some(&config),
+                },
+                &spec,
+            );
+            // Only inspect still-image headers here. Video frames are checked
+            // after extraction, including FFmpeg's orientation handling.
+            if plan.source_media_type == Some(crate::state::BoundMediaType::Image) {
+                if let Some(dimensions) = plan
+                    .source_path_absolute
+                    .as_ref()
+                    .and_then(|path| image::image_dimensions(path).ok())
+                {
+                    if let Some(message) = image_canvas_error(provider, input, &values, dimensions)
+                    {
+                        issues.push(GenerationPreflightIssue {
+                            section: GenerationControlSection::Media,
+                            message,
+                        });
+                    }
+                }
+            }
+        }
+    }
     issues.dedup();
     issues
 }
@@ -755,6 +790,30 @@ pub fn resolve_provider_inputs(
         }
     }
 
+    for input in &provider.inputs {
+        if input.image_dimensions.is_none() {
+            continue;
+        }
+        if let Some(path) = values
+            .get(&input.name)
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+        {
+            match image::image_dimensions(path) {
+                Ok(dimensions) => {
+                    if let Some(message) = image_canvas_error(provider, input, &values, dimensions)
+                    {
+                        media_errors.push(message);
+                    }
+                }
+                Err(error) => media_errors.push(format!(
+                    "{}: cannot verify image dimensions: {error}",
+                    input.label
+                )),
+            }
+        }
+    }
+
     ResolvedInputs {
         values,
         snapshot,
@@ -764,6 +823,32 @@ pub fn resolve_provider_inputs(
         media_bindings_snapshot,
         resolved_media_inputs,
     }
+}
+
+fn image_canvas_error(
+    provider: &ProviderEntry,
+    input: &ProviderInputField,
+    values: &HashMap<String, Value>,
+    dimensions: (u32, u32),
+) -> Option<String> {
+    if input.image_dimensions != Some(crate::state::ImageDimensionsRequirement::MatchOutputCanvas) {
+        return None;
+    }
+    if input.input_type != ProviderInputType::Image {
+        return Some(format!(
+            "{}: image dimensions require an image input.",
+            input.label
+        ));
+    }
+    let (width_input, height_input) = crate::core::canvas::dimension_pair(provider)?;
+    let width = values.get(&width_input.name).and_then(json_dimension)?;
+    let height = values.get(&height_input.name).and_then(json_dimension)?;
+    (dimensions != (width as u32, height as u32)).then(|| {
+        format!(
+            "{}: source is {}×{}; it must match the {}×{} output canvas.",
+            input.label, dimensions.0, dimensions.1, width, height
+        )
+    })
 }
 
 /// Migrates retired provider inputs when a refreshed provider schema replaces
@@ -1806,6 +1891,7 @@ mod tests {
 
     fn dimension_input(name: &str, role: InputRole, default: u32) -> ProviderInputField {
         ProviderInputField {
+            image_dimensions: None,
             name: name.to_string(),
             label: name.to_string(),
             description: None,
@@ -1867,6 +1953,7 @@ mod tests {
         provider.workflow_kind = ProviderWorkflowKind::ImageToImage;
         provider.inputs = vec![
             ProviderInputField {
+                image_dimensions: None,
                 name: "source_image".to_string(),
                 label: "Source Image".to_string(),
                 description: None,
@@ -1877,6 +1964,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                image_dimensions: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -1887,6 +1975,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                image_dimensions: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -1919,6 +2008,7 @@ mod tests {
             dimension_input("width", InputRole::Width, 960),
             dimension_input("height", InputRole::Height, 544),
             ProviderInputField {
+                image_dimensions: None,
                 name: "steps".to_string(),
                 label: "Steps".to_string(),
                 description: None,
@@ -2152,6 +2242,7 @@ mod tests {
         provider.id = Uuid::parse_str(id).expect("provider id");
         provider.inputs = vec![
             ProviderInputField {
+                image_dimensions: None,
                 name: "prompt".to_string(),
                 label: "Prompt".to_string(),
                 description: None,
@@ -2164,6 +2255,7 @@ mod tests {
             dimension_input("width", InputRole::Width, 512),
             dimension_input("height", InputRole::Height, 512),
             ProviderInputField {
+                image_dimensions: None,
                 name: "duration_seconds".to_string(),
                 label: "Duration".to_string(),
                 description: None,
@@ -2180,6 +2272,7 @@ mod tests {
                 }),
             },
             ProviderInputField {
+                image_dimensions: None,
                 name: "seed".to_string(),
                 label: "Seed".to_string(),
                 description: None,
@@ -2290,6 +2383,7 @@ mod tests {
     fn non_seed_integers_keep_the_signed_preflight_contract() {
         let mut provider = dimensions_provider();
         provider.inputs.push(ProviderInputField {
+            image_dimensions: None,
             name: "steps".to_string(),
             label: "Steps".to_string(),
             description: None,

@@ -182,6 +182,7 @@ pub(super) struct ProviderNodeSelectorDraft {
 
 #[derive(Clone, Debug)]
 pub(super) struct ProviderBuilderInput {
+    image_dimensions: Option<crate::state::ImageDimensionsRequirement>,
     pub(super) name: String,
     pub(super) label: String,
     pub(super) description: String,
@@ -1082,6 +1083,7 @@ impl ProviderBuilderState {
 
             let input_ui = build_provider_input_ui(input);
             manifest_inputs.push(ManifestInput {
+                image_dimensions: input.image_dimensions,
                 name: input.name.clone(),
                 label: input.label.clone(),
                 description: optional_trimmed_string(&input.description),
@@ -1096,6 +1098,7 @@ impl ProviderBuilderState {
                 },
             });
             provider_inputs.push(ProviderInputField {
+                image_dimensions: input.image_dimensions,
                 name: input.name.clone(),
                 label: input.label.clone(),
                 description: optional_trimmed_string(&input.description),
@@ -1202,6 +1205,7 @@ impl ProviderBuilderInput {
         let multiline =
             schema.map(|schema| schema.multiline).unwrap_or(false) || heuristic_multiline;
         Self {
+            image_dimensions: None,
             name,
             label,
             description: String::new(),
@@ -1230,6 +1234,7 @@ impl ProviderBuilderInput {
         let (input_type_key, enum_options) = provider_input_type_to_key(&input.input_type);
         let ui_meta = input.ui.as_ref();
         Self {
+            image_dimensions: input.image_dimensions,
             name: input.name.clone(),
             label: input.label.clone(),
             description: input.description.clone().unwrap_or_default(),
@@ -1267,6 +1272,7 @@ impl ProviderBuilderInput {
             .unwrap_or_default();
         let advanced = input.ui.as_ref().is_some_and(|ui| ui.advanced);
         Self {
+            image_dimensions: input.image_dimensions,
             name: input.name,
             label: input.label,
             description: input.description.unwrap_or_default(),
@@ -1304,6 +1310,7 @@ impl ProviderBuilderInput {
             .unwrap_or_default();
         let advanced = input.ui.as_ref().is_some_and(|ui| ui.advanced);
         Self {
+            image_dimensions: None,
             name: input.name,
             label: input.label,
             description: input.description.unwrap_or_default(),

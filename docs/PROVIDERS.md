@@ -43,6 +43,13 @@ generation queue is active.
 
 ## LatentSlate Engine Setup
 
+Image inputs can declare `image_dimensions: "match_output_canvas"`. LTX image-to-video
+and first/last-frame tools publish this requirement at schema revision 3. LatentSlate
+checks still-image dimensions during preflight and checks actual materialized images
+(including extracted video frames) before submission. Sources remain unchanged;
+choose a matching canvas or prepare a matching source. Missing constraints preserve
+existing behavior for ComfyUI, Klein, and Wan.
+
 LatentSlate treats each Engine as a backend in **AI Providers**. Add one or more
 Engine connections from the Add Provider dropdown, then inspect that backend's
 catalog on the right. When an Engine is reachable, its tools appear automatically

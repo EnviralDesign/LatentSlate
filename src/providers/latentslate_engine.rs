@@ -538,7 +538,14 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
         other => return Err(format!("unsupported input type {other:?}")),
     };
 
+    if input.image_dimensions.is_some() && input_type != ProviderInputType::Image {
+        return Err(format!(
+            "image_dimensions requires an image input: {}",
+            input.key
+        ));
+    }
     Ok(ProviderInputField {
+        image_dimensions: input.image_dimensions,
         name: input.key.clone(),
         label: input.label.clone(),
         description: input.description.clone(),
@@ -1296,6 +1303,8 @@ struct EngineInput {
     options: Vec<EngineChoice>,
     #[serde(default)]
     ui: Option<EngineInputUi>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_dimensions: Option<crate::state::ImageDimensionsRequirement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1918,16 +1927,16 @@ mod tests {
             (
                 "5d6e2d6f-216c-5f35-a4ec-1565d6e56ee7",
                 "ltx23.image_to_video",
-                2,
-                "sha256:8364fcc55ec44ae780d49d9c9404768c81a5680783106934f9a17bd990be7efa",
+                3,
+                "sha256:be3be547dd665155e162d51a5bea089cfcb0da66116c6e58c1766af04679bb24",
                 "image_to_video",
                 "video",
             ),
             (
                 "1a8f9c0b-410e-56e4-90de-23bcb9d644ca",
                 "ltx23.first_last_frame_to_video",
-                2,
-                "sha256:aa624d8d8fe060dcc39c15623e4b4b07eb405305051ebdd5fd2caf8368d8acd9",
+                3,
+                "sha256:b58e76368b442ca723a0e2679db3b5b011870c4eeaba223704192d1190d9de1c",
                 "first_frame_last_frame_video",
                 "video",
             ),
@@ -1973,7 +1982,7 @@ mod tests {
             ),
         ];
         let oracle: Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/engine-catalog-7df12b4.json"
+            "../../tests/fixtures/engine-catalog-b0ece51.json"
         ))
         .expect("frozen producer catalog");
         let catalog: EngineCatalog = serde_json::from_value(oracle.clone()).expect("catalog");
@@ -2014,6 +2023,10 @@ mod tests {
                     expected["type"]
                 );
                 assert_eq!(input.required, expected["required"].as_bool().unwrap());
+                assert_eq!(
+                    serde_json::to_value(input.image_dimensions).unwrap(),
+                    expected["image_dimensions"]
+                );
                 assert_eq!(input.default.as_ref(), expected.get("default"));
                 assert_eq!(serde_json::to_value(input.role).unwrap(), expected["role"]);
                 if let Some(hints) = expected.get("ui") {
@@ -2077,6 +2090,254 @@ mod tests {
                     && schema_hash == hash
             ));
         }
+    }
+
+    #[test]
+    fn catalog_image_dimensions_are_checked_before_submission() {
+        use crate::core::generation::{preflight_provider_config, resolve_provider_inputs};
+        use crate::state::{
+            Asset, GenerativeConfig, InputValue, MediaBindingSource, MediaBindingSpec, Project,
+        };
+
+        let catalog: EngineCatalog = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-catalog-b0ece51.json"
+        ))
+        .unwrap();
+        let providers =
+            catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("latentslate-contract-audit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut project = Project::new("LTX consumer audit");
+        project.project_path = Some(root.clone());
+        project.settings.width = 768;
+        project.settings.height = 512;
+        for (name, color) in [("first.png", [255_u8, 0, 0]), ("last.png", [0_u8, 0, 255])] {
+            image::RgbImage::from_pixel(512, 512, image::Rgb(color))
+                .save(root.join(name))
+                .unwrap();
+            project
+                .assets
+                .push(Asset::new_image(name, PathBuf::from(name)));
+        }
+        for provider in providers.iter() {
+            for (case, explicit) in [
+                ("A_matching", Some(512)),
+                ("B_project_fallback", None),
+                ("C_explicit_mismatch", Some(640)),
+            ] {
+                let mut config = GenerativeConfig {
+                    provider_id: Some(provider.id),
+                    ..Default::default()
+                };
+                config.inputs.insert(
+                    "prompt".into(),
+                    InputValue::Literal {
+                        value: json!("A red cube turns blue"),
+                    },
+                );
+                if let Some(width) = explicit {
+                    config.inputs.insert(
+                        "width".into(),
+                        InputValue::Literal {
+                            value: json!(width),
+                        },
+                    );
+                    config
+                        .inputs
+                        .insert("height".into(), InputValue::Literal { value: json!(512) });
+                }
+                for (index, input) in provider
+                    .inputs
+                    .iter()
+                    .filter(|input| input.input_type == ProviderInputType::Image)
+                    .enumerate()
+                {
+                    config.media_bindings.insert(
+                        input.name.clone(),
+                        MediaBindingSpec {
+                            source: MediaBindingSource::ProjectAsset {
+                                asset_id: project.assets[index].id,
+                                version: None,
+                            },
+                            ..Default::default()
+                        },
+                    );
+                }
+                let preflight = preflight_provider_config(&project, None, None, provider, &config);
+                let resolved = resolve_provider_inputs(&project, None, None, provider, &config);
+                let constrained = provider
+                    .inputs
+                    .iter()
+                    .filter(|input| input.image_dimensions.is_some())
+                    .count();
+                let expected_errors = if explicit == Some(512) {
+                    0
+                } else {
+                    constrained
+                };
+                assert_eq!(
+                    preflight.len(),
+                    expected_errors,
+                    "{} {case}: {preflight:?}",
+                    provider.name
+                );
+                assert_eq!(
+                    resolved.media_errors.len(),
+                    expected_errors,
+                    "{} {case}",
+                    provider.name
+                );
+                assert!(resolved.missing_required.is_empty());
+                assert!(resolved.input_errors.is_empty());
+                assert_eq!(resolved.values["width"], json!(explicit.unwrap_or(768)));
+                for (index, input) in provider
+                    .inputs
+                    .iter()
+                    .filter(|input| input.input_type == ProviderInputType::Image)
+                    .enumerate()
+                {
+                    let path = resolved.values[&input.name].as_str().unwrap();
+                    assert_eq!(image::image_dimensions(path).unwrap(), (512, 512));
+                    assert_eq!(
+                        std::fs::read(path).unwrap(),
+                        std::fs::read(root.join(if index == 0 { "first.png" } else { "last.png" }))
+                            .unwrap()
+                    );
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn historical_catalog_and_optional_image_constraint_round_trip() {
+        let catalog: EngineCatalog = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-catalog-7df12b4.json"
+        ))
+        .unwrap();
+        let providers =
+            catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap();
+        for provider in providers {
+            for input in provider.inputs {
+                assert!(input.image_dimensions.is_none());
+                assert!(serde_json::to_value(&input)
+                    .unwrap()
+                    .get("image_dimensions")
+                    .is_none());
+                assert_eq!(
+                    serde_json::from_value::<ProviderInputField>(
+                        serde_json::to_value(&input).unwrap()
+                    )
+                    .unwrap(),
+                    input
+                );
+            }
+        }
+        let input: crate::state::ManifestInput = serde_json::from_value(json!({"name":"image", "label":"Image", "input_type":{"type":"image"}, "required":true, "image_dimensions":"match_output_canvas", "bind":{"selector":{"class_type":"LoadImage", "input_key":"image"}}})).unwrap();
+        assert_eq!(
+            serde_json::to_value(input).unwrap()["image_dimensions"],
+            "match_output_canvas"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local FFmpeg; exercises real rotated-video frame extraction"]
+    fn image_constraint_checks_extracted_orientation_and_each_endpoint() {
+        use crate::core::generation::{preflight_provider_config, resolve_provider_inputs};
+        use crate::state::{
+            Asset, GenerativeConfig, InputValue, MediaBindingSource, MediaBindingSpec, Project,
+        };
+        let catalog: EngineCatalog = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-catalog-b0ece51.json"
+        ))
+        .unwrap();
+        let mut provider = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default()).unwrap().into_iter().find(|provider| matches!(&provider.connection, ProviderConnection::LatentSlateEngine {tool_key,..} if tool_key == "ltx23.first_last_frame_to_video")).unwrap();
+        let root = std::env::temp_dir().join(format!("latentslate-rotation-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("rotated.mp4"),
+            include_bytes!("../../tests/fixtures/rotated-640x512.mp4"),
+        )
+        .unwrap();
+        image::RgbImage::new(512, 640)
+            .save(root.join("still.png"))
+            .unwrap();
+        let mut project = Project::new("rotated input");
+        project.project_path = Some(root.clone());
+        project.settings.width = 512;
+        project.settings.height = 640;
+        let mut video = Asset::new_video("Rotated", "rotated.mp4".into());
+        video.duration_seconds = Some(1.0);
+        project.assets.push(video);
+        project
+            .assets
+            .push(Asset::new_image("Still", "still.png".into()));
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "prompt".into(),
+            InputValue::Literal {
+                value: json!("test"),
+            },
+        );
+        let images: Vec<_> = provider
+            .inputs
+            .iter()
+            .filter(|input| input.input_type == ProviderInputType::Image)
+            .cloned()
+            .collect();
+        for (index, input) in images.iter().enumerate() {
+            config.media_bindings.insert(
+                input.name.clone(),
+                MediaBindingSpec {
+                    source: MediaBindingSource::ProjectAsset {
+                        asset_id: project.assets[index].id,
+                        version: None,
+                    },
+                    sample: crate::state::MediaSample::Frame {
+                        at: crate::state::MediaFramePoint::SourceStart,
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+        let issues = preflight_provider_config(&project, None, None, &provider, &config);
+        assert!(issues.is_empty(), "{issues:?}");
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert!(
+            resolved.media_errors.is_empty(),
+            "{:?}",
+            resolved.media_errors
+        );
+        assert_eq!(
+            image::image_dimensions(resolved.values[&images[0].name].as_str().unwrap()).unwrap(),
+            (512, 640)
+        );
+        image::RgbImage::new(640, 512)
+            .save(root.join("still.png"))
+            .unwrap();
+        let issues = preflight_provider_config(&project, None, None, &provider, &config);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].message.starts_with(&images[1].label));
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert_eq!(resolved.media_errors.len(), 1);
+        assert!(resolved.media_errors[0].starts_with(&images[1].label));
+        provider.connection = ProviderConnection::ComfyUi {
+            base_url: "http://unused".into(),
+            workflow_path: None,
+            manifest: None,
+        };
+        for input in &mut provider.inputs {
+            input.image_dimensions = None;
+        }
+        let issues = preflight_provider_config(&project, None, None, &provider, &config);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert!(
+            resolve_provider_inputs(&project, None, None, &provider, &config)
+                .media_errors
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

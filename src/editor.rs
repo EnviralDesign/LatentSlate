@@ -3423,6 +3423,7 @@ mod tests {
         );
         provider.inputs = vec![
             ProviderInputField {
+                image_dimensions: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -3433,6 +3434,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                image_dimensions: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -3509,6 +3511,7 @@ mod tests {
         );
         provider.id = Uuid::parse_str("34e57585-95a3-4bb6-b3de-fca5dd924ba6").expect("Wan id");
         provider.inputs = vec![ProviderInputField {
+            image_dimensions: None,
             name: "duration_seconds".to_string(),
             label: "Duration".to_string(),
             description: None,
@@ -3589,6 +3592,7 @@ mod tests {
         );
         provider.inputs = vec![
             ProviderInputField {
+                image_dimensions: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -3599,6 +3603,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                image_dimensions: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -3609,6 +3614,7 @@ mod tests {
                 ui: None,
             },
             ProviderInputField {
+                image_dimensions: None,
                 name: "steps".to_string(),
                 label: "Steps".to_string(),
                 description: None,
