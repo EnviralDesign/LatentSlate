@@ -1076,28 +1076,39 @@ fn asset_lab_node_represents_version(
         })
 }
 
-fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &str) -> Option<u64> {
-    node.inputs.get(seed_field).and_then(|input| match input {
-        InputValue::Literal { value } => input_value_as_u64(value),
-        InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
-    })
+fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &ProviderInputField) -> Option<u64> {
+    node.inputs
+        .get(&seed_field.name)
+        .and_then(|input| match input {
+            InputValue::Literal { value } => Some(value),
+            InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
+        })
+        .or(seed_field.default.as_ref())
+        .and_then(input_value_as_u64)
 }
 
 fn asset_lab_seed_preview(
-    node: &AssetLabNode,
-    seed_field: Option<&str>,
+    has_seed_field: bool,
+    seed: Option<u64>,
     batch_count: u32,
     seed_strategy: SeedStrategy,
 ) -> String {
     let batch_count = batch_count.max(1).min(MAX_GENERATION_BATCH_COUNT);
-    let Some(seed_field) = seed_field else {
+    if !has_seed_field {
         return if batch_count > 1 {
             format!("{batch_count} attempts, repeated inputs")
         } else {
             "Single attempt".to_string()
         };
-    };
-    let Some(seed) = asset_lab_node_seed_value(node, seed_field) else {
+    }
+    if seed_strategy == SeedStrategy::Random {
+        return if batch_count > 1 {
+            format!("{batch_count} random seeds")
+        } else {
+            "Random seed".to_string()
+        };
+    }
+    let Some(seed) = seed else {
         return match seed_strategy {
             SeedStrategy::Increment => {
                 if batch_count > 1 {
@@ -4765,9 +4776,18 @@ impl LatentSlateApp {
         action: &mut Option<AssetLabAction>,
     ) {
         let seed_field = provider.and_then(resolve_seed_field);
+        let seed = seed_field.as_ref().and_then(|name| {
+            let field = provider?.inputs.iter().find(|field| field.name == *name)?;
+            let seed = asset_lab_node_seed_value(node, field);
+            if self.asset_lab.run_seed_strategy == SeedStrategy::Increment {
+                self.reserved_seed_base(asset.id, name, seed)
+            } else {
+                seed
+            }
+        });
         let seed_preview = asset_lab_seed_preview(
-            node,
-            seed_field.as_deref(),
+            seed_field.is_some(),
+            seed,
             self.asset_lab.run_batch_count,
             self.asset_lab_run_batch(provider).seed_strategy,
         );
@@ -8201,6 +8221,63 @@ impl LatentSlateApp {
 #[cfg(test)]
 mod asset_lab_compare_tests {
     use super::*;
+
+    #[test]
+    fn seed_preview_matches_resolved_defaults_and_batch_sequence() {
+        let mut provider = timing_provider();
+        let field = &mut provider.inputs[0];
+        field.name = "seed".to_string();
+        field.role = Some(InputRole::Seed);
+        field.default = Some(serde_json::json!(0));
+        let mut node = AssetLabNode::new_with_parent(Some(provider.id), None);
+        let preview = |node: &AssetLabNode, field: &ProviderInputField, count, strategy| {
+            asset_lab_seed_preview(
+                true,
+                asset_lab_node_seed_value(node, field),
+                count,
+                strategy,
+            )
+        };
+        assert_eq!(preview(&node, field, 1, SeedStrategy::Increment), "Seed 0");
+        assert_eq!(
+            preview(&node, field, 3, SeedStrategy::Increment),
+            "Seeds 0-2"
+        );
+        node.inputs.insert(
+            "seed".to_string(),
+            InputValue::Literal {
+                value: serde_json::json!(42),
+            },
+        );
+        assert_eq!(preview(&node, field, 1, SeedStrategy::Keep), "Seed 42");
+        assert_eq!(
+            preview(&node, field, 3, SeedStrategy::Increment),
+            "Seeds 42-44"
+        );
+        assert_eq!(
+            preview(&node, field, 1, SeedStrategy::Random),
+            "Random seed"
+        );
+        assert_eq!(
+            preview(&node, field, 3, SeedStrategy::Random),
+            "3 random seeds"
+        );
+        node.inputs.clear();
+        field.default = None;
+        assert_eq!(
+            preview(&node, field, 1, SeedStrategy::Increment),
+            "Random base seed"
+        );
+        assert_eq!(
+            preview(&node, field, 3, SeedStrategy::Increment),
+            "3 attempts, random base seed"
+        );
+        assert_eq!(preview(&node, field, 1, SeedStrategy::Keep), "No seed set");
+        assert_eq!(
+            asset_lab_seed_preview(false, None, 1, SeedStrategy::Keep),
+            "Single attempt"
+        );
+    }
 
     fn compare() -> AssetLabCompareState {
         AssetLabCompareState::enter("V03", "V08").expect("distinct outputs compare")
