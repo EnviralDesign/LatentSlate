@@ -1,0 +1,717 @@
+{
+  "source_repository": "EnviralDesign/LatentSlate-Engine",
+  "source_commit": "7df12b406f2aba0edae528420c40760d78e57381",
+  "capture": "Static service.TOOLS with availability set true for consumer tests; no model execution or live availability claim.",
+  "protocol_version": "1.0",
+  "engine_version": "0.1.0",
+  "bundles": [],
+  "tools": [
+    {
+      "id": "46bdb57c-3b19-5397-8949-4e20ffe757c9",
+      "key": "ltx23.text_to_video",
+      "schema_revision": 2,
+      "name": "LTX 2.3 Text to Video",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "text_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the shot"
+          }
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "width",
+          "ui": {
+            "min": 64,
+            "step": 64
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "height",
+          "ui": {
+            "min": 64,
+            "step": 64
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "label": "Duration",
+          "type": "number",
+          "required": true,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "ui": {
+            "unit": "seconds",
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 64,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:94f9397a5ff16d5101e81f62396c5c744f045799bcdbdf961b036ee8f0ac2c78",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5
+        }
+      },
+      "available": true
+    },
+    {
+      "id": "5d6e2d6f-216c-5f35-a4ec-1565d6e56ee7",
+      "key": "ltx23.image_to_video",
+      "schema_revision": 2,
+      "name": "LTX 2.3 Image to Video",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "image_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the shot"
+          }
+        },
+        {
+          "key": "start_image",
+          "label": "Start Image",
+          "type": "image",
+          "required": true,
+          "role": "start_image"
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "width",
+          "ui": {
+            "min": 64,
+            "step": 64
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "height",
+          "ui": {
+            "min": 64,
+            "step": 64
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "label": "Duration",
+          "type": "number",
+          "required": true,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "ui": {
+            "unit": "seconds",
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 64,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:8364fcc55ec44ae780d49d9c9404768c81a5680783106934f9a17bd990be7efa",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5
+        }
+      },
+      "available": true
+    },
+    {
+      "id": "1a8f9c0b-410e-56e4-90de-23bcb9d644ca",
+      "key": "ltx23.first_last_frame_to_video",
+      "schema_revision": 2,
+      "name": "LTX 2.3 First/Last Frame to Video",
+      "description": "Generate LTX 2.3 video with synchronized audio.",
+      "workflow_kind": "first_frame_last_frame_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the shot"
+          }
+        },
+        {
+          "key": "start_image",
+          "label": "First Frame",
+          "type": "image",
+          "required": true,
+          "role": "start_image"
+        },
+        {
+          "key": "end_image",
+          "label": "Last Frame",
+          "type": "image",
+          "required": true,
+          "role": "end_image"
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "width",
+          "ui": {
+            "min": 64,
+            "step": 32
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "height",
+          "ui": {
+            "min": 64,
+            "step": 32
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "label": "Duration",
+          "type": "number",
+          "required": true,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "ui": {
+            "unit": "seconds",
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 32,
+        "min_side": 64,
+        "max_pixels": 942080
+      },
+      "schema_hash": "sha256:aa624d8d8fe060dcc39c15623e4b4b07eb405305051ebdd5fd2caf8368d8acd9",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 30.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 10.0,
+          "step": 0.5
+        }
+      },
+      "available": true
+    },
+    {
+      "id": "e7dcbbde-d58f-4354-ad36-b684b5c236f3",
+      "key": "flux2_klein9b.text_to_image",
+      "schema_revision": 1,
+      "name": "FLUX.2 Klein 9B Text to Image",
+      "description": "Generate an image with FLUX.2 Klein 9B distilled.",
+      "workflow_kind": "text_to_image",
+      "output": {
+        "type": "image"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the image"
+          }
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 768,
+          "role": "width",
+          "ui": {
+            "min": 256,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 768,
+          "role": "height",
+          "ui": {
+            "min": 256,
+            "step": 16
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 256,
+        "max_pixels": 1048576,
+        "max_aspect": 4.0
+      },
+      "schema_hash": "sha256:2e94d609c2db43e883da19fb0c73faa1bef7f3459c916760079f7cedd212c6b3",
+      "available": true
+    },
+    {
+      "id": "a7489e73-3bb9-4bb9-888f-fa592c8f4430",
+      "key": "flux2_klein9b.two_image_to_image",
+      "schema_revision": 1,
+      "name": "FLUX.2 Klein 9B Two-Image",
+      "description": "Generate an image with FLUX.2 Klein 9B distilled.",
+      "workflow_kind": "image_to_image",
+      "output": {
+        "type": "image"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the image"
+          }
+        },
+        {
+          "key": "image_1",
+          "label": "Image 1",
+          "type": "image",
+          "required": true,
+          "role": "start_image"
+        },
+        {
+          "key": "image_2",
+          "label": "Image 2",
+          "type": "image",
+          "required": true,
+          "role": "end_image"
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 768,
+          "role": "width",
+          "ui": {
+            "min": 256,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 768,
+          "role": "height",
+          "ui": {
+            "min": 256,
+            "step": 16
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 256,
+        "max_pixels": 1048576,
+        "max_aspect": 4.0
+      },
+      "schema_hash": "sha256:d756bc62e593edd29f3c2c909f3c92fd22d10cb2fb44a2b51bdd93afdb605ed8",
+      "available": true
+    },
+    {
+      "id": "34e57585-95a3-4bb6-b3de-fca5dd924ba6",
+      "key": "wan2214b_turbo.text_to_video",
+      "schema_revision": 2,
+      "name": "Wan 2.2 14B Turbo Text to Video",
+      "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+      "workflow_kind": "text_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the shot"
+          }
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "width",
+          "ui": {
+            "min": 480,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "height",
+          "ui": {
+            "min": 480,
+            "step": 16
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "label": "Duration",
+          "type": "number",
+          "required": true,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "ui": {
+            "unit": "seconds",
+            "min": 1.0,
+            "max": 5.0,
+            "step": 0.25
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 480,
+        "max_pixels": 921600,
+        "max_aspect": 1.7777777777777777
+      },
+      "schema_hash": "sha256:4556b1e1b1ae9483ce25f2a90b45f0a3b709bff6e46b34b0b835507f81ef4f8e",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 16.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 5.0,
+          "step": 0.25
+        }
+      },
+      "available": true
+    },
+    {
+      "id": "aac35e26-08e7-400b-bf9b-dc389809ddd5",
+      "key": "wan2214b_turbo.image_to_video",
+      "schema_revision": 2,
+      "name": "Wan 2.2 14B Turbo Image to Video",
+      "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+      "workflow_kind": "image_to_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the shot"
+          }
+        },
+        {
+          "key": "start_image",
+          "label": "Start Image",
+          "type": "image",
+          "required": true,
+          "role": "start_image"
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "width",
+          "ui": {
+            "min": 480,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "height",
+          "ui": {
+            "min": 480,
+            "step": 16
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "label": "Duration",
+          "type": "number",
+          "required": true,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "ui": {
+            "unit": "seconds",
+            "min": 1.0,
+            "max": 5.0,
+            "step": 0.25
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 480,
+        "max_pixels": 921600,
+        "max_aspect": 1.7777777777777777
+      },
+      "schema_hash": "sha256:8c2c935669909fa6e010369137025cbffff321e4789b2966a31d761303d48426",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 16.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 5.0,
+          "step": 0.25
+        }
+      },
+      "available": true
+    },
+    {
+      "id": "d0c202bf-7dd5-4df8-b116-f7633dc94cfe",
+      "key": "wan2214b_turbo.first_last_frame_to_video",
+      "schema_revision": 2,
+      "name": "Wan 2.2 14B Turbo First/Last Frame to Video",
+      "description": "Generate Wan 2.2 14B turbo video at a fixed 16 fps.",
+      "workflow_kind": "first_frame_last_frame_video",
+      "output": {
+        "type": "video"
+      },
+      "inputs": [
+        {
+          "key": "prompt",
+          "label": "Prompt",
+          "type": "text",
+          "required": true,
+          "ui": {
+            "multiline": true,
+            "placeholder": "Describe the shot"
+          }
+        },
+        {
+          "key": "start_image",
+          "label": "First Frame",
+          "type": "image",
+          "required": true,
+          "role": "start_image"
+        },
+        {
+          "key": "end_image",
+          "label": "Last Frame",
+          "type": "image",
+          "required": true,
+          "role": "end_image"
+        },
+        {
+          "key": "width",
+          "label": "Width",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "width",
+          "ui": {
+            "min": 480,
+            "step": 16
+          }
+        },
+        {
+          "key": "height",
+          "label": "Height",
+          "type": "integer",
+          "required": true,
+          "default": 512,
+          "role": "height",
+          "ui": {
+            "min": 480,
+            "step": 16
+          }
+        },
+        {
+          "key": "duration_seconds",
+          "label": "Duration",
+          "type": "number",
+          "required": true,
+          "default": 5.0,
+          "role": "duration_seconds",
+          "ui": {
+            "unit": "seconds",
+            "min": 1.0,
+            "max": 5.0,
+            "step": 0.25
+          }
+        },
+        {
+          "key": "seed",
+          "label": "Seed",
+          "type": "integer",
+          "required": true,
+          "default": 0,
+          "role": "seed"
+        }
+      ],
+      "canvas": {
+        "alignment": 16,
+        "min_side": 480,
+        "max_pixels": 921600,
+        "max_aspect": 1.7777777777777777
+      },
+      "schema_hash": "sha256:9cf28f66f4a51f1631f4f527d26081bf72ba9644d453b1e6f65b34acbcf5601a",
+      "timing": {
+        "fps": {
+          "mode": "fixed",
+          "value": 16.0
+        },
+        "duration_seconds": {
+          "min": 1.0,
+          "max": 5.0,
+          "step": 0.25
+        }
+      },
+      "available": true
+    }
+  ]
+}

@@ -1972,39 +1972,105 @@ mod tests {
                 "video",
             ),
         ];
-        let tools: Vec<Value> = identities
-            .iter()
-            .map(|(id, key, revision, hash, workflow, output)| {
-                json!({
-                    "id": id,
-                    "key": key,
-                    "schema_revision": revision,
-                    "schema_hash": hash,
-                    "name": key,
-                    "workflow_kind": workflow,
-                    "output": { "type": output },
-                    "inputs": [],
-                    "available": true
-                })
-            })
-            .collect();
-        let catalog: EngineCatalog = serde_json::from_value(json!({
-            "protocol_version": "1.0",
-            "engine_version": "0.1.0",
-            "tools": tools
-        }))
-        .expect("catalog identities");
+        let oracle: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/engine-catalog-7df12b4.json"
+        ))
+        .expect("frozen producer catalog");
+        let catalog: EngineCatalog = serde_json::from_value(oracle.clone()).expect("catalog");
         let providers = catalog_to_provider_entries(&catalog, &EngineConnectionSettings::default())
             .expect("providers");
         assert_eq!(providers.len(), identities.len());
-        for (provider, (id, key, revision, hash, _, _)) in providers.iter().zip(identities.iter()) {
+        for ((provider, (id, key, revision, hash, workflow, output)), tool) in providers
+            .iter()
+            .zip(identities.iter())
+            .zip(oracle["tools"].as_array().expect("tools"))
+        {
             assert_eq!(provider.id, Uuid::parse_str(id).expect("id"));
+            assert_eq!(
+                serde_json::to_value(provider.workflow_kind).unwrap(),
+                *workflow
+            );
+            assert_eq!(serde_json::to_value(provider.output_type).unwrap(), *output);
+            assert_eq!(provider.name, tool["name"].as_str().unwrap());
+            assert_eq!(
+                provider.description.as_deref(),
+                tool["description"].as_str()
+            );
+            assert_eq!(
+                serde_json::to_value(&provider.canvas).unwrap(),
+                tool["canvas"]
+            );
+            assert_eq!(
+                serde_json::to_value(&provider.timing).unwrap(),
+                tool["timing"]
+            );
+            let inputs = tool["inputs"].as_array().expect("ordered inputs");
+            assert_eq!(provider.inputs.len(), inputs.len());
+            for (input, expected) in provider.inputs.iter().zip(inputs) {
+                assert_eq!(input.name, expected["key"].as_str().unwrap());
+                assert_eq!(input.label, expected["label"].as_str().unwrap());
+                assert_eq!(
+                    serde_json::to_value(&input.input_type).unwrap()["type"],
+                    expected["type"]
+                );
+                assert_eq!(input.required, expected["required"].as_bool().unwrap());
+                assert_eq!(input.default.as_ref(), expected.get("default"));
+                assert_eq!(serde_json::to_value(input.role).unwrap(), expected["role"]);
+                if let Some(hints) = expected.get("ui") {
+                    let actual =
+                        serde_json::to_value(input.ui.as_ref().expect("UI hints")).unwrap();
+                    for (key, value) in hints.as_object().unwrap() {
+                        if value.is_number() {
+                            assert_eq!(
+                                actual[key].as_f64(),
+                                value.as_f64(),
+                                "{key} for {}",
+                                input.name
+                            );
+                        } else {
+                            assert_eq!(actual[key], *value, "{key} for {}", input.name);
+                        }
+                    }
+                } else {
+                    assert!(input.ui.is_none());
+                }
+            }
+            let controls = crate::core::generation::generation_control_inputs(provider);
+            assert_eq!(controls.variation.len(), 1);
+            assert_eq!(controls.variation[0].name, "seed");
+            assert!(controls.advanced.is_empty());
+            assert_eq!(
+                controls.normal.len(),
+                inputs.len() - if *output == "video" { 4 } else { 3 }
+            );
+            if *output == "video" {
+                assert_eq!(controls.timing.len(), 1);
+                assert_eq!(controls.timing[0].name, "duration_seconds");
+                let fps = if key.starts_with("ltx23.") {
+                    30.0
+                } else {
+                    16.0
+                };
+                assert_eq!(
+                    crate::core::generation::provider_fixed_fps(provider),
+                    Some(fps)
+                );
+                assert_eq!(
+                    crate::core::generation::reconcile_video_timing_for_provider(
+                        5.0, 24.0, provider
+                    ),
+                    (5.0, fps, (5.0 * fps) as u32)
+                );
+            } else {
+                assert!(controls.timing.is_empty());
+            }
             assert!(matches!(
                 &provider.connection,
                 ProviderConnection::LatentSlateEngine {
                     tool_key,
                     schema_revision,
                     schema_hash,
+                    available: true,
                     ..
                 } if tool_key == key
                     && schema_revision == revision
