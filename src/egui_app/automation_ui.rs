@@ -14,6 +14,24 @@ impl LatentSlateApp {
                         }),
                     ));
                 }
+                crate::core::automation::AutomationCommand::RevealUi { id } => {
+                    if crate::core::automation::find_ui_element(&id).is_none() {
+                        envelope.respond(crate::core::automation::AutomationResponse::not_found(
+                            format!(
+                                "No registered UI element with id {id}. Refresh /ui and try again."
+                            ),
+                        ));
+                    } else {
+                        crate::core::automation::queue_ui_reveal(id.clone());
+                        self.pending_automation_ui_actions
+                            .push(PendingAutomationUiAction {
+                                id,
+                                action: "reveal",
+                                envelope,
+                            });
+                        ctx.request_repaint();
+                    }
+                }
                 crate::core::automation::AutomationCommand::ClickUi { id } => {
                     self.queue_automation_click(ctx, envelope, id);
                 }

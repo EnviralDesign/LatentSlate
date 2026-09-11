@@ -1171,6 +1171,7 @@ impl EditorState {
                 Err(err) => AutomationResponse::error(err),
             },
             AutomationCommand::GetUi
+            | AutomationCommand::RevealUi { .. }
             | AutomationCommand::ClickUi { .. }
             | AutomationCommand::TextUi { .. }
             | AutomationCommand::Screenshot { .. }

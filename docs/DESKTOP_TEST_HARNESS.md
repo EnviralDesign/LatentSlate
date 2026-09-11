@@ -85,6 +85,10 @@ Versioned agent endpoints are also available:
 
 UI commands are consumed by registered egui widgets during normal rendering. Semantic commands are applied through the editor state/controller path where possible.
 
+Use `POST /command` with `{"type":"reveal_ui","id":"<widget id>"}` to scroll a
+registered widget into view without clicking or editing it. Discover its ID with
+`GET /ui`, then capture the viewport with `POST /screenshot` after the reveal.
+
 ## Useful Commands
 
 Current command types include:

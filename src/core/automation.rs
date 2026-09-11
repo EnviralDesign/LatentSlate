@@ -76,6 +76,8 @@ pub enum AutomationCommand {
     },
     /// Click a visible UI widget by automation ID.
     ClickUi { id: String },
+    /// Scroll the existing widget into view without activating or editing it.
+    RevealUi { id: String },
     /// Replace or append text in a visible editable UI widget by automation ID.
     TextUi {
         id: String,
@@ -573,6 +575,7 @@ struct PendingText {
 struct UiRegistry {
     elements: Vec<UiElementRecord>,
     pending_clicks: HashSet<String>,
+    pending_reveals: HashSet<String>,
     pending_text: HashMap<String, PendingText>,
     consumed_actions: HashSet<String>,
     frame_index: u64,
@@ -1158,6 +1161,10 @@ pub fn instrument_response(
     let mut consume_click = false;
     if let Ok(mut registry) = ui_registry().lock() {
         registry.elements.push(UiElementRecord { element });
+        if registry.pending_reveals.remove(&id) {
+            response.scroll_to_me(Some(egui::Align::Center));
+            registry.consumed_actions.insert(id.clone());
+        }
         if enabled && element_clickable && registry.pending_clicks.remove(&id) {
             registry.consumed_actions.insert(id.clone());
             consume_click = true;
@@ -1230,6 +1237,13 @@ pub fn queue_ui_click(id: String) {
     }
 }
 
+/// Queue a reveal for the existing widget during the next render pass.
+pub fn queue_ui_reveal(id: String) {
+    if let Ok(mut registry) = ui_registry().lock() {
+        registry.pending_reveals.insert(id);
+    }
+}
+
 /// Queue a text edit for consumption by the target text widget during the next render pass.
 pub fn queue_ui_text(id: String, text: String, replace: bool) {
     if let Ok(mut registry) = ui_registry().lock() {
@@ -1265,6 +1279,7 @@ pub fn was_action_consumed(id: &str) -> bool {
 pub fn clear_pending_ui_action(id: &str) {
     if let Ok(mut registry) = ui_registry().lock() {
         registry.pending_clicks.remove(id);
+        registry.pending_reveals.remove(id);
         registry.pending_text.remove(id);
         registry.consumed_actions.remove(id);
     }
@@ -2408,6 +2423,7 @@ fn agent_command_names() -> Vec<&'static str> {
         "get_capabilities",
         "get_ui",
         "click_ui",
+        "reveal_ui",
         "text_ui",
         "screenshot",
         "list_projects",
@@ -2584,6 +2600,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "get_ui", "fields": {} },
             { "type": "click_ui", "fields": { "id": "ui element id from get_ui" } },
             { "type": "text_ui", "fields": { "id": "ui element id from get_ui", "text": "string", "replace?": "bool" } },
+            { "type": "reveal_ui", "fields": { "id": "registered UI widget id" } },
             { "type": "screenshot", "fields": { "name?": "string" } },
             { "type": "open_providers|close_providers|open_project_settings|close_project_settings|open_new_project|close_new_project|open_queue|close_queue|open_generative_video|close_generative_video|open_export_video|close_export_video|close_asset_lab|close_all_overlays", "fields": {} },
             { "type": "open_asset_lab", "fields": { "asset_id": "uuid", "version?": "string", "compare_with_active?": "boolean" } },
