@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::generation::provider_timing_role_value;
 use crate::state::{
     default_new_generative_video_timing, normalize_generative_video_fps,
     DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS,
@@ -2355,94 +2356,11 @@ impl LatentSlateApp {
                     .iter()
                     .find(|provider| provider.id == provider_id)
             });
-            self.editor
-                .project
-                .set_generative_provider_id(asset_id, next_provider_id);
-            if let Some(provider) = next_provider {
-                let has_output = self
-                    .editor
-                    .project
-                    .generative_config(asset_id)
-                    .is_some_and(GenerativeConfig::has_generated_output);
-                let creative_duration = if has_output
-                    || selected_provider
-                        .as_ref()
-                        .is_some_and(crate::core::generation::provider_has_duration_mapping)
-                {
-                    selected_provider.as_ref().and_then(|previous| {
-                        self.editor
-                            .project
-                            .generative_config(asset_id)
-                            .and_then(|config| {
-                                crate::core::generation::provider_request_duration(
-                                    previous,
-                                    &config.inputs,
-                                )
-                            })
-                    })
-                } else {
-                    generative_video_timing(&self.editor.project, asset_id)
-                        .map(|(duration, _, _)| duration)
-                };
-                if output_type == ProviderOutputType::Video
-                    && !has_output
-                    && !crate::core::generation::provider_has_duration_mapping(provider)
-                {
-                    if let Some((duration, fps, _)) =
-                        generative_video_timing(&self.editor.project, asset_id)
-                    {
-                        let (_, next_fps, next_frames) =
-                            crate::core::generation::reconcile_video_timing_for_provider(
-                                creative_duration.unwrap_or(duration),
-                                fps,
-                                provider,
-                            );
-                        self.editor.project.set_generative_video_timing(
-                            asset_id,
-                            next_fps,
-                            next_frames,
-                        );
-                    }
-                }
-                self.editor
-                    .project
-                    .update_generative_config(asset_id, |config| {
-                        crate::core::generation::reconcile_provider_switch_inputs(
-                            &mut config.inputs,
-                            selected_provider.as_ref(),
-                            provider,
-                        );
-                        migrate_legacy_size_input(config, provider);
-                        crate::core::generation::migrate_wan_rev1_frame_count(
-                            config,
-                            provider,
-                            creative_duration,
-                        );
-                    });
-                if crate::core::generation::provider_has_duration_mapping(provider) {
-                    let request =
-                        self.editor
-                            .project
-                            .generative_config(asset_id)
-                            .and_then(|config| {
-                                crate::core::generation::provider_request_duration(
-                                    provider,
-                                    &config.inputs,
-                                )
-                            });
-                    if let Some(request) = request {
-                        if let Err(err) = self
-                            .editor
-                            .set_generation_duration_request(asset_id, request)
-                        {
-                            self.editor.status =
-                                format!("Failed to update duration request: {err}");
-                        }
-                    }
-                }
-                if output_type == ProviderOutputType::Video {
-                    self.sync_generative_video_timing_inputs(asset_id);
-                }
+            if let Err(err) = self
+                .editor
+                .set_generation_provider(asset_id, next_provider_id)
+            {
+                self.editor.status = format!("Failed to change generation provider: {err}");
             }
             self.apply_timeline_bridge_provider_change(asset_id, context_clip_id, next_provider);
             config_dirty = true;
@@ -2937,59 +2855,13 @@ impl LatentSlateApp {
     }
 
     fn sync_generative_video_timing_inputs(&mut self, asset_id: Uuid) -> bool {
-        let Some((duration, fps, frame_count)) =
-            generative_video_timing(&self.editor.project, asset_id)
-        else {
-            return false;
-        };
-        let Some(provider_id) = self
-            .editor
-            .project
-            .generative_config(asset_id)
-            .and_then(|config| config.provider_id)
-        else {
-            return false;
-        };
-        let Some(provider) = self
-            .editor
-            .provider_entries
-            .iter()
-            .find(|provider| provider.id == provider_id)
-            .cloned()
-        else {
-            return false;
-        };
-
-        let mut changed = false;
-        self.editor
-            .project
-            .update_generative_config(asset_id, |config| {
-                for input in provider.inputs.iter() {
-                    if config.has_generated_output() {
-                        continue;
-                    }
-                    if input.role == Some(InputRole::DurationSeconds)
-                        && crate::core::generation::provider_has_duration_mapping(&provider)
-                    {
-                        continue;
-                    }
-                    let Some(value) = provider_timing_role_value(input, duration, fps, frame_count)
-                    else {
-                        continue;
-                    };
-                    let next = InputValue::Literal { value };
-                    if config.inputs.get(&input.name) != Some(&next) {
-                        config.inputs.insert(input.name.clone(), next);
-                        changed = true;
-                    }
-                }
-            });
-        if changed {
-            if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+        match self.editor.sync_generative_video_timing_inputs(asset_id) {
+            Ok(changed) => changed,
+            Err(err) => {
                 self.editor.status = format!("Failed to save generative timing inputs: {err}");
+                false
             }
         }
-        changed
     }
 
     fn sync_timeline_bridge_asset_timing(
@@ -4264,37 +4136,6 @@ fn provider_duration_bounds_label(bounds: ProviderDurationBounds) -> String {
     match (range.is_empty(), bounds.step) {
         (false, Some(step)) => format!("{range} · {step} sec increments"),
         _ => range,
-    }
-}
-
-fn provider_timing_role_value(
-    input: &ProviderInputField,
-    duration: f64,
-    fps: f64,
-    frame_count: u32,
-) -> Option<serde_json::Value> {
-    let role = input.role?;
-    let raw = match role {
-        InputRole::DurationSeconds => duration,
-        InputRole::Fps => fps,
-        InputRole::FrameCount => frame_count as f64,
-        InputRole::Width
-        | InputRole::Height
-        | InputRole::Seed
-        | InputRole::StartImage
-        | InputRole::EndImage
-        | InputRole::LeftVideo
-        | InputRole::RightVideo
-        | InputRole::LeftReplaceFrames
-        | InputRole::RightReplaceFrames
-        | InputRole::EdgeBlendFrames => return None,
-    };
-    match input.input_type {
-        ProviderInputType::Integer => Some(serde_json::Value::Number((raw.round() as i64).into())),
-        ProviderInputType::Number => {
-            serde_json::Number::from_f64(raw).map(serde_json::Value::Number)
-        }
-        _ => None,
     }
 }
 

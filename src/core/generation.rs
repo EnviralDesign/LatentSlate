@@ -2761,3 +2761,35 @@ mod tests {
         );
     }
 }
+
+/// Convert an authored timing value without silently repairing an invalid request.
+pub fn provider_timing_role_value(
+    input: &ProviderInputField,
+    duration: f64,
+    fps: f64,
+    frame_count: u32,
+) -> Option<serde_json::Value> {
+    let role = input.role?;
+    let raw = match role {
+        InputRole::DurationSeconds => duration,
+        InputRole::Fps => fps,
+        InputRole::FrameCount => frame_count as f64,
+        InputRole::Width
+        | InputRole::Height
+        | InputRole::Seed
+        | InputRole::StartImage
+        | InputRole::EndImage
+        | InputRole::LeftVideo
+        | InputRole::RightVideo
+        | InputRole::LeftReplaceFrames
+        | InputRole::RightReplaceFrames
+        | InputRole::EdgeBlendFrames => return None,
+    };
+    match input.input_type {
+        ProviderInputType::Integer => Some(serde_json::Value::Number((raw.round() as i64).into())),
+        ProviderInputType::Number => {
+            serde_json::Number::from_f64(raw).map(serde_json::Value::Number)
+        }
+        _ => None,
+    }
+}
