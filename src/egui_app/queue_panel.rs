@@ -595,12 +595,10 @@ impl LatentSlateApp {
         let mut clear_clicked = false;
         let mut cancel_job_id = None;
         let app_rect = ctx.content_rect();
-        let fallback_anchor = Rect::from_min_size(
-            Pos2::new(app_rect.right() - 72.0, app_rect.top() + 4.0),
-            Vec2::new(62.0, kit::TOP_BAR_BUTTON_H),
-        );
-        let anchor = self.queue_button_rect.unwrap_or(fallback_anchor);
-        let bounds = app_rect.shrink(QUEUE_PANEL_MARGIN);
+        let menu_bottom = self
+            .top_bar_rect
+            .map_or(app_rect.top() + kit::TOP_BAR_H, |rect| rect.bottom());
+        let bounds = app_rect.shrink(TOP_BAR_POPOVER_MARGIN);
         let panel_w = QUEUE_PANEL_W.min(bounds.width()).max(240.0);
         let jobs = self.editor.generation_queue.clone();
         let has_attention = jobs.iter().any(|job| {
@@ -617,21 +615,14 @@ impl LatentSlateApp {
             QUEUE_PANEL_PAD * 2.0 + QUEUE_PANEL_HEADER_H + QUEUE_PANEL_GAP + desired_body_h;
         let max_h_by_window = (app_rect.height() - QUEUE_PANEL_MAX_APP_GAP).max(QUEUE_PANEL_MIN_H);
         let panel_top =
-            (anchor.bottom() + QUEUE_PANEL_GAP).clamp(bounds.top(), bounds.bottom() - 24.0);
+            (menu_bottom + TOP_BAR_POPOVER_MARGIN).clamp(bounds.top(), bounds.bottom() - 24.0);
         let max_h_below = (bounds.bottom() - panel_top).max(QUEUE_PANEL_MIN_H);
         let panel_h = desired_h.clamp(
             QUEUE_PANEL_MIN_H,
             max_h_by_window.min(max_h_below).max(QUEUE_PANEL_MIN_H),
         );
         let max_x = (bounds.right() - panel_w).max(bounds.left());
-        let panel_pos = Pos2::new(
-            (anchor.right() - panel_w).clamp(bounds.left(), max_x),
-            panel_top,
-        );
-
-        if kit::modal_scrim(ctx, "queue").clicked() {
-            close_clicked = true;
-        }
+        let panel_pos = Pos2::new(max_x, panel_top);
 
         egui::Area::new(egui::Id::new("generation_queue_popover"))
             .order(egui::Order::Foreground)

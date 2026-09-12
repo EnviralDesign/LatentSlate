@@ -26,11 +26,11 @@ use crate::core::thumbnailer::Thumbnailer;
 use crate::core::timeline_bridge::{provider_is_timeline_bridge, resolve_timeline_bridge_clip};
 use crate::state::{
     generative_video_frames_for_duration, input_value_as_f64, next_generative_index,
-    normalize_generative_video_fps, Asset, AssetKind, GenerationJob, GenerativeConfig, InputRole,
-    InputValue, Project, ProjectProviderScope, ProjectSettings, ProjectWorkspaceLayout,
-    ProviderConnection, ProviderEntry, ProviderInputType, ProviderOutputType, SelectionState,
-    DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS, DEFAULT_GENERATIVE_VIDEO_FPS,
-    DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
+    normalize_generative_video_fps, Asset, AssetKind, ChatWindowPlacement, GenerationJob,
+    GenerativeConfig, InputRole, InputValue, Project, ProjectProviderScope, ProjectSettings,
+    ProjectWorkspaceLayout, ProviderConnection, ProviderEntry, ProviderInputType,
+    ProviderOutputType, SelectionState, DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS,
+    DEFAULT_GENERATIVE_VIDEO_FPS, DEFAULT_GENERATIVE_VIDEO_FRAME_COUNT,
 };
 
 fn persisted_creative_duration_for_wan_migration(asset: &Asset) -> Option<f64> {
@@ -49,6 +49,7 @@ fn persisted_creative_duration_for_wan_migration(asset: &Asset) -> Option<f64> {
 
 #[derive(Clone, Debug)]
 pub struct EditorLayout {
+    pub chat_window: Option<ChatWindowPlacement>,
     pub left_collapsed: bool,
     pub right_collapsed: bool,
     pub timeline_collapsed: bool,
@@ -65,6 +66,7 @@ pub struct EditorLayout {
 impl Default for EditorLayout {
     fn default() -> Self {
         Self {
+            chat_window: None,
             left_collapsed: false,
             right_collapsed: false,
             timeline_collapsed: false,
@@ -83,6 +85,16 @@ impl Default for EditorLayout {
 impl EditorLayout {
     pub fn apply_workspace_layout(&mut self, layout: &ProjectWorkspaceLayout) {
         let defaults = ProjectWorkspaceLayout::default();
+        self.chat_window = layout.chat_window.filter(|placement| {
+            placement
+                .outer_position
+                .iter()
+                .all(|value| value.is_finite())
+                && placement
+                    .inner_size
+                    .iter()
+                    .all(|value| value.is_finite() && *value > 0.0)
+        });
         self.left_collapsed = layout.left_collapsed;
         self.right_collapsed = layout.right_collapsed;
         self.timeline_collapsed = layout.timeline_collapsed;
@@ -98,6 +110,7 @@ impl EditorLayout {
 
     pub fn workspace_layout(&self) -> ProjectWorkspaceLayout {
         ProjectWorkspaceLayout {
+            chat_window: self.chat_window,
             left_collapsed: self.left_collapsed,
             right_collapsed: self.right_collapsed,
             timeline_collapsed: self.timeline_collapsed,
@@ -127,6 +140,7 @@ pub struct EditorOverlays {
     pub new_project: bool,
     pub queue: bool,
     pub agent_api: bool,
+    pub chat: bool,
     pub generative_video: bool,
     pub export_video: bool,
     pub asset_lab: bool,

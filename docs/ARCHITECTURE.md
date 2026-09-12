@@ -50,6 +50,7 @@ Important rules:
 - Deleting an asset removes its project-local owned media, generated folder, and asset-specific caches when no remaining asset references the same project-relative path; external or unsafe paths are only removed from the project model.
 - Writable app-managed state lives under `LatentSlateData/` next to the running executable unless `LATENTSLATE_HOME` is set.
 - Default projects are written to `LatentSlateData/projects/`.
+- Project workspace layout includes Chat's last native window position and content size. Closing Chat retains this placement in memory; saving the project persists it. Projects without a saved placement open Chat beside the main window with matching top and bottom edges.
 - User-authored provider entries are written to `LatentSlateData/providers/`.
 - LatentSlate Engine backends may be stored in `LatentSlateData/engine.json` as a `connections` list (a legacy singleton object still loads). Each backend caches its last successful catalog in `LatentSlateData/engine_catalog.json` or `LatentSlateData/engine_catalogs/<id>.json`.
 - Provider entries contain inline ComfyUI manifest bindings and inline cloud provider API keys.

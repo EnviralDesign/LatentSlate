@@ -184,6 +184,14 @@ impl LatentSlateApp {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if kit::chat_toggle_button(ui, self.editor.overlays.chat)
+                            .on_hover_text("Open or close the separate Chat window.")
+                            .clicked()
+                        {
+                            self.editor.overlays.chat = !self.editor.overlays.chat;
+                        }
+                        ui.separator();
+
                         let active_count = self
                             .editor
                             .generation_queue
@@ -213,12 +221,11 @@ impl LatentSlateApp {
                         } else {
                             "Open generation queue."
                         });
-                        self.queue_button_rect = Some(queue_response.rect);
                         if queue_response.clicked() {
                             self.editor.overlays.queue = !self.editor.overlays.queue;
-                            if self.editor.overlays.queue {
-                                self.editor.overlays.agent_api = false;
-                            }
+                            self.editor.overlays.agent_api = false;
+                            egui::Popup::close_all(ui.ctx());
+                            self.top_bar_menu_open = false;
                         }
 
                         let api_response = kit::api_toggle_button(
@@ -231,13 +238,14 @@ impl LatentSlateApp {
                         } else {
                             "Open Agent API controls."
                         });
-                        self.agent_api_button_rect = Some(api_response.rect);
                         if api_response.clicked() {
                             self.editor.overlays.agent_api = !self.editor.overlays.agent_api;
-                            if self.editor.overlays.agent_api {
-                                self.editor.overlays.queue = false;
-                            }
+                            self.editor.overlays.queue = false;
+                            egui::Popup::close_all(ui.ctx());
+                            self.top_bar_menu_open = false;
                         }
+
+                        ui.separator();
 
                         let release_target_count =
                             crate::providers::provider_resource_release_target_count(
@@ -277,6 +285,7 @@ impl LatentSlateApp {
                     });
                 });
             });
+        self.top_bar_rect = Some(response.response.rect);
         kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Bottom);
     }
 
@@ -343,8 +352,17 @@ impl LatentSlateApp {
     }
 
     pub(super) fn modals(&mut self, ctx: &Context) {
-        if self.top_bar_menu_open {
-            kit::paint_top_bar_menu_scrim(ctx);
+        if self.top_bar_menu_open || self.editor.overlays.queue || self.editor.overlays.agent_api {
+            let mut rect = ctx.content_rect();
+            rect.min.y = self
+                .top_bar_rect
+                .map_or(rect.top() + kit::TOP_BAR_H, |bar| bar.bottom());
+            if kit::top_bar_scrim(ctx, rect).clicked() {
+                self.editor.overlays.queue = false;
+                self.editor.overlays.agent_api = false;
+                egui::Popup::close_all(ctx);
+                self.top_bar_menu_open = false;
+            }
         }
 
         let startup_open = self.editor.show_startup();
@@ -577,6 +595,9 @@ impl eframe::App for LatentSlateApp {
         self.central_preview(ui);
 
         self.modals(&ctx);
+        if self.editor.overlays.chat {
+            self.chat_panel(&ctx);
+        }
         self.service_audio_decode_warmup(&ctx);
         self.finish_automation_ui_actions();
         self.editor.refresh_project_dirty_state();

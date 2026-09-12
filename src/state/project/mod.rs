@@ -11,6 +11,6 @@ mod track;
 
 pub use clip::{Clip, ClipBridgeLink, ClipImageMode, ClipTimeMode, ClipTransform};
 pub use marker::Marker;
-pub use project::{Project, ProjectWorkspaceLayout};
+pub use project::{ChatWindowPlacement, Project, ProjectWorkspaceLayout};
 pub use settings::{ProjectProviderScope, ProjectSettings};
 pub use track::{Track, TrackType};

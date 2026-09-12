@@ -201,22 +201,7 @@ impl LatentSlateApp {
         let available = ui.available_size();
         let duration = self.editor.project.duration().max(10.0);
         let fps = self.editor.project.settings.fps.max(1.0) as f32;
-        let track_count = self.editor.project.tracks.len().max(1) as f32;
-        let min_h = TIMELINE_RULER_H + TIMELINE_TRACK_H + TIMELINE_SCROLLBAR_H;
-        let total_h = available.y.max(min_h);
-        let (outer, response) =
-            ui.allocate_exact_size(Vec2::new(available.x, total_h), Sense::click_and_drag());
-        let track_content_h = track_count * TIMELINE_TRACK_H;
-        let max_scroll_y = (track_content_h
-            - (total_h - TIMELINE_RULER_H - TIMELINE_SCROLLBAR_H).max(1.0))
-        .max(0.0);
-        self.clamp_timeline_vertical_scroll(max_scroll_y);
-        let rects = timeline_rects(outer, self.editor.layout.timeline_scroll_y);
-        let track_stack_bottom = (rects.tracks.top()
-            + self.editor.project.tracks.len() as f32 * TIMELINE_TRACK_H
-            - rects.track_scroll_y)
-            .clamp(rects.tracks.top(), rects.tracks.bottom());
-        let viewport_w = rects.tracks.width().max(1.0);
+        let viewport_w = (available.x - TIMELINE_LABEL_W).max(1.0);
         let (fit_zoom, max_zoom) = timeline_zoom_bounds(duration as f32, viewport_w, fps);
         self.preserve_timeline_visible_range_on_resize(viewport_w, fit_zoom, max_zoom);
         self.editor.layout.timeline_zoom =
@@ -231,6 +216,25 @@ impl LatentSlateApp {
             .max(TIMELINE_MIN_ZOOM_FLOOR);
         self.editor.layout.timeline_zoom = zoom;
         let content_w = (duration as f32 * zoom).max(viewport_w);
+        let scrollbar_h = if content_w > viewport_w + 1.0 {
+            TIMELINE_SCROLLBAR_H
+        } else {
+            0.0
+        };
+        let track_count = self.editor.project.tracks.len().max(1) as f32;
+        let min_h = TIMELINE_RULER_H + TIMELINE_TRACK_H + scrollbar_h;
+        let total_h = available.y.max(min_h);
+        let (outer, response) =
+            ui.allocate_exact_size(Vec2::new(available.x, total_h), Sense::click_and_drag());
+        let track_content_h = track_count * TIMELINE_TRACK_H;
+        let max_scroll_y =
+            (track_content_h - (total_h - TIMELINE_RULER_H - scrollbar_h).max(1.0)).max(0.0);
+        self.clamp_timeline_vertical_scroll(max_scroll_y);
+        let rects = timeline_rects(outer, self.editor.layout.timeline_scroll_y, scrollbar_h);
+        let track_stack_bottom = (rects.tracks.top()
+            + self.editor.project.tracks.len() as f32 * TIMELINE_TRACK_H
+            - rects.track_scroll_y)
+            .clamp(rects.tracks.top(), rects.tracks.bottom());
         self.clamp_timeline_scroll(content_w, viewport_w);
         let content_viewport =
             Rect::from_min_max(rects.outer.left_top(), rects.tracks.right_bottom());
@@ -701,12 +705,16 @@ impl LatentSlateApp {
 
         // Paint separators after every row background. Drawing them inside the
         // row loop lets the next row's fill cover the previous separator.
+        let separator_painter = painter.with_clip_rect(Rect::from_min_max(
+            label_viewport.left_top(),
+            rects.tracks.right_bottom(),
+        ));
         for row in 0..tracks.len().saturating_sub(1) {
             let row_rect = timeline_row_rect(rects, row);
             if row_rect.bottom() < rects.tracks.top() || row_rect.top() > rects.tracks.bottom() {
                 continue;
             }
-            painter.line_segment(
+            separator_painter.line_segment(
                 [
                     Pos2::new(rects.outer.left(), row_rect.bottom()),
                     Pos2::new(rects.tracks.right(), row_rect.bottom()),

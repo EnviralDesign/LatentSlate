@@ -11,8 +11,19 @@ use super::{
 };
 use crate::state::{generative_video_duration_seconds, Asset, AssetKind, GenerativeConfig};
 
+/// Last Chat window placement, in egui screen points.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ChatWindowPlacement {
+    /// Top-left of the native window, including its frame.
+    pub outer_position: [f32; 2],
+    /// Content size, excluding the native title bar and frame.
+    pub inner_size: [f32; 2],
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectWorkspaceLayout {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_window: Option<ChatWindowPlacement>,
     #[serde(default)]
     pub left_collapsed: bool,
     #[serde(default)]
@@ -36,6 +47,7 @@ pub struct ProjectWorkspaceLayout {
 impl Default for ProjectWorkspaceLayout {
     fn default() -> Self {
         Self {
+            chat_window: None,
             left_collapsed: false,
             right_collapsed: false,
             timeline_collapsed: false,

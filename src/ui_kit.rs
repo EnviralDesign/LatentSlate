@@ -2083,7 +2083,10 @@ fn field_stroke(output: &egui::text_edit::TextEditOutput) -> Stroke {
 }
 
 pub fn modal_scrim(ctx: &Context, id: &'static str) -> Response {
-    let rect = ctx.content_rect();
+    modal_scrim_in_rect(ctx, id, ctx.content_rect())
+}
+
+fn modal_scrim_in_rect(ctx: &Context, id: &'static str, rect: Rect) -> Response {
     let area = egui::Area::new(egui::Id::new(format!("modal_scrim_{id}")))
         .order(egui::Order::Middle)
         .fixed_pos(rect.min);
@@ -2520,6 +2523,18 @@ pub fn queue_toggle_button(
     )
 }
 
+/// Renders the top-bar Chat pane toggle.
+pub fn chat_toggle_button(ui: &mut Ui, active: bool) -> Response {
+    subtle_button_with_id(
+        ui,
+        "CHAT",
+        Vec2::new(40.0, TOP_BAR_BUTTON_H),
+        active,
+        10.0,
+        TOP_BAR_BUTTON_RADIUS,
+        ui.make_persistent_id("chat_toggle_button"),
+    )
+}
 pub fn api_toggle_button(ui: &mut Ui, enabled: bool, active: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(TOP_BAR_BUTTON_MIN_W, TOP_BAR_BUTTON_H),
@@ -2590,6 +2605,7 @@ pub fn resource_dump_button(ui: &mut Ui, busy: bool) -> Response {
 pub fn top_bar_menu_button<R>(
     ui: &mut Ui,
     label: &str,
+    popup_top: f32,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> (Response, bool) {
     let button_id = ui.make_persistent_id(("top_bar_menu_button", label));
@@ -2607,6 +2623,13 @@ pub fn top_bar_menu_button<R>(
     let open_this_frame = active || response.clicked();
     egui::Popup::menu(&response)
         .id(popup_id)
+        .anchor(Pos2::new(response.rect.left(), popup_top))
+        .gap(0.0)
+        .frame(
+            modal_frame()
+                .corner_radius(10)
+                .inner_margin(Margin::same(12)),
+        )
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(add_contents);
     (
@@ -2615,19 +2638,45 @@ pub fn top_bar_menu_button<R>(
     )
 }
 
-pub fn paint_top_bar_menu_scrim(ctx: &Context) {
-    let rect = ctx.content_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Middle,
-        egui::Id::new("top_bar_menu_scrim"),
-    ));
-    painter.rect_filled(rect, 0.0, MODAL_SCRIM_FILL);
-    painter.rect_filled(rect, 0.0, MODAL_SCRIM_SOFT_WASH);
-    paint_modal_vignette(&painter, rect);
+/// Dims and intercepts clicks below the top bar for its menus and panes.
+pub fn top_bar_scrim(ctx: &Context, rect: Rect) -> Response {
+    modal_scrim_in_rect(ctx, "top_bar", rect)
 }
 
 fn top_bar_text_button_width(label: &str) -> f32 {
     (label.chars().count() as f32 * 7.0 + TOP_BAR_BUTTON_PAD_X).max(TOP_BAR_BUTTON_MIN_W)
+}
+
+/// Renders a compact pane header and returns whether Close was clicked.
+pub fn popover_header(ui: &mut Ui, title: &str, subtitle: &str) -> bool {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
+    let mut header_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    header_ui.shrink_clip_rect(rect);
+    let title_width = (rect.width() - 62.0).max(0.0);
+    header_ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        ui.add_sized(
+            [title_width, 16.0],
+            egui::Label::new(RichText::new(title).color(TEXT).size(12.0))
+                .halign(Align::Min)
+                .truncate(),
+        );
+        ui.add_sized(
+            [title_width, 12.0],
+            egui::Label::new(RichText::new(subtitle).color(TEXT_MUTED).size(10.0))
+                .halign(Align::Min)
+                .truncate(),
+        );
+    });
+    header_ui
+        .with_layout(Layout::right_to_left(Align::Center), |ui| {
+            popover_button(ui, "Close", 50.0, true).clicked()
+        })
+        .inner
 }
 
 pub fn popover_button(ui: &mut Ui, label: &str, width: f32, enabled: bool) -> Response {

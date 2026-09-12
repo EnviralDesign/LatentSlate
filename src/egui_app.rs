@@ -65,6 +65,7 @@ mod asset_lab;
 mod asset_panel;
 mod attributes_panel;
 mod automation_ui;
+mod chat_panel;
 mod confirmations;
 mod export_modal;
 mod export_modal_ui;
@@ -188,12 +189,12 @@ const PROJECT_DELETE_MODAL_SIZE: [f32; 2] = [520.0, 340.0];
 const ASSET_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 310.0];
 const TRACK_DELETE_MODAL_SIZE: [f32; 2] = [460.0, 300.0];
 const BRIDGE_KEYFRAME_MODAL_SIZE: [f32; 2] = [500.0, 340.0];
-const QUEUE_PANEL_W: f32 = 320.0;
+const QUEUE_PANEL_W: f32 = 380.0;
 const QUEUE_PANEL_MIN_H: f32 = 132.0;
 const QUEUE_PANEL_PAD: f32 = 12.0;
 const QUEUE_PANEL_HEADER_H: f32 = 30.0;
 const QUEUE_PANEL_GAP: f32 = 8.0;
-const QUEUE_PANEL_MARGIN: f32 = 10.0;
+const TOP_BAR_POPOVER_MARGIN: f32 = 10.0;
 const QUEUE_PANEL_MAX_APP_GAP: f32 = 60.0;
 const QUEUE_EMPTY_BODY_H: f32 = 42.0;
 const QUEUE_JOB_GAP: f32 = 8.0;
@@ -362,8 +363,7 @@ pub struct LatentSlateApp {
     export_events_rx: mpsc::Receiver<VideoExportEvent>,
     export_cancel: Option<Arc<AtomicBool>>,
     export_preview_texture: Option<TextureHandle>,
-    queue_button_rect: Option<Rect>,
-    agent_api_button_rect: Option<Rect>,
+    top_bar_rect: Option<Rect>,
     top_bar_menu_open: bool,
     asset_drop_target_rect: Option<Rect>,
     asset_drop_target_hovered: bool,
@@ -843,8 +843,7 @@ impl LatentSlateApp {
             export_events_rx,
             export_cancel: None,
             export_preview_texture: None,
-            queue_button_rect: None,
-            agent_api_button_rect: None,
+            top_bar_rect: None,
             top_bar_menu_open: false,
             asset_drop_target_rect: None,
             asset_drop_target_hovered: false,
@@ -1259,7 +1258,19 @@ fn menu_button(
     add_contents: impl FnOnce(&mut Ui, &mut LatentSlateApp),
     app: &mut LatentSlateApp,
 ) {
-    let (_, open) = kit::top_bar_menu_button(ui, label, |ui| add_contents(ui, app));
+    let menu_bottom = app
+        .top_bar_rect
+        .map_or(ui.ctx().content_rect().top() + kit::TOP_BAR_H, |rect| {
+            rect.bottom()
+        });
+    let (response, open) =
+        kit::top_bar_menu_button(ui, label, menu_bottom + TOP_BAR_POPOVER_MARGIN, |ui| {
+            add_contents(ui, app)
+        });
+    if response.clicked() {
+        app.editor.overlays.queue = false;
+        app.editor.overlays.agent_api = false;
+    }
     app.top_bar_menu_open |= open;
 }
 

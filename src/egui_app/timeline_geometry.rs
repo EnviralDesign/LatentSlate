@@ -8,7 +8,7 @@ use super::{
     TIMELINE_CLIP_H, TIMELINE_CLIP_Y_PAD, TIMELINE_HANDLE_W, TIMELINE_KEYFRAME_HIT_W,
     TIMELINE_LABEL_W, TIMELINE_MARKER_HIT_W, TIMELINE_MARKER_LABEL_H, TIMELINE_MARKER_LABEL_W,
     TIMELINE_MAX_PX_PER_FRAME, TIMELINE_MIN_CLIP_W, TIMELINE_MIN_ZOOM_FLOOR, TIMELINE_RULER_H,
-    TIMELINE_SCROLLBAR_H, TIMELINE_TRACK_H,
+    TIMELINE_TRACK_H,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -45,7 +45,7 @@ pub(super) struct TimelineMarkerGeom {
     pub(super) hit_rect: Rect,
 }
 
-pub(super) fn timeline_rects(outer: Rect, track_scroll_y: f32) -> TimelineRects {
+pub(super) fn timeline_rects(outer: Rect, track_scroll_y: f32, scrollbar_h: f32) -> TimelineRects {
     let ruler = Rect::from_min_max(
         Pos2::new(outer.left() + TIMELINE_LABEL_W, outer.top()),
         Pos2::new(outer.right(), outer.top() + TIMELINE_RULER_H),
@@ -53,7 +53,7 @@ pub(super) fn timeline_rects(outer: Rect, track_scroll_y: f32) -> TimelineRects 
     let scrollbar = Rect::from_min_max(
         Pos2::new(
             outer.left() + TIMELINE_LABEL_W,
-            outer.bottom() - TIMELINE_SCROLLBAR_H,
+            outer.bottom() - scrollbar_h,
         ),
         outer.right_bottom(),
     );

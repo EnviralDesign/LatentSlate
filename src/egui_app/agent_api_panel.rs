@@ -1,8 +1,6 @@
 use super::*;
 
 const API_PANEL_W: f32 = 380.0;
-const API_PANEL_MARGIN: f32 = 8.0;
-const API_PANEL_GAP: f32 = 4.0;
 const API_SERVICE_CARD_PAD: i8 = 12;
 const API_STATUS_BADGE_W: f32 = 64.0;
 const API_STATUS_BADGE_H: f32 = 20.0;
@@ -13,43 +11,33 @@ impl LatentSlateApp {
 
         let mut close_clicked = false;
         let app_rect = ctx.content_rect();
-        let fallback_anchor = Rect::from_min_size(
-            Pos2::new(app_rect.right() - 120.0, app_rect.top() + 4.0),
-            Vec2::new(kit::TOP_BAR_BUTTON_MIN_W, kit::TOP_BAR_BUTTON_H),
-        );
-        let anchor = self.agent_api_button_rect.unwrap_or(fallback_anchor);
-        let bounds = app_rect.shrink(API_PANEL_MARGIN);
+        let menu_bottom = self
+            .top_bar_rect
+            .map_or(app_rect.top() + kit::TOP_BAR_H, |rect| rect.bottom());
+        let bounds = app_rect.shrink(TOP_BAR_POPOVER_MARGIN);
         let panel_w = API_PANEL_W.min(bounds.width().max(0.0));
-        let panel_top = (anchor.bottom() + API_PANEL_GAP).clamp(bounds.top(), bounds.bottom());
+        let panel_top =
+            (menu_bottom + TOP_BAR_POPOVER_MARGIN).clamp(bounds.top(), bounds.bottom() - 24.0);
         let max_x = (bounds.right() - panel_w).max(bounds.left());
-        let panel_pos = Pos2::new(
-            (anchor.right() - panel_w).clamp(bounds.left(), max_x),
-            panel_top,
-        );
-
-        if kit::modal_scrim(ctx, "agent_api").clicked() {
-            close_clicked = true;
-        }
+        let panel_pos = Pos2::new(max_x, panel_top);
 
         egui::Area::new(egui::Id::new("agent_api_popover"))
             .order(egui::Order::Foreground)
             .fixed_pos(panel_pos)
             .show(ctx, |ui| {
-                ui.set_width(panel_w);
-                kit::modal_frame().show(ui, |ui| {
-                    ui.set_width(panel_w);
-                    if kit::modal_header_with_close(
-                        ui,
-                        "Agent API",
-                        Some("Loopback automation for local tools"),
-                        true,
-                    ) {
-                        close_clicked = true;
-                    }
-                    kit::modal_body(ui, |ui| {
+                kit::modal_frame()
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width((panel_w - 26.0).max(0.0));
+                        close_clicked |= kit::popover_header(
+                            ui,
+                            "Agent API",
+                            "Loopback automation for local tools",
+                        );
+                        ui.add_space(8.0);
                         self.agent_api_panel_contents(ui);
                     });
-                });
             });
 
         if close_clicked {
@@ -120,24 +108,9 @@ impl LatentSlateApp {
         ui.add_space(16.0);
         ui.separator();
         ui.add_space(12.0);
-        let mut close_clicked = false;
-        let mut copy_primer_clicked = false;
-        kit::equal_width_action_row(
-            ui,
-            2,
-            kit::SECONDARY_BUTTON_H,
-            kit::ACTION_GAP,
-            |ui, index, button_w| match index {
-                0 => {
-                    close_clicked = kit::secondary_button(ui, "Close", button_w).clicked();
-                }
-                _ => {
-                    copy_primer_clicked = kit::primary_button(ui, "Copy Primer", button_w)
-                        .on_hover_text("Copy a skill-style bootstrap block for another agent.")
-                        .clicked();
-                }
-            },
-        );
+        let copy_primer_clicked = kit::primary_button(ui, "Copy Primer", ui.available_width())
+            .on_hover_text("Copy a skill-style bootstrap block for another agent.")
+            .clicked();
 
         if copy_primer_clicked {
             let payload = crate::core::automation::build_agent_bootstrap(
@@ -150,9 +123,6 @@ impl LatentSlateApp {
             ui.ctx().copy_text(payload);
             self.editor.status = "Copied Agent API primer to clipboard.".to_string();
         }
-        if close_clicked {
-            self.editor.overlays.agent_api = false;
-        }
     }
 }
 
@@ -164,7 +134,7 @@ fn agent_api_service_card(
     detail: &str,
 ) -> bool {
     let card_width = ui.available_width().max(0.0);
-    let content_width = (card_width - f32::from(API_SERVICE_CARD_PAD) * 2.0).max(0.0);
+    let content_width = (card_width - f32::from(API_SERVICE_CARD_PAD) * 2.0 - 2.0).max(0.0);
     let mut changed = false;
     egui::Frame::new()
         .fill(kit::FIELD_BG)
