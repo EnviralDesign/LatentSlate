@@ -49,6 +49,7 @@ fn persisted_creative_duration_for_wan_migration(asset: &Asset) -> Option<f64> {
 
 #[derive(Clone, Debug)]
 pub struct EditorLayout {
+    pub agent_provider: Option<Uuid>,
     pub chat_window: Option<ChatWindowPlacement>,
     pub left_collapsed: bool,
     pub right_collapsed: bool,
@@ -67,6 +68,7 @@ impl Default for EditorLayout {
     fn default() -> Self {
         Self {
             chat_window: None,
+            agent_provider: None,
             left_collapsed: false,
             right_collapsed: false,
             timeline_collapsed: false,
@@ -84,6 +86,7 @@ impl Default for EditorLayout {
 
 impl EditorLayout {
     pub fn apply_workspace_layout(&mut self, layout: &ProjectWorkspaceLayout) {
+        self.agent_provider = layout.agent_provider;
         let defaults = ProjectWorkspaceLayout::default();
         self.chat_window = layout.chat_window.filter(|placement| {
             placement
@@ -110,6 +113,7 @@ impl EditorLayout {
 
     pub fn workspace_layout(&self) -> ProjectWorkspaceLayout {
         ProjectWorkspaceLayout {
+            agent_provider: self.agent_provider,
             chat_window: self.chat_window,
             left_collapsed: self.left_collapsed,
             right_collapsed: self.right_collapsed,

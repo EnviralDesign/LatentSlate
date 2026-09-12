@@ -23,6 +23,8 @@ pub struct ChatWindowPlacement {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectWorkspaceLayout {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_provider: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_window: Option<ChatWindowPlacement>,
     #[serde(default)]
     pub left_collapsed: bool,
@@ -48,6 +50,7 @@ impl Default for ProjectWorkspaceLayout {
     fn default() -> Self {
         Self {
             chat_window: None,
+            agent_provider: None,
             left_collapsed: false,
             right_collapsed: false,
             timeline_collapsed: false,

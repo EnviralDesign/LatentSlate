@@ -7,6 +7,7 @@
 //! - Asset: Project assets (imported files and generative assets)
 //! - Marker: Point-in-time annotations
 
+mod agent_provider;
 mod asset;
 mod generative;
 mod media_binding;
@@ -14,6 +15,7 @@ mod project;
 mod providers;
 mod selection;
 
+pub use agent_provider::*;
 pub use asset::*;
 #[allow(unused_imports)]
 pub use generative::*;

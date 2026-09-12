@@ -250,6 +250,7 @@ pub fn run() -> eframe::Result<()> {
 
 pub struct LatentSlateApp {
     editor: EditorState,
+    chat: chat_panel::ChatUi,
     preview_layers: Option<PreviewLayerStack>,
     preview_layer_textures: HashMap<u64, PreviewLayerTexture>,
     preview_layer_texture_sequence: u64,
@@ -733,6 +734,7 @@ impl LatentSlateApp {
             project_settings: editor.project.settings.clone(),
             project_description_editor: None,
             editor,
+            chat: chat_panel::ChatUi::default(),
             preview_layers: None,
             preview_layer_textures: HashMap::new(),
             preview_layer_texture_sequence: 0,

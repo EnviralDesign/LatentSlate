@@ -111,6 +111,7 @@ impl LatentSlateApp {
                 ui.label(kit::section_label("Providers"));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if kit::secondary_button(ui, "Reload", 76.0).clicked() {
+                        self.chat.providers = crate::core::agent_provider_store::load();
                         self.start_provider_refresh(ui.ctx());
                     }
                 });
@@ -118,6 +119,28 @@ impl LatentSlateApp {
             ui.add_space(kit::FORM_ROW_GAP);
             kit::scroll_body(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                egui::CollapsingHeader::new(format!("Agents ({})", self.chat.providers.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for provider in &self.chat.providers {
+                            let label = format!(
+                                "{}{}",
+                                provider.name,
+                                if provider.enabled { "" } else { " (disabled)" }
+                            );
+                            if automation_button(
+                                ui.selectable_label(
+                                    selected == Some(ProviderModalSelection::Agent(provider.id)),
+                                    &label,
+                                ),
+                                &label,
+                            )
+                            .clicked()
+                            {
+                                next_selection = Some(ProviderModalSelection::Agent(provider.id));
+                            }
+                        }
+                    });
                 let engine_header = format!(
                     "{} ({})",
                     ProviderSourceKind::LatentSlateEngine.label(),
@@ -163,7 +186,10 @@ impl LatentSlateApp {
                         .then_with(|| left_path.cmp(right_path))
                 });
 
-                if summaries.is_empty() && engine_connections.is_empty() {
+                if summaries.is_empty()
+                    && engine_connections.is_empty()
+                    && self.chat.providers.is_empty()
+                {
                     kit::empty_state(
                         ui,
                         "No providers yet",
@@ -220,6 +246,11 @@ impl LatentSlateApp {
 
     fn ensure_provider_modal_selection(&mut self) {
         match self.selected_provider.clone() {
+            Some(ProviderModalSelection::Agent(id)) => {
+                if self.chat.providers.iter().any(|p| p.id == id) {
+                    return;
+                }
+            }
             Some(ProviderModalSelection::Engine(id)) => {
                 if let Some(connection) = self
                     .editor
@@ -289,7 +320,7 @@ impl LatentSlateApp {
                 self.engine_inspector_tab = self.preferred_engine_inspector_tab(*id);
                 self.engine_catalog_search.clear();
             }
-            ProviderModalSelection::LocalFile(_) => {
+            ProviderModalSelection::LocalFile(_) | ProviderModalSelection::Agent(_) => {
                 self.engine_connection_draft = None;
             }
         }
@@ -825,6 +856,7 @@ impl LatentSlateApp {
 
     pub(super) fn create_selected_provider_template(&mut self) {
         match self.provider_template_kind {
+            ProviderTemplateKind::OpenAiAgent => self.create_agent_provider(),
             ProviderTemplateKind::LatentSlateEngine => self.create_engine_connection(),
             ProviderTemplateKind::ComfyUi => self.open_provider_builder(None),
             ProviderTemplateKind::OpenAiImage => self.save_provider_template(
@@ -842,6 +874,7 @@ impl LatentSlateApp {
     pub(super) fn provider_editor_choice_card(&mut self, ui: &mut Ui) {
         let card_h = ui.available_height();
         kit::card_panel(ui, card_h, |ui| match self.selected_provider.clone() {
+            Some(ProviderModalSelection::Agent(id)) => self.agent_provider_inspector(ui, id),
             Some(ProviderModalSelection::Engine(connection_id)) => {
                 self.engine_connection_inspector(ui, connection_id);
             }

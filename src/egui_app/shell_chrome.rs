@@ -574,6 +574,7 @@ impl eframe::App for LatentSlateApp {
         self.update_window_dirty_title(&ctx);
         self.handle_automation_screenshot_events(&ctx);
         self.poll_automation(&ctx);
+        self.poll_chat(&ctx);
         self.keep_automation_responsive(&ctx);
         crate::core::automation::begin_ui_frame();
         self.tick_playback(&ctx);

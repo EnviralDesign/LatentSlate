@@ -21,6 +21,7 @@ use super::{
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderTemplateKind {
+    OpenAiAgent,
     LatentSlateEngine,
     ComfyUi,
     OpenAiImage,
@@ -35,7 +36,8 @@ impl Default for ProviderTemplateKind {
 }
 
 impl ProviderTemplateKind {
-    pub(super) const ALL: [ProviderTemplateKind; 5] = [
+    pub(super) const ALL: [ProviderTemplateKind; 6] = [
+        ProviderTemplateKind::OpenAiAgent,
         ProviderTemplateKind::LatentSlateEngine,
         ProviderTemplateKind::ComfyUi,
         ProviderTemplateKind::OpenAiImage,
@@ -46,6 +48,7 @@ impl ProviderTemplateKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ProviderModalSelection {
+    Agent(Uuid),
     Engine(Uuid),
     LocalFile(PathBuf),
 }
@@ -1603,6 +1606,7 @@ fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
 
 pub(super) fn provider_template_label(kind: ProviderTemplateKind) -> &'static str {
     match kind {
+        ProviderTemplateKind::OpenAiAgent => "OpenAI-compatible Agent",
         ProviderTemplateKind::LatentSlateEngine => "LatentSlate Engine",
         ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",
         ProviderTemplateKind::OpenAiImage => "OpenAI Image",
