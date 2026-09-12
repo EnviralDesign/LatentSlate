@@ -14,16 +14,67 @@ pub(super) struct ChatRow {
     pub failed: bool,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composer_enter_sends_but_shift_enter_keeps_a_newline() {
+        let ctx = Context::default();
+        let mut app = LatentSlateApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
+        let provider = AgentProviderEntry::default();
+        app.chat.selected = Some(provider.id);
+        app.chat.providers = vec![provider];
+        app.chat.composer = "Two lines".into();
+        let render = |app: &mut LatentSlateApp, events| {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.set_max_size(Vec2::new(420.0, 700.0));
+                    app.chat_contents(ui);
+                },
+            );
+        };
+        let enter = |modifiers| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        render(&mut app, vec![]);
+        render(&mut app, vec![enter(egui::Modifiers::NONE)]);
+        assert!(
+            app.chat.rows.is_empty(),
+            "Enter outside the composer must not send"
+        );
+        ctx.memory_mut(|memory| memory.request_focus(app.chat.composer_id.unwrap()));
+        render(&mut app, vec![enter(egui::Modifiers::SHIFT)]);
+        assert!(app.chat.rows.is_empty(), "Shift+Enter must not send");
+        assert_eq!(app.chat.composer.matches('\n').count(), 1);
+        let text = app.chat.composer.clone();
+        render(&mut app, vec![enter(egui::Modifiers::NONE)]);
+        assert!(app.chat.composer.is_empty());
+        assert_eq!(app.chat.rows.len(), 1);
+        assert_eq!(app.chat.rows[0].text, text);
+        assert_eq!(app.chat.rows[0].label, "You");
+    }
+}
+
 pub(super) struct ChatUi {
     pub providers: Vec<AgentProviderEntry>,
     pub draft: Option<AgentProviderEntry>,
-    pub provider_status: String,
-    pub test: Option<ChatRequest>,
+    pub provider_status: Option<kit::OperationPresentation>,
+    pub test: Option<(ChatRequest, Instant)>,
     pub selected: Option<Uuid>,
     pub request: Option<ChatRequest>,
     pub rows: Vec<ChatRow>,
     pub messages: Vec<Value>,
     pub composer: String,
+    pub composer_id: Option<egui::Id>,
     pub session: u64,
     pub stopping: bool,
     pub handles: crate::core::agent_tools::Handles,
@@ -35,13 +86,14 @@ impl Default for ChatUi {
         Self {
             providers: crate::core::agent_provider_store::load(),
             draft: None,
-            provider_status: String::new(),
+            provider_status: None,
             test: None,
             selected: None,
             request: None,
             rows: vec![],
             messages: vec![json!({"role":"system", "content":agent_chat::SYSTEM_PROMPT})],
             composer: String::new(),
+            composer_id: None,
             session: u64::MAX,
             stopping: false,
             handles: Default::default(),
@@ -203,7 +255,8 @@ impl LatentSlateApp {
                 self.selected_provider = Some(ProviderModalSelection::Agent(provider.id));
                 self.chat.draft = Some(provider.clone());
                 self.chat.providers.push(provider);
-                self.chat.provider_status.clear();
+                self.chat.provider_status = None;
+                self.chat.test = None;
             }
             Err(_) => self.editor.status = "Unable to save agent provider.".into(),
         }
@@ -212,7 +265,8 @@ impl LatentSlateApp {
     pub(super) fn agent_provider_inspector(&mut self, ui: &mut Ui, id: Uuid) {
         if self.chat.draft.as_ref().is_none_or(|p| p.id != id) {
             self.chat.draft = self.chat.providers.iter().find(|p| p.id == id).cloned();
-            self.chat.provider_status.clear();
+            self.chat.provider_status = None;
+            self.chat.test = None;
         }
         let Some(draft) = self.chat.draft.as_mut() else {
             return;
@@ -220,77 +274,115 @@ impl LatentSlateApp {
         ui.label(kit::section_label("OpenAI-compatible Agent"));
         ui.add_space(kit::FORM_ROW_GAP);
         kit::scroll_body(ui, |ui| {
-            kit::labeled_text_field(ui, "Agent name", &mut draft.name);
-            let AgentConnection::OpenAiCompatible {
-                base_url,
-                model,
-                api_key,
-            } = &mut draft.connection;
-            kit::labeled_text_field(ui, "Endpoint / Base URL (including /v1)", base_url);
-            kit::labeled_text_field(ui, "Agent model", model);
-            kit::field_label(ui, "API / Bearer key (optional)");
-            let mut key = api_key.clone().unwrap_or_default();
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut key)
-                        .password(true)
-                        .desired_width(f32::INFINITY),
-                )
-                .changed()
-            {
-                *api_key = (!key.trim().is_empty()).then_some(key);
-            }
-            ui.label(kit::caption("Leave blank for anonymous local endpoints."));
-            automation_checkbox(ui, &mut draft.enabled, "Enabled");
-            automation_checkbox(
-                ui,
-                &mut draft.capabilities.image_input,
-                "Image understanding",
-            );
-            automation_checkbox(
-                ui,
-                &mut draft.capabilities.video_input,
-                "Video understanding",
-            );
-            if draft.capabilities.video_input {
-                ui.label(kit::caption(
-                    "Requires native input_video support (llama.cpp).",
-                ));
-            }
+            ui.add_enabled_ui(self.chat.test.is_none(), |ui| {
+                kit::labeled_text_field(ui, "Agent name", &mut draft.name);
+                let AgentConnection::OpenAiCompatible {
+                    base_url,
+                    model,
+                    api_key,
+                } = &mut draft.connection;
+                kit::labeled_text_field(ui, "Endpoint / Base URL (including /v1)", base_url);
+                kit::labeled_text_field(ui, "Agent model", model);
+                kit::field_label(ui, "API / Bearer key (optional)");
+                let mut key = api_key.clone().unwrap_or_default();
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut key)
+                            .password(true)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .changed()
+                {
+                    *api_key = (!key.trim().is_empty()).then_some(key);
+                }
+                ui.label(kit::caption("Leave blank for anonymous local endpoints."));
+                automation_checkbox(ui, &mut draft.enabled, "Enabled");
+                automation_checkbox(
+                    ui,
+                    &mut draft.capabilities.image_input,
+                    "Image understanding",
+                );
+                automation_checkbox(
+                    ui,
+                    &mut draft.capabilities.video_input,
+                    "Video understanding",
+                );
+                if draft.capabilities.video_input {
+                    ui.label(kit::caption(
+                        "Requires native input_video support (llama.cpp).",
+                    ));
+                }
+            });
             ui.add_space(kit::FORM_ROW_GAP);
             let mut save = false;
             let mut test = false;
+            let mut cancel_test = false;
             let mut delete = false;
             ui.horizontal_wrapped(|ui| {
-                save = kit::primary_button(ui, "Save agent", 100.0).clicked();
-                test = automation_button(
-                    ui.add_enabled(self.chat.test.is_none(), egui::Button::new("Test agent")),
-                    "Test agent",
-                )
-                .clicked();
-                delete = kit::secondary_button(ui, "Delete agent", 100.0).clicked();
+                save = ui
+                    .add_enabled_ui(self.chat.test.is_none(), |ui| {
+                        kit::primary_button(ui, "Save agent", 100.0)
+                    })
+                    .inner
+                    .clicked();
+                if self.chat.test.is_some() {
+                    cancel_test = kit::secondary_button(ui, "Cancel test", 100.0).clicked();
+                } else {
+                    test = kit::secondary_button(ui, "Test agent", 100.0).clicked();
+                }
+                delete = ui
+                    .add_enabled_ui(self.chat.test.is_none(), |ui| {
+                        kit::secondary_button(ui, "Delete agent", 100.0)
+                    })
+                    .inner
+                    .clicked();
             });
             if save {
                 match crate::core::agent_provider_store::save(draft) {
                     Ok(()) => {
                         self.chat.providers = crate::core::agent_provider_store::load();
-                        self.chat.provider_status = "Agent saved.".into();
+                        self.chat.provider_status = Some(kit::OperationPresentation::new(
+                            kit::OperationPhase::Succeeded,
+                            kit::OperationSeverity::Success,
+                            "Agent saved",
+                        ));
                     }
                     Err(_) => {
-                        self.chat.provider_status =
-                            "Unable to save agent. Previous settings remain active.".into()
+                        self.chat.provider_status = Some(
+                            kit::OperationPresentation::new(
+                                kit::OperationPhase::Failed,
+                                kit::OperationSeverity::Error,
+                                "Unable to save agent",
+                            )
+                            .detail("Previous settings remain active."),
+                        );
                     }
                 }
             }
             if test {
-                self.chat.test = Some(agent_chat::start(
-                    draft.clone(),
-                    vec![
-                        json!({"role":"user", "content":"Reply briefly to confirm this connection works."}),
-                    ],
-                    vec![],
+                self.chat.test = Some((
+                    agent_chat::start(
+                        draft.clone(),
+                        vec![
+                            json!({"role":"user", "content":"Reply briefly to confirm this connection works."}),
+                        ],
+                        vec![],
+                    ),
+                    Instant::now(),
                 ));
-                self.chat.provider_status = "Testing connection…".into();
+                self.chat.provider_status = Some(kit::OperationPresentation::new(
+                    kit::OperationPhase::Waiting,
+                    kit::OperationSeverity::Neutral,
+                    "Waiting for agent response",
+                ));
+            }
+            if cancel_test {
+                self.chat.test = None;
+                self.chat.provider_status = Some(kit::OperationPresentation::new(
+                    kit::OperationPhase::Canceled,
+                    kit::OperationSeverity::Neutral,
+                    "Connection test canceled",
+                ));
             }
             if delete {
                 match crate::core::agent_provider_store::delete(id) {
@@ -298,11 +390,26 @@ impl LatentSlateApp {
                         self.chat.providers.retain(|p| p.id != id);
                         self.selected_provider = None;
                     }
-                    Err(_) => self.chat.provider_status = "Unable to delete agent provider.".into(),
+                    Err(_) => {
+                        self.chat.provider_status = Some(kit::OperationPresentation::new(
+                            kit::OperationPhase::Failed,
+                            kit::OperationSeverity::Error,
+                            "Unable to delete agent provider",
+                        ))
+                    }
                 }
             }
-            if !self.chat.provider_status.is_empty() {
-                ui.label(&self.chat.provider_status);
+            if let Some(status) = &mut self.chat.provider_status {
+                if let Some((_, started)) = &self.chat.test {
+                    let seconds = started.elapsed().as_secs();
+                    status.detail = Some(if status.phase == kit::OperationPhase::Running {
+                        format!("Receiving the response · {seconds}s elapsed")
+                    } else {
+                        format!("{seconds}s elapsed · No response yet. The server may be loading the model or waiting for capacity. Cold starts can take a minute or more; this request allows up to 15 minutes.")
+                    });
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::operation_banner(ui, "agent_provider_status", status);
             }
         });
     }
@@ -312,6 +419,7 @@ impl LatentSlateApp {
         self.chat.rows.clear();
         self.chat.messages = vec![json!({"role":"system", "content":agent_chat::SYSTEM_PROMPT})];
         self.chat.composer.clear();
+        self.chat.composer_id = None;
         self.chat.stopping = false;
         self.chat.handles = Default::default();
         self.chat.media = None;
@@ -359,17 +467,34 @@ impl LatentSlateApp {
                 .chat
                 .test
                 .as_ref()
-                .and_then(|r| r.events.try_recv().ok());
+                .and_then(|(request, _)| request.events.try_recv().ok());
             match event {
                 Some(ChatEvent::Finished { error, .. }) => {
-                    self.chat.provider_status =
-                        error.unwrap_or_else(|| "Connection and streaming verified.".into());
+                    self.chat.provider_status = Some(match error {
+                        Some(error) => kit::OperationPresentation::new(
+                            kit::OperationPhase::Failed,
+                            kit::OperationSeverity::Warning,
+                            "Agent connection test failed",
+                        )
+                        .detail(error),
+                        None => kit::OperationPresentation::new(
+                            kit::OperationPhase::Succeeded,
+                            kit::OperationSeverity::Success,
+                            "Connection and streaming verified",
+                        ),
+                    });
                     self.chat.test = None;
                 }
                 Some(ChatEvent::Tool { reply, .. }) => {
                     let _ = reply.send(ToolResult::error("No tools available in connection test."));
                 }
-                Some(ChatEvent::Text(_)) => {}
+                Some(ChatEvent::Text(_)) => {
+                    self.chat.provider_status = Some(kit::OperationPresentation::new(
+                        kit::OperationPhase::Running,
+                        kit::OperationSeverity::Neutral,
+                        "Agent is responding",
+                    ));
+                }
                 None => break,
             }
         }
@@ -477,18 +602,53 @@ impl LatentSlateApp {
         });
         ui.add_space(6.0);
         ui.add_enabled_ui(!busy, |ui| {
-            let selected = self
+            let provider = self
                 .chat
                 .providers
                 .iter()
-                .find(|p| Some(p.id) == self.chat.selected)
+                .find(|p| Some(p.id) == self.chat.selected);
+            let selected = provider
                 .map(|p| p.name.as_str())
                 .unwrap_or("Choose agent provider");
-            kit::combo_field(
+            let mut indicators = Vec::new();
+            if let Some(provider) = provider {
+                for (enabled, label, color) in [
+                    (provider.capabilities.image_input, "Images", kit::IMAGE),
+                    (provider.capabilities.video_input, "Video", kit::VIDEO),
+                ] {
+                    if enabled {
+                        indicators.push((
+                            ui.painter().layout_no_wrap(
+                                label.into(),
+                                egui::FontId::proportional(10.0),
+                                color,
+                            ),
+                            color,
+                        ));
+                    }
+                }
+            }
+            let indicator_width = indicators
+                .iter()
+                .map(|(galley, _)| galley.size().x + 8.0)
+                .sum();
+            kit::combo_field_with_leading(
                 ui,
                 "chat_provider",
                 selected,
                 ui.available_width().max(100.0) - 8.0,
+                indicator_width,
+                |ui, rect| {
+                    let mut x = rect.left();
+                    for (galley, color) in &indicators {
+                        ui.painter().galley(
+                            Pos2::new(x, rect.center().y - galley.size().y * 0.5),
+                            galley.clone(),
+                            *color,
+                        );
+                        x += galley.size().x + 8.0;
+                    }
+                },
                 |ui| {
                     for p in self.chat.providers.iter().filter(|p| p.enabled) {
                         automation_selectable_value(
@@ -501,26 +661,6 @@ impl LatentSlateApp {
                 },
             );
         });
-        if let Some(provider) = self
-            .chat
-            .providers
-            .iter()
-            .find(|p| Some(p.id) == self.chat.selected)
-        {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(kit::caption("Project tools"));
-                if provider.capabilities.image_input {
-                    ui.label(egui::RichText::new("• Images").small().color(kit::IMAGE));
-                }
-                if provider.capabilities.video_input {
-                    ui.label(
-                        egui::RichText::new("• Native video")
-                            .small()
-                            .color(kit::VIDEO),
-                    );
-                }
-            });
-        }
         if self.chat.selected.is_none() {
             ui.label("Add an OpenAI-compatible Agent in AI Providers to start chatting.");
             if kit::secondary_button(ui, "AI Providers", 120.0).clicked() {
@@ -538,84 +678,115 @@ impl LatentSlateApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(transcript_height);
-                if self.chat.rows.is_empty() {
-                    ui.add_space(24.0);
-                    ui.label(egui::RichText::new("Work with your project").size(20.0).strong());
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Ask about your assets, make timeline edits, or review a shot together.").size(14.0).color(kit::TEXT_MUTED));
-                    ui.add_space(18.0);
-                    for prompt in ["Summarize this project", "Review the current timeline"] {
-                        if kit::secondary_button(ui, prompt, ui.available_width()).clicked() {
-                            self.chat.composer = prompt.into();
-                        }
-                        ui.add_space(4.0);
-                    }
-                    ui.add_space(12.0);
-                    ui.label(kit::caption("This conversation stays in this session."));
-                }
                 for (index, row) in self.chat.rows.iter().enumerate() {
                     if row.tool {
-                        egui::Frame::new().fill(kit::PANEL_RAISED)
+                        egui::Frame::new()
+                            .fill(kit::PANEL_RAISED)
                             .stroke(egui::Stroke::new(1.0_f32, kit::BORDER_SOFT))
-                            .corner_radius(8).inner_margin(12).show(ui, |ui| {
-                        ui.set_width((ui.available_width()).max(1.0));
-                        let running = self.chat.media.as_ref().is_some_and(|p| p.row == index);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new(tool_title(&row.label)).strong().size(13.0));
-                            ui.label(egui::RichText::new(if running { "Running" } else if row.failed { "Error" } else { "Done" }).size(11.0).color(if row.failed { kit::DANGER } else if running { kit::TEXT_MUTED } else { kit::PRIMARY }));
-                        });
-                        ui.label(egui::RichText::new(&row.summary).size(13.0).color(kit::TEXT_MUTED));
-                        if let Some(texture) = &row.image {
-                            ui.add_space(8.0);
-                            // Keep individual cutsheet frames legible in a narrow chat window.
-                            egui::ScrollArea::horizontal().id_salt(("chat_media",index)).show(ui, |ui| {
-                                let size = texture.size_vec2();
-                                let scale = (960.0 / size.x).min(1.0);
-                                ui.add(egui::Image::new(texture).fit_to_exact_size(size * scale));
-                            });
-                        }
-                        if let Some(path) = &row.media_path {
-                            if kit::secondary_button(ui, "Open media", 100.0).clicked() {
-                                if let Err(error) = open_path_in_file_manager(path) {
-                                    self.editor.status = error;
-                                }
-                            }
-                        }
-                        let response = egui::CollapsingHeader::new("Details")
-                            .id_salt(("chat_tool", index))
+                            .corner_radius(8)
+                            .inner_margin(12)
                             .show(ui, |ui| {
-                                crate::core::automation::instrument_response(
-                                    ui.add(egui::Label::new(&row.text).wrap()),
-                                    "chat_tool_result",
-                                    Some(row.text.clone()),
-                                    false,
-                                    false,
+                                ui.set_width((ui.available_width()).max(1.0));
+                                let running =
+                                    self.chat.media.as_ref().is_some_and(|p| p.row == index);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(tool_title(&row.label))
+                                            .strong()
+                                            .size(13.0),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(if running {
+                                            "Running"
+                                        } else if row.failed {
+                                            "Error"
+                                        } else {
+                                            "Done"
+                                        })
+                                        .size(11.0)
+                                        .color(
+                                            if row.failed {
+                                                kit::DANGER
+                                            } else if running {
+                                                kit::TEXT_MUTED
+                                            } else {
+                                                kit::PRIMARY
+                                            },
+                                        ),
+                                    );
+                                });
+                                ui.label(
+                                    egui::RichText::new(&row.summary)
+                                        .size(13.0)
+                                        .color(kit::TEXT_MUTED),
                                 );
+                                if let Some(texture) = &row.image {
+                                    ui.add_space(8.0);
+                                    // Keep individual cutsheet frames legible in a narrow chat window.
+                                    egui::ScrollArea::horizontal()
+                                        .id_salt(("chat_media", index))
+                                        .show(ui, |ui| {
+                                            let size = texture.size_vec2();
+                                            let scale = (960.0 / size.x).min(1.0);
+                                            ui.add(
+                                                egui::Image::new(texture)
+                                                    .fit_to_exact_size(size * scale),
+                                            );
+                                        });
+                                }
+                                if let Some(path) = &row.media_path {
+                                    if kit::secondary_button(ui, "Open media", 100.0).clicked() {
+                                        if let Err(error) = open_path_in_file_manager(path) {
+                                            self.editor.status = error;
+                                        }
+                                    }
+                                }
+                                let response = egui::CollapsingHeader::new("Details")
+                                    .id_salt(("chat_tool", index))
+                                    .show(ui, |ui| {
+                                        crate::core::automation::instrument_response(
+                                            ui.add(egui::Label::new(&row.text).wrap()),
+                                            "chat_tool_result",
+                                            Some(row.text.clone()),
+                                            false,
+                                            false,
+                                        );
+                                    });
+                                let real_clicked = response.header_response.clicked();
+                                let header = automation_button(
+                                    response.header_response,
+                                    &format!("Chat tool {index}: {}", row.label),
+                                );
+                                if header.clicked() && !real_clicked {
+                                    if let Some(mut state) =
+                                        egui::collapsing_header::CollapsingState::load(
+                                            ui.ctx(),
+                                            header.id,
+                                        )
+                                    {
+                                        state.toggle(ui);
+                                        state.store(ui.ctx());
+                                    }
+                                }
                             });
-                        let real_clicked = response.header_response.clicked();
-                        let header = automation_button(
-                            response.header_response,
-                            &format!("Chat tool {index}: {}", row.label),
-                        );
-                        if header.clicked() && !real_clicked {
-                            if let Some(mut state) =
-                                egui::collapsing_header::CollapsingState::load(ui.ctx(), header.id)
-                            {
-                                state.toggle(ui);
-                                state.store(ui.ctx());
-                            }
-                        }
-                        });
                     } else {
                         let user = row.label == "You";
                         let response = egui::Frame::new()
                             .fill(if user { kit::PANEL_RAISED } else { kit::PANEL })
-                            .corner_radius(8).inner_margin(12).show(ui, |ui| {
-                        ui.set_width(ui.available_width().min(680.0));
-                        ui.label(egui::RichText::new(&row.label).size(11.0).color(if user { kit::TEXT_MUTED } else { kit::PRIMARY }));
-                        ui.add_space(5.0);
-                        ui.add(egui::Label::new(chat_text(&row.text)).wrap());
-                        });
+                            .corner_radius(8)
+                            .inner_margin(12)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width().min(680.0));
+                                ui.label(
+                                    egui::RichText::new(&row.label).size(11.0).color(if user {
+                                        kit::TEXT_MUTED
+                                    } else {
+                                        kit::PRIMARY
+                                    }),
+                                );
+                                ui.add_space(5.0);
+                                ui.add(egui::Label::new(chat_text(&row.text)).wrap());
+                            });
                         crate::core::automation::instrument_response(
                             response.response,
                             "chat_message",
@@ -639,15 +810,33 @@ impl LatentSlateApp {
             } else if busy {
                 "Waiting for the assistant…"
             } else {
-                "Ask your assistant"
+                "Enter to send · Shift+Enter for a newline"
             }));
         });
-        kit::multiline_text_field(
+        let enter_pressed = self
+            .chat
+            .composer_id
+            .is_some_and(|id| ui.memory(|memory| memory.has_focus(id)))
+            && ui.input_mut(|input| {
+                let mut send = false;
+                input.events.retain(|event| {
+                    if matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()) {
+                        send = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                send
+            });
+        let composer_response = kit::multiline_text_field(
             ui,
             &mut self.chat.composer,
             ui.available_width(),
             kit::MultilineTextFieldOptions { rows: 2 },
         );
+        self.chat.composer_id = Some(composer_response.id);
+        let can_send = self.chat.selected.is_some() && !self.chat.composer.trim().is_empty();
         ui.horizontal_wrapped(|ui| {
             if busy {
                 if kit::secondary_button(ui, "Stop", 65.0).clicked() {
@@ -656,13 +845,12 @@ impl LatentSlateApp {
                         request.stop();
                     }
                 }
-            } else if ui
-                .add_enabled_ui(
-                    self.chat.selected.is_some() && !self.chat.composer.trim().is_empty(),
-                    |ui| kit::primary_button(ui, "Send", 80.0),
-                )
+            } else if (ui
+                .add_enabled_ui(can_send, |ui| kit::primary_button(ui, "Send", 80.0))
                 .inner
                 .clicked()
+                || enter_pressed)
+                && can_send
             {
                 if let Some(provider) = self
                     .chat

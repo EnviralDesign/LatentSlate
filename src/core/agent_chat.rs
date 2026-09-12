@@ -233,8 +233,14 @@ async fn completion(
     if let Some(key) = api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         request = request.bearer_auth(key);
     }
-    let mut response = request.send().await.map_err(|_| {
-        "Agent connection failed or timed out. Check endpoint and server availability."
+    let mut response = request.send().await.map_err(|error| {
+        if error.is_connect() {
+            "Could not connect to the agent endpoint. Check the Base URL and that the server is listening."
+        } else if error.is_timeout() {
+            "The agent did not respond within 15 minutes. Check model loading and the server queue."
+        } else {
+            "The agent request failed before a response arrived. Check server availability."
+        }
     })?;
     if !response.status().is_success() {
         return Err(format!(
@@ -243,11 +249,13 @@ async fn completion(
         ));
     }
     let mut decoder = StreamDecoder::default();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| "Agent stream was interrupted.")?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        if error.is_timeout() {
+            "The agent response exceeded the 15-minute request limit."
+        } else {
+            "Agent stream was interrupted."
+        }
+    })? {
         for text in decoder.push(&chunk)? {
             let _ = events.send(ChatEvent::Text(text));
         }
