@@ -632,7 +632,7 @@ impl LatentSlateApp {
                 .iter()
                 .map(|(galley, _)| galley.size().x + 8.0)
                 .sum();
-            kit::combo_field_with_leading(
+            kit::combo_field_with_trailing(
                 ui,
                 "chat_provider",
                 selected,
@@ -669,7 +669,20 @@ impl LatentSlateApp {
         }
         ui.add_space(8.0);
         ui.separator();
-        let transcript_height = (ui.available_height() - 142.0).max(28.0);
+        const COMPOSER_MAX_ROWS: usize = 6;
+        let composer_rows = ui
+            .painter()
+            .layout(
+                self.chat.composer.clone(),
+                egui::FontId::proportional(kit::FIELD_TEXT_SIZE),
+                kit::TEXT,
+                (ui.available_width() - 2.0 * kit::FIELD_INNER_MARGIN_X as f32).max(1.0),
+            )
+            .rows
+            .len()
+            .clamp(1, COMPOSER_MAX_ROWS);
+        let composer_height = kit::multiline_text_field_height(composer_rows);
+        let transcript_height = (ui.available_height() - 94.0 - composer_height).max(28.0);
         egui::ScrollArea::vertical()
             .id_salt("chat_transcript")
             .stick_to_bottom(true)
@@ -833,7 +846,9 @@ impl LatentSlateApp {
             ui,
             &mut self.chat.composer,
             ui.available_width(),
-            kit::MultilineTextFieldOptions { rows: 2 },
+            kit::MultilineTextFieldOptions {
+                rows: composer_rows,
+            },
         );
         self.chat.composer_id = Some(composer_response.id);
         let can_send = self.chat.selected.is_some() && !self.chat.composer.trim().is_empty();

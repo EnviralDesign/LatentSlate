@@ -1228,8 +1228,53 @@ pub fn combo_field_with_leading<R>(
     add_leading: impl FnOnce(&mut Ui, Rect),
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Response {
+    combo_field_with_accessory(
+        ui,
+        id_salt,
+        selected_text,
+        width,
+        leading_width,
+        0.0,
+        add_leading,
+        add_contents,
+    )
+}
+
+/// A dropdown with a right-aligned accessory before its arrow.
+pub fn combo_field_with_trailing<R>(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    selected_text: impl Into<String>,
+    width: f32,
+    trailing_width: f32,
+    add_trailing: impl FnOnce(&mut Ui, Rect),
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
+    combo_field_with_accessory(
+        ui,
+        id_salt,
+        selected_text,
+        width,
+        0.0,
+        trailing_width,
+        add_trailing,
+        add_contents,
+    )
+}
+
+fn combo_field_with_accessory<R>(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    selected_text: impl Into<String>,
+    width: f32,
+    leading_width: f32,
+    trailing_width: f32,
+    add_accessory: impl FnOnce(&mut Ui, Rect),
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
     let selected_text = selected_text.into();
     let leading_width = leading_width.max(0.0);
+    let trailing_width = trailing_width.max(0.0);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, FIELD_H), Sense::hover());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -1272,6 +1317,7 @@ pub fn combo_field_with_leading<R>(
         rect,
         &selected_text,
         leading_width,
+        trailing_width,
         will_be_open,
     );
 
@@ -1312,7 +1358,13 @@ pub fn combo_field_with_leading<R>(
             Pos2::new(rect.left() + 6.0 + leading_width * 0.5, rect.center().y),
             Vec2::new(leading_width, (FIELD_H - 10.0).max(14.0)),
         );
-        add_leading(ui, leading_rect);
+        add_accessory(ui, leading_rect);
+    } else if trailing_width > 0.0 {
+        let trailing_rect = Rect::from_center_size(
+            Pos2::new(rect.right() - 25.0 - trailing_width * 0.5, rect.center().y),
+            Vec2::new(trailing_width, (FIELD_H - 10.0).max(14.0)),
+        );
+        add_accessory(ui, trailing_rect);
     }
 
     response.union(combo_response)
@@ -1333,6 +1385,7 @@ fn paint_combo_field(
     rect: Rect,
     selected_text: &str,
     leading_width: f32,
+    trailing_width: f32,
     open: bool,
 ) {
     let visuals = if open {
@@ -1368,7 +1421,13 @@ fn paint_combo_field(
         } else {
             0.0
         };
-    let text_right = arrow_rect.left() - 8.0;
+    let text_right = arrow_rect.left()
+        - 8.0
+        - if trailing_width > 0.0 {
+            trailing_width + 6.0
+        } else {
+            0.0
+        };
     let text_width = (text_right - text_left).max(0.0);
     let text = egui::WidgetText::from(
         RichText::new(selected_text)
