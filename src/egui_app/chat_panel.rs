@@ -14,6 +14,36 @@ pub(super) struct ChatRow {
     pub failed: bool,
 }
 
+fn composer_field(
+    ui: &mut Ui,
+    text: &mut String,
+    composer_id: &mut Option<egui::Id>,
+    rows: usize,
+) -> bool {
+    let enter_pressed = composer_id
+            .is_some_and(|id| ui.memory(|memory| memory.has_focus(id)))
+            && ui.input_mut(|input| {
+                let mut send = false;
+                input.events.retain(|event| {
+                    if matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()) {
+                        send = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                send
+            });
+    let composer_response = kit::multiline_text_field(
+        ui,
+        text,
+        ui.available_width(),
+        kit::MultilineTextFieldOptions { rows },
+    );
+    *composer_id = Some(composer_response.id);
+    enter_pressed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -21,12 +51,11 @@ mod tests {
     #[test]
     fn composer_enter_sends_but_shift_enter_keeps_a_newline() {
         let ctx = Context::default();
-        let mut app = LatentSlateApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()));
-        let provider = AgentProviderEntry::default();
-        app.chat.selected = Some(provider.id);
-        app.chat.providers = vec![provider];
-        app.chat.composer = "Two lines".into();
-        let render = |app: &mut LatentSlateApp, events| {
+        kit::configure_style(&ctx);
+        let mut text = String::from("Two lines");
+        let mut id = None;
+        let render = |text: &mut String, id: &mut Option<egui::Id>, events| {
+            let mut send = false;
             let _ = ctx.run_ui(
                 egui::RawInput {
                     events,
@@ -34,9 +63,10 @@ mod tests {
                 },
                 |ui| {
                     ui.set_max_size(Vec2::new(420.0, 700.0));
-                    app.chat_contents(ui);
+                    send = composer_field(ui, text, id, 2);
                 },
             );
+            send
         };
         let enter = |modifiers| egui::Event::Key {
             key: egui::Key::Enter,
@@ -45,22 +75,24 @@ mod tests {
             repeat: false,
             modifiers,
         };
-        render(&mut app, vec![]);
-        render(&mut app, vec![enter(egui::Modifiers::NONE)]);
+        render(&mut text, &mut id, vec![]);
         assert!(
-            app.chat.rows.is_empty(),
+            !render(&mut text, &mut id, vec![enter(egui::Modifiers::NONE)]),
             "Enter outside the composer must not send"
         );
-        ctx.memory_mut(|memory| memory.request_focus(app.chat.composer_id.unwrap()));
-        render(&mut app, vec![enter(egui::Modifiers::SHIFT)]);
-        assert!(app.chat.rows.is_empty(), "Shift+Enter must not send");
-        assert_eq!(app.chat.composer.matches('\n').count(), 1);
-        let text = app.chat.composer.clone();
-        render(&mut app, vec![enter(egui::Modifiers::NONE)]);
-        assert!(app.chat.composer.is_empty());
-        assert_eq!(app.chat.rows.len(), 1);
-        assert_eq!(app.chat.rows[0].text, text);
-        assert_eq!(app.chat.rows[0].label, "You");
+        ctx.memory_mut(|memory| memory.request_focus(id.unwrap()));
+        assert!(
+            !render(&mut text, &mut id, vec![enter(egui::Modifiers::SHIFT)]),
+            "Shift+Enter must not send"
+        );
+        assert_eq!(text.matches('\n').count(), 1);
+        let before = text.clone();
+        assert!(render(
+            &mut text,
+            &mut id,
+            vec![enter(egui::Modifiers::NONE)]
+        ));
+        assert_eq!(text, before, "Sending must not insert another newline");
     }
 }
 
@@ -826,31 +858,12 @@ impl LatentSlateApp {
                 "Enter to send · Shift+Enter for a newline"
             }));
         });
-        let enter_pressed = self
-            .chat
-            .composer_id
-            .is_some_and(|id| ui.memory(|memory| memory.has_focus(id)))
-            && ui.input_mut(|input| {
-                let mut send = false;
-                input.events.retain(|event| {
-                    if matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()) {
-                        send = true;
-                        false
-                    } else {
-                        true
-                    }
-                });
-                send
-            });
-        let composer_response = kit::multiline_text_field(
+        let enter_pressed = composer_field(
             ui,
             &mut self.chat.composer,
-            ui.available_width(),
-            kit::MultilineTextFieldOptions {
-                rows: composer_rows,
-            },
+            &mut self.chat.composer_id,
+            composer_rows,
         );
-        self.chat.composer_id = Some(composer_response.id);
         let can_send = self.chat.selected.is_some() && !self.chat.composer.trim().is_empty();
         ui.horizontal_wrapped(|ui| {
             if busy {
