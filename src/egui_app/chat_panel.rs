@@ -3,11 +3,15 @@ use crate::core::agent_chat::{self, ChatEvent, ChatRequest, ToolResult};
 use crate::state::{AgentConnection, AgentProviderEntry};
 use serde_json::{json, Value};
 
+#[derive(Default)]
 pub(super) struct ChatRow {
     pub label: String,
     pub text: String,
     pub tool: bool,
     pub image: Option<egui::TextureHandle>,
+    pub media_path: Option<PathBuf>,
+    pub summary: String,
+    pub failed: bool,
 }
 
 pub(super) struct ChatUi {
@@ -46,7 +50,150 @@ impl Default for ChatUi {
     }
 }
 
-const CHAT_PANEL_W: f32 = 380.0;
+const CHAT_PANEL_W: f32 = 460.0;
+
+fn tool_title(name: &str) -> &str {
+    match name {
+        "project_context" => "Project overview",
+        "inspect" => "Inspect project item",
+        "timeline_edit" => "Timeline edit",
+        "asset_edit" => "Asset edit",
+        "generation" => "Generation",
+        "save_project" => "Save project",
+        "look" => "Visual review",
+        "watch_video" => "Watch video",
+        _ => name,
+    }
+}
+
+fn tool_error(result: &str) -> Option<String> {
+    serde_json::from_str::<Value>(result)
+        .ok()?
+        .get("error")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn tool_summary(name: &str, arguments: &str, result: &str) -> String {
+    if let Some(error) = tool_error(result) {
+        return error;
+    }
+    let args: Value = serde_json::from_str(arguments).unwrap_or_default();
+    let data: Value = serde_json::from_str(result).unwrap_or_default();
+    let source = args["source"]
+        .as_str()
+        .or(args["asset"].as_str())
+        .or(args["handle"].as_str())
+        .unwrap_or("timeline");
+    match name {
+        "project_context" => "Read assets, tracks, settings, and available generators.".into(),
+        "inspect" => format!("Read details for {source}."),
+        "look" => {
+            let times = args["times"].as_array().map(|times| {
+                times
+                    .iter()
+                    .map(|t| format!("{}s", t))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
+            format!(
+                "{} · {}{}",
+                source,
+                args["mode"].as_str().unwrap_or("cutsheet"),
+                times.map(|t| format!(" · {t}")).unwrap_or_default()
+            )
+        }
+        "watch_video" => format!(
+            "{} · native video{}",
+            source,
+            data["duration_seconds"]
+                .as_f64()
+                .map(|d| format!(" · {d:.1}s"))
+                .unwrap_or_default()
+        ),
+        "save_project" => "Project saved.".into(),
+        _ => format!(
+            "{}{}",
+            args["action"].as_str().unwrap_or("Completed"),
+            args["asset"]
+                .as_str()
+                .or(args["clip"].as_str())
+                .map(|s| format!(" · {s}"))
+                .unwrap_or_default()
+        ),
+    }
+}
+
+// A small presentation layer for streamed prose; wire messages remain untouched.
+fn chat_text(text: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for (line_index, line) in text.lines().enumerate() {
+        if line_index > 0 {
+            job.append("\n", 0.0, egui::TextFormat::default());
+        }
+        let heading = line.starts_with("# ") || line.starts_with("## ") || line.starts_with("### ");
+        let line = if heading {
+            line.trim_start_matches('#').trim_start()
+        } else {
+            line
+        };
+        let bullet = line.strip_prefix("- ").or_else(|| line.strip_prefix("* "));
+        let owned;
+        let mut remaining = if let Some(body) = bullet {
+            owned = format!("• {body}");
+            owned.as_str()
+        } else {
+            line
+        };
+        let mut strong = heading;
+        let mut code = false;
+        while !remaining.is_empty() {
+            if remaining.starts_with("**") && !code {
+                strong = !strong;
+                remaining = &remaining[2..];
+                continue;
+            }
+            if remaining.starts_with('`') {
+                code = !code;
+                remaining = &remaining[1..];
+                continue;
+            }
+            let end = remaining
+                .char_indices()
+                .skip(1)
+                .find(|(i, c)| *c == '`' || (!code && remaining[*i..].starts_with("**")))
+                .map(|(i, _)| i)
+                .unwrap_or(remaining.len());
+            let size = if heading { 17.0 } else { 14.0 };
+            job.append(
+                &remaining[..end],
+                0.0,
+                egui::TextFormat {
+                    font_id: if code {
+                        egui::FontId::monospace(13.0)
+                    } else {
+                        egui::FontId::proportional(size)
+                    },
+                    color: if strong {
+                        egui::Color32::WHITE
+                    } else {
+                        kit::TEXT
+                    },
+                    background: if code {
+                        kit::PANEL_RAISED
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    },
+                    extra_letter_spacing: if strong { 0.25 } else { 0.0 },
+                    line_height: Some(20.0),
+                    ..Default::default()
+                },
+            );
+            remaining = &remaining[end..];
+        }
+    }
+    job
+}
 
 impl LatentSlateApp {
     pub(super) fn create_agent_provider(&mut self) {
@@ -187,7 +334,13 @@ impl LatentSlateApp {
         if let Some(pending) = self.chat.media.as_ref() {
             if let Ok((result, image)) = pending.receiver.try_recv() {
                 let pending = self.chat.media.take().unwrap();
-                self.chat.rows[pending.row].text = result.text.clone();
+                self.chat.rows[pending.row]
+                    .text
+                    .push_str(&format!("\n{}", result.text));
+                self.chat.rows[pending.row].failed = tool_error(&result.text).is_some();
+                if let Some(error) = tool_error(&result.text) {
+                    self.chat.rows[pending.row].summary = error;
+                }
                 self.chat.rows[pending.row].image = image.map(|im| {
                     ctx.load_texture(
                         format!("chat_capture_{}_{}", self.chat.session, pending.row),
@@ -239,6 +392,7 @@ impl LatentSlateApp {
                             text: String::new(),
                             tool: false,
                             image: None,
+                            ..Default::default()
                         });
                     }
                     self.chat.rows.last_mut().unwrap().text.push_str(&text);
@@ -252,6 +406,21 @@ impl LatentSlateApp {
                     };
                     let row = self.chat.rows.len();
                     self.chat.rows.push(ChatRow {
+                        summary: tool_summary(
+                            &call.function.name,
+                            &call.function.arguments,
+                            &result.text,
+                        ),
+                        failed: tool_error(&result.text).is_some(),
+                        media_path: result
+                            .media
+                            .first()
+                            .and_then(|m| {
+                                m.get("host_image_path")
+                                    .or_else(|| m.get("host_video_path"))
+                            })
+                            .and_then(Value::as_str)
+                            .map(PathBuf::from),
                         label: call.function.name,
                         text: format!("{}\n{}", call.function.arguments, result.text),
                         tool: true,
@@ -268,7 +437,7 @@ impl LatentSlateApp {
                                 .and_then(|m| m.get("host_image_path"))
                                 .and_then(Value::as_str)
                                 .and_then(|p| image::open(p).ok())
-                                .map(|im| im.thumbnail(768, 768).into_rgba8());
+                                .map(|im| im.thumbnail(2048, 2048).into_rgba8());
                             let _ = sender.send((super::chat_tools::encode_media(result), image));
                         });
                         self.chat.media = Some(super::chat_tools::PendingChatMedia {
@@ -289,6 +458,7 @@ impl LatentSlateApp {
                             text: error,
                             tool: false,
                             image: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -302,6 +472,10 @@ impl LatentSlateApp {
 
     fn chat_contents(&mut self, ui: &mut Ui) {
         let busy = self.chat.request.is_some();
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("LatentSlate Chat").size(18.0).strong());
+        });
+        ui.add_space(6.0);
         ui.add_enabled_ui(!busy, |ui| {
             let selected = self
                 .chat
@@ -327,13 +501,35 @@ impl LatentSlateApp {
                 },
             );
         });
+        if let Some(provider) = self
+            .chat
+            .providers
+            .iter()
+            .find(|p| Some(p.id) == self.chat.selected)
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(kit::caption("Project tools"));
+                if provider.capabilities.image_input {
+                    ui.label(egui::RichText::new("• Images").small().color(kit::IMAGE));
+                }
+                if provider.capabilities.video_input {
+                    ui.label(
+                        egui::RichText::new("• Native video")
+                            .small()
+                            .color(kit::VIDEO),
+                    );
+                }
+            });
+        }
         if self.chat.selected.is_none() {
             ui.label("Add an OpenAI-compatible Agent in AI Providers to start chatting.");
             if kit::secondary_button(ui, "AI Providers", 120.0).clicked() {
                 self.editor.overlays.providers = true;
             }
         }
-        let transcript_height = (ui.available_height() - 114.0).max(28.0);
+        ui.add_space(8.0);
+        ui.separator();
+        let transcript_height = (ui.available_height() - 142.0).max(28.0);
         egui::ScrollArea::vertical()
             .id_salt("chat_transcript")
             .stick_to_bottom(true)
@@ -342,9 +538,50 @@ impl LatentSlateApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(transcript_height);
+                if self.chat.rows.is_empty() {
+                    ui.add_space(24.0);
+                    ui.label(egui::RichText::new("Work with your project").size(20.0).strong());
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Ask about your assets, make timeline edits, or review a shot together.").size(14.0).color(kit::TEXT_MUTED));
+                    ui.add_space(18.0);
+                    for prompt in ["Summarize this project", "Review the current timeline"] {
+                        if kit::secondary_button(ui, prompt, ui.available_width()).clicked() {
+                            self.chat.composer = prompt.into();
+                        }
+                        ui.add_space(4.0);
+                    }
+                    ui.add_space(12.0);
+                    ui.label(kit::caption("This conversation stays in this session."));
+                }
                 for (index, row) in self.chat.rows.iter().enumerate() {
                     if row.tool {
-                        let response = egui::CollapsingHeader::new(&row.label)
+                        egui::Frame::new().fill(kit::PANEL_RAISED)
+                            .stroke(egui::Stroke::new(1.0_f32, kit::BORDER_SOFT))
+                            .corner_radius(8).inner_margin(12).show(ui, |ui| {
+                        ui.set_width((ui.available_width()).max(1.0));
+                        let running = self.chat.media.as_ref().is_some_and(|p| p.row == index);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(tool_title(&row.label)).strong().size(13.0));
+                            ui.label(egui::RichText::new(if running { "Running" } else if row.failed { "Error" } else { "Done" }).size(11.0).color(if row.failed { kit::DANGER } else if running { kit::TEXT_MUTED } else { kit::PRIMARY }));
+                        });
+                        ui.label(egui::RichText::new(&row.summary).size(13.0).color(kit::TEXT_MUTED));
+                        if let Some(texture) = &row.image {
+                            ui.add_space(8.0);
+                            // Keep individual cutsheet frames legible in a narrow chat window.
+                            egui::ScrollArea::horizontal().id_salt(("chat_media",index)).show(ui, |ui| {
+                                let size = texture.size_vec2();
+                                let scale = (960.0 / size.x).min(1.0);
+                                ui.add(egui::Image::new(texture).fit_to_exact_size(size * scale));
+                            });
+                        }
+                        if let Some(path) = &row.media_path {
+                            if kit::secondary_button(ui, "Open media", 100.0).clicked() {
+                                if let Err(error) = open_path_in_file_manager(path) {
+                                    self.editor.status = error;
+                                }
+                            }
+                        }
+                        let response = egui::CollapsingHeader::new("Details")
                             .id_salt(("chat_tool", index))
                             .show(ui, |ui| {
                                 crate::core::automation::instrument_response(
@@ -354,15 +591,6 @@ impl LatentSlateApp {
                                     false,
                                     false,
                                 );
-                                if let Some(texture) = &row.image {
-                                    ui.add(
-                                        egui::Image::new(texture).fit_to_exact_size(
-                                            texture.size_vec2()
-                                                * (ui.available_width() / texture.size_vec2().x)
-                                                    .min(1.0),
-                                        ),
-                                    );
-                                }
                             });
                         let real_clicked = response.header_response.clicked();
                         let header = automation_button(
@@ -377,36 +605,50 @@ impl LatentSlateApp {
                                 state.store(ui.ctx());
                             }
                         }
+                        });
                     } else {
-                        ui.label(kit::section_label(&row.label));
+                        let user = row.label == "You";
+                        let response = egui::Frame::new()
+                            .fill(if user { kit::PANEL_RAISED } else { kit::PANEL })
+                            .corner_radius(8).inner_margin(12).show(ui, |ui| {
+                        ui.set_width(ui.available_width().min(680.0));
+                        ui.label(egui::RichText::new(&row.label).size(11.0).color(if user { kit::TEXT_MUTED } else { kit::PRIMARY }));
+                        ui.add_space(5.0);
+                        ui.add(egui::Label::new(chat_text(&row.text)).wrap());
+                        });
                         crate::core::automation::instrument_response(
-                            ui.add(egui::Label::new(&row.text).wrap()),
+                            response.response,
                             "chat_message",
                             Some(row.text.clone()),
                             false,
                             false,
                         );
-                        ui.add_space(8.0);
                     }
-                }
-                if busy {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(if self.chat.stopping {
-                            "Stopping…"
-                        } else {
-                            "Working…"
-                        });
-                    });
+                    ui.add_space(10.0);
                 }
             });
+        ui.separator();
+        ui.horizontal(|ui| {
+            if busy {
+                ui.spinner();
+            }
+            ui.label(kit::caption(if self.chat.stopping {
+                "Stopping…"
+            } else if self.chat.media.is_some() {
+                "Preparing media for the assistant…"
+            } else if busy {
+                "Waiting for the assistant…"
+            } else {
+                "Ask your assistant"
+            }));
+        });
         kit::multiline_text_field(
             ui,
             &mut self.chat.composer,
             ui.available_width(),
             kit::MultilineTextFieldOptions { rows: 2 },
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if busy {
                 if kit::secondary_button(ui, "Stop", 65.0).clicked() {
                     self.chat.stopping = true;
@@ -414,14 +656,13 @@ impl LatentSlateApp {
                         request.stop();
                     }
                 }
-            } else if automation_button(
-                ui.add_enabled(
+            } else if ui
+                .add_enabled_ui(
                     self.chat.selected.is_some() && !self.chat.composer.trim().is_empty(),
-                    egui::Button::new("Send"),
-                ),
-                "Send",
-            )
-            .clicked()
+                    |ui| kit::primary_button(ui, "Send", 80.0),
+                )
+                .inner
+                .clicked()
             {
                 if let Some(provider) = self
                     .chat
@@ -439,6 +680,7 @@ impl LatentSlateApp {
                         text,
                         tool: false,
                         image: None,
+                        ..Default::default()
                     });
                     self.chat.request = Some(agent_chat::start(
                         provider.clone(),
@@ -467,7 +709,7 @@ impl LatentSlateApp {
         let saved = self.editor.layout.chat_window;
         let mut builder = egui::ViewportBuilder::default()
             .with_title("LatentSlate Chat")
-            .with_min_inner_size([300.0, 240.0])
+            .with_min_inner_size([360.0, 440.0])
             .with_resizable(true);
         if !ctx.input(|input| input.raw.viewports.contains_key(&viewport_id)) {
             if let Some(placement) = saved {
@@ -502,7 +744,7 @@ impl LatentSlateApp {
                         let frame_height = outer.height() - inner.height();
                         let size = Vec2::new(
                             CHAT_PANEL_W,
-                            (main_outer.height() - frame_height).max(240.0),
+                            (main_outer.height() - frame_height).max(440.0),
                         );
                         let position = Pos2::new(main_outer.right() + 6.0, main_outer.top());
                         ui.ctx()

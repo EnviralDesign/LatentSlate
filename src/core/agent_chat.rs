@@ -404,6 +404,7 @@ mod tests {
                         Err(err) => panic!("mock request missing: {err}"),
                     }
                 };
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
