@@ -128,15 +128,40 @@ impl LatentSlateApp {
                                 provider.name,
                                 if provider.enabled { "" } else { " (disabled)" }
                             );
-                            if automation_button(
-                                ui.selectable_label(
-                                    selected == Some(ProviderModalSelection::Agent(provider.id)),
-                                    &label,
-                                ),
-                                &label,
-                            )
-                            .clicked()
-                            {
+                            let is_selected =
+                                selected == Some(ProviderModalSelection::Agent(provider.id));
+                            let crate::state::AgentConnection::OpenAiCompatible { model, .. } =
+                                &provider.connection;
+                            let subtitle = if model.trim().is_empty() {
+                                "Model not configured"
+                            } else {
+                                model
+                            };
+                            let accent = if is_selected {
+                                kit::PRIMARY
+                            } else {
+                                kit::BORDER_SOFT
+                            };
+                            let response =
+                                kit::draw_accent_row(ui, 52.0, is_selected, accent, |ui, rect| {
+                                    paint_truncated_row_text_top(
+                                        ui,
+                                        Pos2::new(rect.left(), rect.top() + 2.0),
+                                        kit::value(&label),
+                                        12.0,
+                                        rect.width(),
+                                        kit::TEXT,
+                                    );
+                                    paint_truncated_row_text_bottom(
+                                        ui,
+                                        Pos2::new(rect.left(), rect.bottom() - 2.0),
+                                        kit::caption(subtitle),
+                                        11.0,
+                                        rect.width(),
+                                        kit::TEXT_MUTED,
+                                    );
+                                });
+                            if automation_button(response, &label).clicked() {
                                 next_selection = Some(ProviderModalSelection::Agent(provider.id));
                             }
                         }
