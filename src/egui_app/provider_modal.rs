@@ -847,7 +847,7 @@ impl LatentSlateApp {
                     }
                 },
             );
-            if kit::primary_button(ui, "+", button_w).clicked() {
+            if kit::primary_button_sized(ui, "+", button_w, kit::FIELD_H).clicked() {
                 self.create_selected_provider_template();
             }
         });
