@@ -330,32 +330,7 @@ impl LatentSlateApp {
                     context_clip_id,
                     wait,
                 } => {
-                    let before: std::collections::HashSet<Uuid> = self
-                        .editor
-                        .generation_queue
-                        .iter()
-                        .map(|job| job.id)
-                        .collect();
-                    self.start_generative_generation(asset_id, context_clip_id);
-                    let jobs: Vec<_> = self
-                        .editor
-                        .generation_queue
-                        .iter()
-                        .filter(|job| !before.contains(&job.id))
-                        .cloned()
-                        .collect();
-                    let ok = !jobs.is_empty();
-                    let response = if ok {
-                        crate::core::automation::AutomationResponse::ok(serde_json::json!({
-                            "jobs": crate::editor::compact_generation_jobs_json(&jobs),
-                            "status": self.editor.status,
-                            "wait_requested": wait,
-                        }))
-                    } else {
-                        crate::core::automation::AutomationResponse::error(
-                            self.editor.status.clone(),
-                        )
-                    };
+                    let response = self.start_agent_generation(asset_id, context_clip_id, wait);
                     envelope.respond(response);
                 }
                 crate::core::automation::AutomationCommand::CancelJob { job_id } => {
@@ -1280,7 +1255,7 @@ impl LatentSlateApp {
         }
     }
 
-    fn extract_agent_still_to_asset(
+    pub(super) fn extract_agent_still_to_asset(
         &mut self,
         source: crate::core::automation::CaptureSource,
         time: Option<crate::core::automation::TimeSelector>,

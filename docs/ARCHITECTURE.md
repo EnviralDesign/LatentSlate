@@ -24,6 +24,14 @@ The UI should call shared editor/core operations instead of duplicating behavior
 in widget code. The automation harness also routes through those paths where
 practical.
 
+The separate Chat viewport uses `core/agent_chat.rs` for its worker-thread SSE/tool
+loop and `core/agent_tools.rs` for a curated vocabulary with session-local short
+handles. Tools call the shared editor and capture/generation helpers directly;
+the loopback Agent API need not be enabled. Agent providers are a separate typed
+model stored under `providers/agents/`, outside generation provider discovery.
+Conversation/media history stays in memory. Project document saves are explicit;
+existing generation sidecar persistence is preserved.
+
 ## Project Model
 
 A project is a folder. The app stores imported and generated media inside that

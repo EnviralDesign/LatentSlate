@@ -21,6 +21,25 @@ providers, while the Engine publishes its own tool catalog.
 | Custom HTTP | Not implemented | Data model exists; runtime returns a planned/not-implemented error. |
 | fal.ai / Replicate / Veo | Not implemented | Future adapter work. |
 
+## Chat Agent Providers
+
+In AI Providers, choose **OpenAI-compatible Agent**, add it, then set its base URL
+(including `/v1`), model, and optional Bearer key. A blank key sends no
+Authorization header. Save and Test the agent, then select it in Chat. Definitions
+live in `LatentSlateData/providers/agents/<uuid>.json`; they never enter generation
+provider selectors or queues. Keys are stored in that local JSON, like existing
+cloud generation provider keys.
+
+Enable image/video understanding only when the endpoint supports those inputs.
+Image understanding offers rendered frames and contact sheets. Video understanding
+currently requires llama.cpp's native `input_video: {data: <raw base64>}` content
+form and accepts whole project video assets or generated versions; it does not
+replace video with extracted images. Media attachments are limited to 32 MiB.
+Chat permits 12 tool rounds and four visual inspections per user turn. Stop ends
+the request without undoing completed edits. Project-document changes are saved
+only by `save_project`; generation configuration/version sidecars retain their
+normal immediate persistence. Chat history is cleared on New Chat or project change.
+
 ## Releasing Provider Resources
 
 The top-right `DUMP` action asks every configured backend that supports resource

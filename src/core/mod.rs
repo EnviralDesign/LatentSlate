@@ -1,5 +1,6 @@
 pub mod agent_chat;
 pub mod agent_provider_store;
+pub mod agent_tools;
 pub mod audio;
 pub mod automation;
 pub mod canvas;

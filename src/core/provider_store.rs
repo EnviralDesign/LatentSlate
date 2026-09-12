@@ -340,6 +340,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn agent_subdirectory_does_not_change_generation_loading() {
+        let generation = default_openai_image_provider_entry();
+        let root = std::env::temp_dir().join(format!("latentslate-isolation-{}", generation.id));
+        let path = save_provider_entry_to(&root, &generation).unwrap();
+        let before = fs::read(&path).unwrap();
+        let agent = crate::state::AgentProviderEntry::default();
+        fs::create_dir(root.join("agents")).unwrap();
+        fs::write(
+            root.join("agents").join(format!("{}.json", agent.id)),
+            serde_json::to_vec(&agent).unwrap(),
+        )
+        .unwrap();
+        let loaded = load_provider_entries_from(&root).unwrap();
+        assert_eq!(loaded, vec![generation]);
+        assert_eq!(fs::read(path).unwrap(), before);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cloud_templates_mint_a_fresh_id_on_every_add() {
         let first = default_openai_image_provider_entry();
         let second = default_openai_image_provider_entry();

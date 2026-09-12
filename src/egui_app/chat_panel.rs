@@ -7,6 +7,7 @@ pub(super) struct ChatRow {
     pub label: String,
     pub text: String,
     pub tool: bool,
+    pub image: Option<egui::TextureHandle>,
 }
 
 pub(super) struct ChatUi {
@@ -21,6 +22,8 @@ pub(super) struct ChatUi {
     pub composer: String,
     pub session: u64,
     pub stopping: bool,
+    pub handles: crate::core::agent_tools::Handles,
+    pub media: Option<super::chat_tools::PendingChatMedia>,
 }
 
 impl Default for ChatUi {
@@ -37,6 +40,8 @@ impl Default for ChatUi {
             composer: String::new(),
             session: u64::MAX,
             stopping: false,
+            handles: Default::default(),
+            media: None,
         }
     }
 }
@@ -161,6 +166,8 @@ impl LatentSlateApp {
         self.chat.messages = vec![json!({"role":"system", "content":agent_chat::SYSTEM_PROMPT})];
         self.chat.composer.clear();
         self.chat.stopping = false;
+        self.chat.handles = Default::default();
+        self.chat.media = None;
     }
 
     pub(super) fn poll_chat(&mut self, ctx: &Context) {
@@ -177,6 +184,23 @@ impl LatentSlateApp {
             self.chat.selected = self.chat.providers.iter().find(|p| p.enabled).map(|p| p.id);
         }
         self.editor.layout.agent_provider = self.chat.selected;
+        if let Some(pending) = self.chat.media.as_ref() {
+            if let Ok((result, image)) = pending.receiver.try_recv() {
+                let pending = self.chat.media.take().unwrap();
+                self.chat.rows[pending.row].text = result.text.clone();
+                self.chat.rows[pending.row].image = image.map(|im| {
+                    ctx.load_texture(
+                        format!("chat_capture_{}_{}", self.chat.session, pending.row),
+                        egui::ColorImage::from_rgba_unmultiplied(
+                            [im.width() as usize, im.height() as usize],
+                            im.as_raw(),
+                        ),
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+                let _ = pending.reply.send(result);
+            }
+        }
         loop {
             let event = self
                 .chat
@@ -214,32 +238,57 @@ impl LatentSlateApp {
                             label: "Assistant".into(),
                             text: String::new(),
                             tool: false,
+                            image: None,
                         });
                     }
                     self.chat.rows.last_mut().unwrap().text.push_str(&text);
                 }
                 Some(ChatEvent::Tool { call, reply }) => {
-                    let result = ToolResult::error(if self.chat.stopping {
-                        "Stopped."
+                    let result = if self.chat.stopping {
+                        ToolResult::error("Stopped.")
                     } else {
-                        "Tool unavailable."
-                    });
+                        self.execute_chat_tool(ctx, &call)
+                            .unwrap_or_else(|e| ToolResult::error(&e))
+                    };
+                    let row = self.chat.rows.len();
                     self.chat.rows.push(ChatRow {
                         label: call.function.name,
-                        text: result.text.clone(),
+                        text: format!("{}\n{}", call.function.arguments, result.text),
                         tool: true,
+                        image: None,
                     });
-                    let _ = reply.send(result);
+                    if result.media.is_empty() {
+                        let _ = reply.send(result);
+                    } else {
+                        let (sender, receiver) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let image = result
+                                .media
+                                .first()
+                                .and_then(|m| m.get("host_image_path"))
+                                .and_then(Value::as_str)
+                                .and_then(|p| image::open(p).ok())
+                                .map(|im| im.thumbnail(768, 768).into_rgba8());
+                            let _ = sender.send((super::chat_tools::encode_media(result), image));
+                        });
+                        self.chat.media = Some(super::chat_tools::PendingChatMedia {
+                            receiver,
+                            reply,
+                            row,
+                        });
+                    }
                 }
                 Some(ChatEvent::Finished { messages, error }) => {
                     self.chat.messages = messages;
                     self.chat.request = None;
                     self.chat.stopping = false;
+                    self.chat.media = None;
                     if let Some(error) = error {
                         self.chat.rows.push(ChatRow {
                             label: "Chat".into(),
                             text: error,
                             tool: false,
+                            image: None,
                         });
                     }
                 }
@@ -261,10 +310,12 @@ impl LatentSlateApp {
                 .find(|p| Some(p.id) == self.chat.selected)
                 .map(|p| p.name.as_str())
                 .unwrap_or("Choose agent provider");
-            egui::ComboBox::from_id_salt("chat_provider")
-                .selected_text(selected)
-                .width(ui.available_width().max(100.0) - 8.0)
-                .show_ui(ui, |ui| {
+            kit::combo_field(
+                ui,
+                "chat_provider",
+                selected,
+                ui.available_width().max(100.0) - 8.0,
+                |ui| {
                     for p in self.chat.providers.iter().filter(|p| p.enabled) {
                         automation_selectable_value(
                             ui,
@@ -273,7 +324,8 @@ impl LatentSlateApp {
                             &p.name,
                         );
                     }
-                });
+                },
+            );
         });
         if self.chat.selected.is_none() {
             ui.label("Add an OpenAI-compatible Agent in AI Providers to start chatting.");
@@ -289,16 +341,51 @@ impl LatentSlateApp {
             .min_scrolled_height(transcript_height)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                ui.set_min_height(transcript_height);
                 for (index, row) in self.chat.rows.iter().enumerate() {
                     if row.tool {
-                        egui::CollapsingHeader::new(&row.label)
+                        let response = egui::CollapsingHeader::new(&row.label)
                             .id_salt(("chat_tool", index))
                             .show(ui, |ui| {
-                                ui.add(egui::Label::new(&row.text).wrap());
+                                crate::core::automation::instrument_response(
+                                    ui.add(egui::Label::new(&row.text).wrap()),
+                                    "chat_tool_result",
+                                    Some(row.text.clone()),
+                                    false,
+                                    false,
+                                );
+                                if let Some(texture) = &row.image {
+                                    ui.add(
+                                        egui::Image::new(texture).fit_to_exact_size(
+                                            texture.size_vec2()
+                                                * (ui.available_width() / texture.size_vec2().x)
+                                                    .min(1.0),
+                                        ),
+                                    );
+                                }
                             });
+                        let real_clicked = response.header_response.clicked();
+                        let header = automation_button(
+                            response.header_response,
+                            &format!("Chat tool {index}: {}", row.label),
+                        );
+                        if header.clicked() && !real_clicked {
+                            if let Some(mut state) =
+                                egui::collapsing_header::CollapsingState::load(ui.ctx(), header.id)
+                            {
+                                state.toggle(ui);
+                                state.store(ui.ctx());
+                            }
+                        }
                     } else {
                         ui.label(kit::section_label(&row.label));
-                        ui.add(egui::Label::new(&row.text).wrap());
+                        crate::core::automation::instrument_response(
+                            ui.add(egui::Label::new(&row.text).wrap()),
+                            "chat_message",
+                            Some(row.text.clone()),
+                            false,
+                            false,
+                        );
                         ui.add_space(8.0);
                     }
                 }
@@ -351,11 +438,12 @@ impl LatentSlateApp {
                         label: "You".into(),
                         text,
                         tool: false,
+                        image: None,
                     });
                     self.chat.request = Some(agent_chat::start(
-                        provider,
+                        provider.clone(),
                         self.chat.messages.clone(),
-                        vec![],
+                        crate::core::agent_tools::schemas(&provider),
                     ));
                     ui.ctx().request_repaint();
                 }

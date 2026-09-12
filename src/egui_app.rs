@@ -66,6 +66,7 @@ mod asset_panel;
 mod attributes_panel;
 mod automation_ui;
 mod chat_panel;
+mod chat_tools;
 mod confirmations;
 mod export_modal;
 mod export_modal_ui;
