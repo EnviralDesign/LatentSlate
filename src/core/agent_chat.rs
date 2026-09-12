@@ -83,6 +83,7 @@ pub fn start(provider: AgentProviderEntry, messages: Vec<Value>, tools: Vec<Valu
             }),
             Err(_) => Err("Unable to start Chat worker.".into()),
         };
+        compact_media(&mut messages);
         let _ = events_tx.send(ChatEvent::Finished {
             messages,
             error: result.err(),
@@ -108,7 +109,9 @@ async fn conversation(
         .map_err(|_| "Unable to initialize Chat connection.")?;
     let mut visuals = 0;
     for round in 0..=MAX_TOOL_ROUNDS {
-        let (text, calls) = completion(&client, provider, messages, tools, events).await?;
+        let result = completion(&client, provider, messages, tools, events).await;
+        compact_media(messages);
+        let (text, calls) = result?;
         if calls.is_empty() {
             messages.push(json!({"role":"assistant", "content":text}));
             return Ok(());
@@ -167,6 +170,18 @@ async fn conversation(
         messages.extend(block);
     }
     unreachable!()
+}
+
+fn compact_media(messages: &mut [Value]) {
+    for message in messages {
+        if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+            for part in parts {
+                if matches!(part["type"].as_str(), Some("image_url" | "input_video")) {
+                    *part = json!({"type":"text", "text":"Binary media from this tool result is no longer retained in Chat history. Request a new inspection if needed."});
+                }
+            }
+        }
+    }
 }
 
 async fn completion(
@@ -565,10 +580,21 @@ mod tests {
 
     #[test]
     fn http_errors_are_sanitized() {
-        let (provider, _requests, server) =
+        let (mut provider, _requests, server) =
             server(vec![(401, "secret-token local/private/path".into())]);
-        let request = start(provider, vec![], vec![]);
-        let (_, error, _, _) = finish(&request);
+        provider.capabilities.video_input = true;
+        let request = start(
+            provider,
+            vec![
+                json!({"role":"user","content":[{"type":"text","text":"Media from watch_video (call_7)"},{"type":"input_video","input_video":{"data":"failure-video-bytes"}}]}),
+            ],
+            vec![],
+        );
+        let (history, error, _, _) = finish(&request);
+        assert!(!serde_json::to_string(&history)
+            .unwrap()
+            .contains("failure-video-bytes"));
+        assert!(serde_json::to_string(&history).unwrap().contains("call_7"));
         let error = error.unwrap();
         assert!(error.contains("401"));
         assert!(!error.contains("secret-token"));
@@ -617,11 +643,22 @@ mod tests {
             model: "fixture".into(),
             api_key: None,
         };
-        let request = start(provider, vec![], vec![]);
+        provider.capabilities.video_input = true;
+        let request = start(
+            provider,
+            vec![
+                json!({"role":"user","content":[{"type":"text","text":"Media from watch_video (call_7)"},{"type":"input_video","input_video":{"data":"canceled-video-bytes"}}]}),
+            ],
+            vec![],
+        );
         let (socket, _) = listener.accept().unwrap();
         request.stop();
-        let (_, error, _, _) = finish(&request);
+        let (history, error, _, _) = finish(&request);
         assert!(error.unwrap().starts_with("Stopped"));
+        assert!(!serde_json::to_string(&history)
+            .unwrap()
+            .contains("canceled-video-bytes"));
+        assert!(serde_json::to_string(&history).unwrap().contains("call_7"));
         drop(socket);
     }
 
@@ -652,12 +689,26 @@ mod tests {
     #[test]
     fn tool_media_is_structured_user_input_on_continuation() {
         let (mut provider, requests, server) = server(vec![
-            (200, tool_stream("{}")),
-            (200, tool_stream("{}")),
+            (
+                200,
+                tool_stream("{}").replace("project_context", "watch_video"),
+            ),
+            (
+                200,
+                tool_stream("{}")
+                    .replace("project_context", "look")
+                    .replace("call_1", "call_2"),
+            ),
             (200, text_stream("I see the video.")),
+            (200, text_stream("Ready for another turn.")),
         ]);
         provider.capabilities.video_input = true;
-        let request = start(provider, vec![], tools());
+        provider.capabilities.image_input = true;
+        let tools = vec![
+            json!({"type":"function","function":{"name":"watch_video"}}),
+            json!({"type":"function","function":{"name":"look"}}),
+        ];
+        let request = start(provider.clone(), vec![], tools.clone());
         let ChatEvent::Tool { reply, .. } =
             request.events.recv_timeout(Duration::from_secs(5)).unwrap()
         else {
@@ -670,12 +721,23 @@ mod tests {
             })
             .ok()
             .unwrap();
-        let (_, error, _, calls) = finish(&request);
+        let ChatEvent::Tool { call, reply } =
+            request.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("expected look after native video")
+        };
+        assert_eq!(call.function.name, "look");
+        reply.send(ToolResult { text: json!({"source":"timeline","kind":"cutsheet"}).to_string(), media:vec![json!({"type":"image_url","image_url":{"url":"data:image/png;base64,encoded-cutsheet"}})] }).ok().unwrap();
+        let (mut history, error, _, calls) = finish(&request);
         assert!(error.is_none());
-        assert_eq!(
-            calls, 1,
-            "another tool executes after the media continuation"
-        );
+        assert_eq!(calls, 0);
+        let retained = serde_json::to_string(&history).unwrap();
+        assert!(!retained.contains("encoded-media"));
+        assert!(!retained.contains("encoded-cutsheet"));
+        assert!(retained.contains("watch_video") && retained.contains("call_1"));
+        assert!(retained.contains("look") && retained.contains("call_2"));
+        history.push(json!({"role":"user","content":"Continue"}));
+        assert!(finish(&start(provider, history, tools)).1.is_none());
         let requests = requests.try_iter().collect::<Vec<_>>();
         let messages = &requests[1].1["messages"];
         assert_eq!(messages[1]["role"], "tool");
@@ -693,6 +755,19 @@ mod tests {
             messages[2]["content"][1]["input_video"]["data"],
             "encoded-media"
         );
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            requests[1].1["messages"]
+                .to_string()
+                .matches("encoded-media")
+                .count(),
+            1
+        );
+        let cutsheet_request = requests[2].1["messages"].to_string();
+        assert!(!cutsheet_request.contains("encoded-media"));
+        assert_eq!(cutsheet_request.matches("encoded-cutsheet").count(), 1);
+        let later_turn = requests[3].1["messages"].to_string();
+        assert!(!later_turn.contains("encoded-media") && !later_turn.contains("encoded-cutsheet"));
         server.join().unwrap();
     }
 }
