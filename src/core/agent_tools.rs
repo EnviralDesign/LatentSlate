@@ -78,7 +78,7 @@ impl Handles {
     pub fn inspect(&self, e: &EditorState, v: &Value) -> Result<Value, String> {
         let id = self.id(v, "handle", "")?;
         let result = if let Some(a) = e.project.assets.iter().find(|a| a.id == id) {
-            json!({"asset":asset(a),"generation":e.project.generative_configs.get(&id).map(|g|json!({"provider":g.provider_id,"inputs":g.inputs,"reference_slots":g.reference_slots,"batch":g.batch,"active_version":g.active_version,"versions":g.versions.iter().rev().take(20).map(|r|json!({"version":r.version})).collect::<Vec<_>>(),"version_count":g.versions.len()}))})
+            json!({"asset":asset(a),"generation":e.project.generative_configs.get(&id).map(|g|json!({"provider":g.provider_id,"inputs":g.inputs,"media_bindings":g.media_bindings,"reference_slots":g.reference_slots,"batch":g.batch,"active_version":g.active_version,"versions":g.versions.iter().rev().take(20).map(|r|json!({"version":r.version})).collect::<Vec<_>>(),"version_count":g.versions.len()}))})
         } else if let Some(c) = e.project.clips.iter().find(|c| c.id == id) {
             json!(c)
         } else if let Some(t) = e.project.tracks.iter().find(|t| t.id == id) {
@@ -165,20 +165,20 @@ impl Handles {
                     if let Some(inputs) = v.get("inputs") {
                         let inputs = inputs.as_object().ok_or("inputs must be an object")?;
                         let mut mapped = serde_json::Map::new();
+                        let mut media = serde_json::Map::new();
                         for (k, value) in inputs {
-                            let input = if value.get("asset").is_some() {
+                            if value.get("asset").is_some() {
                                 let id = self.id(value, "asset", "a")?;
-                                if let Some(version) = optional(value, "version") {
-                                    json!({"type":"generation_ref","asset_id":id,"version":version})
-                                } else {
-                                    json!({"type":"asset_ref","asset_id":id,"pinned":false})
-                                }
+                                media.insert(k.clone(), json!({
+                                    "source":{"type":"project_asset","asset_id":id,"version":optional(value,"version")},
+                                    "sample":{"type":"auto"},"coverage":"strict"
+                                }));
                             } else {
-                                json!({"type":"literal","value":value})
-                            };
-                            mapped.insert(k.clone(), input);
+                                mapped.insert(k.clone(), json!({"type":"literal","value":value}));
+                            }
                         }
                         patch["inputs"] = Value::Object(mapped);
+                        patch["media_bindings"] = Value::Object(media);
                     }
                     json!({"type":"set_generative_config","asset_id":self.id(v,"asset","a")?,"patch":patch})
                 }
@@ -256,7 +256,7 @@ pub fn schemas(provider: &AgentProviderEntry) -> Vec<Value> {
         tool("inspect","Read one asset, clip, track, generation provider or job by handle. Provider details include input names and types.",json!({"handle":s}),json!(["handle"])),
         tool("timeline_edit","Place an asset, move or resize a clip (seconds), or add a track. Mutations stay unsaved.",json!({"action":{"enum":["place","move","resize","add_track"]},"asset":s,"clip":s,"track":s,"time":n,"duration":n,"track_type":{"enum":["Video","Audio"]},"name":s}),json!(["action"])),
         tool("asset_edit","Import a user-specified file, rename, create a generative asset, or extract a rendered still from timeline/c1/a1 at time seconds.",json!({"action":{"enum":["import","rename","create_generative","extract_still"]},"path":s,"asset":s,"name":s,"source":s,"time":n,"version":s,"output_type":{"enum":["image","video","audio"]},"duration":n,"fps":n}),json!(["action"])),
-        tool("generation","Configure inputs, start asynchronously (optional context clip), read status, or activate a version. Inspect provider first. inputs maps exact provider field names to literal values or {asset:a1,version:optional}. Generation sidecars use normal immediate persistence.",json!({"action":{"enum":["configure","start","status","activate_version"]},"asset":s,"provider":s,"clip":s,"version":s,"inputs":{"type":"object"}}),json!(["action"])),
+        tool("generation","Configure inputs, start asynchronously (optional context clip), read status, or activate a version. Inspect provider first. inputs maps exact provider field names to literal values or {asset:a1,version:optional}, which locks that project asset/version as the media source rather than following the timeline. Generation sidecars use normal immediate persistence.",json!({"action":{"enum":["configure","start","status","activate_version"]},"asset":s,"provider":s,"clip":s,"version":s,"inputs":{"type":"object"}}),json!(["action"])),
         tool("save_project","Save the current project document and clear its unsaved-project changes.",json!({}),json!([])),
     ];
     if provider.capabilities.image_input {
@@ -478,6 +478,173 @@ mod tests {
         assert!(!e.project_dirty);
         let reopened = Project::load(&root).unwrap();
         assert_eq!(reopened.clips.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn chat_media_sources_replace_follow_bindings_and_resolve_off_timeline() {
+        use crate::core::media_binding::{resolve_field, MediaResolveContext};
+        use crate::state::{
+            GenerationRecord, MediaBindingRelation, MediaBindingSource, MediaBindingSpec,
+            ProviderInputField,
+        };
+
+        let root = std::env::temp_dir().join(format!("latentslate-chat-media-{}", Uuid::new_v4()));
+        let mut e = EditorState::new();
+        e.provider_entries.clear();
+        e.project = Project::new("Chat media fixture");
+        e.project.project_path = Some(root.clone());
+        e.save().unwrap();
+        let still = Asset::new_image("Coffee still", "coffee.png".into());
+        let still_id = still.id;
+        image::RgbImage::new(8, 8)
+            .save(root.join("coffee.png"))
+            .unwrap();
+        e.project.assets.push(still);
+        let source_id = e.create_generative_image().unwrap();
+        let source_folder = match &e.project.find_asset(source_id).unwrap().kind {
+            crate::state::AssetKind::GenerativeImage { folder, .. } => root.join(folder),
+            _ => unreachable!(),
+        };
+        let target_id = e.create_generative_video(24.0, 24).unwrap();
+        let mut provider = ProviderEntry::new(
+            "Image to video fixture",
+            ProviderOutputType::Video,
+            ProviderConnection::CustomHttp {
+                base_url: "http://127.0.0.1".into(),
+                api_key: None,
+            },
+        );
+        let field: ProviderInputField = serde_json::from_value(json!({
+            "name":"start_image", "label":"Start Image", "input_type":{"type":"image"},
+            "required":true, "role":"start_image"
+        }))
+        .unwrap();
+        provider.inputs.push(field.clone());
+        e.provider_entries.push(provider.clone());
+        for version in ["v1", "v2"] {
+            image::RgbImage::new(8, 8)
+                .save(source_folder.join(format!("{version}.png")))
+                .unwrap();
+            e.project
+                .generative_configs
+                .get_mut(&source_id)
+                .unwrap()
+                .versions
+                .push(GenerationRecord {
+                    engine_execution: None,
+                    version: version.into(),
+                    timestamp: chrono::Utc::now(),
+                    provider_id: provider.id,
+                    inputs_snapshot: Default::default(),
+                    media_bindings_snapshot: Default::default(),
+                    resolved_media_inputs: Default::default(),
+                    lab_node_id: None,
+                });
+        }
+        e.project
+            .generative_configs
+            .get_mut(&source_id)
+            .unwrap()
+            .active_version = Some("v2".into());
+        e.set_generation_provider(target_id, Some(provider.id))
+            .unwrap();
+        e.project
+            .generative_configs
+            .get_mut(&target_id)
+            .unwrap()
+            .media_bindings
+            .insert("start_image".into(), MediaBindingSpec::follow_auto());
+        e.save().unwrap();
+        assert!(e.project.clips.is_empty());
+
+        let mut h = Handles::default();
+        h.sync(&e);
+        let apply = |e: &mut EditorState, source: Value| {
+            let command = h
+                .command(
+                    "generation",
+                    &json!({
+                        "action":"configure", "asset":"a3", "provider":"p1",
+                        "inputs":{"start_image":source, "prompt":"Keep the mug"}
+                    }),
+                )
+                .unwrap();
+            let response = e.apply_automation_command(&command);
+            assert!(response.ok, "{:?}", response.message);
+        };
+        let resolve = |e: &EditorState| {
+            resolve_field(MediaResolveContext {
+                project: &e.project,
+                target_asset_id: Some(target_id),
+                context_clip_id: None,
+                field: &field,
+                provider: Some(&provider),
+                config: e.project.generative_config(target_id),
+            })
+            .unwrap()
+        };
+        assert!(!resolve(&e).is_ok());
+        apply(&mut e, json!({"asset":"a1"}));
+        let plan = resolve(&e);
+        assert!(plan.is_ok(), "{:?}", plan.errors);
+        assert_eq!(plan.relation, Some(MediaBindingRelation::ExplicitAsset));
+        assert_eq!(plan.source_asset_id, Some(still_id));
+        assert_eq!(
+            plan.spec.source,
+            MediaBindingSource::ProjectAsset {
+                asset_id: still_id,
+                version: None
+            }
+        );
+
+        apply(&mut e, json!({"asset":"a2", "version":"v1"}));
+        let plan = resolve(&e);
+        assert!(plan.is_ok(), "{:?}", plan.errors);
+        assert_eq!(plan.source_asset_id, Some(source_id));
+        assert_eq!(plan.source_version.as_deref(), Some("v1"));
+        assert_eq!(
+            plan.source_path_absolute,
+            Some(source_folder.join("v1.png"))
+        );
+        let inspected = h.inspect(&e, &json!({"handle":"a3"})).unwrap();
+        assert_eq!(
+            inspected["generation"]["media_bindings"]["start_image"],
+            json!({
+                "source":{"type":"project_asset","asset_id":"a2","version":"v1"},
+                "sample":{"type":"auto"},"coverage":"strict"
+            })
+        );
+        let reloaded = Project::load(&root).unwrap();
+        assert_eq!(
+            reloaded
+                .generative_config(target_id)
+                .unwrap()
+                .media_bindings,
+            e.project
+                .generative_config(target_id)
+                .unwrap()
+                .media_bindings
+        );
+
+        let before = e.project.generative_config(target_id).unwrap().clone();
+        assert!(h
+            .command(
+                "generation",
+                &json!({
+                    "action":"configure","asset":"a3","inputs":{"start_image":{"asset":"a99"}}
+                })
+            )
+            .is_err());
+        assert_eq!(e.project.generative_config(target_id).unwrap(), &before);
+        apply(&mut e, json!({"asset":"a2", "version":"missing"}));
+        assert!(!resolve(&e).is_ok());
+        let start = h
+            .command("generation", &json!({"action":"start","asset":"a3"}))
+            .unwrap();
+        assert!(!e.apply_automation_command(&start).ok);
+        assert!(e.generation_queue.is_empty());
+        assert!(e.project.clips.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
