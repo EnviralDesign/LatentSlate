@@ -17,7 +17,14 @@ impl Handles {
             ("c", e.project.clips.iter().map(|x| x.id).collect()),
             ("t", e.project.tracks.iter().map(|x| x.id).collect()),
             ("p", e.provider_entries.iter().map(|x| x.id).collect()),
-            ("j", e.generation_queue.iter().map(|x| x.id).collect()),
+            (
+                "j",
+                e.generation_queue
+                    .iter()
+                    .filter(|job| job_belongs_to_current_project(e, job))
+                    .map(|job| job.id)
+                    .collect(),
+            ),
         ] {
             for id in ids {
                 if !self.0.iter().any(|(_, existing)| *existing == id) {
@@ -62,7 +69,7 @@ impl Handles {
             "clips":e.project.clips.iter().take(40).map(|c|json!({"id":c.id,"asset":c.asset_id,"track":c.track_id,"start":c.start_time,"duration":c.duration})).collect::<Vec<_>>(),
             "tracks":e.project.tracks.iter().take(20).map(|t|json!({"id":t.id,"name":t.name,"kind":t.track_type})).collect::<Vec<_>>(),
             "providers":e.provider_entries.iter().filter(|p|ready(p)&&e.provider_in_project_scope(p.id)).take(30).map(|p|json!({"id":p.id,"name":p.name,"output_type":p.output_type})).collect::<Vec<_>>(),
-            "jobs":e.generation_queue.iter().rev().take(15).map(job).collect::<Vec<_>>(),
+            "jobs":e.generation_queue.iter().rev().filter(|job|job_belongs_to_current_project(e,job)).take(15).map(job).collect::<Vec<_>>(),
             "counts":{"assets":e.project.assets.len(),"clips":e.project.clips.len(),"tracks":e.project.tracks.len()},
             "hint":"Use inspect for one handle. Lists bounded to 40 assets/clips, 20 tracks, 30 providers and 15 recent jobs."
         }))
@@ -78,7 +85,11 @@ impl Handles {
             json!(t)
         } else if let Some(p) = e.provider_entries.iter().find(|p| p.id == id) {
             json!({"id":p.id,"name":p.name,"ready":ready(p),"output_type":p.output_type,"inputs":p.inputs,"canvas":p.canvas,"timing":p.timing})
-        } else if let Some(j) = e.generation_queue.iter().find(|j| j.id == id) {
+        } else if let Some(j) = e
+            .generation_queue
+            .iter()
+            .find(|j| j.id == id && job_belongs_to_current_project(e, j))
+        {
             job(j)
         } else {
             return Err("Item no longer exists.".into());
@@ -91,6 +102,7 @@ impl Handles {
             .generation_queue
             .iter()
             .rev()
+            .filter(|job| job_belongs_to_current_project(e, job))
             .filter(|j| asset.is_none_or(|id| j.asset_id == id))
             .take(15)
             .map(job)
@@ -190,6 +202,17 @@ impl Handles {
     }
 }
 
+fn job_belongs_to_current_project(e: &EditorState, job: &crate::state::GenerationJob) -> bool {
+    e.project
+        .assets
+        .iter()
+        .any(|asset| asset.id == job.asset_id)
+        && e.project
+            .project_path
+            .as_ref()
+            .is_some_and(|root| job.folder_path.starts_with(root))
+}
+
 fn ready(p: &crate::state::ProviderEntry) -> bool {
     !matches!(
         p.connection,
@@ -249,6 +272,92 @@ pub fn schemas(provider: &AgentProviderEntry) -> Vec<Value> {
 mod tests {
     use super::*;
     use crate::state::{Asset, Project, ProviderConnection, ProviderEntry, ProviderOutputType};
+
+    #[test]
+    fn chat_jobs_follow_project_ownership_without_changing_the_global_queue() {
+        let mut e = EditorState::new();
+        e.provider_entries.clear();
+        e.project = Project::new("Project B");
+        let root_a = std::env::temp_dir().join("chat-project-a");
+        let root_b = std::env::temp_dir().join("chat-project-b");
+        e.project.project_path = Some(root_b.clone());
+        let asset = Asset::new_generative_image("Current image", "generated/image/current".into());
+        let asset_id = asset.id;
+        e.project.assets.push(asset);
+        let make_job = |asset_id, root: &std::path::Path| crate::state::GenerationJob {
+            id: Uuid::new_v4(),
+            created_at: chrono::Utc::now(),
+            status: crate::state::GenerationJobStatus::Succeeded,
+            progress_overall: None,
+            progress_stage: None,
+            attempts: 0,
+            next_attempt_at: None,
+            provider: ProviderEntry::new(
+                "Fixture",
+                ProviderOutputType::Image,
+                ProviderConnection::CustomHttp {
+                    base_url: "http://127.0.0.1".into(),
+                    api_key: None,
+                },
+            ),
+            output_type: ProviderOutputType::Image,
+            asset_id,
+            clip_id: None,
+            asset_label: "Image".into(),
+            folder_path: root.join("generated/image/current"),
+            inputs: Default::default(),
+            inputs_snapshot: Default::default(),
+            media_bindings_snapshot: Default::default(),
+            resolved_media_inputs: Default::default(),
+            seed_advance: None,
+            version: Some("v1".into()),
+            lab_node_id: None,
+            activate_on_success: true,
+            error: None,
+        };
+        let foreign = make_job(Uuid::new_v4(), &root_a);
+        let cloned_asset = make_job(asset_id, &root_a);
+        let sibling = make_job(asset_id, &root_b.with_file_name("chat-project-b-other"));
+        let current = make_job(asset_id, &root_b);
+        let current_id = current.id;
+        e.generation_queue = vec![foreign, cloned_asset, sibling, current];
+        let original_queue = e.generation_queue.clone();
+        let mut handles = Handles::default();
+        handles.sync(&e);
+
+        assert_eq!(
+            handles.id(&json!({"handle":"j1"}), "handle", "j").unwrap(),
+            current_id
+        );
+        assert!(handles.id(&json!({"handle":"j2"}), "handle", "j").is_err());
+        assert_eq!(handles.context(&e)["jobs"].as_array().unwrap().len(), 1);
+        assert_eq!(handles.jobs(&e, None).as_array().unwrap().len(), 1);
+        assert_eq!(handles.jobs(&e, Some(asset_id))[0]["asset"], "a1");
+        assert_eq!(
+            handles.inspect(&e, &json!({"handle":"j1"})).unwrap()["asset"],
+            "a1"
+        );
+        assert!(handles.inspect(&e, &json!({"handle":"a1"})).is_ok());
+
+        let asset = e.project.assets.remove(0);
+        handles.sync(&e);
+        assert_eq!(handles.context(&e)["jobs"], json!([]));
+        assert_eq!(handles.jobs(&e, Some(asset_id)), json!([]));
+        assert!(handles.inspect(&e, &json!({"handle":"j1"})).is_err());
+
+        e.project.assets.push(asset);
+        e.project.project_path = None;
+        let mut unsaved_handles = Handles::default();
+        unsaved_handles.sync(&e);
+        assert!(unsaved_handles
+            .id(&json!({"handle":"j1"}), "handle", "j")
+            .is_err());
+        assert_eq!(handles.context(&e)["jobs"], json!([]));
+        assert_eq!(handles.jobs(&e, None), json!([]));
+        assert!(handles.inspect(&e, &json!({"handle":"j1"})).is_err());
+        assert!(handles.inspect(&e, &json!({"handle":"a1"})).is_ok());
+        assert_eq!(e.generation_queue, original_queue);
+    }
 
     #[test]
     fn handles_survive_reorder_and_removal_and_context_is_compact() {
