@@ -496,7 +496,7 @@ struct VideoDecoder {
     source_height: u32,
     time_base: ffmpeg::Rational,
     last_pts: Option<i64>,
-    last_time_seconds: Option<f64>,
+    last_frame_end_pts: Option<i64>,
 }
 
 impl VideoDecoder {
@@ -548,7 +548,7 @@ impl VideoDecoder {
             source_height: src_height,
             time_base,
             last_pts: None,
-            last_time_seconds: None,
+            last_frame_end_pts: None,
         })
     }
 
@@ -561,16 +561,24 @@ impl VideoDecoder {
 
     fn decode_sequential(&mut self, time_seconds: f64) -> DecodeOutcome {
         let mut timings = DecodeTimings::default();
-        let last_time = self.last_time_seconds.unwrap_or(f64::NEG_INFINITY);
+        let last_time = self
+            .last_pts
+            .map(|pts| pts_to_seconds(pts, self.time_base))
+            .unwrap_or(f64::NEG_INFINITY);
         let delta = time_seconds - last_time;
-        if self.last_pts.is_none() || delta < 0.0 || delta > MAX_SEQUENTIAL_JUMP_SECONDS {
+        if self
+            .last_frame_end_pts
+            .is_none_or(|end| seconds_to_pts(time_seconds.max(0.0), self.time_base) < end)
+            || delta > MAX_SEQUENTIAL_JUMP_SECONDS
+        {
             return self.decode_with_seek(time_seconds);
         }
 
         let target_pts = seconds_to_pts(time_seconds.max(0.0), self.time_base);
-        if let Some((image, pts, used_hw)) = self.decode_forward(target_pts, &mut timings) {
+        if let Some((image, pts, end_pts, used_hw)) = self.decode_forward(target_pts, &mut timings)
+        {
             self.last_pts = Some(pts);
-            self.last_time_seconds = Some(pts_to_seconds(pts, self.time_base));
+            self.last_frame_end_pts = Some(end_pts);
             return DecodeOutcome {
                 image: Some(image),
                 used_hw,
@@ -601,9 +609,10 @@ impl VideoDecoder {
         timings.seek_ms = elapsed_ms(seek_start);
 
         let target_pts = seconds_to_pts(time_seconds.max(0.0), self.time_base);
-        if let Some((image, pts, used_hw)) = self.decode_forward(target_pts, &mut timings) {
+        if let Some((image, pts, end_pts, used_hw)) = self.decode_forward(target_pts, &mut timings)
+        {
             self.last_pts = Some(pts);
-            self.last_time_seconds = Some(pts_to_seconds(pts, self.time_base));
+            self.last_frame_end_pts = Some(end_pts);
             return DecodeOutcome {
                 image: Some(image),
                 used_hw,
@@ -626,7 +635,7 @@ impl VideoDecoder {
         &mut self,
         target_pts: i64,
         timings: &mut DecodeTimings,
-    ) -> Option<(RgbaImage, i64, bool)> {
+    ) -> Option<(RgbaImage, i64, i64, bool)> {
         let mut decoded = ffmpeg::util::frame::Video::empty();
         let mut sw_frame = ffmpeg::util::frame::Video::empty();
         let mut rgba_frame = ffmpeg::util::frame::Video::empty();
@@ -728,10 +737,14 @@ fn receive_until_target(
     sw_frame: &mut ffmpeg::util::frame::Video,
     rgba_frame: &mut ffmpeg::util::frame::Video,
     timings: &mut DecodeTimings,
-) -> Option<(RgbaImage, i64, bool)> {
+) -> Option<(RgbaImage, i64, i64, bool)> {
     while decoder.receive_frame(decoded).is_ok() {
         let frame_pts = decoded.timestamp().or(decoded.pts()).unwrap_or(0);
-        if frame_pts < target_pts {
+        let duration = decoded.packet().duration;
+        let covers_target = duration > 0
+            && frame_pts <= target_pts
+            && target_pts < frame_pts.saturating_add(duration);
+        if frame_pts < target_pts && !covers_target {
             continue;
         }
 
@@ -769,7 +782,12 @@ fn receive_until_target(
             target_height,
             timings,
         )?;
-        return Some((image, frame_pts, used_hw));
+        return Some((
+            image,
+            frame_pts,
+            frame_pts.saturating_add(duration.max(0)),
+            used_hw,
+        ));
     }
 
     None
@@ -889,4 +907,66 @@ fn frame_to_rgba(frame: &ffmpeg::util::frame::Video) -> Option<RgbaImage> {
 
 fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_frame_remains_visible_until_its_display_interval_ends() {
+        init_ffmpeg().unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rotated-640x512.mp4");
+        let mut decoder = VideoDecoder::open(&path, 160, 128, false).unwrap();
+        let first = decoder
+            .decode_frame_at_time(0.0, DecodeMode::Seek)
+            .image
+            .unwrap();
+        for mode in [DecodeMode::Seek, DecodeMode::Sequential] {
+            for time in [0.5, 0.9, 0.99] {
+                let inside = decoder.decode_frame_at_time(time, mode).image;
+                assert!(
+                    inside.as_ref() == Some(&first),
+                    "missing final frame at {time} in {mode:?}"
+                );
+            }
+            for time in [1.0, 1.5] {
+                assert!(
+                    decoder.decode_frame_at_time(time, mode).image.is_none(),
+                    "frame held beyond EOF at {time}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sequential_requests_within_a_frame_match_seeks() {
+        init_ffmpeg().unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/two-frames-8fps.mp4");
+        let mut decoder = VideoDecoder::open(&path, 160, 128, false).unwrap();
+        let mut sequential = VideoDecoder::open(&path, 160, 128, false).unwrap();
+        for time in [0.0, 0.03, 0.06, 0.10, 0.124, 0.125, 0.13, 0.2, 0.249, 0.25] {
+            let seek = decoder.decode_frame_at_time(time, DecodeMode::Seek).image;
+            let next = sequential
+                .decode_frame_at_time(time, DecodeMode::Sequential)
+                .image;
+            assert!(seek == next, "Seek/Sequential differ at {time}");
+            assert_eq!(
+                seek.is_some(),
+                time < 0.25,
+                "Wrong frame presence at {time}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_and_corrupt_media_fail_to_open() {
+        init_ffmpeg().unwrap();
+        let path =
+            std::env::temp_dir().join(format!("latentslate-invalid-{}.mp4", uuid::Uuid::new_v4()));
+        assert!(VideoDecoder::open(&path, 160, 128, false).is_err());
+        std::fs::write(&path, b"not a video").unwrap();
+        assert!(VideoDecoder::open(&path, 160, 128, false).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
 }
