@@ -49,8 +49,8 @@ testing work, read and follow the **Local stack and process control** section in
 [`../LatentSlate-Engine/AGENTS.md`](../LatentSlate-Engine/AGENTS.md).
 That section owns manager discovery, stable-ID targeting, logs, state verification,
 and reload semantics for both repositories. Do not launch separate unmanaged test
-instances when the manager is available. Managed UI builds must use the release
-wrapper required below, including DLL staging.
+instances when the manager is available. Use the manager's configured UI build
+entry for release builds.
 
 The default loopback endpoint is `http://127.0.0.1:47634`. Before operating a
 managed process, call `GET /health` and `GET /processes`, then use the stable ID
@@ -62,10 +62,9 @@ rather than silently launching an unmanaged instance.
 ## Build & Test Rules
 
 ### Cargo Build
-- After `cargo check` succeeds, attempt `.\scripts\build-and-stage.ps1 -Profile release` before yielding when Rust source/UI changes should be immediately testable.
-- Use `.\scripts\build-and-stage.ps1 -Profile release` instead of calling `cargo build --release` directly. The wrapper builds release, stages runtime DLLs, and best-effort copies the exe/DLLs to the configured deploy folder without copying `LatentSlateData` contents.
+- After `cargo check` succeeds, attempt a release build through the Process Manager before yielding when Rust source/UI changes should be immediately testable.
+- `scripts/build-and-stage.ps1` remains available but is not required. The manager's `cargo build --release` command is supported.
 - If the release build fails because the app executable is open/locked, do **not** compile to a different target; report that the release build did not succeed because the executable appears to be running.
-- If the wrapper build succeeds but the best-effort deploy copy fails because the deployed executable is open/locked, treat that as non-blocking; report the copy warning and continue.
 - Do not run `cargo run` or `dx serve` unless explicitly requested.
 
 ### Cargo Test
@@ -83,9 +82,9 @@ rather than silently launching an unmanaged instance.
 
 1. **Make changes** to source files
 2. **Run `cargo check`** before yielding back to the user
-3. **Attempt `.\scripts\build-and-stage.ps1 -Profile release`** for code/UI changes that should be immediately testable
+3. **Attempt a managed release build** for code/UI changes that should be immediately testable
 4. **Run `cargo test`** only when explicitly requested
-5. **Notify the user** that changes are ready, including whether the release wrapper succeeded, the release build was blocked by a locked executable, or only the best-effort deploy copy was blocked
+5. **Notify the user** that changes are ready, including whether the release build succeeded or was blocked
 
 ## Code Style
 
