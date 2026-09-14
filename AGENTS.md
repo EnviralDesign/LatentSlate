@@ -4,176 +4,73 @@ description: Best practices and rules for AI developers working on this project
 
 # AI Developer Guidelines
 
-## Repository Overview
+## Repository overview
 
-LatentSlate is a Windows-first Rust desktop application by Enviral Design built with
-`egui`/`eframe`. It is a local-first generative NLE for AI-generated media,
-with project-local assets, FFmpeg-backed preview/export, audio playback and
-waveforms, generative asset versioning, and bring-your-own ComfyUI provider
-workflows.
+LatentSlate is a Windows-first Rust desktop app built with `egui`/`eframe`: a local-first generative NLE with project-local media, FFmpeg preview/export, audio/waveforms, generative asset versioning, and provider integrations.
 
-Important directories:
+Key paths:
 
-```
-src/
-├── main.rs              # Entry point and automation startup
-├── egui_app.rs          # eframe/egui desktop shell root
-├── egui_app/            # UI panels, modals, preview, timeline, provider UI
-├── editor.rs            # Editor model/controller shared by UI and automation
-├── state/               # Project, asset, selection, provider, generative state
-├── core/                # Non-UI logic, automation, FFmpeg, preview, export, audio
-└── providers/           # ComfyUI, OpenAI, xAI, and future provider adapters
-```
+- `src/main.rs` — entry point and automation startup
+- `src/egui_app.rs` / `src/egui_app/` — desktop shell and UI
+- `src/editor.rs` — editor operations shared by UI and automation
+- `src/state/` — project/asset/selection/provider/generative state
+- `src/core/` — non-UI logic, automation, FFmpeg, preview/export/audio
+- `src/providers/` — ComfyUI/OpenAI/xAI provider adapters
+- `workflows/` — intentionally tracked example ComfyUI workflow/manifest pairs
+- `.latentslate/` — ignored runtime provider JSON, encrypted credentials, and caches; track only `.gitkeep` placeholders
+- `scripts/desktop-smoke.ps1`, `scripts/automation-scenario.ps1` — native smoke/automation checks
 
-Other useful paths:
+Living docs:
 
-- `workflows/` contains intentionally tracked example ComfyUI workflow/manifest pairs.
-- `.latentslate/` is the repo-local ignored runtime folder for provider JSONs, encrypted credentials, and caches; track only its `.gitkeep` placeholders.
-- `scripts/desktop-smoke.ps1` and `scripts/automation-scenario.ps1` drive native desktop smoke checks.
-- `docs/PROJECT.md` is the concise living source of truth for current status, roadmap, and decisions.
-- `docs/ARCHITECTURE.md` summarizes the current system/data model.
-- `docs/PROVIDERS.md` covers ComfyUI/provider setup and manifest behavior.
-- `docs/DESKTOP_TEST_HARNESS.md` documents the loopback automation harness.
+- `docs/PROJECT.md` — current status, roadmap, decisions
+- `docs/ARCHITECTURE.md` — stable system/data model
+- `docs/PROVIDERS.md` — provider setup and manifest behavior
+- `docs/DESKTOP_TEST_HARNESS.md` — loopback automation harness
 
-## Sub-agent defaults
+## Managed local stack
 
-- Use mini roles for exploration, triage, and mechanical edits.
-- Use full Codex for final decisions, tricky reasoning, deep work, and review.
-- Use fuzzfolioworker specifically for scoring profile exploration. The lead agent must keep that worker on track.
+Use the Local Process Manager for building, running, and testing the managed LatentSlate/Engine stack. The authoritative lifecycle/discovery/reload rules live in `../LatentSlate-Engine/AGENTS.md` under **Local stack and process control**; follow them before runtime work.
 
-## Local stack and process control
+Do not launch separate unmanaged test instances when the manager is available. Use its configured UI build entry for release builds. If the manager is unavailable, report that rather than silently starting an unmanaged replacement.
 
-The Local Process Manager is the canonical control path for building, running,
-and testing the local LatentSlate UI/Engine stack. Before lifecycle or runtime
-testing work, read and follow the **Local stack and process control** section in
-[`../LatentSlate-Engine/AGENTS.md`](../LatentSlate-Engine/AGENTS.md).
-That section owns manager discovery, stable-ID targeting, logs, state verification,
-and reload semantics for both repositories. Do not launch separate unmanaged test
-instances when the manager is available. Use the manager's configured UI build
-entry for release builds.
+## Build and test gates
 
-The default loopback endpoint is `http://127.0.0.1:47634`. Before operating a
-managed process, call `GET /health` and `GET /processes`, then use the stable ID
-returned by discovery for individual start/stop/restart and log requests. Poll
-state after control requests. Do not use `POST /stack/reload` as a routine refresh:
-it stops all managed processes first. If the manager is unavailable, report it
-rather than silently launching an unmanaged instance.
-
-## Build & Test Rules
-
-### Cargo Build
-- After `cargo check` succeeds, attempt a release build through the Process Manager before yielding when Rust source/UI changes should be immediately testable.
-- `scripts/build-and-stage.ps1` remains available but is not required. The manager's `cargo build --release` command is supported.
-- If the release build fails because the app executable is open/locked, do **not** compile to a different target; report that the release build did not succeed because the executable appears to be running.
+- **Always run `cargo check` before yielding after Rust changes.**
+- After `cargo check`, attempt a release build through the Process Manager when source/UI changes should be immediately testable.
+- `scripts/build-and-stage.ps1` remains available but is not required; the managed `cargo build --release` path is supported.
+- If the release build is blocked because the executable is open/locked, do not evade it with a different target directory; report that the managed release build did not succeed.
 - Do not run `cargo run` or `dx serve` unless explicitly requested.
+- Run `cargo test` only when explicitly requested.
+- External provider behavior must remain opt-in for tests and must not be required by routine CI.
+- Do not make `cargo clippy --all-targets -- -D warnings` a required gate while the repository still has existing lint debt.
 
-### Cargo Test
-- **Optional** - run `cargo test` only when explicitly requested
+When yielding, state whether `cargo check` passed and whether the managed release build succeeded or was blocked.
 
-### Cargo Check
-- **Always run** `cargo check` before yielding back to the user
+## UI and code structure
 
-### CI Reality
-- `cargo fmt --check`, `cargo check`, and `cargo test` currently pass locally.
-- `cargo clippy --all-targets -- -D warnings` currently fails on existing lint debt and should not be added as a required gate until that cleanup is done.
-- External provider behavior (ComfyUI/OpenAI/xAI) should be opt-in for tests and must not be required for routine CI.
+Follow normal Rust/rustfmt conventions. Keep code in its existing ownership boundary unless there is a clear reason to move it:
 
-## Development Workflow
+- reusable editor operations belong in `src/editor.rs` so UI and automation use the same behavior;
+- state belongs in `src/state/`;
+- non-UI core logic belongs in `src/core/`;
+- prefer native egui widgets/custom painting over hidden parallel UI logic;
+- keep the opt-in automation surface Rust-native and invoke real egui widget responses through shared kit helpers instead of screenshot/click automation or duplicated hidden behavior.
 
-1. **Make changes** to source files
-2. **Run `cargo check`** before yielding back to the user
-3. **Attempt a managed release build** for code/UI changes that should be immediately testable
-4. **Run `cargo test`** only when explicitly requested
-5. **Notify the user** that changes are ready, including whether the release build succeeded or was blocked
+**egui width trap:** do not calculate remainder widths with `ui.available_width()` from inside `ui.horizontal(...)` or another horizontal layout. The main axis may be unbounded and repeated rows can progressively widen a scroll body. Capture the bounded parent width first or use `kit::bounded_horizontal_row` and its finite `row_width` argument.
 
-## Code Style
+## Debugging
 
-- Follow standard Rust conventions (rustfmt defaults)
-- Use `snake_case` for functions and variables
-- Use `PascalCase` for types and structs
-- Keep functions focused and reasonably sized
-- Add doc comments (`///`) for public APIs
+After 2–3 unsuccessful attempts at a persistent runtime/state bug, stop repeating static guesses and switch to evidence-driven debugging. Instrument the actual flow, reproduce it in the managed app, inspect execution order and relevant state values, then remove temporary debug logging after the behavior is verified. Prefer observed runtime behavior over increasingly elaborate speculation.
 
-## egui Specifics
+Ask the user to perform a manual repro only when the managed automation surface cannot exercise the required interaction or observation.
 
-- Keep UI rendering in `src/egui_app.rs` until a split is clearly needed
-- Keep reusable editor operations in `src/editor.rs` so automation and UI actions share the same path
-- Keep the opt-in loopback automation surface Rust-native. UI-level automation should register and invoke real egui widget responses through shared kit helpers instead of external screenshot/click scripts or hidden duplicate UI logic.
-- Do not calculate remainder widths with `ui.available_width()` from inside `ui.horizontal(...)` or another left-to-right/right-to-left layout. egui deliberately leaves the horizontal main axis unbounded, which can make repeated rows progressively widen a scroll body. Capture the bounded parent width first or use `kit::bounded_horizontal_row` and its finite `row_width` argument.
-- Prefer native egui widgets and custom painting over hidden parallel UI logic
-- State management goes in `src/state/`
-- Core logic (non-UI) goes in `src/core/`
+## Documentation and communication
 
-## Communication
+Keep docs lean and current. Update the existing owner document rather than adding session logs or one-off research dumps:
 
-- Surface to the user frequently during iterative work
-- Don't make sweeping changes without check-ins
-- When making UI changes, describe what was changed so user knows what to look for when they build
+- status/roadmap/decisions → `docs/PROJECT.md`
+- stable architecture/data model → `docs/ARCHITECTURE.md`
+- provider behavior/setup → `docs/PROVIDERS.md`
+- harness behavior → `docs/DESKTOP_TEST_HARNESS.md`
 
-## Debugging Strategy
-
-### When to Pivot to Log-Driven Debugging
-
-**Rule of thumb:** If you hit the same wall 2-3 times on a persistent bug, immediately pivot to a log-driven approach.
-
-#### The Problem with Pure Code Analysis
-When debugging complex state flows or asynchronous behavior, static code analysis often fails because:
-- Signal/state updates may have timing issues
-- Event propagation can be non-obvious
-- Initialization order matters in ways not visible in code
-- Effects may run (or not run) in unexpected ways
-
-#### The Log-Driven Approach
-
-1. **Add Comprehensive Logging**
-   - Instrument every step of the suspected flow with `println!` debug statements
-   - Log at entry/exit of functions, closures, and effect hooks
-   - Log all relevant signal values (before and after updates)
-   - Log decision points (if/else branches, match arms)
-   - Be generous with logging—wall-of-text is fine
-
-2. **Use the Human as the Executor**
-   - Explicitly ask the user to:
-     1. Run the app
-     2. Execute the specific repro steps
-     3. Copy the ENTIRE console output
-     4. Paste it back to you
-   - This leverages the human's ability to actually execute code in the real environment
-
-3. **Analyze the Logs**
-   - The logs will reveal:
-     - Which code paths actually executed
-     - What order things happened in
-     - What the actual signal values were at each step
-     - Where the flow diverged from expectations
-   - This often leads to immediate "aha!" moments
-
-4. **Example Pattern**
-   ```rust
-   println!("[DEBUG] FunctionName called");
-   println!("[DEBUG]   param1: {:?}", param1);
-   println!("[DEBUG]   signal_value: {:?}", my_signal());
-   
-   if condition {
-       println!("[DEBUG]   Taking branch A");
-       // ...
-   } else {
-       println!("[DEBUG]   Taking branch B");
-       // ...
-   }
-   
-   println!("[DEBUG]   FunctionName completed");
-   ```
-
-5. **Clean Up After**
-   - Once bug is fixed and verified, remove or comment out debug logs
-   - Or leave strategic ones if they might help future debugging
-   - Update `docs/PROJECT.md` or another retained doc only when the result changes current status, decisions, or operational guidance.
-
-**This approach saved hours on the Provider Builder re-initialization bug—logs immediately revealed that the `initialized` flag was blocking seed processing on the second modal open.**
-
-## Documentation
-
-**IMPORTANT: Keep docs lean and current.** Update `docs/PROJECT.md` for status, roadmap, or decision changes; `docs/ARCHITECTURE.md` for stable system/data model changes; `docs/PROVIDERS.md` for provider setup/manifest behavior; and `docs/DESKTOP_TEST_HARNESS.md` for harness changes.
-
-Do not add long session logs, one-off implementation plans, or research dumps to `docs/`. Use git history and issues for that.
+Use git history/issues for transient implementation history. During iterative UI work, tell the user what materially changed and what to inspect, but do not make sweeping unrelated changes without a check-in.
