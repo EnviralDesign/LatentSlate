@@ -16,7 +16,7 @@ This file is the living project status page. Keep it current, concise, and factu
 ## What Works Today
 
 - Native desktop shell built with `egui`/`eframe`.
-- Opt-in floating Chat with user-configured OpenAI-compatible agent providers, streaming/cancellation, compact project tools, rendered image inspection, and capability-gated native llama.cpp video input. Conversations are session-only; project changes clear them.
+- Opt-in floating Chat with user-configured OpenAI-compatible agent providers, streaming/cancellation, compact project tools, original image assets and rendered frame/contact-sheet inspection, and capability-gated native llama.cpp video input. Image/video tools can inspect the visible timeline composite or an isolated video track. Video assets and explicit timeline ranges use cancellable silent H.264 proxies, limited to 12 seconds and 320×320 with aspect preserved; backend presets control sampling FPS. Conversations are session-only; project changes clear them.
 - LatentSlate app icon is embedded for the Windows taskbar and title/headerbar window icon.
 - Project create/open/save with self-contained project folders.
 - Project-local asset import for images, audio, and video.

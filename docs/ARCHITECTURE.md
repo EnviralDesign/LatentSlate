@@ -34,6 +34,18 @@ only, then replaced by text while preserving tool-call references, including aft
 failure or cancellation. Project document saves are explicit;
 existing generation sidecar persistence is preserved.
 
+Chat `look` accepts original image assets, frames selected by seconds or a project-FPS
+frame index, and contact sheets. `timeline` uses viewer visibility; track handles
+isolate a video track, including hidden tracks, on a project snapshot. `watch_video`
+accepts video assets or explicit half-open timeline/track ranges. Assets are cut
+with FFmpeg; timeline ranges use the existing export renderer. Silent H.264 proxies
+preserve aspect within 320×320, cover at most 12 seconds, and are deleted after
+encoding the attachment, including error/cancel paths. Media time starts at zero;
+tool metadata supplies the original range and time domain. Native `input_video.data`
+contains raw base64; backend presets determine sampling FPS. Each attachment is
+limited to 32 MiB before base64 and the complete serialized request to 48 MiB.
+These are app limits, not guarantees about backend context capacity.
+
 ## Project Model
 
 A project is a folder. The app stores imported and generated media inside that

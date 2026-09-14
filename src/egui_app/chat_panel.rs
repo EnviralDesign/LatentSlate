@@ -183,16 +183,24 @@ fn tool_summary(name: &str, arguments: &str, result: &str) -> String {
             format!(
                 "{} · {}{}",
                 source,
-                args["mode"].as_str().unwrap_or("cutsheet"),
+                data["kind"]
+                    .as_str()
+                    .or(args["mode"].as_str())
+                    .unwrap_or("cutsheet"),
                 times.map(|t| format!(" · {t}")).unwrap_or_default()
             )
         }
         "watch_video" => format!(
-            "{} · native video{}",
+            "{} · silent video{}{}",
             source,
             data["duration_seconds"]
                 .as_f64()
                 .map(|d| format!(" · {d:.1}s"))
+                .unwrap_or_default(),
+            data["start_seconds"]
+                .as_f64()
+                .zip(data["end_seconds_exclusive"].as_f64())
+                .map(|(start, end)| format!(" · {start:.3}–{end:.3}s"))
                 .unwrap_or_default()
         ),
         "save_project" => "Project saved.".into(),
@@ -341,7 +349,7 @@ impl LatentSlateApp {
                 );
                 if draft.capabilities.video_input {
                     ui.label(kit::caption(
-                        "Requires native input_video support (llama.cpp).",
+                        "Requires native input_video support (llama.cpp). Silent proxies: up to 12 seconds, 320×320. Sampling FPS comes from the server preset.",
                     ));
                 }
             });
@@ -473,7 +481,7 @@ impl LatentSlateApp {
         self.editor.layout.agent_provider = self.chat.selected;
         if let Some(pending) = self.chat.media.as_ref() {
             if let Ok((result, image)) = pending.receiver.try_recv() {
-                let pending = self.chat.media.take().unwrap();
+                let mut pending = self.chat.media.take().unwrap();
                 self.chat.rows[pending.row]
                     .text
                     .push_str(&format!("\n{}", result.text));
@@ -491,7 +499,9 @@ impl LatentSlateApp {
                         egui::TextureOptions::LINEAR,
                     )
                 });
-                let _ = pending.reply.send(result);
+                if let Some(reply) = pending.reply.take() {
+                    let _ = reply.send(result);
+                }
             }
         }
         loop {
@@ -555,12 +565,13 @@ impl LatentSlateApp {
                     self.chat.rows.last_mut().unwrap().text.push_str(&text);
                 }
                 Some(ChatEvent::Tool { call, reply }) => {
-                    let result = if self.chat.stopping {
-                        ToolResult::error("Stopped.")
+                    let prepared = if self.chat.stopping {
+                        ToolResult::error("Stopped.").into()
                     } else {
                         self.execute_chat_tool(ctx, &call)
-                            .unwrap_or_else(|e| ToolResult::error(&e))
+                            .unwrap_or_else(|e| ToolResult::error(&e).into())
                     };
+                    let super::chat_tools::ChatToolResult { result, video } = prepared;
                     let row = self.chat.rows.len();
                     self.chat.rows.push(ChatRow {
                         summary: tool_summary(
@@ -569,15 +580,19 @@ impl LatentSlateApp {
                             &result.text,
                         ),
                         failed: tool_error(&result.text).is_some(),
-                        media_path: result
-                            .media
-                            .first()
-                            .and_then(|m| {
-                                m.get("host_image_path")
-                                    .or_else(|| m.get("host_video_path"))
-                            })
-                            .and_then(Value::as_str)
-                            .map(PathBuf::from),
+                        media_path: if video.is_some() {
+                            None
+                        } else {
+                            result
+                                .media
+                                .first()
+                                .and_then(|m| {
+                                    m.get("host_image_path")
+                                        .or_else(|| m.get("host_video_path"))
+                                })
+                                .and_then(Value::as_str)
+                                .map(PathBuf::from)
+                        },
                         label: call.function.name,
                         text: format!("{}\n{}", call.function.arguments, result.text),
                         tool: true,
@@ -587,7 +602,19 @@ impl LatentSlateApp {
                         let _ = reply.send(result);
                     } else {
                         let (sender, receiver) = std::sync::mpsc::channel();
+                        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let worker_cancel = cancel.clone();
                         std::thread::spawn(move || {
+                            let result = match video.as_ref() {
+                                Some(video) => match super::chat_tools::prepare_video(
+                                    video,
+                                    worker_cancel.clone(),
+                                ) {
+                                    Ok(()) => result,
+                                    Err(error) => ToolResult::error(&error),
+                                },
+                                None => result,
+                            };
                             let image = result
                                 .media
                                 .first()
@@ -595,12 +622,22 @@ impl LatentSlateApp {
                                 .and_then(Value::as_str)
                                 .and_then(|p| image::open(p).ok())
                                 .map(|im| im.thumbnail(2048, 2048).into_rgba8());
-                            let _ = sender.send((super::chat_tools::encode_media(result), image));
+                            let result = if worker_cancel.load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                ToolResult::error("Stopped.")
+                            } else {
+                                super::chat_tools::encode_media(result)
+                            };
+                            if let Some(video) = video {
+                                let _ = std::fs::remove_file(video.output);
+                            }
+                            let _ = sender.send((result, image));
                         });
                         self.chat.media = Some(super::chat_tools::PendingChatMedia {
                             receiver,
-                            reply,
+                            reply: Some(reply),
                             row,
+                            cancel,
                         });
                     }
                 }
@@ -869,6 +906,11 @@ impl LatentSlateApp {
             if busy {
                 if kit::secondary_button(ui, "Stop", 65.0).clicked() {
                     self.chat.stopping = true;
+                    if let Some(media) = &self.chat.media {
+                        media
+                            .cancel
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     if let Some(request) = &self.chat.request {
                         request.stop();
                     }

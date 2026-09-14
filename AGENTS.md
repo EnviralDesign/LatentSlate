@@ -41,6 +41,24 @@ Other useful paths:
 - Use full Codex for final decisions, tricky reasoning, deep work, and review.
 - Use fuzzfolioworker specifically for scoring profile exploration. The lead agent must keep that worker on track.
 
+## Local stack and process control
+
+The Local Process Manager is the canonical control path for building, running,
+and testing the local LatentSlate UI/Engine stack. Before lifecycle or runtime
+testing work, read and follow the **Local stack and process control** section in
+[`../LatentSlate-Engine/AGENTS.md`](../LatentSlate-Engine/AGENTS.md).
+That section owns manager discovery, stable-ID targeting, logs, state verification,
+and reload semantics for both repositories. Do not launch separate unmanaged test
+instances when the manager is available. Managed UI builds must use the release
+wrapper required below, including DLL staging.
+
+The default loopback endpoint is `http://127.0.0.1:47634`. Before operating a
+managed process, call `GET /health` and `GET /processes`, then use the stable ID
+returned by discovery for individual start/stop/restart and log requests. Poll
+state after control requests. Do not use `POST /stack/reload` as a routine refresh:
+it stops all managed processes first. If the manager is unavailable, report it
+rather than silently launching an unmanaged instance.
+
 ## Build & Test Rules
 
 ### Cargo Build

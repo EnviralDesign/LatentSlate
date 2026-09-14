@@ -116,6 +116,10 @@ impl Handles {
             .unwrap_or("timeline");
         if h == "timeline" {
             Ok(CaptureSource::Timeline)
+        } else if h.starts_with('t') {
+            Ok(CaptureSource::Track {
+                track_id: self.id(v, "source", "t")?,
+            })
         } else if h.starts_with('c') {
             Ok(CaptureSource::Clip {
                 clip_id: self.id(v, "source", "c")?,
@@ -260,10 +264,10 @@ pub fn schemas(provider: &AgentProviderEntry) -> Vec<Value> {
         tool("save_project","Save the current project document and clear its unsaved-project changes.",json!({}),json!([])),
     ];
     if provider.capabilities.image_input {
-        tools.push(tool("look","Inspect a rendered frame or contact sheet. source is timeline, clip c1 or asset a1. Seconds are source-relative. Default is 8 annotated frames, no playhead movement.",json!({"source":s,"version":s,"mode":{"enum":["frame","cutsheet"]},"time":n,"times":{"type":"array","items":n,"maxItems":8}}),json!([])));
+        tools.push(tool("look","Inspect an original image asset (mode asset), a rendered frame, or an annotated contact sheet. source: asset a1, timeline (visible viewer composite), track t1 (isolated, even if hidden), or clip c1 (composite at clip-relative time). time is seconds; frame is a zero-based project-FPS index, mutually exclusive with time. Timeline/track time is absolute, asset/clip time is relative. Default mode: asset for image assets, frame when time/frame supplied, otherwise 8-frame cutsheet. Does not move the playhead.",json!({"source":s,"version":s,"mode":{"enum":["asset","frame","cutsheet"]},"time":n,"frame":{"type":"integer","minimum":0},"times":{"type":"array","items":n,"maxItems":8}}),json!([])));
     }
     if provider.capabilities.video_input {
-        tools.push(tool("watch_video","Watch the actual encoded video of one whole video asset, active or specified version. Native video input; not still images. Maximum 32 MiB.",json!({"asset":s,"version":s}),json!(["asset"])));
+        tools.push(tool("watch_video","Watch native video: source a1 (video asset), timeline (visible viewer composite), or t1 (isolated video track, even if hidden). Optional version for assets. start/end are seconds, end exclusive: asset-relative or absolute timeline time. Timeline/track require both; omit both for a whole asset only if <=12 seconds. Maximum 12 seconds, 32 MiB; request a smaller range if exceeded. Prepared as silent H.264, up to 320x320 preserving aspect. Backend controls sampling FPS; exact frame inspection uses look.",json!({"source":s,"asset":s,"version":s,"start":n,"end":n}),json!([])));
     }
     tools
 }

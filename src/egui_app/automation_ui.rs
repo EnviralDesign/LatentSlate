@@ -1326,7 +1326,8 @@ impl LatentSlateApp {
                     Err(err) => Err(err),
                 }
             }
-            crate::core::automation::CaptureSource::Timeline => {
+            crate::core::automation::CaptureSource::Timeline
+            | crate::core::automation::CaptureSource::Track { .. } => {
                 let base_name = name.as_deref().unwrap_or("Timeline Still");
                 self.editor
                     .add_rendered_frame_asset(base_name, image)
@@ -1592,15 +1593,32 @@ impl LatentSlateApp {
         })
     }
 
-    fn capture_project_and_time(
+    pub(super) fn capture_project_and_time(
         &self,
         source: &crate::core::automation::CaptureSource,
         selector: Option<&crate::core::automation::TimeSelector>,
     ) -> Result<(Project, f64, Option<f64>, serde_json::Value, &'static str), String> {
         let mut project = self.editor.project.clone();
         match source {
-            crate::core::automation::CaptureSource::Timeline => {
+            crate::core::automation::CaptureSource::Timeline
+            | crate::core::automation::CaptureSource::Track { .. } => {
                 let duration = project.duration();
+                let source_json =
+                    if let crate::core::automation::CaptureSource::Track { track_id } = source {
+                        let track = project
+                            .tracks
+                            .iter_mut()
+                            .find(|track| track.id == *track_id)
+                            .ok_or("Track not found.")?;
+                        if track.track_type != TrackType::Video {
+                            return Err("Choose a video track for visual inspection.".into());
+                        }
+                        track.visual_enabled = true;
+                        project.clips.retain(|clip| clip.track_id == *track_id);
+                        serde_json::json!({"type":"track", "track_id":track_id, "isolated":true})
+                    } else {
+                        serde_json::json!({"type":"timeline", "scope":"visible composite"})
+                    };
                 let seconds = resolve_agent_time_selector(
                     selector,
                     duration,
@@ -1608,13 +1626,7 @@ impl LatentSlateApp {
                     Some(self.editor.current_time),
                     None,
                 );
-                Ok((
-                    project,
-                    seconds,
-                    None,
-                    serde_json::json!({ "type": "timeline" }),
-                    "timeline",
-                ))
+                Ok((project, seconds, None, source_json, "timeline"))
             }
             crate::core::automation::CaptureSource::Clip { clip_id } => {
                 let clip = project
@@ -1693,6 +1705,9 @@ impl LatentSlateApp {
                     .find(|track| project.asset_compatible_with_track(*asset_id, track.id))
                     .map(|track| track.id)
                     .ok_or_else(|| "No compatible track exists for asset capture.".to_string())?;
+                if let Some(track) = project.tracks.iter_mut().find(|track| track.id == track_id) {
+                    track.visual_enabled = true;
+                }
                 let mut clip = Clip::new(*asset_id, track_id, 0.0, duration.max(0.1));
                 clip.label = Some("asset capture".to_string());
                 project.clips = vec![clip];

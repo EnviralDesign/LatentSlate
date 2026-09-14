@@ -85,6 +85,10 @@ Versioned agent endpoints are also available:
 
 UI commands are consumed by registered egui widgets during normal rendering. Semantic commands are applied through the editor state/controller path where possible.
 
+Capture sources include `{"type":"track","track_id":"<uuid>"}` for an isolated
+video track, including a hidden track. Its time selectors use absolute timeline
+time. Isolation uses a project snapshot and does not change viewer visibility.
+
 Use `POST /command` with `{"type":"reveal_ui","id":"<widget id>"}` to scroll a
 registered widget into view without clicking or editing it. Discover its ID with
 `GET /ui`, then capture the viewport with `POST /screenshot` after the reveal.

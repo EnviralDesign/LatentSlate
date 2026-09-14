@@ -151,6 +151,8 @@ pub struct VideoExportSettings {
 pub struct VideoExportJob {
     pub project: Project,
     pub settings: VideoExportSettings,
+    /// Render a scaled view of the original canvas, preserving clip coordinates.
+    pub preserve_project_canvas: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -333,8 +335,10 @@ fn render_video_frames(
     emit: &mut impl FnMut(VideoExportEvent),
 ) -> ExportResult<()> {
     let mut export_project = job.project.clone();
-    export_project.settings.width = job.settings.width;
-    export_project.settings.height = job.settings.height;
+    if !job.preserve_project_canvas {
+        export_project.settings.width = job.settings.width;
+        export_project.settings.height = job.settings.height;
+    }
     export_project.settings.preview_max_width = job.settings.width;
     export_project.settings.preview_max_height = job.settings.height;
     export_project.project_path = Some(project_root.to_path_buf());

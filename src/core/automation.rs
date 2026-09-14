@@ -922,6 +922,9 @@ pub enum CaptureRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CaptureSource {
     Timeline,
+    Track {
+        track_id: Uuid,
+    },
     Clip {
         clip_id: Uuid,
     },

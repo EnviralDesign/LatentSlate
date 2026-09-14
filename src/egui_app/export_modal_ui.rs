@@ -396,7 +396,11 @@ impl LatentSlateApp {
             self.export_modal.progress = 0.0;
             return;
         }
-        let job = VideoExportJob { project, settings };
+        let job = VideoExportJob {
+            project,
+            settings,
+            preserve_project_canvas: false,
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_thread = Arc::clone(&cancel);
         let events = self.export_events_tx.clone();

@@ -229,7 +229,14 @@ async fn completion(
     if !tools.is_empty() {
         body["tools"] = json!(tools);
     }
-    let mut request = client.post(url).json(&body);
+    let body = serde_json::to_vec(&body).map_err(|_| "Unable to encode Chat request.")?;
+    if body.len() > 48 * 1024 * 1024 {
+        return Err("Chat request exceeds the 48 MiB total limit. Request fewer or smaller media inspections.".into());
+    }
+    let mut request = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body);
     if let Some(key) = api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         request = request.bearer_auth(key);
     }
