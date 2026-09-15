@@ -160,8 +160,12 @@ pub struct ProviderDurationTiming {
     pub output_frame_counts: Vec<ProviderDurationFrameCount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_step: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "frame_offset_is_zero")]
     pub frame_offset: u32,
+}
+
+fn frame_offset_is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Input types supported by provider schemas.
