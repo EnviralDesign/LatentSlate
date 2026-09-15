@@ -287,9 +287,9 @@ pub struct LatentSlateApp {
     audio_peak_caches: HashMap<Uuid, PeakCache>,
     audio_peak_builds: HashSet<Uuid>,
     audio_engine: Option<Arc<AudioPlaybackEngine>>,
-    audio_sample_cache: Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
-    audio_decode_in_flight: Arc<Mutex<HashSet<Uuid>>>,
-    audio_decode_failures: Arc<Mutex<HashMap<Uuid, String>>>,
+    audio_sample_cache: Arc<Mutex<HashMap<PathBuf, Arc<Vec<f32>>>>>,
+    audio_decode_in_flight: Arc<Mutex<HashSet<PathBuf>>>,
+    audio_decode_failures: Arc<Mutex<HashMap<PathBuf, String>>>,
     audio_decode_warmup_pending: bool,
     timeline_drag: Option<TimelineDrag>,
     timeline_context_menu_pos: Option<Pos2>,
@@ -511,8 +511,7 @@ fn provider_refresh_blocks_provider(state: ProviderRefreshState, provider: &Prov
     state.blocks_new_engine_work() && provider_uses_latentslate_engine(provider)
 }
 
-const ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE: &str =
-    "Wait for the latest Engine settings and catalog to finish applying before starting new provider work.";
+const ENGINE_PROVIDER_SNAPSHOT_PENDING_MESSAGE: &str = "Wait for the latest Engine settings and catalog to finish applying before starting new provider work.";
 
 fn ensure_provider_snapshot_ready_for_new_work(
     state: ProviderRefreshState,
@@ -1358,8 +1357,8 @@ fn build_audio_playback_items(
     project: &Project,
     project_root: &Path,
     engine: &AudioPlaybackEngine,
-    sample_cache: &Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
-    failure_cache: &Arc<Mutex<HashMap<Uuid, String>>>,
+    sample_cache: &Arc<Mutex<HashMap<PathBuf, Arc<Vec<f32>>>>>,
+    failure_cache: &Arc<Mutex<HashMap<PathBuf, String>>>,
     allow_decode: bool,
 ) -> (Vec<PlaybackItem>, Vec<Uuid>) {
     let mut track_types = HashMap::new();
@@ -1403,7 +1402,7 @@ fn build_audio_playback_items(
         let known_failure = failure_cache
             .lock()
             .ok()
-            .map(|failures| failures.contains_key(&asset.id))
+            .map(|failures| failures.contains_key(&source_path))
             .unwrap_or(false);
         if known_failure {
             continue;
@@ -1412,7 +1411,7 @@ fn build_audio_playback_items(
         let cached = sample_cache
             .lock()
             .ok()
-            .and_then(|cache| cache.get(&asset.id).cloned());
+            .and_then(|cache| cache.get(&source_path).cloned());
         let samples = if let Some(samples) = cached {
             samples
         } else if !allow_decode {
@@ -1431,14 +1430,14 @@ fn build_audio_playback_items(
                         asset.id, err
                     );
                     if let Ok(mut failures) = failure_cache.lock() {
-                        failures.insert(asset.id, err);
+                        failures.insert(source_path.clone(), err);
                     }
                     continue;
                 }
             };
             let samples = Arc::new(decoded.samples);
             if let Ok(mut cache) = sample_cache.lock() {
-                cache.insert(asset.id, Arc::clone(&samples));
+                cache.insert(source_path.clone(), Arc::clone(&samples));
             }
             samples
         };
@@ -1517,15 +1516,15 @@ fn audio_decode_targets_for_project(
 fn schedule_audio_decode_targets(
     targets: Vec<(Uuid, PathBuf)>,
     decode_config: AudioDecodeConfig,
-    sample_cache: Arc<Mutex<HashMap<Uuid, Arc<Vec<f32>>>>>,
-    in_flight: Arc<Mutex<HashSet<Uuid>>>,
-    failure_cache: Arc<Mutex<HashMap<Uuid, String>>>,
+    sample_cache: Arc<Mutex<HashMap<PathBuf, Arc<Vec<f32>>>>>,
+    in_flight: Arc<Mutex<HashSet<PathBuf>>>,
+    failure_cache: Arc<Mutex<HashMap<PathBuf, String>>>,
 ) {
     for (asset_id, source_path) in targets {
         let known_failure = failure_cache
             .lock()
             .ok()
-            .map(|failures| failures.contains_key(&asset_id))
+            .map(|failures| failures.contains_key(&source_path))
             .unwrap_or(false);
         if known_failure {
             continue;
@@ -1534,7 +1533,7 @@ fn schedule_audio_decode_targets(
         let cache_hit = sample_cache
             .lock()
             .ok()
-            .map(|cache| cache.contains_key(&asset_id))
+            .map(|cache| cache.contains_key(&source_path))
             .unwrap_or(false);
         if cache_hit {
             continue;
@@ -1544,10 +1543,10 @@ fn schedule_audio_decode_targets(
             Ok(guard) => guard,
             Err(_) => continue,
         };
-        if inflight_guard.contains(&asset_id) {
+        if inflight_guard.contains(&source_path) {
             continue;
         }
-        inflight_guard.insert(asset_id);
+        inflight_guard.insert(source_path.clone());
         drop(inflight_guard);
 
         let sample_cache = Arc::clone(&sample_cache);
@@ -1561,14 +1560,16 @@ fn schedule_audio_decode_targets(
                 Ok(decoded) => {
                     let samples = Arc::new(decoded.samples);
                     if let Ok(mut cache) = sample_cache.lock() {
-                        cache.insert(asset_id, Arc::clone(&samples));
+                        cache.insert(source_path.clone(), Arc::clone(&samples));
                     }
                 }
                 Err(err) => {
                     let first_failure = failure_cache
                         .lock()
                         .ok()
-                        .map(|mut failures| failures.insert(asset_id, err.clone()).is_none())
+                        .map(|mut failures| {
+                            failures.insert(source_path.clone(), err.clone()).is_none()
+                        })
                         .unwrap_or(false);
                     if first_failure {
                         eprintln!(
@@ -1580,7 +1581,7 @@ fn schedule_audio_decode_targets(
             }
 
             if let Ok(mut inflight) = in_flight.lock() {
-                inflight.remove(&asset_id);
+                inflight.remove(&source_path);
             }
         });
     }
@@ -1942,15 +1943,54 @@ fn provider_input_drag_u64(
     width: f32,
 ) -> bool {
     provider_input_field_label(ui, label, input);
-    let rect = inspector_numeric_rect(ui, width);
-    inspector_numeric_field(ui, rect, |ui, width| {
-        ui.add_sized(
-            [width, INSPECTOR_NUMERIC_H],
-            egui::DragValue::new(value)
-                .speed(speed.max(1.0))
-                .max_decimals(0),
-        )
-    })
+    let min = input
+        .ui
+        .as_ref()
+        .and_then(|ui| ui.min)
+        .map(|value| value.ceil() as u64)
+        .unwrap_or(0);
+    let max = input
+        .ui
+        .as_ref()
+        .and_then(|ui| ui.max)
+        .map(|value| value.floor() as u64)
+        .unwrap_or(u64::MAX)
+        .max(min);
+    let before = *value;
+    kit::bounded_horizontal_row(ui, INSPECTOR_NUMERIC_H, |ui, row_width| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let row_width = row_width.min(width);
+        let button_width = 28.0_f32.min(row_width * 0.25);
+        let value_width = (row_width - 2.0 * button_width - 12.0).max(0.0);
+        if ui
+            .add_enabled_ui(*value > min, |ui| kit::field_button(ui, "−", button_width))
+            .inner
+            .on_hover_text("Decrease seed by 1")
+            .clicked()
+        {
+            *value = value.saturating_sub(1).clamp(min, max);
+        }
+        let rect = inspector_numeric_rect(ui, value_width);
+        if inspector_numeric_field(ui, rect, |ui, width| {
+            ui.add_sized(
+                [width, INSPECTOR_NUMERIC_H],
+                egui::DragValue::new(value)
+                    .speed(speed.max(1.0))
+                    .max_decimals(0),
+            )
+        }) {
+            *value = (*value).clamp(min, max);
+        }
+        if ui
+            .add_enabled_ui(*value < max, |ui| kit::field_button(ui, "+", button_width))
+            .inner
+            .on_hover_text("Increase seed by 1")
+            .clicked()
+        {
+            *value = value.saturating_add(1).clamp(min, max);
+        }
+    });
+    *value != before
 }
 
 fn provider_input_labeled_combo_field<R>(

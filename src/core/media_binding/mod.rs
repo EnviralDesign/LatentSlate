@@ -7,7 +7,9 @@ mod materialize;
 mod tests;
 
 #[allow(unused_imports)]
-pub use materialize::{freeze_binding, materialize_plan, MEDIA_MATERIALIZER_REVISION};
+pub use materialize::{
+    freeze_binding, materialize_plan, prepare_reference_image, MEDIA_MATERIALIZER_REVISION,
+};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

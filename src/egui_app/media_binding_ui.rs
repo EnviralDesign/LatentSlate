@@ -55,6 +55,44 @@ impl LatentSlateApp {
             .generative_config(asset_id)
             .cloned()
             .unwrap_or_default();
+        if input.image_dimensions
+            == Some(crate::state::ImageDimensionsRequirement::MatchOutputCanvas)
+        {
+            use crate::state::ReferenceSizing;
+            let mut sizing = config
+                .reference_sizing
+                .get(&input.name)
+                .copied()
+                .unwrap_or_default();
+            let before = sizing;
+            kit::labeled_combo_field(
+                ui,
+                &format!("{} sizing", input.label),
+                ("reference_sizing", asset_id, &input.name),
+                sizing.label(),
+                |ui| {
+                    for mode in [
+                        ReferenceSizing::Exact,
+                        ReferenceSizing::FitInside,
+                        ReferenceSizing::Fill,
+                        ReferenceSizing::Stretch,
+                    ] {
+                        automation_selectable_value(ui, &mut sizing, mode, mode.label());
+                    }
+                },
+            );
+            ui.label(kit::caption("Uses the output canvas; preserves the original. Padding is black; cropping is centered."));
+            if sizing != before {
+                self.editor
+                    .project
+                    .update_generative_config(asset_id, |config| {
+                        config.reference_sizing.insert(input.name.clone(), sizing);
+                    });
+                if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+                    self.editor.status = format!("Failed to save reference sizing: {err}");
+                }
+            }
+        }
         let spec = lookup_media_binding(&config, input, &self.editor.project);
         let context = resolve_generation_context(
             &self.editor.project,

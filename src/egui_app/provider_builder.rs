@@ -25,6 +25,7 @@ pub(super) enum ProviderTemplateKind {
     LatentSlateEngine,
     ComfyUi,
     OpenAiImage,
+    OpenAiImageEdit,
     XaiImage,
     XaiVideo,
 }
@@ -36,11 +37,12 @@ impl Default for ProviderTemplateKind {
 }
 
 impl ProviderTemplateKind {
-    pub(super) const ALL: [ProviderTemplateKind; 6] = [
+    pub(super) const ALL: [ProviderTemplateKind; 7] = [
         ProviderTemplateKind::OpenAiAgent,
         ProviderTemplateKind::LatentSlateEngine,
         ProviderTemplateKind::ComfyUi,
         ProviderTemplateKind::OpenAiImage,
+        ProviderTemplateKind::OpenAiImageEdit,
         ProviderTemplateKind::XaiImage,
         ProviderTemplateKind::XaiVideo,
     ];
@@ -1609,7 +1611,8 @@ pub(super) fn provider_template_label(kind: ProviderTemplateKind) -> &'static st
         ProviderTemplateKind::OpenAiAgent => "OpenAI-compatible Agent",
         ProviderTemplateKind::LatentSlateEngine => "LatentSlate Engine",
         ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",
-        ProviderTemplateKind::OpenAiImage => "OpenAI Image",
+        ProviderTemplateKind::OpenAiImage => "OpenAI Image 2.5 T2I",
+        ProviderTemplateKind::OpenAiImageEdit => "OpenAI Image 2.5 I2I",
         ProviderTemplateKind::XaiImage => "xAI Image",
         ProviderTemplateKind::XaiVideo => "xAI Grok Video",
     }

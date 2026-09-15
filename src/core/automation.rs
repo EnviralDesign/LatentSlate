@@ -800,6 +800,8 @@ pub enum ProviderTemplate {
     ComfyUi,
     #[serde(alias = "openai_image")]
     OpenAiImage,
+    #[serde(alias = "openai_image_edit")]
+    OpenAiImageEdit,
     XaiImage,
     XaiVideo,
 }
@@ -2394,7 +2396,7 @@ pub fn agent_schema_json() -> Value {
                 { "mode": "all" },
                 { "mode": "selected", "provider_ids": ["uuid"] }
             ],
-            "provider_template": ["comfy_ui", "openai_image", "xai_image", "xai_video"],
+            "provider_template": ["comfy_ui", "openai_image", "openai_image_edit", "xai_image", "xai_video"],
             "capture_mode": ["normal", "enhanced"],
             "time_key": ["first", "last", "current"],
             "i2v_reference": ["image", "video_first_frame", "video_last_frame"],
@@ -2565,7 +2567,7 @@ fn agent_command_schema_json() -> Value {
         "providers": [
             { "type": "list_providers", "fields": { "include_all?": "bool; default false returns only providers in the current project scope" } },
             { "type": "refresh_providers", "fields": { "include_all?": "bool; default false returns only providers in the current project scope" } },
-            { "type": "create_provider_from_template", "fields": { "template": "comfy_ui|openai_image|xai_image|xai_video" } },
+            { "type": "create_provider_from_template", "fields": { "template": "comfy_ui|openai_image|openai_image_edit|xai_image|xai_video" } },
             { "type": "create_provider", "fields": { "provider": "ProviderEntry" } },
             { "type": "update_provider", "fields": { "provider_id": "uuid", "provider": "ProviderEntry" } },
             { "type": "delete_provider", "fields": { "provider_id": "uuid" } },

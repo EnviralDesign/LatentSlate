@@ -136,7 +136,7 @@ impl LatentSlateApp {
         }
         ui.add_space(8.0);
 
-        kit::scroll_body(ui, |ui| {
+        kit::clipped_scroll_body(ui, self.project_panel_id("attributes_body"), |ui| {
             ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
             if self.editor.selection.clip_ids.len() > 1 {
                 self.multi_clip_attributes(ui);
@@ -1655,18 +1655,42 @@ impl LatentSlateApp {
             transform_editor(ui, &mut next_transform, &mut transform_changed);
         });
         ui.add_space(kit::FORM_ROW_GAP);
-        inspector_card(ui, "Timing", |ui| {
+        inspector_card(ui, "Timeline placement", |ui| {
             if clip_asset_is_image && next_image_mode == ClipImageMode::Keyframe {
                 timing_changed |=
                     inspector_drag_f64(ui, "Time", &mut next_start, 0.05, ui.available_width());
             } else {
                 let before_start = next_start;
                 let before_duration = next_duration;
-                inspector_two_drag_f64(
-                    ui,
-                    ("Start", &mut next_start, 0.05),
-                    ("Duration", &mut next_duration, 0.05),
-                );
+                inspector_drag_f64(ui, "Start", &mut next_start, 0.05, ui.available_width());
+                let has_output = self
+                    .editor
+                    .project
+                    .generative_config(clip_snapshot.asset_id)
+                    .is_none_or(|config| config.has_generated_output());
+                let max_duration = clip_asset
+                    .as_ref()
+                    .filter(|_| {
+                        clip_asset_is_time_based
+                            && has_output
+                            && (next_time_mode == ClipTimeMode::Crop || !clip_asset_is_video)
+                    })
+                    .and_then(|asset| asset.duration_seconds)
+                    .map(|duration| (duration - next_trim).max(0.1));
+                kit::field_label(ui, "Clip duration");
+                let rect = inspector_numeric_rect(ui, ui.available_width());
+                inspector_numeric_field(ui, rect, |ui, width| {
+                    ui.add_sized(
+                        [width, kit::FIELD_H],
+                        egui::DragValue::new(&mut next_duration)
+                            .speed(0.05)
+                            .range(0.1..=max_duration.unwrap_or(f64::INFINITY))
+                            .suffix(" s"),
+                    )
+                });
+                if let Some(maximum) = max_duration {
+                    ui.label(kit::caption(format!("Available source: {maximum:.3} s. Crop mode cannot extend beyond the source.")));
+                }
                 timing_changed |= (next_start - before_start).abs() > f64::EPSILON
                     || (next_duration - before_duration).abs() > f64::EPSILON;
                 if clip_asset_is_time_based {
@@ -2473,7 +2497,7 @@ impl LatentSlateApp {
                     ui.separator();
                     ui.add_space(kit::FORM_ROW_GAP);
                 }
-                kit::field_label(ui, "Timing");
+                kit::field_label(ui, "Generation timing");
                 ui.add_space(kit::FORM_ROW_GAP);
                 self.generative_video_timing_controls(
                     ui,
@@ -2647,6 +2671,200 @@ impl LatentSlateApp {
                 fps
             }
         });
+        if let Some(provider) = selected_provider.filter(|p| {
+            crate::core::generation::provider_duration_timing(p)
+                .is_some_and(|t| t.frame_step.is_some())
+        }) {
+            let timing = crate::core::generation::provider_duration_timing(provider).unwrap();
+            let before_fps = next_fps;
+            let mut fps_changed = false;
+            if let Some(fixed) = fixed_fps {
+                kit::field_label(ui, "FPS");
+                kit::readonly_value_box(
+                    ui,
+                    format!("{fixed} (fixed by recipe)"),
+                    Vec2::new(ui.available_width(), kit::FIELD_H),
+                );
+            } else if let Some(input) = provider
+                .inputs
+                .iter()
+                .find(|i| i.role == Some(InputRole::Fps))
+            {
+                if input.ui.as_ref().is_some_and(|u| u.choices.is_some()) {
+                    if let Some(value) = provider_input_numeric_choice(
+                        ui,
+                        "FPS",
+                        input,
+                        ("generation_fps", asset_id),
+                        Some(&serde_json::json!(next_fps)),
+                    ) {
+                        next_fps = value.as_f64().unwrap_or(next_fps);
+                        fps_changed = true;
+                    }
+                } else {
+                    kit::field_label(ui, "FPS");
+                    let min = input.ui.as_ref().and_then(|u| u.min).unwrap_or(1.0);
+                    let max = input.ui.as_ref().and_then(|u| u.max).unwrap_or(120.0);
+                    fps_changed = ui
+                        .add_sized(
+                            [ui.available_width(), kit::FIELD_H],
+                            egui::DragValue::new(&mut next_fps)
+                                .speed(1.0)
+                                .fixed_decimals(0)
+                                .range(min..=max)
+                                .update_while_editing(false),
+                        )
+                        .changed();
+                }
+            }
+            next_fps = next_fps.round();
+            let constrained =
+                fixed_duration.is_some() || duration_choices.is_some() || bounds.step.is_some();
+            let mut shown = if constrained {
+                next_duration
+            } else {
+                crate::core::generation::predicted_output_timing_at_fps(
+                    provider,
+                    next_duration,
+                    next_fps,
+                )
+                .and_then(|t| t.duration_seconds)
+                .unwrap_or(next_duration)
+            };
+            ui.add_space(kit::FORM_ROW_GAP);
+            kit::field_label(ui, "Target duration");
+            let mut changed = false;
+            if let Some(fixed) = fixed_duration {
+                kit::readonly_value_box(
+                    ui,
+                    format!("{fixed} s (fixed by recipe)"),
+                    Vec2::new(ui.available_width(), kit::FIELD_H),
+                );
+            } else if let Some(input) = duration_choices {
+                if let Some(value) = provider_input_numeric_choice(
+                    ui,
+                    "Target duration",
+                    input,
+                    ("generation_seconds", asset_id),
+                    Some(&serde_json::json!(next_duration)),
+                ) {
+                    shown = value.as_f64().unwrap_or(next_duration);
+                    changed = true;
+                }
+            } else {
+                let width = ui.available_width();
+                let first = crate::core::generation::predicted_output_timing_at_fps(
+                    provider, timing.min, next_fps,
+                )
+                .and_then(|t| t.duration_seconds)
+                .unwrap_or(timing.min);
+                let last = crate::core::generation::predicted_output_timing_at_fps(
+                    provider, timing.max, next_fps,
+                )
+                .and_then(|t| t.duration_seconds)
+                .unwrap_or(timing.max);
+                ui.horizontal(|ui| {
+                    let step = bounds
+                        .step
+                        .unwrap_or(timing.frame_step.unwrap() as f64 / next_fps);
+                    if ui
+                        .add_enabled(
+                            shown > (if constrained { timing.min } else { first }) + 1e-6,
+                            egui::Button::new("-"),
+                        )
+                        .clicked()
+                    {
+                        shown -= step;
+                        changed = true;
+                    }
+                    changed |= ui
+                        .add_sized(
+                            [(width - 64.0).max(40.0), kit::FIELD_H],
+                            egui::DragValue::new(&mut shown)
+                                .speed(step)
+                                .range(timing.min..=timing.max)
+                                .max_decimals(3)
+                                .suffix(" s")
+                                .update_while_editing(false),
+                        )
+                        .changed();
+                    if ui
+                        .add_enabled(
+                            shown < (if constrained { timing.max } else { last }) - 1e-6,
+                            egui::Button::new("+"),
+                        )
+                        .clicked()
+                    {
+                        shown += step;
+                        changed = true;
+                    }
+                });
+            }
+            if let Some(output) =
+                crate::core::generation::predicted_output_timing_at_fps(provider, shown, next_fps)
+            {
+                ui.label(kit::caption(format!(
+                    "Output: {} frames / {:.3} s",
+                    output.frame_count,
+                    output.duration_seconds.unwrap()
+                )));
+            } else {
+                ui.label(kit::caption(
+                    "No valid output length within these recipe limits.",
+                ));
+            }
+            ui.label(kit::caption(if has_output { "Applies to the next generation. Existing footage and timeline trims stay unchanged." } else { "Controls the footage to generate." }));
+            if changed || fps_changed {
+                if fps_changed {
+                    if let Some(input) = provider
+                        .inputs
+                        .iter()
+                        .find(|i| i.role == Some(InputRole::Fps))
+                    {
+                        self.editor
+                            .project
+                            .update_generative_config(asset_id, |config| {
+                                config.inputs.insert(
+                                    input.name.clone(),
+                                    InputValue::Literal {
+                                        value: serde_json::json!(next_fps.round() as u32),
+                                    },
+                                );
+                            });
+                    }
+                }
+                let requested = if changed {
+                    clamp_provider_duration(shown, bounds)
+                } else {
+                    next_duration
+                };
+                if let Err(err) = self
+                    .editor
+                    .set_generation_duration_request(asset_id, requested)
+                {
+                    if fps_changed {
+                        if let Some(input) = provider
+                            .inputs
+                            .iter()
+                            .find(|i| i.role == Some(InputRole::Fps))
+                        {
+                            self.editor
+                                .project
+                                .update_generative_config(asset_id, |config| {
+                                    config.inputs.insert(
+                                        input.name.clone(),
+                                        InputValue::Literal {
+                                            value: serde_json::json!(before_fps.round() as u32),
+                                        },
+                                    );
+                                });
+                        }
+                    }
+                    self.editor.status = format!("Cannot update generation timing: {err}");
+                }
+            }
+            return;
+        }
         let mut next_frame_count = if request_owned {
             request_number(InputRole::FrameCount)
                 .unwrap_or(next_duration * next_fps)
@@ -2660,7 +2878,7 @@ impl LatentSlateApp {
         let mut frames_changed = false;
 
         if let Some(duration) = fixed_duration {
-            kit::field_label(ui, "Seconds");
+            kit::field_label(ui, "Target duration");
             kit::readonly_value_box(
                 ui,
                 format!("{duration} (fixed)"),
@@ -2675,7 +2893,7 @@ impl LatentSlateApp {
                 .or_else(|| input.default.clone());
             if let Some(value) = provider_input_numeric_choice(
                 ui,
-                "Seconds",
+                "Target duration",
                 input,
                 ("provider_duration_choice", asset_id),
                 current.as_ref(),
@@ -2686,7 +2904,7 @@ impl LatentSlateApp {
         } else {
             duration_changed |= inspector_drag_f64(
                 ui,
-                "Seconds",
+                "Target duration",
                 &mut next_duration,
                 bounds.step.unwrap_or(0.05),
                 ui.available_width(),
@@ -4091,7 +4309,7 @@ fn provider_duration_bounds(provider: Option<&ProviderEntry>) -> ProviderDuratio
         return ProviderDurationBounds {
             min: Some(timing.min),
             max: Some(timing.max),
-            step: Some(timing.step),
+            step: (timing.step > 0.0).then_some(timing.step),
         };
     }
     ProviderDurationBounds {
@@ -4138,7 +4356,7 @@ fn initial_context_video_timing(
         let duration = clamp_provider_duration(duration, bounds);
         let frame_count = provider
             .and_then(|provider| {
-                crate::core::generation::predicted_output_timing(provider, duration)
+                crate::core::generation::predicted_output_timing_at_fps(provider, duration, fps)
             })
             .map(|timing| timing.frame_count)
             .unwrap_or_else(|| {

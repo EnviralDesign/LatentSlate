@@ -887,6 +887,9 @@ impl LatentSlateApp {
             ProviderTemplateKind::OpenAiImage => self.save_provider_template(
                 crate::core::provider_store::default_openai_image_provider_entry(),
             ),
+            ProviderTemplateKind::OpenAiImageEdit => self.save_provider_template(
+                crate::core::provider_store::default_openai_image_edit_provider_entry(),
+            ),
             ProviderTemplateKind::XaiImage => self.save_provider_template(
                 crate::core::provider_store::default_xai_image_provider_entry(),
             ),

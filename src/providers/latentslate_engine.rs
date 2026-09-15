@@ -557,7 +557,7 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
             return Err(format!(
                 "resource input {:?} is reserved for a later LatentSlate resource picker",
                 input.key
-            ))
+            ));
         }
         other => return Err(format!("unsupported input type {other:?}")),
     };
@@ -831,7 +831,7 @@ pub async fn generate_output(
                 return Err(ProviderExecutionError::Canceled(
                     job.message
                         .unwrap_or_else(|| "LatentSlate Engine job was canceled.".to_string()),
-                ))
+                ));
             }
             "failed" => {
                 return Err(ProviderExecutionError::Error(
@@ -839,12 +839,12 @@ pub async fn generate_output(
                         .map(|error| error.message)
                         .or(job.message)
                         .unwrap_or_else(|| "LatentSlate Engine job failed.".to_string()),
-                ))
+                ));
             }
             other => {
                 return Err(ProviderExecutionError::Error(format!(
                     "LatentSlate Engine returned unknown job status {other:?}"
-                )))
+                )));
             }
         }
     }
@@ -1699,9 +1699,11 @@ mod tests {
             .insert("steps".into(), InputValue::Literal { value: json!(5) });
         let issues =
             preflight_provider_config(&Project::new("choices"), None, None, &provider, &config);
-        assert!(issues.iter().any(|issue| issue
-            .message
-            .contains("Steps must use a supported choice (4)")));
+        assert!(issues.iter().any(|issue| {
+            issue
+                .message
+                .contains("Steps must use a supported choice (4)")
+        }));
         let shift = provider
             .inputs
             .iter()
@@ -2660,6 +2662,8 @@ mod tests {
                 max: 5.0,
                 step: 0.25,
                 output_frame_counts: Vec::new(),
+                frame_step: None,
+                frame_offset: 0,
             })
         );
         assert!(matches!(

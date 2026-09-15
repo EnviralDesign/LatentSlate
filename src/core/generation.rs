@@ -120,6 +120,8 @@ pub fn provider_duration_timing(provider: &ProviderEntry) -> Option<ProviderDura
         max: ui.max?,
         step: ui.step?,
         output_frame_counts: Vec::new(),
+        frame_step: None,
+        frame_offset: 0,
     })
 }
 
@@ -129,7 +131,9 @@ pub fn provider_has_duration_mapping(provider: &ProviderEntry) -> bool {
         .timing
         .as_ref()
         .and_then(|timing| timing.duration_seconds.as_ref())
-        .is_some_and(|duration| !duration.output_frame_counts.is_empty())
+        .is_some_and(|duration| {
+            !duration.output_frame_counts.is_empty() || duration.frame_step.is_some()
+        })
 }
 
 /// Resolve the nominal request without inferring it from delivered media.
@@ -194,7 +198,47 @@ pub fn predicted_output_timing(
     provider: &ProviderEntry,
     duration: f64,
 ) -> Option<PredictedOutputTiming> {
-    let fps = provider_fixed_fps(provider);
+    let fps = provider_fixed_fps(provider).or_else(|| {
+        provider
+            .inputs
+            .iter()
+            .find(|input| input.role == Some(InputRole::Fps))
+            .and_then(|input| input.default.as_ref())
+            .and_then(Value::as_f64)
+    })?;
+    predicted_output_timing_at_fps(provider, duration, fps)
+}
+
+/// Resolve actual output timing at the selected FPS using the provider's frame grid.
+pub fn predicted_output_timing_at_fps(
+    provider: &ProviderEntry,
+    duration: f64,
+    fps: f64,
+) -> Option<PredictedOutputTiming> {
+    let timing = provider_duration_timing(provider);
+    if let Some(grid) = timing.as_ref().filter(|t| t.frame_step.is_some()) {
+        let step = grid.frame_step? as f64;
+        if step < 1.0 || !duration.is_finite() || !fps.is_finite() || fps <= 0.0 {
+            return None;
+        }
+        let offset = grid.frame_offset as f64;
+        let lo = ((grid.min * fps - offset) / step).ceil().max(0.0);
+        let hi = ((grid.max * fps - offset) / step).floor();
+        if hi < lo {
+            return None;
+        }
+        let groups = ((duration * fps - offset) / step).round().clamp(lo, hi);
+        let frames = groups * step + offset;
+        if frames < 1.0 || frames > u32::MAX as f64 {
+            return None;
+        }
+        return Some(PredictedOutputTiming {
+            frame_count: frames as u32,
+            fps: Some(fps),
+            duration_seconds: Some(frames / fps),
+        });
+    }
+    let fps = Some(fps);
     let mapping = provider
         .timing
         .as_ref()
@@ -231,7 +275,7 @@ pub fn reconcile_video_timing_for_provider(
 ) -> (f64, f64, u32) {
     let duration_seconds = provider_fixed_duration(provider).unwrap_or(duration_seconds);
     let fps = provider_fixed_fps(provider).unwrap_or(current_fps.max(1.0));
-    let predicted = predicted_output_timing(provider, duration_seconds);
+    let predicted = predicted_output_timing_at_fps(provider, duration_seconds, fps);
     let frame_count = predicted
         .map(|timing| timing.frame_count)
         .or_else(|| {
@@ -470,7 +514,8 @@ pub fn preflight_provider_config(
                             duration_contract.min, duration_contract.max
                         ),
                     });
-                } else if !value_uses_step(duration, duration_contract.min, duration_contract.step)
+                } else if duration_contract.step > 0.0
+                    && !value_uses_step(duration, duration_contract.min, duration_contract.step)
                 {
                     issues.push(GenerationPreflightIssue {
                         section: GenerationControlSection::Timing,
@@ -504,7 +549,14 @@ pub fn preflight_provider_config(
     }
 
     for input in &provider.inputs {
-        if input.image_dimensions.is_none() {
+        if input.image_dimensions.is_none()
+            || config
+                .reference_sizing
+                .get(&input.name)
+                .copied()
+                .unwrap_or_default()
+                != crate::state::ReferenceSizing::Exact
+        {
             continue;
         }
         if let Some(spec) = lookup_media_binding(&config, input, project) {
@@ -935,7 +987,41 @@ pub fn resolve_provider_inputs(
             .and_then(Value::as_str)
             .filter(|path| !path.is_empty())
         {
-            match image::image_dimensions(path) {
+            let mut path = PathBuf::from(path);
+            let sizing = config
+                .reference_sizing
+                .get(&input.name)
+                .copied()
+                .unwrap_or_default();
+            if sizing != crate::state::ReferenceSizing::Exact {
+                if let Some((width, height)) = effective_canvas_dimensions(provider, &values) {
+                    if width > 0 && height > 0 && input_errors.is_empty() {
+                        match crate::core::media_binding::prepare_reference_image(
+                            project,
+                            &path,
+                            width as u32,
+                            height as u32,
+                            sizing,
+                        ) {
+                            Ok(prepared) => {
+                                path = prepared;
+                                values.insert(
+                                    input.name.clone(),
+                                    Value::String(path.to_string_lossy().into_owned()),
+                                );
+                                if let Some(resolved) = resolved_media_inputs.get_mut(&input.name) {
+                                    resolved.materialized_path = path.clone();
+                                }
+                            }
+                            Err(err) => {
+                                media_errors.push(format!("{}: {err}", input.label));
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            match image::image_dimensions(&path) {
                 Ok(dimensions) => {
                     if let Some(message) = image_canvas_error(provider, input, &values, dimensions)
                     {
@@ -1131,6 +1217,22 @@ pub fn effective_dimension_input_value(
         .and_then(parse_legacy_size)
     {
         return Some(dimension_value(role, width, height));
+    }
+
+    if matches!(
+        provider.connection,
+        ProviderConnection::LatentSlateEngine {
+            recipe: Some(_),
+            ..
+        }
+    ) {
+        if let Some(value) = input
+            .default
+            .as_ref()
+            .filter(|value| json_dimension(value).is_some_and(|v| v > 0))
+        {
+            return Some(value.clone());
+        }
     }
 
     let raw = source_dimensions
@@ -2544,6 +2646,8 @@ mod tests {
                 max: 5.0,
                 step: 0.25,
                 output_frame_counts: Vec::new(),
+                frame_step: None,
+                frame_offset: 0,
             },
         )
     }
@@ -2690,6 +2794,8 @@ mod tests {
                 max: 10.0,
                 step: 0.5,
                 output_frame_counts: Vec::new(),
+                frame_step: None,
+                frame_offset: 0,
             },
         );
         assert_eq!(

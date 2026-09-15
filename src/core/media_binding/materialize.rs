@@ -401,3 +401,55 @@ fn commit_atomic(tmp: &Path, dest: &Path) -> Result<(), MediaBindingError> {
         }
     })
 }
+
+/// Prepare a derived still image (including an extracted video frame) in the media cache.
+pub fn prepare_reference_image(
+    project: &Project,
+    source: &Path,
+    width: u32,
+    height: u32,
+    sizing: crate::state::ReferenceSizing,
+) -> Result<PathBuf, String> {
+    use crate::state::ReferenceSizing;
+    use image::imageops::FilterType;
+    if sizing == ReferenceSizing::Exact
+        || image::image_dimensions(source).map_err(|e| e.to_string())? == (width, height)
+    {
+        return Ok(source.to_path_buf());
+    }
+    let root = project
+        .project_path
+        .as_ref()
+        .ok_or("Project folder is unavailable")?;
+    let bytes = fs::read(source).map_err(|e| e.to_string())?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    (width, height, sizing, MEDIA_MATERIALIZER_REVISION).hash(&mut hasher);
+    let folder = root.join(".cache").join("media_inputs");
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let output = folder.join(format!("sized-{:016x}.png", hasher.finish()));
+    if image::image_dimensions(&output).ok() == Some((width, height)) {
+        return Ok(output);
+    }
+    let image = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let prepared = match sizing {
+        ReferenceSizing::FitInside => {
+            let resized = image.resize(width, height, FilterType::Lanczos3).to_rgb8();
+            let mut canvas = image::RgbImage::new(width, height);
+            image::imageops::overlay(
+                &mut canvas,
+                &resized,
+                ((width - resized.width()) / 2) as i64,
+                ((height - resized.height()) / 2) as i64,
+            );
+            image::DynamicImage::ImageRgb8(canvas)
+        }
+        ReferenceSizing::Fill => image.resize_to_fill(width, height, FilterType::Lanczos3),
+        ReferenceSizing::Stretch => image.resize_exact(width, height, FilterType::Lanczos3),
+        ReferenceSizing::Exact => unreachable!(),
+    };
+    let temp = output.with_extension(format!("{}.png", uuid::Uuid::new_v4()));
+    prepared.save(&temp).map_err(|e| e.to_string())?;
+    commit_atomic(&temp, &output).map_err(|e| format!("{e:?}"))?;
+    Ok(output)
+}

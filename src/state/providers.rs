@@ -158,6 +158,10 @@ pub struct ProviderDurationTiming {
     pub step: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_frame_counts: Vec<ProviderDurationFrameCount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_step: Option<u32>,
+    #[serde(default)]
+    pub frame_offset: u32,
 }
 
 /// Input types supported by provider schemas.

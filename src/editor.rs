@@ -325,7 +325,9 @@ impl EditorState {
                     };
                     if let Some(duration) = duration.filter(|_| !config.has_generated_output()) {
                         if let Some(timing) =
-                            crate::core::generation::predicted_output_timing(provider, duration)
+                            crate::core::generation::predicted_output_timing_at_fps(
+                                provider, duration, fps,
+                            )
                         {
                             timing_updates.push((*asset_id, fps, timing.frame_count));
                         }
@@ -576,19 +578,37 @@ impl EditorState {
                     })
             })
             .unwrap_or(self.project.settings.fps);
-        let predicted = crate::core::generation::predicted_output_timing(provider, duration)
-            .or_else(|| {
-                (!crate::core::generation::provider_has_duration_mapping(provider))
-                    .then(|| crate::core::generation::delivered_frame_count(duration, fps))
-                    .flatten()
-                    .map(
-                        |frame_count| crate::core::generation::PredictedOutputTiming {
-                            frame_count,
-                            fps: Some(fps),
-                            duration_seconds: Some(frame_count as f64 / fps),
-                        },
-                    )
-            });
+        let predicted =
+            crate::core::generation::predicted_output_timing_at_fps(provider, duration, fps)
+                .or_else(|| {
+                    (!crate::core::generation::provider_has_duration_mapping(provider))
+                        .then(|| crate::core::generation::delivered_frame_count(duration, fps))
+                        .flatten()
+                        .map(
+                            |frame_count| crate::core::generation::PredictedOutputTiming {
+                                frame_count,
+                                fps: Some(fps),
+                                duration_seconds: Some(frame_count as f64 / fps),
+                            },
+                        )
+                });
+        let duration = if crate::core::generation::provider_duration_timing(provider)
+            .is_some_and(|t| t.frame_step.is_some())
+            && crate::core::generation::provider_fixed_duration(provider).is_none()
+            && provider
+                .inputs
+                .iter()
+                .find(|i| i.role == Some(InputRole::DurationSeconds))
+                .is_none_or(|i| {
+                    i.ui.as_ref()
+                        .is_none_or(|u| u.choices.is_none() && u.step.is_none())
+                }) {
+            predicted
+                .and_then(|t| t.duration_seconds)
+                .ok_or("No valid duration at this FPS within the recipe limits")?
+        } else {
+            duration
+        };
         let updates: Vec<_> = provider
             .inputs
             .iter()
@@ -2298,6 +2318,9 @@ impl EditorState {
                     crate::core::automation::ProviderTemplate::OpenAiImage => {
                         default_openai_image_provider_entry()
                     }
+                    crate::core::automation::ProviderTemplate::OpenAiImageEdit => {
+                        crate::core::provider_store::default_openai_image_edit_provider_entry()
+                    }
                     crate::core::automation::ProviderTemplate::XaiImage => {
                         default_xai_image_provider_entry()
                     }
@@ -3785,6 +3808,8 @@ mod tests {
                 max: 5.0,
                 step: 0.25,
                 output_frame_counts: Vec::new(),
+                frame_step: None,
+                frame_offset: 0,
             }),
         });
         let provider_id = provider.id;

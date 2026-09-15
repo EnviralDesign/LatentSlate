@@ -154,6 +154,8 @@ pub struct AssetLabNode {
     #[serde(default)]
     pub media_bindings: HashMap<String, MediaBindingSpec>,
     #[serde(default)]
+    pub reference_sizing: HashMap<String, ReferenceSizing>,
+    #[serde(default)]
     pub output_version: Option<String>,
 }
 
@@ -165,6 +167,7 @@ impl AssetLabNode {
             provider_id,
             inputs: HashMap::new(),
             media_bindings: HashMap::new(),
+            reference_sizing: HashMap::new(),
             output_version: None,
         }
     }
@@ -292,6 +295,28 @@ pub struct AssetLabGraph {
     pub selected_node_id: Option<Uuid>,
 }
 
+/// How a reference image is prepared for the generation canvas.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceSizing {
+    #[default]
+    Exact,
+    FitInside,
+    Fill,
+    Stretch,
+}
+
+impl ReferenceSizing {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Exact => "Exact (require matching size)",
+            Self::FitInside => "Fit inside (pad)",
+            Self::Fill => "Fit outside (crop)",
+            Self::Stretch => "Stretch",
+        }
+    }
+}
+
 /// Persistent config stored in `generated/.../config.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerativeConfig {
@@ -303,6 +328,8 @@ pub struct GenerativeConfig {
     pub reference_slots: HashMap<String, InputValue>,
     #[serde(default)]
     pub media_bindings: HashMap<String, MediaBindingSpec>,
+    #[serde(default)]
+    pub reference_sizing: HashMap<String, ReferenceSizing>,
     #[serde(default)]
     pub batch: BatchSettings,
     #[serde(default)]
@@ -320,6 +347,7 @@ impl Default for GenerativeConfig {
             inputs: HashMap::new(),
             reference_slots: HashMap::new(),
             media_bindings: HashMap::new(),
+            reference_sizing: HashMap::new(),
             batch: BatchSettings::default(),
             versions: Vec::new(),
             active_version: None,

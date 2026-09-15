@@ -27,7 +27,7 @@ src/
 
 Other useful paths:
 
-- `workflows/` contains intentionally tracked example ComfyUI workflow/manifest pairs.
+- Use `C:\Users\envir\Documents\LatentSlate-Diagnostics\README.md` as the local entry point for reference workflows, pairings, test specimens and evidence; agents may maintain and reorganize that external workspace as needed to keep this repository clean and concerns separate, without publishing its contents.
 - `.latentslate/` is the repo-local ignored runtime folder for provider JSONs, encrypted credentials, and caches; track only its `.gitkeep` placeholders.
 - `scripts/desktop-smoke.ps1` and `scripts/automation-scenario.ps1` drive native desktop smoke checks.
 - `docs/PROJECT.md` is the concise living source of truth for current status, roadmap, and decisions.

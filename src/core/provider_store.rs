@@ -99,11 +99,11 @@ pub fn default_provider_entry() -> ProviderEntry {
 
 pub fn default_openai_image_provider_entry() -> ProviderEntry {
     let mut entry = ProviderEntry::new(
-        "OpenAI Image",
+        "OpenAI Image 2.5 Text to Image",
         ProviderOutputType::Image,
         ProviderConnection::OpenAiImage {
             api_key: None,
-            model: "gpt-image-2".to_string(),
+            model: "gpt-image-2.5-flare".to_string(),
             base_url: None,
         },
     );
@@ -111,6 +111,12 @@ pub fn default_openai_image_provider_entry() -> ProviderEntry {
         Some("Cloud text-to-image provider for generating still assets from prompts.".to_string());
     entry.workflow_kind = ProviderWorkflowKind::TextToImage;
     entry.inputs = vec![
+        enum_input(
+            "model",
+            "Model",
+            &["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"],
+            Some("gpt-image-2.5-flare"),
+        ),
         text_input(
             "prompt",
             "Prompt",
@@ -127,7 +133,13 @@ pub fn default_openai_image_provider_entry() -> ProviderEntry {
         enum_input(
             "quality",
             "Quality",
-            &["auto", "low", "medium", "high"],
+            &["auto", "low", "medium", "high", "xhigh", "max"],
+            Some("auto"),
+        ),
+        enum_input(
+            "background",
+            "Background",
+            &["auto", "opaque", "transparent"],
             Some("auto"),
         ),
         enum_input(
@@ -137,6 +149,38 @@ pub fn default_openai_image_provider_entry() -> ProviderEntry {
             Some("png"),
         ),
     ];
+    entry
+}
+
+pub fn default_openai_image_edit_provider_entry() -> ProviderEntry {
+    let mut entry = default_openai_image_provider_entry();
+    entry.name = "OpenAI Image 2.5 Image to Image".to_string();
+    entry.description =
+        Some("Edit a reference image with GPT Image 2.5 Sunburst or Flare.".to_string());
+    entry.workflow_kind = ProviderWorkflowKind::ImageToImage;
+    if let ProviderConnection::OpenAiImage { model, .. } = &mut entry.connection {
+        *model = "gpt-image-2.5-sunburst".to_string();
+    }
+    for field in &mut entry.inputs {
+        if field.name == "model" {
+            field.default = Some(serde_json::json!("gpt-image-2.5-sunburst"));
+        }
+    }
+    entry.inputs.insert(
+        1,
+        ProviderInputField {
+            name: "image".to_string(),
+            label: "Reference image".to_string(),
+            description: Some("Image to edit or use as a reference.".to_string()),
+            input_type: ProviderInputType::Image,
+            required: true,
+            default: None,
+            role: None,
+            ui: None,
+            ordered_collection: false,
+            image_dimensions: None,
+        },
+    );
     entry
 }
 

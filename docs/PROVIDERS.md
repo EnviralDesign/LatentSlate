@@ -15,11 +15,22 @@ providers, while the Engine publishes its own tool catalog.
 |---|---|---|
 | LatentSlate Engine | Implemented | Discovers versioned tools from `/v1/catalog`, uploads media, submits/polls jobs, and downloads outputs over HTTP. |
 | ComfyUI | Implemented | API workflow JSON plus embedded manifest bindings. Supports image/video/audio output detection by file extension. |
-| OpenAI image | Experimental | Stores `connection.api_key` in provider JSON. |
+| OpenAI image | Implemented | GPT Image 2.5 Flare and Sunburst, with T2I and reference-image editing templates. Stores `connection.api_key` in provider JSON. |
 | xAI image | Experimental | Stores `connection.api_key` in provider JSON. |
 | xAI Grok video | Experimental | Submits/polls/downloads video results through xAI API. |
 | Custom HTTP | Not implemented | Data model exists; runtime returns a planned/not-implemented error. |
 | fal.ai / Replicate / Veo | Not implemented | Future adapter work. |
+
+## OpenAI Image 2.5
+
+Add **OpenAI Image 2.5 T2I** or **OpenAI Image 2.5 I2I** in AI Providers.
+Both offer Flare and Sunburst in the Model field; T2I defaults to Flare and I2I
+to Sunburst. Quality includes `auto`, `low`, `medium`, `high`, `xhigh`, and `max`.
+I2I requires a reference image. Transparent output requires PNG or WebP.
+The adapter uses `/v1/images/generations` for T2I and multipart
+`/v1/images/edits` for I2I, then decodes the returned base64 image.
+Existing saved provider definitions retain their settings; add the updated template
+to get these fields. See the [official image API guide](https://developers.openai.com/api/docs/guides/image-generation).
 
 ## Chat Agent Providers
 

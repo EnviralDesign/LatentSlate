@@ -429,6 +429,7 @@ pub async fn execute_generation(
             &model,
             base_url.as_deref(),
             inputs,
+            provider.workflow_kind == crate::state::ProviderWorkflowKind::ImageToImage,
             progress_tx,
         )
         .await

@@ -58,15 +58,10 @@ logs/
 # case LATENTSLATE_HOME points at the repo during development.
 /LatentSlateData/
 
-# Local/personal ComfyUI workflows.
-# Keep this deny-by-default and opt in only blessed default workflows.
-/workflows/*
-!/workflows/Mock Video Workflow API.json
-!/workflows/Mock Video Workflow API_manifest.json
-!/workflows/sdxl_simple_example_API.json
-!/workflows/sdxl_simple_example_API_manifest.json
-!/workflows/SDXL-VANILLA-API.json
-!/workflows/SDXL-VANILLA-API_manifest.json
+# Local reference material belongs in the external diagnostics workspace.
+/workflows/
+/reference/
+/evidence/
 
 # OS generated
 .DS_Store
