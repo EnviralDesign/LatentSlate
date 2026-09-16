@@ -185,48 +185,56 @@ impl LatentSlateApp {
                     .as_ref()
                     .is_some_and(|active| active != v)
             });
-        let mut close = false;
-        kit::bounded_horizontal_row(ui, 48.0, |ui, width| {
-            let side = ((width - 268.0) * 0.5).max(100.0);
-            ui.allocate_ui_with_layout(Vec2::new(side, 48.0), Layout::top_down(Align::Min), |ui| {
-                ui.set_min_width(side);
-                ui.label(kit::body("Asset Lab"));
-                ui.label(kit::caption(&asset.name));
-            });
-            for (view, label) in [
-                (AssetLabView::Create, "Create"),
-                (AssetLabView::Lineage, "Lineage"),
-                (AssetLabView::Compare, "Compare"),
-            ] {
-                let enabled = !self.asset_lab.v4.interacting
-                    && (view != AssetLabView::Compare || can_compare);
-                let response =
-                    kit::workspace_tab(ui, label, self.asset_lab.v4.view == view, enabled);
-                if !enabled {
-                    response.clone().on_hover_text("Choose a result in Lineage, or use Compare on a completed result thumbnail.");
-                }
-                if response.clicked() {
-                    if view == AssetLabView::Compare {
-                        self.begin_asset_lab_compare(asset.id);
-                    } else {
-                        self.asset_lab.compare = None;
-                        self.asset_lab.v4.view = view;
-                    }
-                    self.asset_lab.v4.preview = None;
-                }
+        let header = kit::modal_header_layout(
+            ui,
+            "Asset Lab",
+            Some(&asset.name),
+            Some(kit::Icon::Lab),
+            268.0,
+            82.0,
+            true,
+        );
+        let mut tabs = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(header.navigation)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        tabs.spacing_mut().item_spacing.x = 4.0;
+        for (view, label) in [
+            (AssetLabView::Create, "Create"),
+            (AssetLabView::Lineage, "Lineage"),
+            (AssetLabView::Compare, "Compare"),
+        ] {
+            let enabled =
+                !self.asset_lab.v4.interacting && (view != AssetLabView::Compare || can_compare);
+            let response =
+                kit::workspace_tab(&mut tabs, label, self.asset_lab.v4.view == view, enabled);
+            if !enabled {
+                response.clone().on_disabled_hover_text(
+                    "Choose a result in Lineage, or use Compare on a completed result thumbnail.",
+                );
             }
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                close = kit::icon_button(ui, "×")
-                    .on_hover_text("Close Asset Lab")
-                    .clicked();
-                if let Some(pin) = &config.active_version {
-                    ui.label(kit::caption(format!("◆ {pin}")));
+            if response.clicked() {
+                if view == AssetLabView::Compare {
+                    self.begin_asset_lab_compare(asset.id);
+                } else {
+                    self.asset_lab.compare = None;
+                    self.asset_lab.v4.view = view;
                 }
-            });
-        });
-        ui.separator();
-        close
+                self.asset_lab.v4.preview = None;
+            }
+        }
+        if let Some(pin) = &config.active_version {
+            let mut trailing = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(header.trailing)
+                    .layout(Layout::right_to_left(Align::Center)),
+            );
+            trailing.label(kit::caption(pin));
+            let (rect, _) = trailing.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+            kit::paint_icon(&trailing, kit::Icon::Pin, rect, kit::PRIMARY);
+        }
+        header.close_clicked
     }
 
     pub(in crate::egui_app) fn asset_lab_v4_contents(&mut self, ui: &mut Ui, asset: &Asset) {
@@ -336,66 +344,58 @@ impl LatentSlateApp {
                     .collect()
             })
             .unwrap_or_default();
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         StripBuilder::new(ui)
             .size(Size::remainder())
-            .size(Size::exact(310.0))
+            .size(Size::exact(340.0))
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
-                    let columns = if media_fields.len() == 4 {
-                        2
-                    } else {
-                        media_fields.len().clamp(1, 3)
-                    };
+                    let columns = if media_fields.len() == 4 { 2 } else { media_fields.len().clamp(1, 3) };
                     let rows = media_fields.len().div_ceil(columns);
-                    let inputs_height = if rows == 0 {
-                        0.0
-                    } else {
-                        rows as f32 * 70.0 + 8.0
+                    let inputs_height = if rows == 0 { 0.0 } else {
+                        rows as f32 * (kit::COMPACT_SOURCE_FIELD_H + 8.0) + 12.0
                     };
-                    let results_height = if self.asset_lab.v4.results.is_empty() {
-                        0.0
-                    } else {
-                        126.0
-                    };
+                    let results_height = if self.asset_lab.v4.results.is_empty() { 0.0 } else { 126.0 };
                     StripBuilder::new(ui)
                         .size(Size::remainder().at_least(80.0))
                         .size(Size::exact(inputs_height))
                         .size(Size::exact(results_height))
                         .vertical(|mut strip| {
+                            strip.cell(|ui| self.asset_lab_authoring_canvas(ui, asset, config, provider.as_ref()));
                             strip.cell(|ui| {
-                                self.asset_lab_authoring_canvas(
-                                    ui,
-                                    asset,
-                                    config,
-                                    provider.as_ref(),
-                                );
-                            });
-                            strip.cell(|ui| {
-                                if let Some(provider) = &provider {
-                                    let width = (ui.available_width() - 8.0 * (columns - 1) as f32)
-                                        / columns as f32;
-                                    for row in media_fields.chunks(columns) {
-                                        kit::bounded_horizontal_row(ui, 64.0, |ui, _| {
-                                            for field in row {
-                                                ui.allocate_ui_with_layout(
-                                                    Vec2::new(width, 64.0),
-                                                    Layout::top_down(Align::Min),
-                                                    |ui| {
-                                                        self.media_source_picker_field(
-                                                            ui, asset.id, None, provider, field,
-                                                        )
-                                                    },
-                                                );
-                                            }
-                                        });
-                                    }
+                                if let Some(provider) = provider.as_ref().filter(|_| !media_fields.is_empty()) {
+                                    let rect = ui.max_rect();
+                                    kit::paint_panel_edge(ui, rect, kit::PanelEdge::Top);
+                                    egui::Frame::new().fill(kit::PANEL).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                                        ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+                                        let width = (ui.available_width() - 8.0 * (columns - 1) as f32) / columns as f32;
+                                        for row in media_fields.chunks(columns) {
+                                            kit::bounded_horizontal_row(ui, kit::COMPACT_SOURCE_FIELD_H, |ui, _| {
+                                                for field in row {
+                                                    ui.allocate_ui_with_layout(Vec2::new(width, kit::COMPACT_SOURCE_FIELD_H),
+                                                        Layout::top_down(Align::Min), |ui| {
+                                                            self.media_source_picker_field_sized(ui, asset.id, None, provider, field, true);
+                                                        });
+                                                }
+                                            });
+                                        }
+                                    });
                                 }
                             });
-                            strip.cell(|ui| self.asset_lab_results_v4(ui, asset));
+                            strip.cell(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+                                self.asset_lab_results_v4(ui, asset);
+                            });
                         });
                 });
                 strip.cell(|ui| {
-                    self.asset_lab_create_inspector_v4(ui, asset, config, provider.as_ref())
+                    let rect = ui.max_rect();
+                    ui.painter().rect_filled(rect, 0, kit::PANEL);
+                    kit::paint_panel_edge(ui, rect, kit::PanelEdge::Left);
+                    egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                        self.asset_lab_create_inspector_v4(ui, asset, config, provider.as_ref());
+                    });
                 });
             });
     }
@@ -492,18 +492,6 @@ impl LatentSlateApp {
                         reference_sizing: config.reference_sizing.clone(),
                         output_version: None,
                     };
-                    if let Some(seed_field) = provider
-                        .inputs
-                        .iter()
-                        .find(|field| field.role == Some(InputRole::Seed))
-                    {
-                        ui.label(kit::caption(asset_lab_seed_preview(
-                            true,
-                            asset_lab_node_seed_value(&node, seed_field),
-                            setup.batch.count,
-                            setup.batch.seed_strategy,
-                        )));
-                    }
                     let prompt_fields: Vec<_> = provider
                         .inputs
                         .iter()
@@ -525,25 +513,64 @@ impl LatentSlateApp {
                     ui.add_space(12.0);
                     match crate::state::asset_lab_authoring_profile(provider) {
                         crate::state::AssetLabAuthoringProfile::Mask => {
-                            ui.checkbox(&mut setup.authoring.mask_enabled, "Use painted mask");
-                            ui.checkbox(&mut self.asset_lab.v4.mask_visible, "Show mask overlay");
-                            ui.label(kit::caption(
-                                "Mask authoring only · generation support is not connected yet.",
-                            ));
+                            ui.separator();
+                            kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
+                                ui.checkbox(&mut setup.authoring.mask_enabled, "Use painted mask");
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let visible = self.asset_lab.v4.mask_visible;
+                                    if kit::tool_button(ui, if visible { kit::Icon::Eye } else { kit::Icon::EyeOff },
+                                        "Show mask overlay", visible).clicked() {
+                                        self.asset_lab.v4.mask_visible = !visible;
+                                    }
+                                });
+                            });
+                            ui.label(kit::caption("Mask authoring · execution not connected"));
                         }
                         crate::state::AssetLabAuthoringProfile::Regions => {
+                            ui.separator();
                             ui.checkbox(&mut setup.authoring.regions_enabled, "Use prompt regions");
-                            ui.checkbox(&mut self.asset_lab.v4.guide_visible, "Show guide image");
-                            for region in &mut setup.authoring.regions {
-                                kit::labeled_text_field(ui, "Region", &mut region.name);
-                                kit::labeled_text_field(ui, "Description", &mut region.description);
-                                if let Some(text) = region.text.as_mut() {
-                                    kit::labeled_text_field(ui, "Text", text);
+                            ui.label(kit::body("Prompt regions"));
+                            let selected = &mut self.asset_lab.v4.canvas.selected;
+                            if selected.is_some_and(|id| !setup.authoring.regions.iter().any(|r| r.id == id)) {
+                                *selected = None;
+                            }
+                            for region in &setup.authoring.regions {
+                                if kit::selectable_icon_row(ui, region.id,
+                                    if region.text.is_some() { kit::Icon::Text } else { kit::Icon::Object },
+                                    &region.name, *selected == Some(region.id)).clicked() {
+                                    *selected = Some(region.id);
                                 }
                             }
-                            ui.label(kit::caption(
-                                "Region authoring only · generation support is not connected yet.",
-                            ));
+                            let mut delete = None;
+                            if let Some(region) = setup.authoring.regions.iter_mut().find(|r| Some(r.id) == *selected) {
+                                ui.add_space(8.0);
+                                ui.push_id(region.id, |ui| {
+                                    kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
+                                        ui.label(kit::body(if region.text.is_some() { "Text region" } else { "Object region" }));
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            if kit::tool_button(ui, kit::Icon::Trash, "Delete selected region", false).clicked() {
+                                                delete = Some(region.id);
+                                            }
+                                        });
+                                    });
+                                    kit::labeled_text_field(ui, "Name", &mut region.name);
+                                    kit::field_label(ui, "Description");
+                                    kit::multiline_text_field(ui, &mut region.description, ui.available_width(),
+                                        kit::MultilineTextFieldOptions::rows(3));
+                                    if let Some(text) = region.text.as_mut() {
+                                        kit::field_label(ui, "Text");
+                                        kit::multiline_text_field(ui, text, ui.available_width(),
+                                            kit::MultilineTextFieldOptions::rows(2));
+                                    }
+                                });
+                            } else {
+                                ui.label(kit::caption("Select a region to edit it, or draw an object or text region on the canvas."));
+                            }
+                            if let Some(id) = delete {
+                                setup.authoring.regions.retain(|r| r.id != id);
+                                *selected = None;
+                            }
+                            ui.label(kit::caption("Region authoring · execution not connected"));
                         }
                         _ => {}
                     }
@@ -561,9 +588,14 @@ impl LatentSlateApp {
                             setup.authoring.regions.len()
                         )));
                     }
-                    egui::CollapsingHeader::new("Generation settings")
-                        .id_salt("lab_v4_settings")
-                        .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.label(kit::body("Generation settings"));
+                    if let Some(seed_field) = provider.inputs.iter().find(|field| field.role == Some(InputRole::Seed)) {
+                        ui.label(kit::caption(asset_lab_seed_preview(true,
+                            asset_lab_node_seed_value(&node, seed_field), setup.batch.count, setup.batch.seed_strategy)));
+                    }
+                    ui.scope(|ui| {
                             self.asset_lab_canvas_field(ui, &node, provider, &mut action);
                             for field in &provider.inputs {
                                 if crate::core::media_binding::bound_media_type_for_input(field)
@@ -620,10 +652,10 @@ impl LatentSlateApp {
         ui.add_space((ui.max_rect().bottom() - 36.0 - ui.cursor().min.y).max(0.0));
         kit::bounded_horizontal_row(ui, 36.0, |ui, width| {
             let mut count = setup.batch.count as i64;
-            kit::integer_step_drag(
+            kit::integer_step_drag_sized(
                 ui,
                 &mut count,
-                48.0,
+                Vec2::new(48.0, 36.0),
                 1,
                 Some(1),
                 Some(crate::egui_app::MAX_GENERATION_BATCH_COUNT as i64),

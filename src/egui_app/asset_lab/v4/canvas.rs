@@ -32,7 +32,7 @@ pub(super) struct CanvasState {
     draft: Option<AssetLabSnapshot>,
     tool: Tool,
     brush: f32,
-    selected: Option<Uuid>,
+    pub(super) selected: Option<Uuid>,
     gesture: Option<Gesture>,
 }
 
@@ -282,30 +282,6 @@ impl LatentSlateApp {
         let mut undo = !ui.ctx().text_edit_focused()
             && !self.asset_lab.v4.interacting
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z));
-        kit::bounded_horizontal_row(ui, 30.0, |ui, _| {
-            ui.label(kit::caption(
-                audition
-                    .as_ref()
-                    .map(|v| format!("Preview · {v}"))
-                    .unwrap_or_else(|| match profile {
-                        AssetLabAuthoringProfile::Mask => "Image edit".into(),
-                        AssetLabAuthoringProfile::Regions => "Scene composition".into(),
-                        _ => "Create".into(),
-                    }),
-            ));
-            if kit::field_button(ui, "Fit", 40.0).clicked() {
-                self.asset_lab.preview_auto_fit = true;
-            }
-            ui.add_enabled_ui(
-                !self.asset_lab.v4.undo.is_empty() && audition.is_none(),
-                |ui| {
-                    undo |= kit::field_button(ui, "Undo", 50.0).clicked();
-                },
-            );
-            if profile != AssetLabAuthoringProfile::Generic {
-                clear = kit::field_button(ui, "Clear", 50.0).clicked();
-            }
-        });
         if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
             if let Some(error) = &canvas.error {
                 ui.label(kit::caption(error));
@@ -356,49 +332,136 @@ impl LatentSlateApp {
                 preview = None;
             }
         }
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let header_rect =
+            Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), 44.0));
+        ui.painter().rect_filled(header_rect, 0, kit::PANEL);
+        kit::paint_panel_edge(ui, header_rect, kit::PanelEdge::Bottom);
+        kit::bounded_horizontal_row(ui, 44.0, |ui, width| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.add_space(16.0);
+            ui.label(kit::caption(
+                audition
+                    .as_ref()
+                    .map(|v| format!("Preview · {v}"))
+                    .unwrap_or_else(|| match profile {
+                        AssetLabAuthoringProfile::Mask => "Image edit".into(),
+                        AssetLabAuthoringProfile::Regions => "Scene composition".into(),
+                        _ => "Create".into(),
+                    }),
+            ));
+            if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
+                ui.add_space(12.0);
+                ui.label(kit::caption("Size"));
+                if width > 650.0 {
+                    kit::compact_slider(ui, "Brush size", &mut canvas.brush, 1.0..=512.0, 105.0);
+                }
+                let mut value = canvas.brush.round() as i64;
+                kit::integer_step_drag(ui, &mut value, 46.0, 1, Some(1), Some(512));
+                canvas.brush = value as f32;
+                ui.label(kit::caption("px"));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(12.0);
+                if profile == AssetLabAuthoringProfile::Regions && audition.is_none() {
+                    let visible = self.asset_lab.v4.guide_visible;
+                    if kit::tool_button(
+                        ui,
+                        if visible {
+                            kit::Icon::Eye
+                        } else {
+                            kit::Icon::EyeOff
+                        },
+                        "Show guide image",
+                        visible,
+                    )
+                    .clicked()
+                    {
+                        self.asset_lab.v4.guide_visible = !visible;
+                    }
+                }
+                ui.label(kit::caption(format!(
+                    "{} × {}",
+                    extent.x as u32, extent.y as u32
+                )));
+                if width > 540.0 {
+                    ui.add_space(10.0);
+                    if kit::tool_button(ui, kit::Icon::Plus, "Zoom in", false).clicked() {
+                        self.asset_lab.preview_zoom =
+                            (self.asset_lab.preview_zoom * 1.2).clamp(0.001, 32.0);
+                        self.asset_lab.preview_auto_fit = false;
+                    }
+                    ui.label(kit::caption(format!(
+                        "{:.0}%",
+                        self.asset_lab.preview_zoom * 100.0
+                    )));
+                    if kit::tool_button(ui, kit::Icon::Minus, "Zoom out", false).clicked() {
+                        self.asset_lab.preview_zoom =
+                            (self.asset_lab.preview_zoom / 1.2).clamp(0.001, 32.0);
+                        self.asset_lab.preview_auto_fit = false;
+                    }
+                }
+            });
+        });
         let mut committed_mask = false;
         let mut commit_regions = false;
         let height = (ui.available_height() - if asset.is_video() { 50.0 } else { 0.0 }).max(1.0);
         kit::bounded_horizontal_row(ui, height, |ui, width| {
-            let rail = if profile == AssetLabAuthoringProfile::Generic {
-                0.0
-            } else {
-                48.0
-            };
-            if rail > 0.0 {
-                ui.allocate_ui_with_layout(
-                    Vec2::new(rail, height),
-                    Layout::top_down(Align::Center),
-                    |ui| {
-                        let tools: &[(Tool, &str)] = if profile == AssetLabAuthoringProfile::Mask {
-                            &[(Tool::Paint, "Brush"), (Tool::Erase, "Erase")]
-                        } else {
-                            &[
-                                (Tool::Select, "Select"),
-                                (Tool::Object, "Object"),
-                                (Tool::Text, "Text"),
-                            ]
-                        };
-                        for (tool, label) in tools {
-                            if kit::timeline_tool_text_button(ui, label, 44.0, canvas.tool == *tool)
-                                .clicked()
-                            {
-                                canvas.tool = *tool;
-                                if profile == AssetLabAuthoringProfile::Mask {
-                                    self.asset_lab.v4.mask_visible = true;
-                                }
+            let rail = 48.0;
+            let rail_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(rail, height));
+            ui.painter().rect_filled(rail_rect, 0, kit::PANEL);
+            kit::paint_panel_edge(ui, rail_rect, kit::PanelEdge::Right);
+            ui.allocate_ui_with_layout(
+                Vec2::new(rail, height),
+                Layout::top_down(Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    ui.add_space(8.0);
+                    let tools: &[(Tool, kit::Icon, &str)] = match profile {
+                        AssetLabAuthoringProfile::Mask => &[
+                            (Tool::Paint, kit::Icon::Brush, "Brush"),
+                            (Tool::Erase, kit::Icon::Erase, "Erase"),
+                        ],
+                        AssetLabAuthoringProfile::Regions => &[
+                            (Tool::Select, kit::Icon::Select, "Select"),
+                            (Tool::Object, kit::Icon::Object, "Object"),
+                            (Tool::Text, kit::Icon::Text, "Text"),
+                        ],
+                        _ => &[],
+                    };
+                    for (tool, icon, label) in tools {
+                        if kit::tool_button(ui, *icon, label, canvas.tool == *tool).clicked() {
+                            canvas.tool = *tool;
+                            if profile == AssetLabAuthoringProfile::Mask {
+                                self.asset_lab.v4.mask_visible = true;
                             }
                         }
-                        if profile == AssetLabAuthoringProfile::Mask {
-                            let mut value = canvas.brush as i64;
-                            kit::integer_step_drag(ui, &mut value, 42.0, 1, Some(1), Some(512));
-                            canvas.brush = value as f32;
-                        }
-                    },
-                );
-            }
+                    }
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_enabled_ui(
+                        !self.asset_lab.v4.undo.is_empty() && audition.is_none(),
+                        |ui| {
+                            undo |= kit::tool_button(ui, kit::Icon::Undo, "Undo", false).clicked();
+                        },
+                    );
+                    if profile != AssetLabAuthoringProfile::Generic {
+                        ui.add_enabled_ui(audition.is_none(), |ui| {
+                            clear =
+                                kit::tool_button(ui, kit::Icon::Trash, "Clear", false).clicked();
+                        });
+                    }
+                    ui.add_space((rail_rect.bottom() - 40.0 - ui.cursor().min.y).max(0.0));
+                    if kit::tool_button(ui, kit::Icon::Fit, "Fit", false).clicked() {
+                        self.asset_lab.preview_auto_fit = true;
+                    }
+                },
+            );
             let (rect, response) = ui.allocate_exact_size(
-                Vec2::new((width - rail - 8.0).max(1.0), height),
+                Vec2::new(
+                    (width - rail - ui.spacing().item_spacing.x).max(1.0),
+                    height,
+                ),
                 Sense::click_and_drag(),
             );
             let response = crate::core::automation::instrument_response(
@@ -657,13 +720,27 @@ impl LatentSlateApp {
                         ),
                         egui::StrokeKind::Inside,
                     );
-                    painter.text(
-                        bounds.min + Vec2::splat(4.0),
-                        egui::Align2::LEFT_TOP,
-                        &region.name,
+                    let label = painter.layout_no_wrap(
+                        region.name.clone(),
                         FontId::proportional(12.0),
-                        color,
+                        kit::TEXT,
                     );
+                    let label_size = label.size() + Vec2::new(12.0, 6.0);
+                    let label_pos = Pos2::new(
+                        bounds.left().max(rect.left()),
+                        (bounds.top() - label_size.y).max(rect.top()),
+                    );
+                    let label_rect = Rect::from_min_size(label_pos, label_size);
+                    painter.rect_filled(
+                        label_rect,
+                        3,
+                        if canvas.selected == Some(region.id) {
+                            Color32::from_rgb(26, 58, 66)
+                        } else {
+                            kit::PANEL
+                        },
+                    );
+                    painter.galley(label_rect.min + Vec2::new(6.0, 3.0), label, kit::TEXT);
                     if canvas.selected == Some(region.id) {
                         painter.rect_filled(
                             Rect::from_center_size(bounds.max, Vec2::splat(8.0)),

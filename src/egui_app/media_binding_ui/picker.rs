@@ -58,6 +58,18 @@ impl LatentSlateApp {
         provider: &ProviderEntry,
         field: &ProviderInputField,
     ) {
+        self.media_source_picker_field_sized(ui, asset_id, context, provider, field, false);
+    }
+
+    pub(in crate::egui_app) fn media_source_picker_field_sized(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context: Option<Uuid>,
+        provider: &ProviderEntry,
+        field: &ProviderInputField,
+        compact: bool,
+    ) {
         let Some(config) = self.editor.project.generative_config(asset_id).cloned() else {
             return;
         };
@@ -97,14 +109,14 @@ impl LatentSlateApp {
             }
         }
         let width = ui.available_width();
-        if kit::source_row(
+        if kit::source_field(
             ui,
             ("source_field", asset_id, &field.name),
             &title,
             &label,
             preview,
             source_badge(spec.as_ref()),
-            false,
+            compact,
             width,
         )
         .on_hover_text(summary)

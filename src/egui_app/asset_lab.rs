@@ -1848,23 +1848,23 @@ impl LatentSlateApp {
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                if !asset.is_generative() {
+                if let Some(config) = config_snapshot.as_ref().filter(|_| asset.is_generative()) {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    close_clicked = self.asset_lab_v4_header(ui, &asset, config);
+                    self.asset_lab_v4_contents(ui, &asset);
+                } else {
                     close_clicked =
                         kit::modal_header_with_close(ui, "Asset Lab", Some(&subtitle), true);
+                    kit::modal_body(ui, |ui| {
+                        self.asset_lab_modal_contents(
+                            ui,
+                            &asset,
+                            config_snapshot.as_ref(),
+                            generate_shortcut_requested,
+                            &mut action,
+                        );
+                    });
                 }
-                kit::modal_body(ui, |ui| {
-                    if let Some(config) = config_snapshot.as_ref().filter(|_| asset.is_generative())
-                    {
-                        close_clicked = self.asset_lab_v4_header(ui, &asset, config);
-                    }
-                    self.asset_lab_modal_contents(
-                        ui,
-                        &asset,
-                        config_snapshot.as_ref(),
-                        generate_shortcut_requested,
-                        &mut action,
-                    );
-                });
             });
 
         if let Some(action) = action {
