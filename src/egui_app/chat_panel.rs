@@ -628,7 +628,7 @@ impl LatentSlateApp {
                     let mut x = rect.left();
                     for (galley, color) in &indicators {
                         ui.painter().galley(
-                            Pos2::new(x, rect.center().y - galley.size().y * 0.5),
+                            Pos2::new(x, rect.center().y - galley.mesh_bounds.center().y),
                             galley.clone(),
                             *color,
                         );

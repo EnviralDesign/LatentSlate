@@ -1440,7 +1440,13 @@ fn paint_combo_field(
         text_width,
         egui::TextStyle::Button,
     );
-    let text_pos = Pos2::new(text_left, rect.center().y - galley.size().y * 0.5);
+    // Font line boxes can have asymmetric leading; center the rendered glyphs.
+    let text_center_y = if galley.mesh_bounds.is_finite() {
+        galley.mesh_bounds.center().y
+    } else {
+        galley.rect.center().y
+    };
+    let text_pos = Pos2::new(text_left, rect.center().y - text_center_y);
     ui.painter().galley(text_pos, galley, visuals.text_color());
 }
 
