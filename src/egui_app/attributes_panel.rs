@@ -3259,6 +3259,7 @@ impl LatentSlateApp {
             config_for_generation,
             folder_path,
             asset_label,
+            None,
         ) {
             Ok(status) => {
                 self.editor.status = status;

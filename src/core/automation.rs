@@ -76,6 +76,8 @@ pub enum AutomationCommand {
     },
     /// Click a visible UI widget by automation ID.
     ClickUi { id: String },
+    /// Feed one native egui input event on the next frame (canvas/keyboard tests).
+    InputUi { event: NativeUiInput },
     /// Scroll the existing widget into view without activating or editing it.
     RevealUi { id: String },
     /// Replace or append text in a visible editable UI widget by automation ID.
@@ -573,12 +575,111 @@ struct PendingText {
 
 #[derive(Default)]
 struct UiRegistry {
+    native_events: Vec<egui::Event>,
     elements: Vec<UiElementRecord>,
     pending_clicks: HashSet<String>,
     pending_reveals: HashSet<String>,
     pending_text: HashMap<String, PendingText>,
     consumed_actions: HashSet<String>,
     frame_index: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NativeUiInput {
+    Pointer {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Option<String>,
+        #[serde(default)]
+        pressed: bool,
+    },
+    Key {
+        key: String,
+        pressed: bool,
+        #[serde(default)]
+        shift: bool,
+        #[serde(default)]
+        ctrl: bool,
+    },
+    Scroll {
+        x: f32,
+        y: f32,
+    },
+}
+
+pub fn queue_native_input(event: NativeUiInput) -> Result<(), String> {
+    let mut events = Vec::new();
+    match event {
+        NativeUiInput::Pointer {
+            x,
+            y,
+            button,
+            pressed,
+        } => {
+            if !x.is_finite() || !y.is_finite() {
+                return Err("Pointer coordinates must be finite".into());
+            }
+            let pos = egui::pos2(x, y);
+            events.push(egui::Event::PointerMoved(pos));
+            if let Some(button) = button {
+                let button = match button.as_str() {
+                    "primary" => egui::PointerButton::Primary,
+                    "secondary" => egui::PointerButton::Secondary,
+                    _ => return Err("Use primary or secondary".into()),
+                };
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
+        NativeUiInput::Key {
+            key,
+            pressed,
+            shift,
+            ctrl,
+        } => {
+            let key = egui::Key::from_name(&key).ok_or("Unknown egui key")?;
+            events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    shift,
+                    ctrl,
+                    command: ctrl,
+                    ..Default::default()
+                },
+            });
+        }
+        NativeUiInput::Scroll { x, y } => events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: egui::vec2(x, y),
+            modifiers: egui::Modifiers::NONE,
+        }),
+    }
+    UI_REGISTRY
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "UI registry unavailable")?
+        .native_events
+        .extend(events);
+    Ok(())
+}
+
+pub fn append_native_input(input: &mut egui::RawInput) {
+    if !is_enabled() {
+        return;
+    }
+    if let Ok(mut registry) = UI_REGISTRY.get_or_init(Default::default).lock() {
+        input.events.append(&mut registry.native_events);
+    }
 }
 
 /// JSON response returned by the automation API.

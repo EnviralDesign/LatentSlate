@@ -339,6 +339,9 @@ impl LatentSlateApp {
         &mut self,
         job: &GenerationJob,
     ) -> Result<(), String> {
+        if job.lab_submission.is_some() {
+            return Ok(());
+        }
         let Some(seed_advance) = job.seed_advance.as_ref() else {
             return Ok(());
         };
@@ -388,6 +391,23 @@ impl LatentSlateApp {
             .project
             .update_generative_config(job.asset_id, |config| {
                 if let Some(node_id) = job.lab_node_id {
+                    if let Some(submission) = &job.lab_submission {
+                        if !config.lab_graph.nodes.iter().any(|node| node.id == node_id) {
+                            let mut node = AssetLabNode::new_with_parent(
+                                Some(job.provider.id),
+                                submission.parent_node_id,
+                            );
+                            node.id = node_id;
+                            node.inputs = job.inputs_snapshot.clone();
+                            node.media_bindings = job.media_bindings_snapshot.clone();
+                            node.reference_sizing = job
+                                .authoring_snapshot
+                                .as_ref()
+                                .map(|snapshot| snapshot.reference_sizing.clone())
+                                .unwrap_or_default();
+                            config.lab_graph.nodes.push(node);
+                        }
+                    }
                     if let Some(node) = config
                         .lab_graph
                         .nodes
@@ -400,7 +420,9 @@ impl LatentSlateApp {
                             node.media_bindings = job.media_bindings_snapshot.clone();
                         }
                     }
-                    config.lab_graph.selected_node_id = Some(node_id);
+                    if job.lab_submission.is_none() {
+                        config.lab_graph.selected_node_id = Some(node_id);
+                    }
                 }
                 if job.activate_on_success || job.lab_node_id.is_none() {
                     config.provider_id = Some(job.provider.id);
@@ -452,7 +474,10 @@ impl LatentSlateApp {
         self.editor.previewer.invalidate_folder(&job.folder_path);
         self.invalidate_asset_visual_cache(job.asset_id);
         self.editor.preview_dirty = true;
-        if self.asset_lab.asset_id == Some(job.asset_id) && self.asset_lab.compare.is_none() {
+        if job.lab_submission.is_some() {
+            self.asset_lab_v4_completed(&job, &version);
+        } else if self.asset_lab.asset_id == Some(job.asset_id) && self.asset_lab.compare.is_none()
+        {
             self.asset_lab.selected_version = Some(version.clone());
             self.asset_lab.pending_delete_version = None;
             self.asset_lab_preview_texture = None;
@@ -528,6 +553,7 @@ impl LatentSlateApp {
         config_snapshot: GenerativeConfig,
         folder_path: PathBuf,
         asset_label: String,
+        lab_submission: Option<crate::state::AssetLabSubmission>,
     ) -> Result<String, String> {
         if self.provider_resource_release_in_flight {
             return Err(
@@ -604,7 +630,7 @@ impl LatentSlateApp {
             seed_base_randomized = true;
         }
 
-        let activate_on_success = lab_node_id.is_none();
+        let activate_on_success = lab_node_id.is_none() && lab_submission.is_none();
         let lab_node_parent_id = if activate_on_success {
             None
         } else {
@@ -669,7 +695,9 @@ impl LatentSlateApp {
                     }
                 };
 
-            let job_lab_node_id = if activate_on_success {
+            let job_lab_node_id = if lab_submission.is_some() {
+                Some(Uuid::new_v4())
+            } else if activate_on_success {
                 let mut node =
                     AssetLabNode::new_with_parent(Some(provider.id), next_parent_node_id);
                 node.inputs = inputs_snapshot.clone();
@@ -738,10 +766,14 @@ impl LatentSlateApp {
             };
 
             let mut authoring_snapshot = authored.clone();
+            authoring_snapshot.provider_id = Some(provider.id);
+            authoring_snapshot
+                .media_bindings
+                .extend(resolved.media_bindings_snapshot.clone());
             authoring_snapshot.inputs = inputs_snapshot.clone();
             jobs.push(GenerationJob {
                 authoring_snapshot: Some(authoring_snapshot),
-                lab_submission: None,
+                lab_submission: lab_submission.clone(),
                 id: Uuid::new_v4(),
                 created_at: chrono::Utc::now(),
                 status: GenerationJobStatus::Queued,
@@ -970,6 +1002,118 @@ mod cancellation_tests {
             activate_on_success: true,
             error: None,
         }
+    }
+
+    #[test]
+    fn asset_lab_v4_native_queue_keeps_batches_siblings_and_completions_out_of_new_sessions() {
+        let ctx = Context::default();
+        let mut app = LatentSlateApp::new(&eframe::CreationContext::_new_kittest(ctx));
+        let root = std::env::temp_dir().join(format!("ls-v4-queue-{}", Uuid::new_v4()));
+        let folder = PathBuf::from("generated/image/fixture");
+        std::fs::create_dir_all(root.join(&folder)).unwrap();
+        app.editor.project = crate::state::Project::new("Offline queue fixture");
+        app.editor.project.project_path = Some(root.clone());
+        let asset = Asset::new_generative_image("Synthetic result", folder.clone());
+        let id = asset.id;
+        app.editor.project.assets.push(asset);
+        let mut provider = test_generation_job(GenerationJobStatus::Queued).provider;
+        provider.inputs=vec![serde_json::from_value(serde_json::json!({"name":"seed","label":"Seed","input_type":{"type":"integer"},"required":false,"default":0,"role":"seed"})).unwrap()];
+        app.editor.provider_entries = vec![provider.clone()];
+        let mut config = GenerativeConfig::default();
+        config.provider_id = Some(provider.id);
+        config.inputs.insert(
+            "seed".into(),
+            InputValue::Literal {
+                value: serde_json::json!(u64::MAX - 8),
+            },
+        );
+        config.lab_authoring.initialized = true;
+        app.editor.project.generative_configs.insert(id, config);
+        app.asset_lab.asset_id = Some(id);
+        app.reset_asset_lab_session();
+        app.submit_asset_lab_v4(id);
+        assert_eq!(
+            app.editor.generation_queue.len(),
+            1,
+            "{}",
+            app.editor.status
+        );
+        let complete = |app: &mut LatentSlateApp, job: GenerationJob, version: &str| {
+            let path = root.join(&folder).join(format!("{version}.png"));
+            image::RgbImage::from_pixel(80, 40, image::Rgb([20, 90, 150]))
+                .save(&path)
+                .unwrap();
+            app.finish_generation_success(
+                job.clone(),
+                GenerationOutput {
+                    path,
+                    version: version.into(),
+                    engine_execution: None,
+                },
+            );
+            app.editor
+                .generation_queue
+                .iter_mut()
+                .find(|entry| entry.id == job.id)
+                .unwrap()
+                .status = GenerationJobStatus::Succeeded;
+        };
+        let first = app.editor.generation_queue[0].clone();
+        assert_eq!(first.inputs["seed"], serde_json::json!(u64::MAX - 8));
+        complete(&mut app, first, "v1");
+        let config = app.editor.project.generative_config(id).unwrap();
+        assert_eq!(config.lab_authoring.working_version.as_deref(), Some("v1"));
+        assert_eq!(config.active_version, None);
+        let parent = config.versions[0].lab_node_id;
+        app.editor
+            .project
+            .update_generative_config(id, |config| config.batch.count = 3);
+        app.reset_asset_lab_session();
+        app.submit_asset_lab_v4(id);
+        assert_eq!(
+            app.editor.generation_queue.len(),
+            4,
+            "{}",
+            app.editor.status
+        );
+        let jobs = app.editor.generation_queue[1..].to_vec();
+        for (index, job) in jobs.into_iter().enumerate() {
+            assert_eq!(job.lab_submission.as_ref().unwrap().parent_node_id, parent);
+            assert!(!job.lab_submission.as_ref().unwrap().allow_advance);
+            assert_eq!(
+                job.inputs["seed"],
+                serde_json::json!(u64::MAX - 7 + index as u64)
+            );
+            complete(&mut app, job, &format!("v{}", index + 2));
+        }
+        let config = app.editor.project.generative_config(id).unwrap();
+        assert_eq!(config.versions.len(), 4);
+        assert_eq!(config.lab_graph.nodes.len(), 4);
+        assert_eq!(config.lab_authoring.working_version.as_deref(), Some("v1"));
+        assert!(
+            config
+                .lab_graph
+                .nodes
+                .iter()
+                .filter(|node| node.parent_node_id == parent)
+                .count()
+                == 3
+        );
+        assert_eq!(app.asset_lab.v4.results.len(), 3);
+        app.reset_asset_lab_session();
+        let old = app.editor.generation_queue[1].clone();
+        app.asset_lab_v4_completed(&old, "v2");
+        assert!(app.asset_lab.v4.results.is_empty());
+        assert_eq!(
+            app.editor
+                .project
+                .generative_config(id)
+                .unwrap()
+                .lab_authoring
+                .working_version
+                .as_deref(),
+            Some("v1")
+        );
     }
 
     #[test]

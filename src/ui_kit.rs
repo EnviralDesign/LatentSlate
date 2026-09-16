@@ -2372,7 +2372,219 @@ pub fn section_label(label: &str) -> RichText {
 }
 
 pub fn field_label(ui: &mut Ui, label: &str) {
-    ui.label(section_label(label));
+    ui.label(RichText::new(label).size(11.5).color(TEXT_MUTED));
+}
+
+/// A selectable source with a contained thumbnail and two compact text lines.
+pub fn source_row(
+    ui: &mut Ui,
+    id: impl Hash,
+    title: &str,
+    subtitle: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    badge: Option<&str>,
+    selected: bool,
+    width: f32,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(1.0), 64.0), Sense::hover());
+    let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response,
+        "source_row",
+        Some(title.to_string()),
+        ui.is_enabled(),
+        false,
+    );
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(
+            rect,
+            5,
+            if selected {
+                FIELD_BG_ACTIVE
+            } else if response.hovered() {
+                PANEL_RAISED
+            } else {
+                FIELD_BG
+            },
+        );
+        painter.rect_stroke(
+            rect,
+            5,
+            Stroke::new(
+                1.0_f32,
+                if selected || response.has_focus() {
+                    IMAGE
+                } else {
+                    BORDER
+                },
+            ),
+            StrokeKind::Inside,
+        );
+        let thumb = Rect::from_min_size(rect.min + Vec2::splat(10.0), Vec2::splat(44.0));
+        paint_contained_thumbnail(ui, thumb, preview);
+        if let Some(badge) = badge {
+            let badge_rect = Rect::from_min_size(thumb.max - Vec2::splat(17.0), Vec2::splat(17.0));
+            painter.rect_filled(badge_rect, 3, FIELD_BG_ACTIVE);
+            painter.text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                badge,
+                FontId::proportional(12.0),
+                IMAGE,
+            );
+        }
+        for (text, y, size, color) in [
+            (title, 15.0, 12.0, TEXT),
+            (subtitle, 35.0, 10.5, TEXT_MUTED),
+        ] {
+            let galley = egui::WidgetText::from(RichText::new(text).size(size).color(color))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    (rect.width() - 90.0).max(1.0),
+                    FontId::proportional(size),
+                );
+            painter.galley(rect.min + Vec2::new(66.0, y), galley, color);
+        }
+        if selected {
+            painter.text(
+                rect.right_center() - Vec2::new(15.0, 0.0),
+                egui::Align2::CENTER_CENTER,
+                "✓",
+                FontId::proportional(12.0),
+                IMAGE,
+            );
+        }
+    }
+    response
+}
+
+pub fn source_tile(
+    ui: &mut Ui,
+    id: impl Hash,
+    label: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    selected: bool,
+    pinned: bool,
+    size: Vec2,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response,
+        "source_tile",
+        Some(label.to_string()),
+        ui.is_enabled(),
+        false,
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(
+        rect,
+        4,
+        if response.hovered() {
+            FIELD_BG_ACTIVE
+        } else {
+            PANEL_RAISED
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        4,
+        Stroke::new(
+            1.0_f32,
+            if selected || response.has_focus() {
+                IMAGE
+            } else {
+                BORDER
+            },
+        ),
+        StrokeKind::Inside,
+    );
+    let pad = (rect.width() * 0.04).clamp(1.0, 6.0);
+    let footer = (rect.height() * 0.25).clamp(8.0, 27.0);
+    paint_contained_thumbnail(
+        ui,
+        Rect::from_min_max(
+            rect.min + Vec2::splat(pad),
+            rect.max - Vec2::new(pad, footer),
+        ),
+        preview,
+    );
+    painter.text(
+        rect.left_bottom() + Vec2::new(pad, -footer * 0.5),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::proportional((footer * 0.6).clamp(6.0, 11.0)),
+        TEXT,
+    );
+    if pinned {
+        painter.text(
+            rect.right_bottom() - Vec2::new(pad + 4.0, footer * 0.5),
+            egui::Align2::CENTER_CENTER,
+            "◆",
+            FontId::proportional((footer * 0.5).clamp(5.0, 10.0)),
+            PRIMARY,
+        );
+    }
+    response
+}
+
+pub fn paint_contained_thumbnail(ui: &Ui, rect: Rect, preview: Option<(egui::TextureId, Vec2)>) {
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3, PANEL_SUNKEN);
+    if let Some((texture, size)) = preview {
+        let scale = (rect.width() / size.x.max(1.0)).min(rect.height() / size.y.max(1.0));
+        painter.image(
+            texture,
+            Rect::from_center_size(rect.center(), size * scale),
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "—",
+            FontId::proportional(12.0),
+            TEXT_DIM,
+        );
+    }
+}
+
+pub fn workspace_tab(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> Response {
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(84.0, 38.0), Sense::click());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                FontId::proportional(12.0),
+                if !enabled {
+                    TEXT_DIM
+                } else if selected {
+                    TEXT
+                } else {
+                    TEXT_MUTED
+                },
+            );
+            if selected {
+                ui.painter().line_segment(
+                    [rect.left_bottom(), rect.right_bottom()],
+                    Stroke::new(2.0_f32, IMAGE),
+                );
+            }
+            response
+        })
+        .inner;
+    crate::core::automation::instrument_response(
+        response,
+        "tab",
+        Some(label.to_string()),
+        enabled,
+        false,
+    )
 }
 
 pub fn primary_button(ui: &mut Ui, label: &str, width: f32) -> Response {

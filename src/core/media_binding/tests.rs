@@ -13,6 +13,88 @@ fn uid(n: u128) -> Uuid {
 }
 
 #[test]
+fn asset_lab_v4_submitted_mask_is_immutable_and_none_clears_legacy_sources() {
+    let mut harness = Harness::new();
+    let image = harness.add_image(992, "Mask base", "media/base.png");
+    let field = image_field(Some(InputRole::StartImage));
+    let spec = MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: image.id,
+            version: None,
+        },
+        sample: MediaSample::Whole,
+        coverage: Default::default(),
+    };
+    let plan = resolve_media_binding(harness.ctx(&field), &spec);
+    let root = harness.project.project_path.clone().unwrap();
+    let path = PathBuf::from("mask.png");
+    image::GrayImage::from_pixel(80, 40, image::Luma([255]))
+        .save(root.join(&path))
+        .unwrap();
+    harness.config.lab_authoring.mask = Some(crate::state::AssetLabMask {
+        path: path.clone(),
+        has_content: true,
+        geometry: crate::state::AssetLabMaskGeometry {
+            input_field: field.name.clone(),
+            width: 80,
+            height: 40,
+            base: plan.to_resolved(PathBuf::from("media/base.png")).unwrap(),
+            sizing: Default::default(),
+            source_identity: "base".into(),
+        },
+    });
+    let snapshot = crate::core::generation::freeze_asset_lab_snapshot(
+        &harness.project,
+        &root.join("generated/test"),
+        &harness.config,
+    )
+    .unwrap();
+    image::GrayImage::new(80, 40)
+        .save(root.join(&path))
+        .unwrap();
+    let submitted = image::open(root.join(&snapshot.authoring.mask.unwrap().path))
+        .unwrap()
+        .to_luma8();
+    assert!(submitted.pixels().all(|pixel| pixel[0] == 255));
+
+    harness
+        .config
+        .media_bindings
+        .insert(field.name.clone(), spec.clone());
+    harness
+        .config
+        .media_bindings
+        .insert("start_image".into(), spec);
+    let legacy = InputValue::AssetRef {
+        asset_id: image.id,
+        pinned: true,
+        frame_reference: None,
+        source_clip_id: None,
+    };
+    harness
+        .config
+        .inputs
+        .insert("start_image".into(), legacy.clone());
+    harness
+        .config
+        .reference_slots
+        .insert("start_image".into(), legacy);
+    harness
+        .project
+        .generative_configs
+        .insert(harness.target.id, harness.config.clone());
+    let mut editor = crate::editor::EditorState::new();
+    editor.project = harness.project.clone();
+    editor
+        .set_generation_source(harness.target.id, &field, None, None)
+        .unwrap();
+    let cleared = editor.project.generative_config(harness.target.id).unwrap();
+    assert!(lookup_media_binding(cleared, &field, &editor.project).is_none());
+    assert!(!cleared.inputs.contains_key("start_image"));
+    assert!(!cleared.reference_slots.contains_key("start_image"));
+}
+
+#[test]
 fn asset_lab_v4_working_output_follows_setup_without_rewriting_fixed_sources() {
     let mut harness = Harness::new();
     let field = video_field();

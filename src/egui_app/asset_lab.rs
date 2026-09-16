@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
 
+mod v4;
+use v4::*;
+
 use super::*;
 
 use eframe::egui::{
@@ -26,11 +29,9 @@ use super::{
     VIDEO_EXTENSIONS,
 };
 
-const ASSET_LAB_GRAPH_ZOOM_MIN: f32 = 0.20;
-const ASSET_LAB_GRAPH_ZOOM_MAX: f32 = 4.8;
-
 #[derive(Clone, Debug)]
 pub(super) struct AssetLabState {
+    pub(super) v4: AssetLabV4State,
     pub(super) asset_id: Option<Uuid>,
     pub(super) selected_version: Option<String>,
     pub(super) pending_delete_version: Option<String>,
@@ -41,7 +42,6 @@ pub(super) struct AssetLabState {
     pub(super) preview_pan_drag: Option<(Vec2, Pos2)>,
     pub(super) graph_pan: Vec2,
     pub(super) graph_zoom: f32,
-    pub(super) graph_pan_drag: Option<(Vec2, Pos2)>,
     pub(super) pending_graph_focus_node_id: Option<Uuid>,
     pub(super) inspector_focus_id: Option<egui::Id>,
     pub(super) inspector_focus_node_id: Option<Uuid>,
@@ -57,6 +57,7 @@ pub(super) struct AssetLabState {
 impl Default for AssetLabState {
     fn default() -> Self {
         Self {
+            v4: AssetLabV4State::default(),
             asset_id: None,
             selected_version: None,
             pending_delete_version: None,
@@ -67,7 +68,6 @@ impl Default for AssetLabState {
             preview_pan_drag: None,
             graph_pan: Vec2::ZERO,
             graph_zoom: 1.0,
-            graph_pan_drag: None,
             pending_graph_focus_node_id: None,
             inspector_focus_id: None,
             inspector_focus_node_id: None,
@@ -154,25 +154,6 @@ impl AssetLabCompareState {
         let changed = self.candidate_version.as_deref() != Some(version);
         self.candidate_version = Some(version.to_string());
         changed
-    }
-
-    fn swap(&mut self) -> bool {
-        let Some(candidate) = self.candidate_version.take() else {
-            return false;
-        };
-        let previous_baseline = std::mem::replace(&mut self.baseline_version, candidate);
-        self.candidate_version = Some(previous_baseline);
-        true
-    }
-
-    fn use_candidate_as_baseline(&mut self) -> bool {
-        let Some(candidate) = self.candidate_version.take() else {
-            return false;
-        };
-        self.baseline_version = candidate;
-        self.playing = false;
-        self.last_playback_update = None;
-        true
     }
 
     fn max_duration(a_duration: f64, b_duration: Option<f64>) -> f64 {
@@ -326,31 +307,6 @@ impl AssetLabVersionTiming {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AssetLabCompareField {
-    key: String,
-    label: String,
-    value: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct AssetLabCompareSnapshot {
-    fields: Vec<AssetLabCompareField>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AssetLabCompareDeltaRow {
-    label: String,
-    baseline: String,
-    candidate: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct AssetLabCompareDelta {
-    changed: Vec<AssetLabCompareDeltaRow>,
-    unchanged_count: usize,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AssetLabComparePaneStatus {
     Ready,
@@ -378,6 +334,7 @@ pub(super) struct AssetLabPreviewTexture {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) struct AssetLabNodePreviewKey {
+    path: PathBuf,
     pub(super) asset_id: Uuid,
     pub(super) version: Option<String>,
     pub(super) frame_index: Option<i64>,
@@ -389,8 +346,6 @@ pub(super) enum AssetLabAction {
     SelectVersion(String),
     EnterCompare,
     ExitCompare,
-    SwapCompare,
-    UseCompareCandidateAsBaseline,
     MakeCompareCandidateActive,
     BranchFromCompareBaseline,
     BranchFromCompareCandidate,
@@ -552,147 +507,6 @@ pub(super) fn asset_lab_version_exists(config: Option<&GenerativeConfig>, versio
             .iter()
             .any(|record| record.version == version)
     })
-}
-
-pub(super) fn asset_lab_provider_name(providers: &[ProviderEntry], provider_id: Uuid) -> String {
-    providers
-        .iter()
-        .find(|provider| provider.id == provider_id)
-        .map(|provider| provider.name.clone())
-        .unwrap_or_else(|| provider_id.to_string())
-}
-
-fn asset_lab_compare_input_value_label(
-    project: &Project,
-    value: &InputValue,
-    role: Option<InputRole>,
-) -> Option<String> {
-    match value {
-        InputValue::Literal { value } => {
-            let raw = input_value_as_string(value)?;
-            if role == Some(InputRole::DurationSeconds) {
-                input_value_as_f64(value).map(|duration| format!("{duration:.1}s"))
-            } else {
-                Some(raw)
-            }
-        }
-        InputValue::AssetRef {
-            asset_id,
-            frame_reference,
-            ..
-        } => {
-            let asset = project.find_asset(*asset_id)?;
-            let mut label = asset_display_name(asset);
-            if let Some(frame) = frame_reference {
-                label.push_str(&format!(" · {}", frame.label()));
-            }
-            Some(label)
-        }
-        InputValue::GenerationRef {
-            asset_id,
-            version,
-            frame_reference,
-        } => {
-            let asset = project.find_asset(*asset_id)?;
-            let mut label = format!("{} · {version}", asset_display_name(asset));
-            if let Some(frame) = frame_reference {
-                label.push_str(&format!(" · {}", frame.label()));
-            }
-            Some(label)
-        }
-    }
-}
-
-fn asset_lab_compare_snapshot(
-    project: &Project,
-    record: &GenerationRecord,
-    providers: &[ProviderEntry],
-) -> AssetLabCompareSnapshot {
-    let Some(provider) = providers
-        .iter()
-        .find(|provider| provider.id == record.provider_id)
-    else {
-        return AssetLabCompareSnapshot::default();
-    };
-    let mut fields = vec![AssetLabCompareField {
-        key: "provider".to_string(),
-        label: "Provider".to_string(),
-        value: provider.name.clone(),
-    }];
-
-    let width = provider
-        .inputs
-        .iter()
-        .find(|input| input.role == Some(InputRole::Width))
-        .and_then(|input| record.inputs_snapshot.get(&input.name))
-        .and_then(|value| {
-            asset_lab_compare_input_value_label(project, value, Some(InputRole::Width))
-        });
-    let height = provider
-        .inputs
-        .iter()
-        .find(|input| input.role == Some(InputRole::Height))
-        .and_then(|input| record.inputs_snapshot.get(&input.name))
-        .and_then(|value| {
-            asset_lab_compare_input_value_label(project, value, Some(InputRole::Height))
-        });
-    if let (Some(width), Some(height)) = (width, height) {
-        fields.push(AssetLabCompareField {
-            key: "resolution".to_string(),
-            label: "Resolution".to_string(),
-            value: format!("{width}×{height}"),
-        });
-    }
-
-    for input in &provider.inputs {
-        if matches!(input.role, Some(InputRole::Width | InputRole::Height)) {
-            continue;
-        }
-        let Some(value) = record.inputs_snapshot.get(&input.name) else {
-            continue;
-        };
-        let Some(value) = asset_lab_compare_input_value_label(project, value, input.role) else {
-            continue;
-        };
-        fields.push(AssetLabCompareField {
-            key: input
-                .role
-                .map(|role| format!("role:{role:?}"))
-                .unwrap_or_else(|| format!("input:{}", input.name)),
-            label: asset_lab_input_label(input),
-            value,
-        });
-    }
-    AssetLabCompareSnapshot { fields }
-}
-
-fn asset_lab_compare_delta(
-    baseline: &AssetLabCompareSnapshot,
-    candidate: &AssetLabCompareSnapshot,
-) -> AssetLabCompareDelta {
-    let mut delta = AssetLabCompareDelta::default();
-    let mut emitted = HashSet::new();
-    for field in candidate.fields.iter().chain(baseline.fields.iter()) {
-        if !emitted.insert(field.key.as_str()) {
-            continue;
-        }
-        let Some(a) = baseline.fields.iter().find(|value| value.key == field.key) else {
-            continue;
-        };
-        let Some(b) = candidate.fields.iter().find(|value| value.key == field.key) else {
-            continue;
-        };
-        if a.value == b.value {
-            delta.unchanged_count += 1;
-        } else {
-            delta.changed.push(AssetLabCompareDeltaRow {
-                label: b.label.clone(),
-                baseline: a.value.clone(),
-                candidate: b.value.clone(),
-            });
-        }
-    }
-    delta
 }
 
 fn asset_lab_compare_record_role_value(
@@ -1065,20 +879,6 @@ fn asset_lab_record_is_node_baseline(record: &GenerationRecord, node: &AssetLabN
         || node.output_version.as_deref() == Some(record.version.as_str())
 }
 
-fn asset_lab_node_represents_version(
-    config: Option<&GenerativeConfig>,
-    node: &AssetLabNode,
-    version: &str,
-) -> bool {
-    node.output_version.as_deref() == Some(version)
-        || config.is_some_and(|config| {
-            config
-                .versions
-                .iter()
-                .any(|record| record.version == version && record.lab_node_id == Some(node.id))
-        })
-}
-
 fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &ProviderInputField) -> Option<u64> {
     node.inputs
         .get(&seed_field.name)
@@ -1151,272 +951,6 @@ fn asset_lab_seed_preview(
     }
 }
 
-fn asset_lab_input_is_media_link(asset: &Asset, input: &ProviderInputField) -> bool {
-    asset_lab_generation_ref_for_input(asset, input, "__probe__").is_some()
-}
-
-#[derive(Clone, Debug)]
-struct AssetLabGraphLayoutEntry {
-    node_id: Uuid,
-    lane: usize,
-    depth: usize,
-}
-
-#[derive(Clone, Debug)]
-struct AssetLabGhostLayoutEntry {
-    parent_node_id: Uuid,
-    lane: usize,
-    depth: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-struct AssetLabGraphLayout {
-    nodes: Vec<AssetLabGraphLayoutEntry>,
-    ghost: Option<AssetLabGhostLayoutEntry>,
-}
-
-#[derive(Clone, Debug)]
-struct AssetLabMediaRefInput {
-    label: String,
-    version: String,
-}
-
-#[derive(Clone, Debug)]
-struct AssetLabMediaRefLink {
-    source_node_id: Uuid,
-    target_node_id: Uuid,
-    label: String,
-    port_index: usize,
-    port_count: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum AssetLabNodeIcon {
-    Pin,
-    Trash,
-}
-
-fn asset_lab_graph_layout(
-    config: Option<&GenerativeConfig>,
-    draft_source_node_id: Option<Uuid>,
-) -> AssetLabGraphLayout {
-    let Some(config) = config else {
-        return AssetLabGraphLayout::default();
-    };
-
-    let nodes = &config.lab_graph.nodes;
-    let mut layout = AssetLabGraphLayout::default();
-    let mut next_lane = 0usize;
-    let mut visited = std::collections::HashSet::new();
-
-    fn walk(
-        node_id: Uuid,
-        depth: usize,
-        lane: usize,
-        draft_source_node_id: Option<Uuid>,
-        nodes: &[AssetLabNode],
-        layout: &mut AssetLabGraphLayout,
-        next_lane: &mut usize,
-        visited: &mut std::collections::HashSet<Uuid>,
-    ) {
-        if !visited.insert(node_id) {
-            return;
-        }
-        layout.nodes.push(AssetLabGraphLayoutEntry {
-            node_id,
-            lane,
-            depth,
-        });
-
-        let mut children: Vec<Uuid> = nodes
-            .iter()
-            .filter(|node| node.parent_node_id == Some(node_id))
-            .map(|node| node.id)
-            .collect();
-
-        let ghost_index = if draft_source_node_id == Some(node_id) {
-            let index = children.len();
-            children.push(Uuid::nil());
-            Some(index)
-        } else {
-            None
-        };
-
-        for (index, child_id) in children.into_iter().enumerate() {
-            let child_lane = if index == 0 {
-                lane
-            } else {
-                let lane = *next_lane;
-                *next_lane += 1;
-                lane
-            };
-            if ghost_index == Some(index) {
-                layout.ghost = Some(AssetLabGhostLayoutEntry {
-                    parent_node_id: node_id,
-                    lane: child_lane,
-                    depth: depth + 1,
-                });
-            } else {
-                walk(
-                    child_id,
-                    depth + 1,
-                    child_lane,
-                    draft_source_node_id,
-                    nodes,
-                    layout,
-                    next_lane,
-                    visited,
-                );
-            }
-        }
-    }
-
-    for node in nodes.iter().filter(|node| node.parent_node_id.is_none()) {
-        let lane = next_lane;
-        next_lane += 1;
-        walk(
-            node.id,
-            0,
-            lane,
-            draft_source_node_id,
-            nodes,
-            &mut layout,
-            &mut next_lane,
-            &mut visited,
-        );
-    }
-
-    layout
-}
-
-fn asset_lab_node_provider<'a>(
-    providers: &'a [ProviderEntry],
-    node: &AssetLabNode,
-) -> Option<&'a ProviderEntry> {
-    node.provider_id
-        .and_then(|provider_id| providers.iter().find(|provider| provider.id == provider_id))
-}
-
-fn asset_lab_ordered_media_ref_inputs(
-    asset: &Asset,
-    node: &AssetLabNode,
-    provider: Option<&ProviderEntry>,
-) -> Vec<AssetLabMediaRefInput> {
-    let mut refs = Vec::new();
-    let mut used_names: Vec<&str> = Vec::new();
-
-    if let Some(provider) = provider {
-        for input in &provider.inputs {
-            let Some(value) = node.inputs.get(&input.name) else {
-                continue;
-            };
-            let InputValue::GenerationRef {
-                asset_id, version, ..
-            } = value
-            else {
-                continue;
-            };
-            if *asset_id != asset.id
-                || !asset_lab_input_is_media_link(asset, input)
-                || !asset_lab_input_value_valid_for_field(value, input)
-            {
-                continue;
-            }
-            refs.push(AssetLabMediaRefInput {
-                label: asset_lab_input_label(input),
-                version: version.clone(),
-            });
-            used_names.push(input.name.as_str());
-        }
-    }
-
-    let mut leftover_refs: Vec<(&String, &InputValue)> = node
-        .inputs
-        .iter()
-        .filter(|(name, value)| {
-            !used_names.iter().any(|used| *used == name.as_str())
-                && matches!(
-                    value,
-                    InputValue::GenerationRef { asset_id, .. } if *asset_id == asset.id
-                )
-        })
-        .collect();
-    leftover_refs.sort_by(|(left, _), (right, _)| left.cmp(right));
-
-    for (name, value) in leftover_refs {
-        let InputValue::GenerationRef { version, .. } = value else {
-            continue;
-        };
-        let label = provider
-            .and_then(|provider| provider.inputs.iter().find(|input| input.name == *name))
-            .map(asset_lab_input_label)
-            .unwrap_or_else(|| {
-                name.replace('_', " ")
-                    .replace('-', " ")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            });
-        refs.push(AssetLabMediaRefInput {
-            label,
-            version: version.clone(),
-        });
-    }
-
-    refs
-}
-
-fn asset_lab_version_source_nodes(
-    nodes: &[AssetLabNode],
-    versions: &[GenerationRecord],
-) -> HashMap<String, Uuid> {
-    let mut sources = HashMap::new();
-    for record in versions {
-        if let Some(node_id) = record.lab_node_id {
-            sources.insert(record.version.clone(), node_id);
-        }
-    }
-    for node in nodes {
-        if let Some(version) = node.output_version.as_ref() {
-            sources.entry(version.clone()).or_insert(node.id);
-        }
-    }
-    sources
-}
-
-fn asset_lab_media_ref_links(
-    asset: &Asset,
-    nodes: &[AssetLabNode],
-    versions: &[GenerationRecord],
-    providers: &[ProviderEntry],
-) -> Vec<AssetLabMediaRefLink> {
-    let version_source_nodes = asset_lab_version_source_nodes(nodes, versions);
-    let mut links = Vec::new();
-
-    for node in nodes {
-        let provider = asset_lab_node_provider(providers, node);
-        let refs = asset_lab_ordered_media_ref_inputs(asset, node, provider);
-        let port_count = refs.len();
-        for (port_index, media_ref) in refs.into_iter().enumerate() {
-            let Some(source_node_id) = version_source_nodes.get(&media_ref.version).copied() else {
-                continue;
-            };
-            if node.parent_node_id == Some(source_node_id) {
-                continue;
-            }
-            links.push(AssetLabMediaRefLink {
-                source_node_id,
-                target_node_id: node.id,
-                label: media_ref.label,
-                port_index,
-                port_count,
-            });
-        }
-    }
-
-    links
-}
-
 fn asset_lab_delete_dependency_message(
     project: &Project,
     config: &GenerativeConfig,
@@ -1442,454 +976,6 @@ fn asset_lab_delete_dependency_message(
     Some(format!(
         "Cannot delete this step: {dependent_count} {noun} on it. {next}"
     ))
-}
-
-fn asset_lab_input_port(node_rect: Rect, index: usize, count: usize, zoom: f32) -> Pos2 {
-    let spacing = (24.0 * zoom).clamp(12.0, 34.0);
-    let side = if index % 2 == 0 { -1.0 } else { 1.0 };
-    let rank = (index / 2 + 1) as f32;
-    let raw_x = if count <= 1 {
-        node_rect.center().x - spacing
-    } else {
-        node_rect.center().x + side * rank * spacing
-    };
-    Pos2::new(
-        raw_x.clamp(
-            node_rect.left() + (18.0 * zoom).max(8.0),
-            node_rect.right() - (18.0 * zoom).max(8.0),
-        ),
-        node_rect.bottom(),
-    )
-}
-
-fn asset_lab_media_ref_route(
-    source_rect: Rect,
-    target_rect: Rect,
-    port_index: usize,
-    port_count: usize,
-    zoom: f32,
-) -> Vec<Pos2> {
-    let start = source_rect.center_top();
-    let end = asset_lab_input_port(target_rect, port_index, port_count, zoom);
-    let below_target_gap = (28.0 * zoom).clamp(14.0, 44.0);
-    let mut bus_y = if start.y > end.y {
-        start.y + (end.y - start.y) * 0.5
-    } else {
-        end.y + below_target_gap
-    };
-    let fan_offset = (port_index as f32 - port_count.saturating_sub(1) as f32 * 0.5)
-        * (7.0 * zoom).clamp(4.0, 10.0);
-    bus_y += fan_offset;
-
-    vec![
-        start,
-        Pos2::new(start.x, bus_y),
-        Pos2::new(end.x, bus_y),
-        end,
-    ]
-}
-
-fn asset_lab_short_port_label(label: &str) -> String {
-    let trimmed = label.trim();
-    if trimmed.chars().count() <= 18 {
-        return trimmed.to_string();
-    }
-
-    let prefix: String = trimmed.chars().take(15).collect();
-    format!("{prefix}...")
-}
-
-fn paint_asset_lab_dashed_segment(
-    painter: &egui::Painter,
-    start: Pos2,
-    end: Pos2,
-    stroke: Stroke,
-    dash: f32,
-    gap: f32,
-) {
-    let delta = end - start;
-    let length = delta.length();
-    if length <= f32::EPSILON {
-        return;
-    }
-
-    let direction = delta / length;
-    let mut cursor = 0.0;
-    while cursor < length {
-        let next = (cursor + dash).min(length);
-        painter.line_segment(
-            [start + direction * cursor, start + direction * next],
-            stroke,
-        );
-        cursor += dash + gap;
-    }
-}
-
-fn paint_asset_lab_dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    let dash = 9.0;
-    let gap = 5.0;
-    paint_asset_lab_dashed_segment(
-        painter,
-        rect.left_top(),
-        rect.right_top(),
-        stroke,
-        dash,
-        gap,
-    );
-    paint_asset_lab_dashed_segment(
-        painter,
-        rect.right_top(),
-        rect.right_bottom(),
-        stroke,
-        dash,
-        gap,
-    );
-    paint_asset_lab_dashed_segment(
-        painter,
-        rect.right_bottom(),
-        rect.left_bottom(),
-        stroke,
-        dash,
-        gap,
-    );
-    paint_asset_lab_dashed_segment(
-        painter,
-        rect.left_bottom(),
-        rect.left_top(),
-        stroke,
-        dash,
-        gap,
-    );
-}
-
-fn paint_asset_lab_arrowhead(
-    painter: &egui::Painter,
-    segment_start: Pos2,
-    tip: Pos2,
-    stroke: Stroke,
-    size: f32,
-) {
-    let delta = tip - segment_start;
-    let length = delta.length();
-    if length <= f32::EPSILON {
-        return;
-    }
-
-    let direction = delta / length;
-    let normal = Vec2::new(-direction.y, direction.x);
-    let left = tip - direction * size + normal * (size * 0.55);
-    let right = tip - direction * size - normal * (size * 0.55);
-    painter.line_segment([left, tip], stroke);
-    painter.line_segment([right, tip], stroke);
-}
-
-fn paint_asset_lab_polyline(painter: &egui::Painter, points: &[Pos2], stroke: Stroke) {
-    for pair in points.windows(2) {
-        let start = pair[0];
-        let end = pair[1];
-        if (end - start).length() <= f32::EPSILON {
-            continue;
-        }
-        painter.line_segment([start, end], stroke);
-    }
-}
-
-fn paint_asset_lab_polyline_arrow(
-    painter: &egui::Painter,
-    points: &[Pos2],
-    stroke: Stroke,
-    arrow_size: f32,
-) {
-    let mut last_segment = None;
-    for pair in points.windows(2) {
-        let start = pair[0];
-        let end = pair[1];
-        if (end - start).length() <= f32::EPSILON {
-            continue;
-        }
-        painter.line_segment([start, end], stroke);
-        last_segment = Some((start, end));
-    }
-    if let Some((start, end)) = last_segment {
-        paint_asset_lab_arrowhead(painter, start, end, stroke, arrow_size);
-    }
-}
-
-fn paint_asset_lab_dashed_polyline_arrow(
-    painter: &egui::Painter,
-    points: &[Pos2],
-    stroke: Stroke,
-    arrow_size: f32,
-) {
-    let mut last_segment = None;
-    for pair in points.windows(2) {
-        let start = pair[0];
-        let end = pair[1];
-        if (end - start).length() <= f32::EPSILON {
-            continue;
-        }
-        paint_asset_lab_dashed_segment(painter, start, end, stroke, 9.0, 5.0);
-        last_segment = Some((start, end));
-    }
-    if let Some((start, end)) = last_segment {
-        paint_asset_lab_arrowhead(painter, start, end, stroke, arrow_size);
-    }
-}
-
-fn asset_lab_fit_texture_rect(bounds: Rect, size: Vec2) -> Rect {
-    if bounds.width() <= 0.0 || bounds.height() <= 0.0 || size.x <= 0.0 || size.y <= 0.0 {
-        return bounds;
-    }
-    let scale = (bounds.width() / size.x).min(bounds.height() / size.y);
-    Rect::from_center_size(bounds.center(), size * scale.max(0.01))
-}
-
-fn paint_asset_lab_truncated_text(
-    ui: &mut Ui,
-    painter: &egui::Painter,
-    pos: Pos2,
-    text: RichText,
-    font_size: f32,
-    max_width: f32,
-    fallback_color: Color32,
-) {
-    let galley = egui::WidgetText::from(text).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        max_width.max(1.0),
-        FontId::proportional(font_size),
-    );
-    painter.galley(pos, galley, fallback_color);
-}
-
-fn paint_asset_lab_node_preview(
-    painter: &egui::Painter,
-    rect: Rect,
-    asset: &Asset,
-    preview: Option<(TextureId, Vec2)>,
-    accent: Color32,
-    label: &str,
-    zoom: f32,
-) {
-    let painter = painter.with_clip_rect(rect);
-    painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
-    painter.rect_stroke(
-        rect,
-        kit::field_radius(),
-        Stroke::new(1.0_f32, kit::BORDER_SOFT),
-        egui::StrokeKind::Inside,
-    );
-
-    if let Some((texture_id, size)) = preview {
-        let image_rect = asset_lab_fit_texture_rect(rect.shrink(4.0), size);
-        painter.image(
-            texture_id,
-            image_rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
-        painter.rect_stroke(
-            rect,
-            kit::field_radius(),
-            Stroke::new(1.0_f32, accent.gamma_multiply(0.68)),
-            egui::StrokeKind::Inside,
-        );
-    } else {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            asset_icon(asset),
-            FontId::proportional(16.0),
-            accent.gamma_multiply(0.92),
-        );
-    }
-
-    let label_h = (22.0 * zoom.sqrt()).clamp(12.0, 22.0).min(rect.height());
-    let label_rect = Rect::from_min_size(
-        rect.left_bottom() - Vec2::new(0.0, label_h),
-        Vec2::new(rect.width(), label_h),
-    );
-    painter.rect_filled(
-        label_rect,
-        kit::field_radius(),
-        Color32::from_rgba_unmultiplied(8, 10, 12, 170),
-    );
-    painter.text(
-        label_rect.left_center() + Vec2::new((8.0 * zoom).clamp(3.0, 8.0), 0.0),
-        egui::Align2::LEFT_CENTER,
-        label,
-        FontId::proportional((11.0 * zoom.sqrt()).clamp(8.0, 11.0)),
-        kit::TEXT,
-    );
-}
-
-fn paint_asset_lab_node_icon(
-    painter: &egui::Painter,
-    rect: Rect,
-    icon: AssetLabNodeIcon,
-    color: Color32,
-) {
-    let center = rect.center();
-    match icon {
-        AssetLabNodeIcon::Pin => {
-            painter.circle_filled(center + Vec2::new(0.0, -5.0), 3.2, color);
-            painter.line_segment(
-                [center + Vec2::new(0.0, -2.0), center + Vec2::new(0.0, 7.0)],
-                Stroke::new(1.7_f32, color),
-            );
-            painter.line_segment(
-                [center + Vec2::new(-4.0, 0.0), center + Vec2::new(4.0, 0.0)],
-                Stroke::new(1.5_f32, color),
-            );
-            painter.line_segment(
-                [center + Vec2::new(0.0, 7.0), center + Vec2::new(-3.0, 11.0)],
-                Stroke::new(1.5_f32, color.gamma_multiply(0.85)),
-            );
-        }
-        AssetLabNodeIcon::Trash => {
-            let body = Rect::from_center_size(center + Vec2::new(0.0, 3.0), Vec2::new(10.0, 11.0));
-            painter.rect_stroke(
-                body,
-                1.5,
-                Stroke::new(1.5_f32, color),
-                egui::StrokeKind::Inside,
-            );
-            painter.line_segment(
-                [
-                    center + Vec2::new(-7.0, -5.0),
-                    center + Vec2::new(7.0, -5.0),
-                ],
-                Stroke::new(1.6_f32, color),
-            );
-            painter.line_segment(
-                [
-                    center + Vec2::new(-3.0, -8.0),
-                    center + Vec2::new(3.0, -8.0),
-                ],
-                Stroke::new(1.5_f32, color),
-            );
-            painter.line_segment(
-                [center + Vec2::new(-2.5, 0.0), center + Vec2::new(-2.5, 8.0)],
-                Stroke::new(1.0_f32, color.gamma_multiply(0.85)),
-            );
-            painter.line_segment(
-                [center + Vec2::new(2.5, 0.0), center + Vec2::new(2.5, 8.0)],
-                Stroke::new(1.0_f32, color.gamma_multiply(0.85)),
-            );
-        }
-    }
-}
-
-fn asset_lab_node_icon_button(
-    ui: &mut Ui,
-    rect: Rect,
-    id: egui::Id,
-    icon: AssetLabNodeIcon,
-    enabled: bool,
-    active: bool,
-    danger: bool,
-    tooltip: &str,
-) -> Response {
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, id, sense).on_hover_text(tooltip);
-    let fill = if active {
-        kit::PRIMARY.gamma_multiply(0.55)
-    } else if !enabled {
-        Color32::from_rgb(23, 25, 29)
-    } else if danger {
-        Color32::from_rgb(75, 24, 28)
-    } else {
-        Color32::from_rgb(23, 25, 29)
-    };
-    let hover_fill = if danger {
-        Color32::from_rgb(105, 30, 35)
-    } else {
-        Color32::from_rgb(33, 37, 42)
-    };
-    let stroke = if active {
-        kit::PRIMARY
-    } else if !enabled {
-        kit::BORDER_SOFT
-    } else if danger {
-        kit::DANGER
-    } else {
-        kit::BORDER_SOFT
-    };
-    let icon_color = if enabled || active {
-        kit::TEXT
-    } else {
-        kit::TEXT_DIM
-    };
-    ui.painter().rect_filled(
-        rect,
-        kit::field_radius(),
-        if response.hovered() && enabled {
-            hover_fill
-        } else {
-            fill
-        },
-    );
-    ui.painter().rect_stroke(
-        rect,
-        kit::field_radius(),
-        Stroke::new(1.0_f32, stroke),
-        egui::StrokeKind::Inside,
-    );
-    paint_asset_lab_node_icon(ui.painter(), rect, icon, icon_color);
-    response
-}
-
-fn asset_lab_node_text_button(
-    ui: &mut Ui,
-    rect: Rect,
-    id: egui::Id,
-    label: &str,
-    enabled: bool,
-    tooltip: &str,
-) -> Response {
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, id, sense).on_hover_text(tooltip);
-    let fill = if response.hovered() && enabled {
-        kit::PRIMARY
-    } else {
-        kit::PRIMARY.gamma_multiply(0.45)
-    };
-    let stroke = if enabled {
-        kit::PRIMARY.gamma_multiply(0.85)
-    } else {
-        kit::BORDER_SOFT
-    };
-    let text_color = if enabled {
-        kit::TEXT_ON_ACCENT
-    } else {
-        kit::TEXT_DIM
-    };
-
-    ui.painter().rect_filled(rect, kit::field_radius(), fill);
-    ui.painter().rect_stroke(
-        rect,
-        kit::field_radius(),
-        Stroke::new(1.0_f32, stroke),
-        egui::StrokeKind::Inside,
-    );
-    let galley = egui::WidgetText::from(RichText::new(label).color(text_color).size(11.0))
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            (rect.width() - 10.0).max(0.0),
-            FontId::proportional(11.0),
-        );
-    ui.painter()
-        .galley(rect.center() - galley.size() * 0.5, galley, text_color);
-    response
 }
 
 fn asset_lab_input_label(input: &ProviderInputField) -> String {
@@ -2619,6 +1705,7 @@ impl LatentSlateApp {
                     .and_then(|asset| asset.active_version().map(str::to_string))
             });
         self.asset_lab = AssetLabState {
+            v4: AssetLabV4State::default(),
             asset_id: Some(asset_id),
             selected_version,
             pending_delete_version: None,
@@ -2629,7 +1716,6 @@ impl LatentSlateApp {
             preview_pan_drag: None,
             graph_pan: Vec2::ZERO,
             graph_zoom: 1.0,
-            graph_pan_drag: None,
             pending_graph_focus_node_id: None,
             inspector_focus_id: None,
             inspector_focus_node_id: None,
@@ -2645,7 +1731,13 @@ impl LatentSlateApp {
         self.asset_lab_node_preview_textures.clear();
         self.clear_asset_lab_compare_runtime();
         self.editor.overlays.asset_lab = true;
-        self.ensure_asset_lab_graph_for_versions(asset_id);
+        if self.editor.project.generative_config(asset_id).is_some() {
+            if let Err(error) = self.editor.initialize_asset_lab_authoring(asset_id) {
+                self.editor.status = error;
+            }
+            self.ensure_asset_lab_graph_for_versions(asset_id);
+            self.reset_asset_lab_session();
+        }
         self.asset_lab.pending_graph_focus_node_id = self
             .editor
             .project
@@ -2660,6 +1752,9 @@ impl LatentSlateApp {
     }
 
     pub(super) fn close_asset_lab(&mut self) {
+        if self.editor.overlays.asset_lab {
+            self.source_picker = None;
+        }
         self.editor.overlays.asset_lab = false;
         self.asset_lab = AssetLabState::default();
         self.asset_lab_preview_texture = None;
@@ -2719,7 +1814,8 @@ impl LatentSlateApp {
             && !ctx.any_popup_open();
         let generate_shortcut_requested = inspector_has_keyboard_focus
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
-        let outside_clicked = kit::dismissible_modal_scrim(ctx, "asset_lab", true);
+        let outside_clicked =
+            kit::dismissible_modal_scrim(ctx, "asset_lab", self.source_picker.is_none());
         let size = modal_size(ctx, ASSET_LAB_MODAL_SIZE, [660.0, 460.0]);
         let subtitle = if asset.is_generative() {
             let active = config_snapshot
@@ -2752,9 +1848,15 @@ impl LatentSlateApp {
             .frame(kit::modal_frame())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                close_clicked =
-                    kit::modal_header_with_close(ui, "Asset Lab", Some(&subtitle), true);
+                if !asset.is_generative() {
+                    close_clicked =
+                        kit::modal_header_with_close(ui, "Asset Lab", Some(&subtitle), true);
+                }
                 kit::modal_body(ui, |ui| {
+                    if let Some(config) = config_snapshot.as_ref().filter(|_| asset.is_generative())
+                    {
+                        close_clicked = self.asset_lab_v4_header(ui, &asset, config);
+                    }
                     self.asset_lab_modal_contents(
                         ui,
                         &asset,
@@ -2776,382 +1878,15 @@ impl LatentSlateApp {
         &mut self,
         ui: &mut Ui,
         asset: &Asset,
-        config: Option<&GenerativeConfig>,
-        generate_shortcut_requested: bool,
+        _config: Option<&GenerativeConfig>,
+        _generate_shortcut_requested: bool,
         action: &mut Option<AssetLabAction>,
     ) {
-        if !asset.is_generative() {
+        if asset.is_generative() {
+            self.asset_lab_v4_contents(ui, asset);
+        } else {
             self.asset_lab_basic_asset_contents(ui, asset, action);
-            return;
         }
-
-        let versions = config.map(sorted_generation_records).unwrap_or_default();
-        let selected_version = self.asset_lab.selected_version.clone();
-        let active_version = asset.active_version().map(str::to_string);
-        let pending_delete = self.asset_lab.pending_delete_version.clone();
-        let selected_node_id = config
-            .and_then(|config| config.lab_graph.selected_node_id)
-            .filter(|node_id| {
-                config.is_some_and(|config| {
-                    config
-                        .lab_graph
-                        .nodes
-                        .iter()
-                        .any(|node| node.id == *node_id)
-                })
-            });
-        let inspector_node_id =
-            asset_lab_effective_selected_node_id(config, self.asset_lab.compare.as_ref());
-        let compatible_providers: Vec<ProviderEntry> = self
-            .editor
-            .provider_entries
-            .iter()
-            .filter(|provider| {
-                asset_lab_provider_is_compatible(asset, provider)
-                    && self.editor.provider_in_project_scope(provider.id)
-            })
-            .cloned()
-            .collect();
-
-        let available_width = ui.available_width();
-        let inspector_width = (available_width * 0.34)
-            .clamp(340.0, 460.0)
-            .min((available_width - 420.0).max(300.0));
-        StripBuilder::new(ui)
-            .clip(true)
-            .size(Size::remainder().at_least(320.0))
-            .size(Size::exact(inspector_width))
-            .horizontal(|mut strip| {
-                strip.cell(|ui| {
-                    if self.asset_lab.compare.is_some() {
-                        self.asset_lab_compare_column(
-                            ui,
-                            asset,
-                            config,
-                            &versions,
-                            inspector_node_id,
-                            active_version.as_deref(),
-                            &compatible_providers,
-                            action,
-                        );
-                    } else {
-                        self.asset_lab_flow_column(
-                            ui,
-                            asset,
-                            config,
-                            &versions,
-                            selected_node_id,
-                            active_version.as_deref(),
-                            &compatible_providers,
-                            action,
-                        );
-                    }
-                });
-                strip.cell(|ui| {
-                    self.asset_lab_node_inspector(
-                        ui,
-                        asset,
-                        config,
-                        &versions,
-                        inspector_node_id,
-                        selected_version.as_deref(),
-                        active_version.as_deref(),
-                        pending_delete.as_deref(),
-                        &compatible_providers,
-                        generate_shortcut_requested,
-                        action,
-                    );
-                });
-            });
-    }
-
-    pub(super) fn asset_lab_flow_column(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        config: Option<&GenerativeConfig>,
-        versions: &[GenerationRecord],
-        selected_node_id: Option<Uuid>,
-        active_version: Option<&str>,
-        compatible_providers: &[ProviderEntry],
-        action: &mut Option<AssetLabAction>,
-    ) {
-        kit::card_frame().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                kit::field_label(ui, "Flow");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    kit::media_pill(
-                        ui,
-                        &format!("{:.0}%", self.asset_lab.graph_zoom * 100.0),
-                        kit::TEXT_MUTED,
-                    );
-                    if config
-                        .map(|config| config.lab_graph.nodes.is_empty())
-                        .unwrap_or(true)
-                        && kit::secondary_button(ui, "+ Step", 82.0).clicked()
-                    {
-                        let provider_id = compatible_providers
-                            .iter()
-                            .find(|provider| provider_is_available_for_generation(provider))
-                            .map(|provider| provider.id);
-                        *action = Some(AssetLabAction::AddNode(provider_id));
-                    }
-                });
-            });
-            ui.add_space(kit::FORM_ROW_GAP);
-            ui.add(
-                egui::Label::new(kit::caption(
-                    "Select a generation, edit its settings, then generate the staged variant.",
-                ))
-                .wrap(),
-            );
-            ui.add_space(kit::FORM_ROW_GAP);
-            self.asset_lab_flow_canvas(
-                ui,
-                asset,
-                config,
-                versions,
-                selected_node_id,
-                active_version,
-                compatible_providers,
-                action,
-            );
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn asset_lab_compare_column(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        config: Option<&GenerativeConfig>,
-        versions: &[GenerationRecord],
-        selected_node_id: Option<Uuid>,
-        active_version: Option<&str>,
-        compatible_providers: &[ProviderEntry],
-        action: &mut Option<AssetLabAction>,
-    ) {
-        self.poll_asset_lab_compare_timing_requests(ui.ctx());
-        self.poll_asset_lab_compare_video_requests(ui.ctx());
-        let available_h = ui.available_height().max(360.0);
-        let stage_h = (available_h * 0.60).clamp(260.0, (available_h - 210.0).max(260.0));
-        StripBuilder::new(ui)
-            .clip(true)
-            .size(Size::exact(stage_h))
-            .size(Size::remainder().at_least(170.0))
-            .vertical(|mut strip| {
-                strip.cell(|ui| {
-                    kit::card_frame().show(ui, |ui| {
-                        let compact = ui.available_width() < 560.0;
-                        ui.horizontal(|ui| {
-                            kit::field_label(ui, "Compare");
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                kit::media_pill(ui, "A / B", kit::PRIMARY);
-                            });
-                        });
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        kit::equal_width_action_row(
-                            ui,
-                            3,
-                            kit::SECONDARY_BUTTON_H,
-                            kit::FIELD_COMPOUND_GAP,
-                            |ui, index, width| match index {
-                                0 => {
-                                    let enabled =
-                                        self.asset_lab.compare.as_ref().is_some_and(|compare| {
-                                            compare.candidate_version.is_some()
-                                        });
-                                    ui.add_enabled_ui(enabled, |ui| {
-                                        let label = if compact { "Swap" } else { "Swap A / B" };
-                                        if kit::secondary_button(ui, label, width).clicked() {
-                                            *action = Some(AssetLabAction::SwapCompare);
-                                        }
-                                    });
-                                }
-                                1 => {
-                                    let enabled =
-                                        self.asset_lab.compare.as_ref().is_some_and(|compare| {
-                                            compare.candidate_version.is_some()
-                                        });
-                                    ui.add_enabled_ui(enabled, |ui| {
-                                        let label = if compact {
-                                            "B → A"
-                                        } else {
-                                            "Use B as Baseline"
-                                        };
-                                        if kit::secondary_button(ui, label, width).clicked() {
-                                            *action =
-                                                Some(AssetLabAction::UseCompareCandidateAsBaseline);
-                                        }
-                                    });
-                                }
-                                _ => {
-                                    let label = if compact { "Exit" } else { "Exit Compare" };
-                                    if kit::secondary_button(ui, label, width).clicked() {
-                                        *action = Some(AssetLabAction::ExitCompare);
-                                    }
-                                }
-                            },
-                        );
-                        ui.add_space(kit::ACTION_GAP);
-
-                        let Some(compare) = self.asset_lab.compare.clone() else {
-                            return;
-                        };
-                        let baseline_record =
-                            asset_lab_record_for_version(config, Some(&compare.baseline_version));
-                        let candidate_record = asset_lab_record_for_version(
-                            config,
-                            compare.candidate_version.as_deref(),
-                        );
-                        let a_timing = if asset.is_video() {
-                            match self.asset_lab_compare_version_timing(
-                                ui.ctx(),
-                                asset,
-                                &compare.baseline_version,
-                                baseline_record,
-                            ) {
-                                AssetLabTimingLookup::Ready(timing) => Some(timing),
-                                AssetLabTimingLookup::Pending => None,
-                            }
-                        } else {
-                            Some(asset_lab_compare_resolve_timing(
-                                asset,
-                                baseline_record,
-                                &self.editor.provider_entries,
-                                None,
-                                self.editor.project.settings.fps,
-                            ))
-                        };
-                        let b_timing =
-                            if let Some(candidate_version) = compare.candidate_version.as_deref() {
-                                if asset.is_video() {
-                                    match self.asset_lab_compare_version_timing(
-                                        ui.ctx(),
-                                        asset,
-                                        candidate_version,
-                                        candidate_record,
-                                    ) {
-                                        AssetLabTimingLookup::Ready(timing) => Some(timing),
-                                        AssetLabTimingLookup::Pending => None,
-                                    }
-                                } else {
-                                    Some(asset_lab_compare_resolve_timing(
-                                        asset,
-                                        candidate_record,
-                                        &self.editor.provider_entries,
-                                        None,
-                                        self.editor.project.settings.fps,
-                                    ))
-                                }
-                            } else {
-                                None
-                            };
-                        let a_duration = a_timing
-                            .map(|timing| timing.duration_seconds)
-                            .unwrap_or(0.0);
-                        let b_duration = b_timing.map(|timing| timing.duration_seconds);
-                        let max_duration =
-                            AssetLabCompareState::max_duration(a_duration, b_duration);
-                        if !asset.is_video() || (a_timing.is_some() && b_timing.is_some()) {
-                            self.advance_asset_lab_compare_playback(ui.ctx(), max_duration);
-                        }
-                        let compare = self.asset_lab.compare.clone().unwrap_or(compare);
-                        let a_time = compare.side_time(a_duration);
-                        let b_time = b_duration.map(|duration| compare.side_time(duration));
-                        let a_preview = self.asset_lab_compare_pane_preview(
-                            ui.ctx(),
-                            asset,
-                            AssetLabCompareSide::Baseline,
-                            Some(&compare.baseline_version),
-                            a_time,
-                            a_timing,
-                        );
-                        let b_preview = self.asset_lab_compare_pane_preview(
-                            ui.ctx(),
-                            asset,
-                            AssetLabCompareSide::Candidate,
-                            compare.candidate_version.as_deref(),
-                            b_time.unwrap_or(0.0),
-                            b_timing,
-                        );
-
-                        let transport_h = if asset.is_video() { 72.0 } else { 0.0 };
-                        let pane_h = (ui.available_height() - transport_h).max(120.0);
-                        let pane_gap = kit::FIELD_COMPOUND_GAP;
-                        let pane_w = ((ui.available_width() - pane_gap) * 0.5).max(1.0);
-                        kit::bounded_horizontal_row(ui, pane_h, |ui, _| {
-                            ui.spacing_mut().item_spacing.x = pane_gap;
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(pane_w, pane_h),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    self.paint_asset_lab_compare_pane(
-                                        ui,
-                                        asset,
-                                        config,
-                                        AssetLabCompareSide::Baseline,
-                                        Some(&compare.baseline_version),
-                                        active_version,
-                                        a_duration,
-                                        compare.side_has_ended(a_duration, max_duration),
-                                        a_preview,
-                                        action,
-                                    );
-                                },
-                            );
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(pane_w, pane_h),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    self.paint_asset_lab_compare_pane(
-                                        ui,
-                                        asset,
-                                        config,
-                                        AssetLabCompareSide::Candidate,
-                                        compare.candidate_version.as_deref(),
-                                        active_version,
-                                        b_duration.unwrap_or(0.0),
-                                        b_duration.is_some_and(|duration| {
-                                            compare.side_has_ended(duration, max_duration)
-                                        }),
-                                        b_preview,
-                                        action,
-                                    );
-                                },
-                            );
-                        });
-                        if asset.is_video() {
-                            self.asset_lab_compare_transport(ui, max_duration);
-                        }
-                    });
-                });
-                strip.cell(|ui| {
-                    kit::card_frame().show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            kit::field_label(ui, "Graph · Candidate Browser");
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                kit::media_pill(
-                                    ui,
-                                    &format!("{:.0}%", self.asset_lab.graph_zoom * 100.0),
-                                    kit::TEXT_MUTED,
-                                );
-                            });
-                        });
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        self.asset_lab_flow_canvas(
-                            ui,
-                            asset,
-                            config,
-                            versions,
-                            selected_node_id,
-                            active_version,
-                            compatible_providers,
-                            action,
-                        );
-                    });
-                });
-            });
     }
 
     #[allow(dead_code)]
@@ -3263,1692 +1998,6 @@ impl LatentSlateApp {
                 action,
             );
         });
-    }
-
-    pub(super) fn asset_lab_flow_canvas(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        config: Option<&GenerativeConfig>,
-        versions: &[GenerationRecord],
-        selected_node_id: Option<Uuid>,
-        active_version: Option<&str>,
-        compatible_providers: &[ProviderEntry],
-        action: &mut Option<AssetLabAction>,
-    ) {
-        let compare = self.asset_lab.compare.clone();
-        let nodes = config
-            .map(|config| config.lab_graph.nodes.as_slice())
-            .unwrap_or(&[]);
-        let available = ui.available_size();
-        let viewport_h = available.y.max(220.0);
-        let (canvas_rect, response) =
-            ui.allocate_exact_size(Vec2::new(available.x, viewport_h), Sense::click_and_drag());
-        let painter = ui.painter().with_clip_rect(canvas_rect);
-        painter.rect_filled(canvas_rect, kit::field_radius(), kit::FIELD_BG);
-        painter.rect_stroke(
-            canvas_rect,
-            kit::field_radius(),
-            Stroke::new(1.0_f32, kit::BORDER_SOFT),
-            egui::StrokeKind::Inside,
-        );
-
-        if nodes.is_empty() {
-            painter.text(
-                canvas_rect.center_top() + Vec2::new(0.0, 76.0),
-                egui::Align2::CENTER_CENTER,
-                "Add a generation step",
-                FontId::proportional(13.0),
-                kit::TEXT_MUTED,
-            );
-            painter.text(
-                canvas_rect.center_top() + Vec2::new(0.0, 98.0),
-                egui::Align2::CENTER_CENTER,
-                "The lineage graph appears here once this asset has staged steps.",
-                FontId::proportional(11.0),
-                kit::TEXT_DIM,
-            );
-            if kit::secondary_button(ui, "+ Step", 82.0).clicked() {
-                let provider_id = compatible_providers
-                    .iter()
-                    .find(|provider| provider_is_available_for_generation(provider))
-                    .map(|provider| provider.id);
-                *action = Some(AssetLabAction::AddNode(provider_id));
-            }
-            return;
-        }
-
-        let layout = asset_lab_graph_layout(config, self.asset_lab.draft_source_node_id);
-        let lane_pitch = 346.0f32;
-        let depth_pitch = 244.0f32;
-        let node_size = Vec2::new(284.0, 194.0);
-        let graph_margin = 32.0f32;
-        let max_lane = layout
-            .nodes
-            .iter()
-            .map(|entry| entry.lane)
-            .chain(layout.ghost.iter().map(|entry| entry.lane))
-            .max()
-            .unwrap_or(0);
-        let max_depth = layout
-            .nodes
-            .iter()
-            .map(|entry| entry.depth)
-            .chain(layout.ghost.iter().map(|entry| entry.depth))
-            .max()
-            .unwrap_or(0);
-        let content_w = graph_margin * 2.0 + (max_lane as f32 + 1.0) * lane_pitch;
-        let content_h = graph_margin * 2.0 + (max_depth as f32 + 1.0) * depth_pitch;
-        let content_size = Vec2::new(content_w, content_h);
-        let hit_zoom = self
-            .asset_lab
-            .graph_zoom
-            .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
-        let hit_origin =
-            canvas_rect.center() + self.asset_lab.graph_pan - content_size * hit_zoom * 0.5;
-        let hit_scaled_node = node_size * hit_zoom;
-        let hit_scaled_lane_pitch = lane_pitch * hit_zoom;
-        let hit_scaled_depth_pitch = depth_pitch * hit_zoom;
-        let hit_scaled_margin = graph_margin * hit_zoom;
-        let mut graph_item_hit_rects: Vec<Rect> = Vec::new();
-        let mut graph_item_hit_by_id: HashMap<Uuid, Rect> = HashMap::new();
-        for entry in &layout.nodes {
-            let x = hit_origin.x + hit_scaled_margin + entry.lane as f32 * hit_scaled_lane_pitch;
-            let y = hit_origin.y
-                + hit_scaled_margin
-                + (max_depth.saturating_sub(entry.depth)) as f32 * hit_scaled_depth_pitch;
-            let rect = Rect::from_min_size(Pos2::new(x, y), hit_scaled_node);
-            graph_item_hit_rects.push(rect);
-            graph_item_hit_by_id.insert(entry.node_id, rect);
-        }
-        if let Some(ghost) = layout.ghost.as_ref() {
-            if graph_item_hit_by_id.contains_key(&ghost.parent_node_id) {
-                let x =
-                    hit_origin.x + hit_scaled_margin + ghost.lane as f32 * hit_scaled_lane_pitch;
-                let y = hit_origin.y
-                    + hit_scaled_margin
-                    + (max_depth.saturating_sub(ghost.depth)) as f32 * hit_scaled_depth_pitch;
-                graph_item_hit_rects.push(Rect::from_min_size(Pos2::new(x, y), hit_scaled_node));
-            }
-        }
-
-        let pointer = ui
-            .ctx()
-            .pointer_interact_pos()
-            .or_else(|| ui.ctx().pointer_hover_pos());
-        let pointer_in_canvas = pointer
-            .map(|pointer| canvas_rect.contains(pointer))
-            .unwrap_or(false);
-        let pointer_on_graph_item = pointer
-            .map(|pointer| {
-                graph_item_hit_rects
-                    .iter()
-                    .any(|rect| rect.contains(pointer))
-            })
-            .unwrap_or(false);
-        let pan_pressed =
-            ui.input(|input| input.pointer.primary_pressed() || input.pointer.secondary_pressed());
-        if pan_pressed && pointer_in_canvas && !pointer_on_graph_item {
-            if let Some(start_pointer) = pointer {
-                self.asset_lab.graph_pan_drag = Some((self.asset_lab.graph_pan, start_pointer));
-            }
-        }
-        if let Some((start_pan, start_pointer)) = self.asset_lab.graph_pan_drag {
-            let pan_down =
-                ui.input(|input| input.pointer.primary_down() || input.pointer.secondary_down());
-            if pan_down {
-                if let Some(pointer) = pointer {
-                    self.asset_lab.graph_pan = start_pan + (pointer - start_pointer);
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::AllScroll);
-                    ui.ctx().request_repaint();
-                }
-            } else {
-                self.asset_lab.graph_pan_drag = None;
-            }
-        }
-
-        let wheel_delta = preview_scroll_delta(ui, canvas_rect);
-        if wheel_delta.abs() > f32::EPSILON {
-            let old_zoom = self
-                .asset_lab
-                .graph_zoom
-                .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
-            let zoom_factor =
-                (1.0 + wheel_delta * 0.015 * PREVIEW_WHEEL_ZOOM_MULTIPLIER).clamp(0.28, 1.88);
-            let new_zoom =
-                (old_zoom * zoom_factor).clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
-            if (new_zoom - old_zoom).abs() > f32::EPSILON {
-                if let Some(pointer) = ui
-                    .ctx()
-                    .pointer_hover_pos()
-                    .filter(|pointer| canvas_rect.contains(*pointer))
-                {
-                    let old_origin = canvas_rect.center() + self.asset_lab.graph_pan
-                        - content_size * old_zoom * 0.5;
-                    let before = (pointer - old_origin) / old_zoom.max(0.0001);
-                    self.asset_lab.graph_zoom = new_zoom;
-                    self.asset_lab.graph_pan = pointer - canvas_rect.center()
-                        + content_size * new_zoom * 0.5
-                        - before * new_zoom;
-                } else {
-                    self.asset_lab.graph_zoom = new_zoom;
-                }
-            }
-        }
-
-        let zoom = self
-            .asset_lab
-            .graph_zoom
-            .clamp(ASSET_LAB_GRAPH_ZOOM_MIN, ASSET_LAB_GRAPH_ZOOM_MAX);
-        self.asset_lab.graph_zoom = zoom;
-
-        if let Some(focus_node_id) = self.asset_lab.pending_graph_focus_node_id.take() {
-            if let Some(entry) = layout
-                .nodes
-                .iter()
-                .find(|entry| entry.node_id == focus_node_id)
-            {
-                let focus_center = Vec2::new(
-                    graph_margin + entry.lane as f32 * lane_pitch + node_size.x * 0.5,
-                    graph_margin
-                        + (max_depth.saturating_sub(entry.depth)) as f32 * depth_pitch
-                        + node_size.y * 0.5,
-                );
-                self.asset_lab.graph_pan = content_size * zoom * 0.5 - focus_center * zoom;
-            }
-        }
-
-        let origin = canvas_rect.center() + self.asset_lab.graph_pan - content_size * zoom * 0.5;
-        let scaled_node = node_size * zoom;
-        let scaled_lane_pitch = lane_pitch * zoom;
-        let scaled_depth_pitch = depth_pitch * zoom;
-        let scaled_margin = graph_margin * zoom;
-        let mut node_rects: HashMap<Uuid, Rect> = HashMap::new();
-
-        for entry in &layout.nodes {
-            let x = origin.x + scaled_margin + entry.lane as f32 * scaled_lane_pitch;
-            let y = origin.y
-                + scaled_margin
-                + (max_depth.saturating_sub(entry.depth)) as f32 * scaled_depth_pitch;
-            let rect = Rect::from_min_size(Pos2::new(x, y), scaled_node);
-            node_rects.insert(entry.node_id, rect);
-        }
-
-        let media_ref_links =
-            asset_lab_media_ref_links(asset, nodes, versions, &self.editor.provider_entries);
-        let mut media_ref_links_by_target: HashMap<Uuid, Vec<usize>> = HashMap::new();
-        for (index, link) in media_ref_links.iter().enumerate() {
-            media_ref_links_by_target
-                .entry(link.target_node_id)
-                .or_default()
-                .push(index);
-        }
-
-        for link in &media_ref_links {
-            let Some(source_rect) = node_rects.get(&link.source_node_id).copied() else {
-                continue;
-            };
-            let Some(target_rect) = node_rects.get(&link.target_node_id).copied() else {
-                continue;
-            };
-            let focused = selected_node_id.is_none_or(|node_id| {
-                node_id == link.source_node_id || node_id == link.target_node_id
-            });
-            let stroke = Stroke::new(
-                (1.15 * zoom).clamp(0.9, 1.8),
-                if focused {
-                    Color32::from_rgba_unmultiplied(75, 196, 123, 150)
-                } else {
-                    Color32::from_rgba_unmultiplied(75, 196, 123, 58)
-                },
-            );
-            let route = asset_lab_media_ref_route(
-                source_rect,
-                target_rect,
-                link.port_index,
-                link.port_count,
-                zoom,
-            );
-            paint_asset_lab_polyline(&painter, &route, stroke);
-        }
-
-        for node in nodes {
-            let Some(node_rect) = node_rects.get(&node.id).copied() else {
-                continue;
-            };
-            if let Some(parent_id) = node.parent_node_id {
-                if let Some(parent_rect) = node_rects.get(&parent_id).copied() {
-                    let start = parent_rect.center_top();
-                    let end = node_rect.center_bottom();
-                    let mid_y = start.y + (end.y - start.y) * 0.5;
-                    let stroke = Stroke::new(
-                        (1.6 * zoom).clamp(1.25, 2.4),
-                        asset_accent(asset).gamma_multiply(0.78),
-                    );
-                    paint_asset_lab_polyline_arrow(
-                        &painter,
-                        &[
-                            start,
-                            Pos2::new(start.x, mid_y),
-                            Pos2::new(end.x, mid_y),
-                            end,
-                        ],
-                        stroke,
-                        (8.0 * zoom).clamp(6.0, 12.0),
-                    );
-                }
-            }
-        }
-
-        let mut node_or_sidecar_clicked = false;
-        let mut ghost_generate_overlay: Option<(Rect, Uuid, bool)> = None;
-        if let Some(ghost) = layout.ghost.as_ref() {
-            if let Some(source_rect) = node_rects.get(&ghost.parent_node_id).copied() {
-                let x = origin.x + scaled_margin + ghost.lane as f32 * scaled_lane_pitch;
-                let y = origin.y
-                    + scaled_margin
-                    + (max_depth.saturating_sub(ghost.depth)) as f32 * scaled_depth_pitch;
-                let ghost_rect = Rect::from_min_size(Pos2::new(x, y), scaled_node);
-                let start = source_rect.center_top();
-                let end = ghost_rect.center_bottom();
-                let mid_y = start.y + (end.y - start.y) * 0.5;
-                let stroke = Stroke::new(
-                    (1.5 * zoom).clamp(1.2, 2.2),
-                    kit::MARKER.gamma_multiply(0.92),
-                );
-                paint_asset_lab_dashed_polyline_arrow(
-                    &painter,
-                    &[
-                        start,
-                        Pos2::new(start.x, mid_y),
-                        Pos2::new(end.x, mid_y),
-                        end,
-                    ],
-                    stroke,
-                    (8.0 * zoom).clamp(6.0, 12.0),
-                );
-                painter.rect_filled(
-                    ghost_rect,
-                    kit::field_radius(),
-                    Color32::from_rgba_unmultiplied(244, 127, 45, 20),
-                );
-                paint_asset_lab_dashed_rect(&painter, ghost_rect, stroke);
-                if zoom >= 0.65 {
-                    let preview_rect = Rect::from_min_size(
-                        ghost_rect.min + Vec2::splat(10.0 * zoom),
-                        Vec2::new(
-                            (ghost_rect.width() - 20.0 * zoom).max(20.0),
-                            (ghost_rect.height() * 0.58).max(36.0),
-                        ),
-                    );
-                    painter.rect_filled(
-                        preview_rect,
-                        kit::field_radius(),
-                        Color32::from_rgba_unmultiplied(244, 127, 45, 24),
-                    );
-                    paint_asset_lab_dashed_rect(&painter, preview_rect, stroke);
-                    painter.text(
-                        ghost_rect.center_bottom() - Vec2::new(0.0, ghost_rect.height() * 0.25),
-                        egui::Align2::CENTER_CENTER,
-                        "Ungenerated variant",
-                        FontId::proportional(12.0),
-                        kit::MARKER,
-                    );
-                }
-                let pending_job_status =
-                    self.editor.generation_queue.iter().rev().find_map(|job| {
-                        (job.lab_node_id == Some(ghost.parent_node_id)
-                            && matches!(
-                                job.status,
-                                GenerationJobStatus::Queued
-                                    | GenerationJobStatus::Running
-                                    | GenerationJobStatus::Canceling
-                            ))
-                        .then_some(job.status)
-                    });
-                let draft_node = nodes
-                    .iter()
-                    .find(|node| node.id == ghost.parent_node_id)
-                    .cloned()
-                    .map(|mut node| {
-                        node.provider_id = self.asset_lab.draft_provider_id;
-                        node.inputs = self.asset_lab.draft_inputs.clone();
-                        node.output_version = None;
-                        node
-                    });
-                let draft_provider = draft_node.as_ref().and_then(|node| {
-                    node.provider_id.and_then(|provider_id| {
-                        self.editor
-                            .provider_entries
-                            .iter()
-                            .find(|provider| provider.id == provider_id)
-                            .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
-                    })
-                });
-                let draft_preflight_error = draft_node.as_ref().and_then(|node| {
-                    self.asset_lab_node_preflight_error(asset, node, draft_provider)
-                });
-                let can_generate = draft_node.as_ref().is_some_and(|_| {
-                    self.asset_lab_can_generate_variant(
-                        asset,
-                        draft_provider,
-                        self.asset_lab.draft_source_node_id == Some(ghost.parent_node_id),
-                        pending_job_status,
-                        draft_preflight_error.as_deref(),
-                    )
-                });
-                if zoom >= 0.72 {
-                    let button_size =
-                        Vec2::new((ghost_rect.width() - 28.0).clamp(104.0, 148.0), 34.0);
-                    let button_rect = Rect::from_min_size(
-                        ghost_rect.left_top() + Vec2::new(14.0, 14.0),
-                        button_size,
-                    );
-                    ghost_generate_overlay =
-                        Some((button_rect, ghost.parent_node_id, can_generate));
-                }
-            }
-        }
-
-        for entry in &layout.nodes {
-            let Some(node) = nodes.iter().find(|node| node.id == entry.node_id) else {
-                continue;
-            };
-            let Some(node_rect) = node_rects.get(&node.id).copied() else {
-                continue;
-            };
-            let selected = selected_node_id == Some(node.id);
-            let active_output = node
-                .output_version
-                .as_deref()
-                .is_some_and(|version| active_version == Some(version));
-            let response = crate::core::automation::instrument_response(
-                ui.interact(
-                    node_rect,
-                    ui.id().with(("asset_lab_node", node.id)),
-                    Sense::click(),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand),
-                "step",
-                Some(
-                    node.provider_id
-                        .map(|id| asset_lab_provider_name(&self.editor.provider_entries, id))
-                        .unwrap_or_else(|| "Select provider".to_string()),
-                ),
-                true,
-                false,
-            );
-            if response.clicked() {
-                node_or_sidecar_clicked = true;
-                *action = Some(AssetLabAction::SelectNode(node.id));
-            }
-
-            let node_label = node
-                .provider_id
-                .map(|id| asset_lab_provider_name(&self.editor.provider_entries, id))
-                .unwrap_or_else(|| "Staged step".to_string());
-            let node_depth = config
-                .map(|config| config.lineage_depth(node.id))
-                .unwrap_or(0);
-            let pending_job_status = self
-                .editor
-                .generation_queue
-                .iter()
-                .rev()
-                .find(|job| {
-                    job.lab_node_id == Some(node.id)
-                        && matches!(
-                            job.status,
-                            GenerationJobStatus::Queued
-                                | GenerationJobStatus::Running
-                                | GenerationJobStatus::Canceling
-                        )
-                })
-                .map(|job| job.status);
-            let output_label = if let Some(status) = pending_job_status {
-                match status {
-                    GenerationJobStatus::Queued => "Queued".to_string(),
-                    GenerationJobStatus::Running => "Running".to_string(),
-                    GenerationJobStatus::Canceling => "Canceling".to_string(),
-                    _ => "In progress".to_string(),
-                }
-            } else {
-                node.output_version
-                    .as_deref()
-                    .map(|version| {
-                        if active_output {
-                            format!("{version} on timeline")
-                        } else {
-                            format!("Output {version}")
-                        }
-                    })
-                    .unwrap_or_else(|| "Staged".to_string())
-            };
-
-            let fill = if selected {
-                Color32::from_rgb(25, 38, 36)
-            } else if response.hovered() {
-                Color32::from_rgb(27, 30, 34)
-            } else {
-                Color32::from_rgb(19, 21, 24)
-            };
-            painter.rect_filled(node_rect, kit::field_radius(), fill);
-            painter.rect_stroke(
-                node_rect,
-                kit::field_radius(),
-                Stroke::new(
-                    1.1_f32,
-                    if active_output {
-                        kit::PRIMARY
-                    } else if selected {
-                        kit::BORDER_FOCUS
-                    } else {
-                        kit::BORDER_SOFT
-                    },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            painter.rect_filled(
-                Rect::from_min_size(node_rect.left_top(), Vec2::new(4.0, node_rect.height())),
-                kit::field_radius(),
-                asset_accent(asset),
-            );
-
-            let inner = node_rect.shrink(10.0 * zoom);
-            let preview_h = if zoom < 0.64 {
-                inner.height()
-            } else {
-                (node_rect.height() * 0.58).min((inner.height() - 54.0).max(24.0))
-            };
-            let preview_rect =
-                Rect::from_min_size(inner.left_top(), Vec2::new(inner.width(), preview_h));
-            let preview_response = ui.interact(
-                preview_rect,
-                ui.id().with(("asset_lab_node_preview", node.id)),
-                Sense::hover(),
-            );
-            let output_path =
-                node.output_version.as_deref().and_then(|version| {
-                    self.editor.project.project_path.as_ref().and_then(|root| {
-                        generative_output_file_for_version(root, asset, Some(version))
-                    })
-                });
-            let video_duration = if asset.is_video() {
-                asset
-                    .duration_seconds
-                    .filter(|duration| *duration > 0.0)
-                    .or_else(|| output_path.as_deref().and_then(probe_duration_seconds))
-                    .unwrap_or(0.0)
-                    .max(0.0)
-            } else {
-                0.0
-            };
-            let mut scrub_fraction = 0.0;
-            let mut preview_time = 0.0;
-            if asset.is_video() && output_path.is_some() && preview_response.hovered() {
-                if let Some(pointer) = ui.ctx().pointer_hover_pos() {
-                    scrub_fraction =
-                        ((pointer.x - preview_rect.left()) / preview_rect.width()).clamp(0.0, 1.0);
-                    preview_time = video_duration * scrub_fraction as f64;
-                }
-            }
-            let preview = if node.output_version.is_some() {
-                self.asset_lab_node_preview_texture(
-                    ui.ctx(),
-                    asset,
-                    node.output_version.as_deref(),
-                    preview_time,
-                )
-            } else {
-                None
-            };
-            paint_asset_lab_node_preview(
-                &painter,
-                preview_rect,
-                asset,
-                preview,
-                asset_accent(asset),
-                &output_label,
-                zoom,
-            );
-            if let Some(compare) = compare.as_ref() {
-                let is_a =
-                    asset_lab_node_represents_version(config, node, &compare.baseline_version);
-                let is_b = compare.candidate_version.as_deref().is_some_and(|version| {
-                    asset_lab_node_represents_version(config, node, version)
-                });
-                if is_a || is_b {
-                    let badge_size = Vec2::new((22.0 * zoom).clamp(16.0, 24.0), 18.0);
-                    let gap = (4.0 * zoom).clamp(2.0, 5.0);
-                    let count = usize::from(is_a) + usize::from(is_b);
-                    let total_w =
-                        badge_size.x * count as f32 + gap * count.saturating_sub(1) as f32;
-                    let mut badge_left = preview_rect.right() - total_w - 6.0;
-                    for (visible, side, color) in [
-                        (is_a, AssetLabCompareSide::Baseline, kit::PRIMARY),
-                        (is_b, AssetLabCompareSide::Candidate, kit::MARKER),
-                    ] {
-                        if !visible {
-                            continue;
-                        }
-                        let badge_rect = Rect::from_min_size(
-                            Pos2::new(badge_left, preview_rect.top() + 6.0),
-                            badge_size,
-                        );
-                        painter.rect_filled(
-                            badge_rect,
-                            kit::field_radius(),
-                            Color32::from_rgba_unmultiplied(12, 16, 18, 226),
-                        );
-                        painter.rect_stroke(
-                            badge_rect,
-                            kit::field_radius(),
-                            Stroke::new(1.2_f32, color),
-                            egui::StrokeKind::Inside,
-                        );
-                        painter.text(
-                            badge_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            side.marker(),
-                            FontId::proportional((10.5 * zoom).clamp(9.0, 11.5)),
-                            color,
-                        );
-                        badge_left += badge_size.x + gap;
-                    }
-                }
-            }
-            if asset.is_video() && output_path.is_some() {
-                let scrub_y = preview_rect.bottom() - 4.0;
-                painter.line_segment(
-                    [
-                        Pos2::new(preview_rect.left() + 8.0, scrub_y),
-                        Pos2::new(preview_rect.right() - 8.0, scrub_y),
-                    ],
-                    Stroke::new(1.0_f32, kit::BORDER_SOFT),
-                );
-                if preview_response.hovered() {
-                    let scrub_x = egui::lerp(
-                        (preview_rect.left() + 8.0)..=(preview_rect.right() - 8.0),
-                        scrub_fraction,
-                    );
-                    painter.line_segment(
-                        [
-                            Pos2::new(scrub_x, preview_rect.top() + 7.0),
-                            Pos2::new(scrub_x, preview_rect.bottom() - 5.0),
-                        ],
-                        Stroke::new(1.4_f32, kit::MARKER),
-                    );
-                }
-            }
-
-            if zoom >= 0.64 {
-                let text_top = preview_rect.bottom() + 8.0;
-                let text_left = inner.left();
-                let text_width = if selected && zoom >= 0.86 {
-                    (inner.width() - 70.0).max(24.0)
-                } else {
-                    inner.width()
-                };
-                painter.text(
-                    Pos2::new(text_left, text_top),
-                    egui::Align2::LEFT_TOP,
-                    format!("Step {}", node_depth + 1),
-                    FontId::proportional(12.5),
-                    kit::TEXT,
-                );
-                paint_asset_lab_truncated_text(
-                    ui,
-                    &painter,
-                    Pos2::new(text_left, text_top + 20.0),
-                    kit::caption(node_label),
-                    11.0,
-                    text_width,
-                    kit::TEXT_MUTED,
-                );
-                paint_asset_lab_truncated_text(
-                    ui,
-                    &painter,
-                    Pos2::new(text_left, text_top + 39.0),
-                    kit::caption(format!(
-                        "{} media refs | {} inputs",
-                        node.inputs
-                            .values()
-                            .filter(|value| matches!(value, InputValue::GenerationRef { .. }))
-                            .count(),
-                        node.inputs.len()
-                    )),
-                    10.5,
-                    text_width,
-                    kit::TEXT_DIM,
-                );
-            }
-
-            if let Some(link_indexes) = media_ref_links_by_target.get(&node.id) {
-                let focused_node = selected_node_id.is_none_or(|selected| selected == node.id);
-                let rail_y = node_rect.bottom() - (1.5 * zoom).clamp(1.0, 2.0);
-                painter.line_segment(
-                    [
-                        Pos2::new(node_rect.left() + 14.0 * zoom, rail_y),
-                        Pos2::new(node_rect.right() - 14.0 * zoom, rail_y),
-                    ],
-                    Stroke::new(
-                        (1.0 * zoom).clamp(0.7, 1.25),
-                        if focused_node {
-                            Color32::from_rgba_unmultiplied(75, 196, 123, 112)
-                        } else {
-                            Color32::from_rgba_unmultiplied(75, 196, 123, 46)
-                        },
-                    ),
-                );
-                for link_index in link_indexes {
-                    let Some(link) = media_ref_links.get(*link_index) else {
-                        continue;
-                    };
-                    let endpoint_focused = selected_node_id.is_none_or(|selected| {
-                        selected == link.source_node_id || selected == link.target_node_id
-                    });
-                    let port =
-                        asset_lab_input_port(node_rect, link.port_index, link.port_count, zoom);
-                    let port_radius = (4.0 * zoom).clamp(2.4, 5.2);
-                    painter.circle_filled(
-                        port,
-                        port_radius,
-                        if endpoint_focused {
-                            Color32::from_rgba_unmultiplied(82, 220, 136, 220)
-                        } else {
-                            Color32::from_rgba_unmultiplied(82, 220, 136, 92)
-                        },
-                    );
-                    painter.circle_stroke(
-                        port,
-                        port_radius + 1.2,
-                        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(7, 13, 10, 190)),
-                    );
-
-                    if selected && zoom >= 0.86 {
-                        let label = asset_lab_short_port_label(&link.label);
-                        let label_size = Vec2::new((label.len() as f32 * 5.6 + 14.0) * zoom, 16.0);
-                        let label_rect =
-                            Rect::from_center_size(port - Vec2::new(0.0, 17.0 * zoom), label_size);
-                        painter.rect_filled(
-                            label_rect,
-                            kit::field_radius(),
-                            Color32::from_rgba_unmultiplied(15, 42, 29, 218),
-                        );
-                        painter.rect_stroke(
-                            label_rect,
-                            kit::field_radius(),
-                            Stroke::new(
-                                1.0_f32,
-                                Color32::from_rgba_unmultiplied(82, 220, 136, 140),
-                            ),
-                            egui::StrokeKind::Inside,
-                        );
-                        painter.text(
-                            label_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            label,
-                            FontId::proportional((9.0 * zoom).clamp(8.0, 10.0)),
-                            kit::TEXT,
-                        );
-                    }
-                }
-            }
-
-            if selected && zoom >= 0.86 {
-                let icon_size = Vec2::splat(26.0);
-                let action_top = inner.bottom() - icon_size.y - 6.0;
-                let action_right = inner.right() - 6.0;
-                let trash_rect = Rect::from_min_size(
-                    Pos2::new(action_right - icon_size.x, action_top),
-                    icon_size,
-                );
-                if let Some(version) = node.output_version.as_deref() {
-                    let pin_rect = trash_rect.translate(Vec2::new(-(icon_size.x + 6.0), 0.0));
-                    let pin_enabled = !active_output;
-                    let pin = asset_lab_node_icon_button(
-                        ui,
-                        pin_rect,
-                        ui.id().with(("asset_lab_node_pin", node.id)),
-                        AssetLabNodeIcon::Pin,
-                        pin_enabled,
-                        active_output,
-                        false,
-                        if active_output {
-                            "Active output"
-                        } else {
-                            "Set active output"
-                        },
-                    );
-                    if pin_enabled && pin.clicked() {
-                        node_or_sidecar_clicked = true;
-                        *action = Some(AssetLabAction::SetActive(version.to_string()));
-                    }
-                } else {
-                    let generate_w = (inner.width() - icon_size.x - 14.0).clamp(72.0, 96.0);
-                    let generate_rect = Rect::from_min_size(
-                        Pos2::new(trash_rect.left() - generate_w - 6.0, action_top),
-                        Vec2::new(generate_w, icon_size.y),
-                    );
-                    let generate_label = pending_job_status
-                        .map(|status| match status {
-                            GenerationJobStatus::Queued => "Queued",
-                            GenerationJobStatus::Running => "Running",
-                            GenerationJobStatus::Canceling => "Canceling",
-                            _ => "Generate",
-                        })
-                        .unwrap_or("Generate");
-                    let provider = node.provider_id.and_then(|provider_id| {
-                        self.editor
-                            .provider_entries
-                            .iter()
-                            .find(|provider| provider.id == provider_id)
-                            .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
-                    });
-                    let preflight_error =
-                        self.asset_lab_node_preflight_error(asset, node, provider);
-                    let can_generate = self.asset_lab_can_generate_variant(
-                        asset,
-                        provider,
-                        true,
-                        pending_job_status,
-                        preflight_error.as_deref(),
-                    );
-                    if asset_lab_node_text_button(
-                        ui,
-                        generate_rect,
-                        ui.id().with(("asset_lab_node_generate", node.id)),
-                        generate_label,
-                        can_generate,
-                        if can_generate {
-                            "Generate staged step"
-                        } else {
-                            generate_label
-                        },
-                    )
-                    .clicked()
-                    {
-                        node_or_sidecar_clicked = true;
-                        *action = Some(AssetLabAction::GenerateNode {
-                            node_id: node.id,
-                            batch: BatchSettings::default(),
-                        });
-                    }
-                }
-                let delete_blocked = config.and_then(|config| {
-                    self.asset_lab_node_delete_block_reason(config, asset.id, node.id)
-                });
-                let delete_enabled = delete_blocked.is_none();
-                if asset_lab_node_icon_button(
-                    ui,
-                    trash_rect,
-                    ui.id().with(("asset_lab_node_delete", node.id)),
-                    AssetLabNodeIcon::Trash,
-                    delete_enabled,
-                    false,
-                    true,
-                    delete_blocked
-                        .as_deref()
-                        .unwrap_or("Delete this leaf step. Generated outputs will be kept."),
-                )
-                .clicked()
-                    && delete_enabled
-                {
-                    node_or_sidecar_clicked = true;
-                    *action = Some(AssetLabAction::DeleteNode(node.id));
-                }
-            }
-        }
-
-        if let Some((sidecar_rect, source_node_id, can_generate)) = ghost_generate_overlay {
-            let mut sidecar_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(sidecar_rect)
-                    .layout(Layout::top_down(Align::Min)),
-            );
-            sidecar_ui.set_min_size(sidecar_rect.size());
-            sidecar_ui.shrink_clip_rect(sidecar_rect);
-            sidecar_ui.set_width(sidecar_rect.width());
-            sidecar_ui.set_max_width(sidecar_rect.width());
-            let width = sidecar_ui.available_width();
-            sidecar_ui.add_enabled_ui(can_generate, |ui| {
-                if kit::primary_button(ui, "Generate Variant", width).clicked() {
-                    node_or_sidecar_clicked = true;
-                    *action = Some(AssetLabAction::GenerateNode {
-                        node_id: source_node_id,
-                        batch: BatchSettings::default(),
-                    });
-                }
-            });
-        }
-
-        if response.clicked() && !node_or_sidecar_clicked && action.is_none() {
-            *action = Some(AssetLabAction::ClearNodeSelection);
-        }
-    }
-
-    fn asset_lab_compare_inspector_summary(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        config: Option<&GenerativeConfig>,
-        action: &mut Option<AssetLabAction>,
-    ) {
-        let Some(compare) = self.asset_lab.compare.clone() else {
-            return;
-        };
-        ui.horizontal_wrapped(|ui| {
-            kit::media_pill(ui, "B · CANDIDATE", kit::MARKER);
-            ui.label(kit::caption(format!(
-                "Compared to A · {}",
-                compare.baseline_version
-            )));
-        });
-        ui.add_space(kit::FORM_ROW_GAP);
-
-        let baseline_record = asset_lab_record_for_version(config, Some(&compare.baseline_version));
-        let candidate_record =
-            asset_lab_record_for_version(config, compare.candidate_version.as_deref());
-        if let (Some(baseline), Some(candidate)) = (baseline_record, candidate_record) {
-            let baseline = asset_lab_compare_snapshot(
-                &self.editor.project,
-                baseline,
-                &self.editor.provider_entries,
-            );
-            let candidate = asset_lab_compare_snapshot(
-                &self.editor.project,
-                candidate,
-                &self.editor.provider_entries,
-            );
-            let delta = asset_lab_compare_delta(&baseline, &candidate);
-            if delta.changed.is_empty() {
-                ui.label(kit::caption(
-                    "Persisted provider inputs match the baseline.",
-                ));
-            } else {
-                for row in delta.changed.iter().take(5) {
-                    asset_lab_meta_row(
-                        ui,
-                        &row.label,
-                        format!("{} → {}", row.baseline, row.candidate),
-                    );
-                }
-                if delta.changed.len() > 5 {
-                    egui::CollapsingHeader::new(
-                        RichText::new(format!("All differing inputs ({})", delta.changed.len()))
-                            .color(kit::TEXT_MUTED)
-                            .size(10.5),
-                    )
-                    .id_salt(("asset_lab_compare_delta", asset.id))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        for row in &delta.changed {
-                            asset_lab_meta_row(
-                                ui,
-                                &row.label,
-                                format!("{} → {}", row.baseline, row.candidate),
-                            );
-                        }
-                    });
-                }
-            }
-            if delta.unchanged_count > 0 {
-                ui.label(kit::caption(format!(
-                    "{} persisted fields unchanged",
-                    delta.unchanged_count
-                )));
-            }
-        } else {
-            ui.label(kit::caption("Select another output to compare."));
-        }
-
-        ui.add_space(kit::ACTION_GAP);
-        let baseline_available =
-            Self::asset_lab_version_has_record(config, &compare.baseline_version)
-                && self.asset_lab_version_has_output(asset, &compare.baseline_version);
-        let candidate_available = compare.candidate_version.as_deref().is_some_and(|version| {
-            Self::asset_lab_version_has_record(config, version)
-                && self.asset_lab_version_has_output(asset, version)
-        });
-        ui.add_enabled_ui(candidate_available, |ui| {
-            if kit::primary_button(ui, "Make B Active", ui.available_width()).clicked() {
-                *action = Some(AssetLabAction::MakeCompareCandidateActive);
-            }
-        });
-        ui.label(kit::caption(
-            "Updates all timeline placements of this asset. Pinned references stay pinned.",
-        ));
-        ui.add_space(kit::FORM_ROW_GAP);
-        kit::equal_width_action_row(
-            ui,
-            2,
-            kit::SECONDARY_BUTTON_H,
-            kit::FIELD_COMPOUND_GAP,
-            |ui, index, width| match index {
-                0 => {
-                    ui.add_enabled_ui(baseline_available, |ui| {
-                        if kit::secondary_button(ui, "Branch from A", width).clicked() {
-                            *action = Some(AssetLabAction::BranchFromCompareBaseline);
-                        }
-                    });
-                }
-                _ => {
-                    ui.add_enabled_ui(candidate_available, |ui| {
-                        if kit::secondary_button(ui, "Branch from B", width).clicked() {
-                            *action = Some(AssetLabAction::BranchFromCompareCandidate);
-                        }
-                    });
-                }
-            },
-        );
-        if !candidate_available {
-            ui.add_space(kit::FORM_ROW_GAP);
-            ui.label(
-                RichText::new("Candidate media is unavailable; decision actions are disabled.")
-                    .color(kit::MARKER)
-                    .size(10.5),
-            );
-        }
-    }
-
-    pub(super) fn asset_lab_node_inspector(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        config: Option<&GenerativeConfig>,
-        versions: &[GenerationRecord],
-        selected_node_id: Option<Uuid>,
-        selected_version: Option<&str>,
-        active_version: Option<&str>,
-        _pending_delete: Option<&str>,
-        compatible_providers: &[ProviderEntry],
-        generate_shortcut_requested: bool,
-        action: &mut Option<AssetLabAction>,
-    ) {
-        let focus_before = ui.memory(|memory| memory.focused());
-        let tracked_focus_before = self.asset_lab.inspector_focus_id == focus_before;
-        let card = kit::card_frame().show(ui, |ui| {
-            kit::field_label(
-                ui,
-                if self.asset_lab.compare.is_some() {
-                    "Candidate Inspector"
-                } else {
-                    "Inspector"
-                },
-            );
-            ui.add_space(kit::FORM_ROW_GAP);
-
-            let selected_node = config.and_then(|config| {
-                selected_node_id
-                    .and_then(|id| config.lab_graph.nodes.iter().find(|node| node.id == id))
-            });
-
-            let Some(node) = selected_node else {
-                ui.label(kit::caption(if self.asset_lab.compare.is_some() {
-                    "Select another output to compare. The baseline remains fixed."
-                } else {
-                    "Select a node to edit provider settings and generation parameters."
-                }));
-                return;
-            };
-
-            let selected_record = asset_lab_record_for_version(config, selected_version);
-            let baseline_record =
-                selected_record.filter(|record| asset_lab_record_is_node_baseline(record, node));
-            let draft_active = baseline_record
-                .is_some_and(|_| self.asset_lab.draft_matches(node.id, selected_version));
-
-            let mut display_node = node.clone();
-            if draft_active {
-                display_node.provider_id = self.asset_lab.draft_provider_id;
-                display_node.inputs = self.asset_lab.draft_inputs.clone();
-                display_node.output_version = None;
-            } else if let Some(record) = baseline_record {
-                display_node.provider_id = Some(record.provider_id);
-                display_node.inputs = record.inputs_snapshot.clone();
-                display_node.output_version = Some(record.version.clone());
-            }
-
-            let selected_provider = display_node.provider_id.and_then(|provider_id| {
-                self.editor
-                    .provider_entries
-                    .iter()
-                    .find(|provider| provider.id == provider_id)
-                    .filter(|provider| asset_lab_provider_is_compatible(asset, provider))
-                    .cloned()
-            });
-            let selected_provider_out_of_scope = selected_provider
-                .as_ref()
-                .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id));
-
-            let staged_or_ungenerated = draft_active || display_node.output_version.is_none();
-            let pending_job_status = self
-                .editor
-                .generation_queue
-                .iter()
-                .rev()
-                .find(|job| {
-                    job.lab_node_id == Some(display_node.id)
-                        && matches!(
-                            job.status,
-                            GenerationJobStatus::Queued
-                                | GenerationJobStatus::Running
-                                | GenerationJobStatus::Canceling
-                        )
-                })
-                .map(|job| job.status);
-            let preflight_error = self.asset_lab_node_preflight_error(
-                asset,
-                &display_node,
-                selected_provider.as_ref(),
-            );
-            if self.asset_lab.compare.is_some() {
-                self.asset_lab_compare_inspector_summary(ui, asset, config, action);
-                ui.add_space(kit::ACTION_GAP);
-                ui.separator();
-                ui.add_space(kit::ACTION_GAP);
-            } else if selected_version.is_some()
-                && selected_version != active_version
-                && asset.is_visual()
-            {
-                let can_compare = selected_version.is_some_and(|version| {
-                    Self::asset_lab_version_has_record(config, version)
-                        && self.asset_lab_version_has_output(asset, version)
-                }) && active_version.is_some_and(|version| {
-                    Self::asset_lab_version_has_record(config, version)
-                        && self.asset_lab_version_has_output(asset, version)
-                });
-                ui.add_enabled_ui(can_compare, |ui| {
-                    if kit::primary_button(ui, "Compare with Active", ui.available_width())
-                        .clicked()
-                    {
-                        *action = Some(AssetLabAction::EnterCompare);
-                    }
-                });
-                ui.add_space(kit::ACTION_GAP);
-            }
-            self.asset_lab_run_header(
-                ui,
-                asset,
-                &display_node,
-                selected_provider.as_ref(),
-                staged_or_ungenerated,
-                pending_job_status,
-                preflight_error.as_deref(),
-                generate_shortcut_requested,
-                action,
-            );
-            ui.add_space(kit::ACTION_GAP);
-
-            let scroll_height = ui.available_height().max(120.0);
-            egui::ScrollArea::vertical()
-                .id_salt(("asset_lab_inspector", asset.id, node.id))
-                .max_height(scroll_height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        kit::field_label(ui, "Generation");
-                        if draft_active {
-                            kit::media_pill(ui, "Variant Ready", kit::MARKER);
-                        } else if baseline_record.is_some() {
-                            kit::media_pill(ui, "Matches Output", kit::PRIMARY);
-                        } else if display_node.output_version.is_some() {
-                            kit::media_pill(ui, "Generated", kit::PRIMARY);
-                        } else {
-                            kit::media_pill(ui, "Staged", kit::TEXT_MUTED);
-                        }
-                    });
-                    ui.add_space(kit::FORM_ROW_GAP);
-
-                    let mut provider_choice = display_node.provider_id;
-                    labeled_provider_combo_field(
-                        ui,
-                        "Provider",
-                        ("asset_lab_node_provider", node.id),
-                        selected_provider.as_ref(),
-                        "Select provider",
-                        |ui| {
-                            automation_selectable_value(ui, &mut provider_choice, None, "None");
-                            for provider in compatible_providers {
-                                provider_selectable_value(
-                                    ui,
-                                    &mut provider_choice,
-                                    Some(provider.id),
-                                    provider,
-                                );
-                            }
-                        },
-                    );
-                    if provider_choice != display_node.provider_id {
-                        *action = Some(AssetLabAction::SetNodeProvider {
-                            node_id: node.id,
-                            provider_id: provider_choice,
-                        });
-                    }
-                    if selected_provider_out_of_scope {
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        ui.label(
-                            RichText::new(
-                                "Selected provider is outside this project's provider scope.",
-                            )
-                            .color(kit::MARKER)
-                            .size(11.0),
-                        );
-                    } else if let Some(provider) = selected_provider
-                        .as_ref()
-                        .filter(|provider| !provider_is_available_for_generation(provider))
-                    {
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        ui.label(
-                            RichText::new(
-                                provider_unavailable_reason(provider).unwrap_or(
-                                    "Selected provider is unavailable for new generation.",
-                                ),
-                            )
-                            .color(kit::MARKER)
-                            .size(11.0),
-                        );
-                    }
-
-                    if let Some(provider) = selected_provider.as_ref() {
-                        if provider.inputs.iter().any(|input| {
-                            matches!(
-                                input.input_type,
-                                ProviderInputType::Image
-                                    | ProviderInputType::Video
-                                    | ProviderInputType::Audio
-                            )
-                        }) {
-                            self.media_binding_context_picker(
-                                ui,
-                                asset.id,
-                                self.editor.selected_clip_id(),
-                            );
-                        }
-                        let dimension_names = crate::core::canvas::dimension_pair(provider)
-                            .map(|(width, height)| (width.name.clone(), height.name.clone()));
-                        let sections = crate::core::generation::generation_control_inputs(provider);
-                        let variation_inputs = sections.variation;
-                        let fixed_fps =
-                            crate::core::generation::provider_fixed_fps(provider).is_some();
-                        let timing_inputs: Vec<&ProviderInputField> = sections
-                            .timing
-                            .into_iter()
-                            .filter(|input| !(fixed_fps && input.role == Some(InputRole::Fps)))
-                            .collect();
-                        let standard_inputs = sections.normal;
-                        let advanced_inputs = sections.advanced;
-
-                        ui.add_space(kit::ACTION_GAP);
-                        ui.separator();
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        kit::field_label(ui, "Inputs");
-                        ui.add_space(kit::FORM_ROW_GAP);
-                        if standard_inputs.is_empty() {
-                            ui.label(kit::caption("No additional inputs for this provider."));
-                        } else {
-                            self.asset_lab_node_input_list(
-                                ui,
-                                asset,
-                                &display_node,
-                                versions,
-                                &standard_inputs,
-                                action,
-                            );
-                        }
-
-                        if dimension_names.is_some()
-                            || !timing_inputs.is_empty()
-                            || provider.timing.is_some()
-                        {
-                            ui.add_space(kit::ACTION_GAP);
-                            ui.separator();
-                            ui.add_space(kit::FORM_ROW_GAP);
-                            kit::field_label(ui, "Output");
-                            ui.add_space(kit::FORM_ROW_GAP);
-                            if dimension_names.is_some() {
-                                let (width, height) =
-                                    crate::core::canvas::dimension_pair(provider).unwrap();
-                                if [width, height].iter().any(|input| {
-                                    input.ui.as_ref().is_some_and(|ui| ui.choices.is_some())
-                                }) {
-                                    self.asset_lab_node_input_list(
-                                        ui,
-                                        asset,
-                                        &display_node,
-                                        versions,
-                                        &[width, height],
-                                        action,
-                                    );
-                                } else {
-                                    self.asset_lab_canvas_field(
-                                        ui,
-                                        &display_node,
-                                        provider,
-                                        action,
-                                    );
-                                }
-                            }
-                            if !timing_inputs.is_empty() || provider.timing.is_some() {
-                                if dimension_names.is_some() {
-                                    ui.add_space(kit::ACTION_GAP);
-                                    ui.separator();
-                                    ui.add_space(kit::FORM_ROW_GAP);
-                                }
-                                ui.label(kit::caption("Timing"));
-                                ui.add_space(kit::FORM_ROW_GAP);
-                                if !timing_inputs.is_empty() {
-                                    self.asset_lab_node_input_list(
-                                        ui,
-                                        asset,
-                                        &display_node,
-                                        versions,
-                                        &timing_inputs,
-                                        action,
-                                    );
-                                }
-                                self.asset_lab_fixed_timing_summary(ui, &display_node, provider);
-                            }
-                        }
-
-                        if !variation_inputs.is_empty() {
-                            ui.add_space(kit::ACTION_GAP);
-                            ui.separator();
-                            ui.add_space(kit::FORM_ROW_GAP);
-                            kit::field_label(ui, "Variation");
-                            ui.add_space(kit::FORM_ROW_GAP);
-                            self.asset_lab_node_input_list(
-                                ui,
-                                asset,
-                                &display_node,
-                                versions,
-                                &variation_inputs,
-                                action,
-                            );
-                        }
-
-                        if !advanced_inputs.is_empty() {
-                            ui.add_space(kit::ACTION_GAP);
-                            ui.separator();
-                            ui.add_space(kit::FORM_ROW_GAP);
-                            egui::CollapsingHeader::new(
-                                RichText::new("Advanced").color(kit::TEXT_MUTED).size(11.0),
-                            )
-                            .id_salt(("asset_lab_inputs_advanced", asset.id, node.id))
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                ui.add_space(kit::FORM_ROW_GAP);
-                                self.asset_lab_node_input_list(
-                                    ui,
-                                    asset,
-                                    &display_node,
-                                    versions,
-                                    &advanced_inputs,
-                                    action,
-                                );
-                            });
-                        }
-                    } else {
-                        ui.add_space(kit::ACTION_GAP);
-                        ui.label(kit::caption(
-                            "Choose a provider to configure output and inputs.",
-                        ));
-                    }
-                });
-        });
-
-        let focus_after = ui.memory(|memory| memory.focused());
-        let focus_after_inside = focus_after.filter(|focus_id| {
-            ui.ctx().read_response(*focus_id).is_some_and(|response| {
-                card.response.rect.contains(response.interact_rect.center())
-            })
-        });
-        let pointer_press = ui.input(|input| input.pointer.any_pressed());
-        let pointer = ui.ctx().pointer_interact_pos();
-        if pointer_press {
-            self.asset_lab.inspector_focus_id = pointer
-                .filter(|pointer| card.response.rect.contains(*pointer))
-                .and(focus_after_inside);
-            self.asset_lab.inspector_focus_node_id =
-                self.asset_lab.inspector_focus_id.and(selected_node_id);
-        } else if self.asset_lab.inspector_focus_node_id != selected_node_id {
-            self.asset_lab.inspector_focus_id = None;
-            self.asset_lab.inspector_focus_node_id = None;
-        } else if tracked_focus_before && ui.input(|input| input.key_pressed(egui::Key::Tab)) {
-            self.asset_lab.inspector_focus_id = focus_after_inside;
-            self.asset_lab.inspector_focus_node_id =
-                self.asset_lab.inspector_focus_id.and(selected_node_id);
-        } else if self.asset_lab.inspector_focus_id != focus_after {
-            self.asset_lab.inspector_focus_id = None;
-            self.asset_lab.inspector_focus_node_id = None;
-        }
-    }
-
-    fn asset_lab_node_input_list(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        node: &AssetLabNode,
-        versions: &[GenerationRecord],
-        inputs: &[&ProviderInputField],
-        action: &mut Option<AssetLabAction>,
-    ) {
-        let mut current_group: Option<&str> = None;
-        for (index, input) in inputs.iter().copied().enumerate() {
-            let group = input
-                .ui
-                .as_ref()
-                .and_then(|presentation| presentation.group.as_deref())
-                .map(str::trim)
-                .filter(|group| !group.is_empty());
-            if group != current_group {
-                if index > 0 {
-                    ui.add_space(kit::ACTION_GAP);
-                }
-                if let Some(group) = group {
-                    ui.label(kit::caption(group));
-                    ui.add_space(kit::FORM_ROW_GAP);
-                }
-                current_group = group;
-            } else if index > 0 {
-                ui.add_space(kit::FORM_ROW_GAP);
-            }
-            self.asset_lab_node_input_field(ui, asset, node, input, versions, action);
-        }
-    }
-
-    fn asset_lab_fixed_timing_summary(
-        &self,
-        ui: &mut Ui,
-        node: &AssetLabNode,
-        provider: &ProviderEntry,
-    ) {
-        let Some(fps) = crate::core::generation::provider_fixed_fps(provider) else {
-            return;
-        };
-        let duration = crate::core::generation::provider_request_duration(provider, &node.inputs);
-        if let Some(duration) = crate::core::generation::provider_fixed_duration(provider) {
-            kit::field_label(ui, "Seconds");
-            kit::readonly_value_box(
-                ui,
-                format!("{duration} (fixed)"),
-                Vec2::new(ui.available_width(), kit::FIELD_H),
-            );
-        }
-        ui.add_space(kit::FORM_ROW_GAP);
-        kit::field_label(ui, "FPS");
-        kit::readonly_value_box(
-            ui,
-            format!("{fps} (fixed)"),
-            Vec2::new(ui.available_width(), kit::FIELD_H),
-        );
-        if let Some(timing) = duration.and_then(|duration| {
-            crate::core::generation::predicted_output_timing(provider, duration)
-        }) {
-            ui.add_space(kit::FORM_ROW_GAP);
-            kit::field_label(ui, "Output Frames");
-            kit::readonly_value_box(
-                ui,
-                timing.frame_count.to_string(),
-                Vec2::new(ui.available_width(), kit::FIELD_H),
-            );
-            if let Some(seconds) = timing.duration_seconds {
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::field_label(ui, "Output Duration");
-                kit::readonly_value_box(
-                    ui,
-                    format!("{seconds:.3} s"),
-                    Vec2::new(ui.available_width(), kit::FIELD_H),
-                );
-            }
-        }
-    }
-
-    fn asset_lab_run_batch(&self, provider: Option<&ProviderEntry>) -> BatchSettings {
-        let has_seed = provider.and_then(resolve_seed_field).is_some();
-        BatchSettings {
-            count: self
-                .asset_lab
-                .run_batch_count
-                .max(1)
-                .min(MAX_GENERATION_BATCH_COUNT),
-            seed_strategy: if has_seed {
-                self.asset_lab.run_seed_strategy
-            } else {
-                SeedStrategy::Keep
-            },
-            seed_field: None,
-        }
-    }
-
-    fn asset_lab_node_preflight_error(
-        &self,
-        asset: &Asset,
-        node: &AssetLabNode,
-        provider: Option<&ProviderEntry>,
-    ) -> Option<String> {
-        let provider = provider?;
-        let mut preflight_config = GenerativeConfig::default();
-        preflight_config.provider_id = Some(provider.id);
-        preflight_config.inputs = node.inputs.clone();
-        preflight_config.media_bindings = node.media_bindings.clone();
-        let context_clip_id = match crate::core::media_binding::resolve_generation_context(
-            &self.editor.project,
-            asset.id,
-            self.editor.selected_clip_id(),
-            self.generation_context_by_asset.get(&asset.id).copied(),
-        ) {
-            Ok(context_clip_id) => context_clip_id,
-            Err(err)
-                if preflight_config.media_bindings.values().any(|spec| {
-                    matches!(
-                        spec.source,
-                        crate::state::MediaBindingSource::FollowTimeline { .. }
-                    )
-                }) =>
-            {
-                return Some(err.message("Generate"));
-            }
-            Err(_) => None,
-        };
-        crate::core::generation::preflight_provider_config(
-            &self.editor.project,
-            Some(asset.id),
-            context_clip_id,
-            provider,
-            &preflight_config,
-        )
-        .into_iter()
-        .next()
-        .map(|issue| issue.message)
-    }
-
-    fn asset_lab_can_generate_variant(
-        &self,
-        asset: &Asset,
-        provider: Option<&ProviderEntry>,
-        variant_ready: bool,
-        pending_job_status: Option<GenerationJobStatus>,
-        preflight_error: Option<&str>,
-    ) -> bool {
-        variant_ready
-            && asset.is_generative()
-            && provider.is_some()
-            && !provider.is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id))
-            && provider.is_some_and(provider_is_available_for_generation)
-            && preflight_error.is_none()
-            && pending_job_status.is_none()
-    }
-
-    fn asset_lab_run_header(
-        &mut self,
-        ui: &mut Ui,
-        asset: &Asset,
-        node: &AssetLabNode,
-        provider: Option<&ProviderEntry>,
-        variant_ready: bool,
-        pending_job_status: Option<GenerationJobStatus>,
-        preflight_error: Option<&str>,
-        generate_shortcut_requested: bool,
-        action: &mut Option<AssetLabAction>,
-    ) {
-        let seed_field = provider.and_then(resolve_seed_field);
-        let seed = seed_field.as_ref().and_then(|name| {
-            let field = provider?.inputs.iter().find(|field| field.name == *name)?;
-            let seed = asset_lab_node_seed_value(node, field);
-            if self.asset_lab.run_seed_strategy == SeedStrategy::Increment {
-                self.reserved_seed_base(asset.id, name, seed)
-            } else {
-                seed
-            }
-        });
-        let seed_preview = asset_lab_seed_preview(
-            seed_field.is_some(),
-            seed,
-            self.asset_lab.run_batch_count,
-            self.asset_lab_run_batch(provider).seed_strategy,
-        );
-        let can_generate = self.asset_lab_can_generate_variant(
-            asset,
-            provider,
-            variant_ready,
-            pending_job_status,
-            preflight_error,
-        );
-        let generate_label = pending_job_status
-            .map(|status| match status {
-                GenerationJobStatus::Queued => "Queued",
-                GenerationJobStatus::Running => "Running",
-                GenerationJobStatus::Canceling => "Canceling",
-                _ => "Generate Variant",
-            })
-            .unwrap_or("Generate Variant");
-        if generate_shortcut_requested && can_generate && action.is_none() {
-            *action = Some(AssetLabAction::GenerateNode {
-                node_id: node.id,
-                batch: self.asset_lab_run_batch(provider),
-            });
-        }
-
-        egui::Frame::new()
-            .fill(kit::PANEL_SUNKEN)
-            .stroke(Stroke::new(1.0_f32, kit::BORDER_SOFT))
-            .corner_radius(kit::field_radius())
-            .inner_margin(egui::Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(kit::section_label("Run"));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_enabled_ui(can_generate, |ui| {
-                            let tooltip = if can_generate {
-                                "Generate this variant. Ctrl+Enter works while editing Inspector."
-                            } else if pending_job_status.is_some() {
-                                "This step already has generation work in progress."
-                            } else if !variant_ready {
-                                "Change a setting to stage a variant for generation."
-                            } else if let Some(error) = preflight_error {
-                                error
-                            } else {
-                                "Choose an available in-scope provider before generating."
-                            };
-                            if kit::primary_button(ui, generate_label, 126.0)
-                                .on_hover_text(tooltip)
-                                .clicked()
-                            {
-                                *action = Some(AssetLabAction::GenerateNode {
-                                    node_id: node.id,
-                                    batch: self.asset_lab_run_batch(provider),
-                                });
-                            }
-                        });
-                    });
-                });
-                if let Some(error) = preflight_error {
-                    ui.add_space(kit::FORM_ROW_GAP);
-                    ui.label(RichText::new(error).color(kit::MARKER).size(11.0));
-                }
-                ui.add_space(kit::FORM_ROW_GAP);
-
-                let mut batch_count = self
-                    .asset_lab
-                    .run_batch_count
-                    .max(1)
-                    .min(MAX_GENERATION_BATCH_COUNT) as i64;
-                let mut attempts_changed = false;
-                let mut draw_attempts = |ui: &mut Ui| {
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = kit::FIELD_LABEL_GAP;
-                        kit::field_label(ui, "Attempts");
-                        let width = ui.available_width();
-                        let rect = inspector_numeric_rect(ui, width);
-                        if inspector_numeric_field(ui, rect, |ui, width| {
-                            ui.add_sized(
-                                [width, INSPECTOR_NUMERIC_H],
-                                egui::DragValue::new(&mut batch_count).speed(1.0),
-                            )
-                        }) {
-                            attempts_changed = true;
-                        }
-                    });
-                };
-
-                if seed_field.is_some() {
-                    kit::field_grid_row(ui, &[0.9, 1.3], |ui, index| match index {
-                        0 => draw_attempts(ui),
-                        _ => {
-                            kit::labeled_combo_field(
-                                ui,
-                                "Seed Strategy",
-                                ("asset_lab_seed_strategy", node.id),
-                                seed_strategy_label(self.asset_lab.run_seed_strategy),
-                                |ui| {
-                                    automation_selectable_value(
-                                        ui,
-                                        &mut self.asset_lab.run_seed_strategy,
-                                        SeedStrategy::Increment,
-                                        "Increment",
-                                    );
-                                    automation_selectable_value(
-                                        ui,
-                                        &mut self.asset_lab.run_seed_strategy,
-                                        SeedStrategy::Random,
-                                        "Random",
-                                    );
-                                    automation_selectable_value(
-                                        ui,
-                                        &mut self.asset_lab.run_seed_strategy,
-                                        SeedStrategy::Keep,
-                                        "Keep",
-                                    );
-                                },
-                            );
-                        }
-                    });
-                } else {
-                    draw_attempts(ui);
-                }
-                if attempts_changed {
-                    self.asset_lab.run_batch_count =
-                        batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
-                }
-
-                ui.add_space(kit::FIELD_LABEL_GAP);
-                let seed_summary = if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
-                    "No seed role detected; attempts will reuse identical inputs.".to_string()
-                } else {
-                    seed_preview
-                };
-                let seed_color = if self.asset_lab.run_batch_count > 1 && seed_field.is_none() {
-                    kit::MARKER
-                } else {
-                    kit::TEXT_MUTED
-                };
-                ui.add(
-                    egui::Label::new(RichText::new(&seed_summary).color(seed_color).size(11.0))
-                        .truncate(),
-                )
-                .on_hover_text(seed_summary);
-            });
     }
 
     pub(super) fn asset_lab_canvas_field(
@@ -5868,35 +2917,6 @@ impl LatentSlateApp {
                 self.clear_asset_lab_compare_runtime();
                 self.editor.status = "Exited comparison. Timeline output unchanged.".to_string();
             }
-            AssetLabAction::SwapCompare => {
-                let swapped = self
-                    .asset_lab
-                    .compare
-                    .as_mut()
-                    .is_some_and(AssetLabCompareState::swap);
-                if swapped {
-                    self.asset_lab.selected_version = self
-                        .asset_lab
-                        .compare
-                        .as_ref()
-                        .and_then(|compare| compare.candidate_version.clone());
-                    self.clear_asset_lab_compare_runtime();
-                }
-            }
-            AssetLabAction::UseCompareCandidateAsBaseline => {
-                let changed = self
-                    .asset_lab
-                    .compare
-                    .as_mut()
-                    .is_some_and(AssetLabCompareState::use_candidate_as_baseline);
-                if changed {
-                    self.asset_lab.selected_version = None;
-                    self.asset_lab_compare_preview_textures
-                        .remove(&AssetLabCompareSide::Candidate);
-                    self.asset_lab_compare_errors
-                        .remove(&AssetLabCompareSide::Candidate);
-                }
-            }
             AssetLabAction::MakeCompareCandidateActive => {
                 let version = self
                     .asset_lab
@@ -6088,49 +3108,39 @@ impl LatentSlateApp {
                         .timestamp
                         .cmp(&config.versions[*right].timestamp)
                 });
-                let mut previous_node_id = None;
 
                 for index in version_indices {
                     let version = config.versions[index].version.clone();
                     let inputs_snapshot = config.versions[index].inputs_snapshot.clone();
-                    let valid_record_node = config.versions[index]
-                        .lab_node_id
-                        .is_some_and(|node_id| existing_node_ids.contains(&node_id));
+                    let valid_record_node =
+                        config.versions[index].lab_node_id.is_some_and(|node_id| {
+                            config.lab_graph.nodes.iter().any(|node| {
+                                node.id == node_id
+                                    && node.output_version.as_deref() == Some(version.as_str())
+                            })
+                        });
 
                     if valid_record_node {
                         if let Some(node_id) = config.versions[index].lab_node_id {
                             nodes_by_output.entry(version.clone()).or_insert(node_id);
-                            if let Some(parent_id) = previous_node_id {
-                                if let Some(node) = config
-                                    .lab_graph
-                                    .nodes
-                                    .iter_mut()
-                                    .find(|node| node.id == node_id)
-                                {
-                                    let imported_root = node.parent_node_id.is_none()
-                                        && node.output_version.as_deref() == Some(version.as_str())
-                                        && node.inputs == inputs_snapshot;
-                                    if imported_root {
-                                        node.parent_node_id = Some(parent_id);
-                                        changed = true;
-                                    }
-                                }
-                            }
-                            previous_node_id = Some(node_id);
                         }
                         continue;
                     }
 
                     if let Some(node_id) = nodes_by_output.get(&version).copied() {
                         config.versions[index].lab_node_id = Some(node_id);
-                        previous_node_id = Some(node_id);
+
                         changed = true;
                         continue;
                     }
 
+                    let recorded_parent = config.versions[index]
+                        .lab_node_id
+                        .and_then(|id| config.lab_graph.nodes.iter().find(|node| node.id == id))
+                        .and_then(|node| node.parent_node_id);
                     let mut node = AssetLabNode::new_with_parent(
                         Some(config.versions[index].provider_id),
-                        previous_node_id,
+                        recorded_parent,
                     );
                     node.inputs = inputs_snapshot;
                     node.output_version = Some(version.clone());
@@ -6139,7 +3149,7 @@ impl LatentSlateApp {
                     config.versions[index].lab_node_id = Some(node_id);
                     existing_node_ids.insert(node_id);
                     nodes_by_output.insert(version, node_id);
-                    previous_node_id = Some(node_id);
+
                     changed = true;
                 }
 
@@ -6966,6 +3976,7 @@ impl LatentSlateApp {
             node_config,
             folder_path,
             asset_label,
+            None,
         ) {
             Ok(status) => {
                 self.editor.status = format!("{status} from Asset Lab step.");
@@ -7208,8 +4219,10 @@ impl LatentSlateApp {
             .project
             .update_generative_config(asset_id, |config| {
                 config.active_version = Some(version.to_string());
-                config.provider_id = Some(record.provider_id);
-                config.inputs = record.inputs_snapshot;
+                if !config.lab_authoring.initialized {
+                    config.provider_id = Some(record.provider_id);
+                    config.inputs = record.inputs_snapshot;
+                }
                 if let Some(node_id) = record.lab_node_id {
                     config.lab_graph.selected_node_id = Some(node_id);
                     if let Some(node) = config
@@ -7227,7 +4240,12 @@ impl LatentSlateApp {
             self.editor.status = message.clone();
             return Err(message);
         }
-        self.editor.reconcile_generative_config_dimensions(asset_id);
+        if !config_snapshot
+            .as_ref()
+            .is_some_and(|config| config.lab_authoring.initialized)
+        {
+            self.editor.reconcile_generative_config_dimensions(asset_id);
+        }
         if let Err(err) = self.editor.project.save_generative_config(asset_id) {
             let message = format!("Failed to save active version: {err}");
             self.editor.status = message.clone();
@@ -7863,66 +4881,36 @@ impl LatentSlateApp {
         &mut self,
         ui: &mut Ui,
         asset: &Asset,
-        config: Option<&GenerativeConfig>,
+        _config: Option<&GenerativeConfig>,
         side: AssetLabCompareSide,
         version: Option<&str>,
-        active_version: Option<&str>,
-        duration: f64,
+        _active_version: Option<&str>,
+        _duration: f64,
         ended: bool,
         preview: AssetLabComparePanePreview,
         action: &mut Option<AssetLabAction>,
     ) {
-        ui.horizontal(|ui| {
-            kit::media_pill(
-                ui,
-                side.marker(),
+        kit::bounded_horizontal_row(ui, 36.0, |ui, _| {
+            ui.label(kit::body(format!(
+                "{} · {}",
                 if side == AssetLabCompareSide::Baseline {
-                    kit::PRIMARY
+                    "Current output"
                 } else {
-                    kit::MARKER
+                    "Selected"
                 },
-            );
-            ui.add(
-                egui::Label::new(RichText::new(version.unwrap_or("No candidate")).strong())
-                    .truncate(),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ended {
-                    kit::media_pill(ui, "ENDED", kit::TEXT_MUTED);
-                } else if version.is_some_and(|version| active_version == Some(version)) {
-                    kit::media_pill(ui, "ACTIVE", kit::PRIMARY);
-                } else {
-                    kit::media_pill(
-                        ui,
-                        if side == AssetLabCompareSide::Baseline {
-                            "BASELINE"
-                        } else {
-                            "CANDIDATE"
-                        },
-                        kit::TEXT_MUTED,
-                    );
+                version.unwrap_or("No candidate")
+            )));
+            if side == AssetLabCompareSide::Candidate {
+                if let Some(version) = version {
+                    if kit::primary_button(ui, "Use this output", 130.0).clicked() {
+                        self.pin_asset_lab_result_v4(asset.id, version);
+                    }
                 }
-            });
-        });
-        let provider = asset_lab_record_for_version(config, version)
-            .and_then(|record| {
-                self.editor
-                    .provider_entries
-                    .iter()
-                    .find(|provider| provider.id == record.provider_id)
-            })
-            .map(|provider| provider.name.as_str())
-            .unwrap_or("Local output");
-        ui.horizontal(|ui| {
-            ui.add(egui::Label::new(kit::caption(provider)).truncate());
-            if asset.is_video() && duration > 0.0 {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(kit::caption(timecode(duration)));
-                });
+            }
+            if ended {
+                ui.label(kit::caption("Ended"));
             }
         });
-        ui.add_space(kit::FORM_ROW_GAP);
-
         let desired_h = ui.available_height().max(70.0);
         let (rect, response) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), desired_h),
@@ -8129,6 +5117,18 @@ impl LatentSlateApp {
     ) -> Option<(TextureId, Vec2)> {
         let project_root = self.editor.project.project_path.as_ref()?;
         let path = asset_lab_media_path(project_root, asset, version)?;
+        self.asset_lab_path_preview_texture(ctx, asset, version, local_time_seconds, &path)
+    }
+
+    pub(super) fn asset_lab_path_preview_texture(
+        &mut self,
+        ctx: &Context,
+        asset: &Asset,
+        version: Option<&str>,
+        local_time_seconds: f64,
+        path: &Path,
+    ) -> Option<(TextureId, Vec2)> {
+        let path = path.to_path_buf();
         if !asset.is_visual() {
             return None;
         }
@@ -8140,6 +5140,7 @@ impl LatentSlateApp {
                 .max(0.0) as i64
         });
         let key = AssetLabNodePreviewKey {
+            path: path.clone(),
             asset_id: asset.id,
             version: version.map(str::to_string),
             frame_index,
@@ -8243,7 +5244,7 @@ impl LatentSlateApp {
             );
             (image, size)
         } else {
-            load_preview_image(&path, 512)?
+            load_preview_image(&path, 2048)?
         };
         let texture = ctx.load_texture(
             format!(
@@ -8331,19 +5332,6 @@ mod asset_lab_compare_tests {
 
     fn compare() -> AssetLabCompareState {
         AssetLabCompareState::enter("V03", "V08").expect("distinct outputs compare")
-    }
-
-    fn snapshot(fields: &[(&str, &str, &str)]) -> AssetLabCompareSnapshot {
-        AssetLabCompareSnapshot {
-            fields: fields
-                .iter()
-                .map(|(key, label, value)| AssetLabCompareField {
-                    key: (*key).to_string(),
-                    label: (*label).to_string(),
-                    value: (*value).to_string(),
-                })
-                .collect(),
-        }
     }
 
     fn timing_provider() -> ProviderEntry {
@@ -8462,21 +5450,6 @@ mod asset_lab_compare_tests {
     }
 
     #[test]
-    fn swap_and_use_candidate_as_baseline_never_imply_an_active_mutation() {
-        let project_active = "V03";
-        let mut state = compare();
-        assert!(state.swap());
-        assert_eq!(state.baseline_version, "V08");
-        assert_eq!(state.candidate_version.as_deref(), Some("V03"));
-        assert_eq!(project_active, "V03");
-
-        assert!(state.use_candidate_as_baseline());
-        assert_eq!(state.baseline_version, "V03");
-        assert_eq!(state.candidate_version, None);
-        assert_eq!(project_active, "V03");
-    }
-
-    #[test]
     fn decision_roles_resolve_the_exact_existing_version() {
         let state = compare();
         assert_eq!(
@@ -8487,34 +5460,6 @@ mod asset_lab_compare_tests {
             state.decision_version(AssetLabCompareSide::Candidate),
             Some("V08")
         );
-    }
-
-    #[test]
-    fn delta_collapses_same_values_omits_unavailable_and_keeps_candidate_order() {
-        let baseline = snapshot(&[
-            ("provider", "Provider", "Engine A"),
-            ("prompt", "Prompt", "quiet lake"),
-            ("seed", "Seed", "4281"),
-            ("a_only", "Removed", "value"),
-        ]);
-        let candidate = snapshot(&[
-            ("provider", "Provider", "Engine A"),
-            ("seed", "Seed", "4286"),
-            ("prompt", "Prompt", "stormy lake"),
-            ("b_only", "Added", "value"),
-        ]);
-        let delta = asset_lab_compare_delta(&baseline, &candidate);
-        assert_eq!(delta.unchanged_count, 1);
-        assert_eq!(
-            delta
-                .changed
-                .iter()
-                .map(|row| row.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Seed", "Prompt"]
-        );
-        assert_eq!(delta.changed[0].baseline, "4281");
-        assert_eq!(delta.changed[0].candidate, "4286");
     }
 
     #[test]

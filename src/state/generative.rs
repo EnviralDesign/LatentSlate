@@ -211,6 +211,10 @@ impl GenerativeConfig {
             if node.parent_node_id.is_some() {
                 continue;
             }
+            if self.lab_authoring.initialized {
+                // V4 records the submitted base explicitly, including an intentional root.
+                continue;
+            }
 
             let mut ordered_inputs: Vec<(&String, &InputValue)> = node.inputs.iter().collect();
             ordered_inputs.sort_by(|(left, _), (right, _)| left.cmp(right));

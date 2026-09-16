@@ -61,12 +61,12 @@ use egui_extras::{Size, StripBuilder};
 use serde::Serialize;
 
 mod agent_api_panel;
+mod agent_settings;
 mod asset_lab;
 mod asset_panel;
 mod attributes_panel;
 mod automation_ui;
 mod chat_panel;
-mod agent_settings;
 mod chat_tools;
 mod confirmations;
 mod export_modal;
@@ -333,6 +333,7 @@ pub struct LatentSlateApp {
     provider_builder_open: bool,
     provider_builder: ProviderBuilderState,
     asset_lab: AssetLabState,
+    source_picker: Option<media_binding_ui::SourcePickerState>,
     asset_lab_preview_texture: Option<AssetLabPreviewTexture>,
     asset_lab_node_preview_textures: HashMap<AssetLabNodePreviewKey, AssetLabPreviewTexture>,
     asset_lab_compare_preview_textures: HashMap<AssetLabCompareSide, AssetLabComparePreviewTexture>,
@@ -815,6 +816,7 @@ impl LatentSlateApp {
             provider_builder_open: false,
             provider_builder: ProviderBuilderState::default(),
             asset_lab: AssetLabState::default(),
+            source_picker: None,
             asset_lab_preview_texture: None,
             asset_lab_node_preview_textures: HashMap::new(),
             asset_lab_compare_preview_textures: HashMap::new(),

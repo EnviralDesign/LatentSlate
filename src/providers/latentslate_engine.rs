@@ -529,7 +529,9 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
             ));
         }
     }
-    if input.nullable
+    let optional_media =
+        !input.required && matches!(input.r#type.as_str(), "image" | "video" | "audio");
+    if (input.nullable && !optional_media)
         || input.collection != input.ordered
         || (input.collection && (input.r#type != "number" || input.role.is_some()))
     {
@@ -1652,6 +1654,23 @@ mod tests {
             assert!(!providers
                 .iter()
                 .any(|provider| provider.id == catalog.tools[9].id));
+        }
+    }
+
+    #[test]
+    fn asset_lab_v4_optional_nullable_media_uses_native_empty_slot_semantics() {
+        for kind in ["image", "video", "audio"] {
+            let input: EngineInput=serde_json::from_value(json!({"key":"reference","label":"Reference","type":kind,"required":false,"nullable":true})).unwrap();
+            let field = convert_input(&input).unwrap();
+            assert!(!field.required);
+            assert!(field.default.is_none());
+            let mut required = input.clone();
+            required.required = true;
+            assert!(convert_input(&required).is_err());
+            let mut collection = input;
+            collection.collection = true;
+            collection.ordered = true;
+            assert!(convert_input(&collection).is_err());
         }
     }
 

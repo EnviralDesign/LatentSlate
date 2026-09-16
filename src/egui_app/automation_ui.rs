@@ -7,6 +7,13 @@ impl LatentSlateApp {
         }
         while let Some(envelope) = crate::core::automation::try_recv_command() {
             match envelope.command.clone() {
+                crate::core::automation::AutomationCommand::InputUi { event } => {
+                    envelope.respond(match crate::core::automation::queue_native_input(event) {
+                        Ok(()) => crate::core::automation::AutomationResponse::empty_ok(),
+                        Err(error) => crate::core::automation::AutomationResponse::error(error),
+                    });
+                    ctx.request_repaint();
+                }
                 crate::core::automation::AutomationCommand::GetUi => {
                     envelope.respond(crate::core::automation::AutomationResponse::ok(
                         serde_json::json!({
@@ -400,6 +407,12 @@ impl LatentSlateApp {
                 }
                 crate::core::automation::AutomationCommand::CloseAssetLab => {
                     self.close_asset_lab();
+                    envelope.respond(crate::core::automation::AutomationResponse::empty_ok());
+                }
+                crate::core::automation::AutomationCommand::CloseAllOverlays => {
+                    self.close_asset_lab();
+                    self.source_picker = None;
+                    self.editor.overlays = Default::default();
                     envelope.respond(crate::core::automation::AutomationResponse::empty_ok());
                 }
                 crate::core::automation::AutomationCommand::SetAssetLabCompareTime {

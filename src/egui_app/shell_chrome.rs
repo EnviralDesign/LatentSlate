@@ -401,6 +401,7 @@ impl LatentSlateApp {
         if self.editor.overlays.asset_lab {
             self.asset_lab_modal(ctx);
         }
+        self.source_picker_modal(ctx);
         if self.project_description_editor.is_some() {
             self.project_description_modal(ctx);
         }
@@ -563,6 +564,9 @@ fn status_text_color(status: &str, generation_queue: &[crate::state::GenerationJ
 }
 
 impl eframe::App for LatentSlateApp {
+    fn raw_input_hook(&mut self, _ctx: &Context, input: &mut egui::RawInput) {
+        crate::core::automation::append_native_input(input);
+    }
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.editor.refresh_project_dirty_state();
@@ -574,6 +578,7 @@ impl eframe::App for LatentSlateApp {
         self.keep_automation_responsive(&ctx);
         crate::core::automation::begin_ui_frame();
         self.tick_playback(&ctx);
+        self.asset_lab_v4_input_guard(&ctx);
         self.service_generation_queue(&ctx);
         self.service_provider_resource_release();
         self.poll_provider_refresh(&ctx);

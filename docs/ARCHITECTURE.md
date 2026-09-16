@@ -122,6 +122,42 @@ uses this to distinguish nominal duration from its native encoded extent.
 Ordinary hollow single-clip timing sync remains available for unmapped providers;
 clip resizing after generation is timeline editing.
 
+## Asset Lab authoring and source configuration
+
+`GenerativeConfig` owns one current setup: native inputs, bindings, reference sizing,
+batch policy, working version, mask document, prompt regions, and effect switches.
+The pinned active version remains independent. Older selected drafts initialize this
+setup; unfinished legacy nodes do not become separate workspaces.
+
+Submitted jobs and completed records contain an `AssetLabSnapshot` alongside concrete
+resolved-input provenance. Submitted masks and captured inputs use unique project-local
+artifacts. A successful attempt contributes one version and one completed lineage node;
+batch siblings share their submitted parent. Native integer seeds and reservations remain
+authoritative.
+
+The Lab session owns its result strip, revision, pending associations, and up to 20
+coalesced undo actions with an approximate memory guard. Closing clears those; submission
+clears undo without deleting authored content. Cameras, overlay visibility, and result
+previews are presentation state. Explicit continuation restores the submitted setup and
+starts a fresh session. Automatic continuation requires an unchanged, nonoverlapping
+single request in its originating session, without active input, a modal, or audition.
+Compare keeps the pinned output on the left and an explicit candidate on the right.
+Acceptance changes only the pin and returns to Lineage.
+
+Working-output bindings resolve through the native media resolver without rewriting fixed
+version, project-current-output, or timeline bindings. The shared picker uses editor
+operations for both Attributes and Asset Lab. Quick selections commit directly; Configure
+stages changes for Apply/Cancel. Capture commits only after materialization succeeds.
+
+Mask geometry records actual raster dimensions, resolved source/frame/crop, sizing, and
+source identity. Painting uses canvas coordinates under zoom/pan; incompatible geometry
+retains the document and requires matching alignment or explicit clearing. Region bounds
+are normalized separately on each axis. Content, effect switches, and visibility are
+independent. Authoring profiles select presentation only: they do not establish execution
+capability. Masked and spatial execution have no supported Engine contract in this phase;
+applicable enabled nonempty effects block submission, while disabled effects allow the
+existing ordinary-generation path.
+
 ## Provider And Tool Model
 
 `ProviderEntry` remains the shared frontend/runtime shape. It describes:

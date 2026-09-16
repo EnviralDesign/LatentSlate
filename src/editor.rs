@@ -504,6 +504,50 @@ impl EditorState {
         });
         setup.authoring.initialized = true;
         setup.authoring.working_version = Some(version.to_string());
+        // A rolling edit base may continue on a result with exactly the same pixel extent.
+        // Fixed and timeline sources keep their original coordinate identity.
+        if let Some(mask) = setup.authoring.mask.as_mut() {
+            if setup
+                .media_bindings
+                .get(&mask.geometry.input_field)
+                .is_some_and(|binding| {
+                    matches!(
+                        binding.source,
+                        crate::state::MediaBindingSource::WorkingOutput
+                    )
+                })
+            {
+                if let (Some(root), Some(asset)) = (
+                    &self.project.project_path,
+                    self.project.find_asset(asset_id),
+                ) {
+                    if let Some(path) = crate::core::generation::generative_asset_source_path(
+                        root,
+                        asset,
+                        Some(version),
+                    ) {
+                        if image::image_dimensions(&path).ok()
+                            == Some((mask.geometry.width, mask.geometry.height))
+                        {
+                            use sha2::{Digest, Sha256};
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                let relative =
+                                    path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+                                mask.geometry.source_identity =
+                                    format!("{:x}", Sha256::digest(bytes));
+                                mask.geometry.base.source_asset_id = Some(asset_id);
+                                mask.geometry.base.source_clip_id = None;
+                                mask.geometry.base.source_version = Some(version.to_string());
+                                mask.geometry.base.source_path = Some(relative.clone());
+                                mask.geometry.base.materialized_path = relative;
+                                mask.geometry.base.source_frame_time = Some(0.0);
+                                mask.geometry.base.target_frame_time = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(provider) = self
             .provider_entries
             .iter()
@@ -1671,6 +1715,7 @@ impl EditorState {
                 Err(err) => AutomationResponse::error(err),
             },
             AutomationCommand::GetUi
+            | AutomationCommand::InputUi { .. }
             | AutomationCommand::RevealUi { .. }
             | AutomationCommand::ClickUi { .. }
             | AutomationCommand::TextUi { .. }
@@ -3733,8 +3778,10 @@ fn apply_active_generation_version_to_config(config: &mut GenerativeConfig, vers
         return false;
     };
     config.active_version = Some(version.to_string());
-    config.provider_id = Some(record.provider_id);
-    config.inputs = record.inputs_snapshot;
+    if !config.lab_authoring.initialized {
+        config.provider_id = Some(record.provider_id);
+        config.inputs = record.inputs_snapshot;
+    }
     if let Some(node_id) = record.lab_node_id {
         config.lab_graph.selected_node_id = Some(node_id);
         if let Some(node) = config

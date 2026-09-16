@@ -85,6 +85,24 @@ Versioned agent endpoints are also available:
 
 UI commands are consumed by registered egui widgets during normal rendering. Semantic commands are applied through the editor state/controller path where possible.
 
+For canvas gestures and keyboard focus, `input_ui` queues a real egui raw-input event
+for the next native frame. Its acknowledgment means queued, not yet rendered. Pointer
+coordinates use logical window points; send separate press, move, and release commands.
+For example:
+
+```json
+{"type":"input_ui","event":{"kind":"pointer","x":350,"y":300,"button":"primary","pressed":true}}
+{"type":"input_ui","event":{"kind":"pointer","x":400,"y":330}}
+{"type":"input_ui","event":{"kind":"pointer","x":400,"y":330,"button":"primary","pressed":false}}
+{"type":"input_ui","event":{"kind":"scroll","x":0,"y":120}}
+{"type":"input_ui","event":{"kind":"key","key":"Escape","pressed":true}}
+```
+
+Use registered widget IDs for ordinary controls. Offline Asset Lab tests also exercise
+actual egui frames, synthetic image gestures, keyboard audition, and completion paths
+without running inference.
+
+
 Capture sources include `{"type":"track","track_id":"<uuid>"}` for an isolated
 video track, including a hidden track. Its time selectors use absolute timeline
 time. Isolation uses a project snapshot and does not change viewer visibility.
