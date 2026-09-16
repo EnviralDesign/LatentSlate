@@ -101,6 +101,13 @@ pub async fn completion(
         })
         .collect();
     let mut body = json!({"model":model,"instructions":instructions,"input":input,"tools":tools,"stream":true,"store":false});
+    if let AgentConnection::OpenAi {
+        reasoning_effort: Some(effort),
+        ..
+    } = &provider.connection
+    {
+        body["reasoning"] = json!({"effort": effort});
+    }
     let mut request = match &provider.connection {
         AgentConnection::OpenAiCompatible {
             base_url, api_key, ..
@@ -185,6 +192,7 @@ struct ResponsesDecoder {
     received: usize,
     text: String,
     output: Option<Vec<Value>>,
+    completed_items: std::collections::BTreeMap<usize, Value>,
 }
 
 impl ResponsesDecoder {
@@ -224,6 +232,13 @@ impl ResponsesDecoder {
         let event: Value =
             serde_json::from_slice(bytes).map_err(|_| "Invalid Responses streaming JSON.")?;
         match event["type"].as_str() {
+            Some("response.output_item.done") => {
+                let item = event.get("item").filter(|item| item.is_object())
+                    .ok_or("Responses completed item is missing.")?;
+                let index = event["output_index"].as_u64()
+                    .map(|index| index as usize).unwrap_or(self.completed_items.len());
+                self.completed_items.insert(index, item.clone());
+            }
             Some("response.output_text.delta" | "response.refusal.delta") => {
                 let delta = event["delta"].as_str().ok_or("Responses text delta is missing.")?;
                 self.text.push_str(delta);
@@ -233,7 +248,8 @@ impl ResponsesDecoder {
                 if event["response"]["status"].as_str().is_some_and(|s| s != "completed") {
                     return Err("Agent response stopped before completion.".into());
                 }
-                let output = event["response"]["output"].as_array().ok_or("Responses completion has no output.")?.clone();
+                let output = event["response"]["output"].as_array().filter(|items| !items.is_empty())
+                    .cloned().unwrap_or_else(|| std::mem::take(&mut self.completed_items).into_values().collect());
                 let final_text: String = output.iter().filter(|item| item["type"] == "message")
                     .filter_map(|item| item["content"].as_array()).flatten()
                     .filter_map(|part| part["text"].as_str().or(part["refusal"].as_str())).collect();
@@ -250,7 +266,7 @@ impl ResponsesDecoder {
     }
 
     fn finish(self) -> Result<Completion, String> {
-        // Final output is authoritative, including on llama.cpp which omits output_index and arguments.done.
+        // Use final output when supplied, or completed streamed items from Codex.
         // Never execute a partially streamed function or drop the reasoning items needed by the next request.
         let output = self
             .output
@@ -283,6 +299,9 @@ impl ResponsesDecoder {
                 });
             }
         }
+        if self.text.trim().is_empty() && calls.is_empty() {
+            return Err("Agent completed without a reply or tool call. Please try again.".into());
+        }
         Ok(Completion {
             text: self.text,
             calls,
@@ -294,6 +313,32 @@ impl ResponsesDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_completed_items_survive_empty_final_output() {
+        let mut decoder = ResponsesDecoder::default();
+        let mut emitted = Vec::new();
+        for event in [
+            json!({"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","encrypted_content":"opaque","summary":[]}}),
+            json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"project_context","arguments":"{}"}}),
+            json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
+        ] {
+            decoder
+                .event(&serde_json::to_vec(&event).unwrap(), &mut emitted)
+                .unwrap();
+        }
+        let completion = decoder.finish().unwrap();
+        assert_eq!(completion.calls[0].function.name, "project_context");
+        assert_eq!(completion.output[0]["encrypted_content"], "opaque");
+        let mut decoder = ResponsesDecoder::default();
+        decoder
+            .event(
+                br#"{"type":"response.completed","response":{"status":"completed","output":[]}}"#,
+                &mut emitted,
+            )
+            .unwrap();
+        assert!(decoder.finish().is_err());
+    }
 
     #[test]
     fn fragmented_llama_stream_without_indices_preserves_calls_and_reasoning() {

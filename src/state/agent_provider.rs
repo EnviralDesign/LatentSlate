@@ -25,6 +25,8 @@ pub enum AgentConnection {
     },
     OpenAi {
         model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_effort: Option<String>,
         #[serde(default)]
         auth: OpenAiAuth,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +128,7 @@ mod tests {
             .supports_native_video());
         let connection = AgentConnection::OpenAi {
             model: "fixture".into(),
+            reasoning_effort: None,
             auth: OpenAiAuth::ChatGpt,
             api_key: None,
         };

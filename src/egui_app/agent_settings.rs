@@ -67,6 +67,7 @@ impl LatentSlateApp {
             provider.name = "OpenAI Agent".into();
             provider.connection = AgentConnection::OpenAi {
                 model: String::new(),
+                reasoning_effort: None,
                 auth: OpenAiAuth::ChatGpt,
                 api_key: None,
             };
@@ -204,6 +205,7 @@ impl LatentSlateApp {
                 let mut after = draft.connection.clone();
                 *after.model_mut() = String::new();
                 if before != after { settings.models.clear(); }
+                let previous_model = draft.connection.model().to_owned();
                 kit::labeled_text_field(ui, "Agent model", draft.connection.model_mut());
                 ui.horizontal_wrapped(|ui| {
                     if kit::secondary_button(ui, "Refresh models", 125.0).clicked() { action = Some(SettingsAction::Models); }
@@ -217,6 +219,37 @@ impl LatentSlateApp {
                 }
                 capabilities(draft, &settings.models);
                 let model = settings.models.iter().find(|m| m.id == draft.connection.model());
+                let model_changed = previous_model != draft.connection.model();
+                if let AgentConnection::OpenAi { reasoning_effort, .. } = &mut draft.connection {
+                    if model_changed || before != after {
+                        *reasoning_effort = None;
+                    }
+                    let reported = model.and_then(|m| m.reasoning_efforts.as_deref());
+                    if reported.is_some_and(|levels| reasoning_effort.as_ref().is_some_and(|effort| !levels.contains(effort))) {
+                        *reasoning_effort = None;
+                    }
+                    let default_label = model.and_then(|m| m.default_reasoning_effort.as_deref())
+                        .map(|effort| format!("Model default ({effort})")).unwrap_or_else(|| "Model default".into());
+                    let selected = reasoning_effort.clone().unwrap_or_else(|| default_label.clone());
+                    kit::field_label(ui, "Thinking strength");
+                    kit::combo_field(ui, "agent_reasoning_effort", &selected, ui.available_width(), |ui| {
+                        automation_selectable_value(ui, reasoning_effort, None, &default_label);
+                        if let Some(levels) = reported {
+                            for effort in levels {
+                                automation_selectable_value(ui, reasoning_effort, Some(effort.clone()), effort);
+                            }
+                        } else {
+                            for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] {
+                                automation_selectable_value(ui, reasoning_effort, Some(effort.into()), effort);
+                            }
+                        }
+                    });
+                    ui.label(kit::caption(if reported.is_some() {
+                        "Levels reported by this model. Higher strength can take longer."
+                    } else {
+                        "Supported levels are unreported. Refresh models, or choose a level your model supports. Model default leaves it unset."
+                    }));
+                }
                 automation_checkbox(ui, &mut draft.enabled, "Enabled");
                 ui.add_enabled_ui(model.is_none_or(|m| m.image.is_none()), |ui| {
                     automation_checkbox(ui, &mut draft.capabilities.image_input, "Image understanding");

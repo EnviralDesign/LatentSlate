@@ -52,6 +52,12 @@ Subscription credential storage currently requires Windows; other platforms can
 use API keys. This direct Codex Responses integration does not launch a Codex
 runtime or give the agent additional shell/filesystem tools.
 
+OpenAI agents save a **Thinking strength** per agent and send it as Responses
+`reasoning.effort`. **Model default** leaves the parameter unset. Refresh models
+to use the subscription catalog's supported levels and default; connections that
+omit this metadata offer manual levels whose availability depends on the model.
+Changing the model or connection resets the choice to Model default.
+
 Compatible agents accept a base URL including `/v1` and an optional Bearer key;
 a blank key sends no Authorization header. New entries default to **Responses**.
 Existing entries without an API-format setting retain **Chat Completions**, which

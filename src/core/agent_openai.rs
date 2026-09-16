@@ -30,6 +30,8 @@ pub struct AgentModel {
     pub label: String,
     pub image: Option<bool>,
     pub video: Option<bool>,
+    pub reasoning_efforts: Option<Vec<String>>,
+    pub default_reasoning_effort: Option<String>,
 }
 
 pub enum SettingsAction {
@@ -439,6 +441,15 @@ async fn models(provider: &AgentProviderEntry) -> Result<Vec<AgentModel>, String
         let mut model = AgentModel {
             id: id.into(),
             label: entry["display_name"].as_str().unwrap_or(id).into(),
+            reasoning_efforts: entry["supported_reasoning_levels"]
+                .as_array()
+                .map(|levels| {
+                    levels
+                        .iter()
+                        .filter_map(|level| level["effort"].as_str().map(str::to_owned))
+                        .collect()
+                }),
+            default_reasoning_effort: entry["default_reasoning_level"].as_str().map(str::to_owned),
             image: modalities.map(|m| m.iter().any(|v| v == "image")),
             video: if matches!(provider.connection, AgentConnection::OpenAi { .. }) {
                 Some(false)
