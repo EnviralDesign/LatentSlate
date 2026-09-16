@@ -723,31 +723,66 @@ impl LatentSlateApp {
                                 };
                                 let status_color = if row.failed {
                                     kit::DANGER
-                                } else if running {
-                                    kit::TEXT_MUTED
                                 } else {
-                                    kit::PRIMARY
+                                    kit::TEXT_MUTED
                                 };
                                 let mut toggle_details = false;
                                 kit::bounded_horizontal_row(ui, 20.0, |ui, row_width| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
-                                    let status_width = 48.0;
+                                    ui.spacing_mut().item_spacing.x = 6.0;
                                     let details_width = 66.0;
-                                    let summary_width = (row_width
+                                    let separator_width = 10.0;
+                                    let status_width = ui
+                                        .painter()
+                                        .layout_no_wrap(
+                                            status.into(),
+                                            egui::FontId::proportional(10.5),
+                                            status_color,
+                                        )
+                                        .size()
+                                        .x;
+                                    let max_summary_width = (row_width
+                                        - details_width
+                                        - separator_width
+                                        - status_width
+                                        - ui.spacing().item_spacing.x * 4.0)
+                                        .max(0.0);
+                                    let summary_width = ui
+                                        .painter()
+                                        .layout_no_wrap(
+                                            row.summary.clone(),
+                                            egui::FontId::proportional(12.0),
+                                            kit::TEXT_MUTED,
+                                        )
+                                        .size()
+                                        .x
+                                        .min(max_summary_width);
+                                    let spacer_width = (row_width
+                                        - summary_width
+                                        - separator_width
                                         - status_width
                                         - details_width
-                                        - ui.spacing().item_spacing.x * 2.0)
+                                        - ui.spacing().item_spacing.x * 4.0)
                                         .max(0.0);
                                     let summary = ui.add_sized(
                                         [summary_width, 20.0],
                                         egui::Label::new(
                                             egui::RichText::new(&row.summary)
                                                 .size(12.0)
-                                                .color(kit::TEXT),
+                                                .color(kit::TEXT_MUTED),
                                         )
+                                        .halign(Align::Min)
                                         .truncate(),
                                     );
                                     summary.on_hover_text(&row.summary);
+                                    ui.add_sized(
+                                        [separator_width, 20.0],
+                                        egui::Label::new(
+                                            egui::RichText::new("·")
+                                                .size(10.5)
+                                                .color(kit::TEXT_DIM),
+                                        )
+                                        .halign(Align::Center),
+                                    );
                                     ui.add_sized(
                                         [status_width, 20.0],
                                         egui::Label::new(
@@ -755,7 +790,11 @@ impl LatentSlateApp {
                                                 .size(10.5)
                                                 .color(status_color),
                                         )
-                                        .truncate(),
+                                        .halign(Align::Min),
+                                    );
+                                    ui.allocate_exact_size(
+                                        Vec2::new(spacer_width, 20.0),
+                                        Sense::hover(),
                                     );
                                     let details_label = if details.is_open() {
                                         "▾ Details"
