@@ -58,6 +58,12 @@ to use the subscription catalog's supported levels and default; connections that
 omit this metadata offer manual levels whose availability depends on the model.
 Changing the model or connection resets the choice to Model default.
 
+Chat shows a context wheel below the composer. Its tooltip reports the latest request's input + output tokens (including cached input and reasoning), not cumulative billing usage or unsent text. Missing usage or capacity is shown as unknown.
+
+OpenAI API-key and ChatGPT connections use native Responses compaction at 200,000 tokens, with a 272,000-token application context budget (or a smaller advertised model window). The composer stays editable while sending is disabled. Native encrypted compaction items replace earlier wire context; the visible transcript remains. After compaction, occupancy is unknown until the next usage report, since OAuth does not expose a usable standalone token-count endpoint.
+
+For llama.cpp, the configured per-slot context comes from the loaded model's props or router preset. Where supported, prompt counting runs before each request, including tool follow-ups, without auto-loading a cold model. Sending stops when the prompt cannot leave 4,096 tokens for a reply, or the server reports context overflow; start a new chat to continue. No local summarization or transcript-recall tool is enabled.
+
 Compatible agents accept a base URL including `/v1` and an optional Bearer key;
 a blank key sends no Authorization header. New entries default to **Responses**.
 Existing entries without an API-format setting retain **Chat Completions**, which

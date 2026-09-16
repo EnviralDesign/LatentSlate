@@ -1,4 +1,5 @@
 pub mod agent_chat;
+pub mod agent_context;
 pub mod agent_openai;
 pub mod agent_responses;
 pub mod agent_provider_store;

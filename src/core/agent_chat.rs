@@ -1,4 +1,5 @@
 //! The bounded OpenAI-compatible conversation loop. Editor work is requested through events.
+use super::agent_context::{self, ContextUsage};
 use crate::state::{AgentConnection, AgentProtocol, AgentProviderEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -41,6 +42,8 @@ impl ToolResult {
 
 pub enum ChatEvent {
     Text(String),
+    Context(ContextUsage),
+    Compacting(bool),
     Tool {
         call: ToolCall,
         reply: tokio::sync::oneshot::Sender<ToolResult>,
@@ -108,6 +111,12 @@ async fn conversation(
         .build()
         .map_err(|_| "Unable to initialize Chat connection.")?;
     let mut visuals = 0;
+    let limit = agent_context::limit(provider).await;
+    let _ = events.send(ChatEvent::Context(ContextUsage {
+        limit,
+        preflight: true,
+        ..Default::default()
+    }));
     for round in 0..=MAX_TOOL_ROUNDS {
         let responses = !matches!(
             provider.connection,
@@ -117,11 +126,11 @@ async fn conversation(
             }
         );
         let result = if responses {
-            super::agent_responses::completion(&client, provider, messages, tools, events)
+            super::agent_responses::completion(&client, provider, messages, tools, events, limit)
                 .await
                 .map(|result| (result.text, result.calls, Some(result.output)))
         } else {
-            completion(&client, provider, messages, tools, events)
+            completion(&client, provider, messages, tools, events, limit)
                 .await
                 .map(|(text, calls)| (text, calls, None))
         };
@@ -211,6 +220,7 @@ async fn completion(
     messages: &[Value],
     tools: &[Value],
     events: &mpsc::Sender<ChatEvent>,
+    limit: Option<u64>,
 ) -> Result<(String, Vec<ToolCall>), String> {
     let AgentConnection::OpenAiCompatible {
         base_url,
@@ -253,10 +263,24 @@ async fn completion(
             }
         }
     }
-    let mut body =
-        json!({"model":model, "messages":compatible_messages, "stream":true, "max_tokens":4096});
+    let mut body = json!({"model":model, "messages":compatible_messages, "stream":true,
+            "stream_options":{"include_usage":true}, "max_tokens":agent_context::LOCAL_REPLY_RESERVE});
     if !tools.is_empty() {
         body["tools"] = json!(tools);
+    }
+    if let Some(tokens) = agent_context::local_input_tokens(client, provider, &body, false).await {
+        let full = limit
+            .is_some_and(|max| tokens.saturating_add(agent_context::LOCAL_REPLY_RESERVE) >= max);
+        let _ = events.send(ChatEvent::Context(ContextUsage {
+            tokens: Some(tokens),
+            limit,
+            full,
+            preflight: true,
+            ..Default::default()
+        }));
+        if full {
+            return Err(agent_context::FULL_MESSAGE.into());
+        }
     }
     let body = serde_json::to_vec(&body).map_err(|_| "Unable to encode Chat request.")?;
     if body.len() > 48 * 1024 * 1024 {
@@ -279,9 +303,22 @@ async fn completion(
         }
     })?;
     if !response.status().is_success() {
+        let status = response.status().as_u16();
+        if let Ok(value) = super::agent_openai::limited_json(response).await {
+            if agent_context::context_error(&value) {
+                let error = &value["error"];
+                let _ = events.send(ChatEvent::Context(ContextUsage {
+                    tokens: error["n_prompt_tokens"].as_u64(),
+                    limit: error["n_ctx"].as_u64().or(limit),
+                    full: true,
+                    ..Default::default()
+                }));
+                return Err(agent_context::FULL_MESSAGE.into());
+            }
+        }
         return Err(format!(
             "Agent request failed (HTTP {}). Check endpoint, model, and credentials.",
-            response.status().as_u16()
+            status
         ));
     }
     let mut decoder = StreamDecoder::default();
@@ -299,6 +336,11 @@ async fn completion(
             break;
         }
     }
+    let context = ContextUsage::reported(&decoder.usage, limit, true);
+    let _ = events.send(ChatEvent::Context(context));
+    if context.full && decoder.incomplete {
+        return Err(agent_context::FULL_MESSAGE.into());
+    }
     decoder.finish()
 }
 
@@ -311,6 +353,8 @@ struct StreamDecoder {
     received: usize,
     done: bool,
     finished: bool,
+    usage: Value,
+    incomplete: bool,
 }
 
 impl StreamDecoder {
@@ -350,6 +394,9 @@ impl StreamDecoder {
         }
         let event: Value =
             serde_json::from_slice(data).map_err(|_| "Agent returned invalid streaming JSON.")?;
+        if event["usage"].is_object() {
+            self.usage = event["usage"].clone();
+        }
         if event.get("error").is_some() {
             return Err("Agent reported a streaming error.".into());
         }
@@ -358,9 +405,7 @@ impl StreamDecoder {
         };
         if let Some(reason) = choice["finish_reason"].as_str() {
             if !matches!(reason, "stop" | "tool_calls") {
-                return Err(
-                    "Agent response stopped before completion. Try a smaller request.".into(),
-                );
+                self.incomplete = true;
             }
             self.finished = true;
         }
@@ -396,6 +441,9 @@ impl StreamDecoder {
     }
 
     fn finish(self) -> Result<(String, Vec<ToolCall>), String> {
+        if self.incomplete {
+            return Err("Agent response stopped before completion. Try a smaller request.".into());
+        }
         if !self.finished {
             return Err("Agent stream ended before completion.".into());
         }
@@ -453,7 +501,8 @@ mod tests {
         };
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::spawn(move || {
-            for (status, reply) in replies {
+            let mut replies = replies.into_iter();
+            while replies.len() > 0 {
                 let deadline = std::time::Instant::now() + Duration::from_secs(10);
                 let mut socket = loop {
                     match listener.accept() {
@@ -486,13 +535,21 @@ mod tests {
                             .strip_prefix("content-length:")
                             .map(|s| s.trim().parse().unwrap())
                     })
-                    .unwrap();
+                    .unwrap_or(0);
                 while bytes.len() < end + size {
                     let mut chunk = [0; 4096];
                     let count = socket.read(&mut chunk).unwrap();
                     assert!(count > 0);
                     bytes.extend_from_slice(&chunk[..count]);
                 }
+                if headers.starts_with("GET ")
+                    || headers.lines().next().unwrap().contains("/input_tokens")
+                {
+                    let reply = "{}";
+                    write!(socket, "HTTP/1.1 404 Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
+                    continue;
+                }
+                let (status, reply) = replies.next().unwrap();
                 tx.send((
                     headers,
                     serde_json::from_slice(&bytes[end..end + size]).unwrap(),
@@ -515,6 +572,15 @@ mod tests {
         ]
     }
 
+    fn next_content_event(request: &ChatRequest) -> ChatEvent {
+        loop {
+            let event = request.events.recv_timeout(Duration::from_secs(5)).unwrap();
+            if !matches!(event, ChatEvent::Context(_) | ChatEvent::Compacting(_)) {
+                return event;
+            }
+        }
+    }
+
     fn finish(request: &ChatRequest) -> (Vec<Value>, Option<String>, String, usize) {
         let mut text = String::new();
         let mut calls = 0;
@@ -524,6 +590,7 @@ mod tests {
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
             {
+                ChatEvent::Context(_) | ChatEvent::Compacting(_) => {}
                 ChatEvent::Text(delta) => text.push_str(&delta),
                 ChatEvent::Tool { reply, .. } => {
                     calls += 1;
@@ -669,7 +736,7 @@ mod tests {
         );
         let ChatEvent::Tool {
             reply: _held_reply, ..
-        } = request.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        } = next_content_event(&request)
         else {
             panic!("expected tool")
         };
@@ -757,9 +824,7 @@ mod tests {
             json!({"type":"function","function":{"name":"look"}}),
         ];
         let request = start(provider.clone(), vec![], tools.clone());
-        let ChatEvent::Tool { reply, .. } =
-            request.events.recv_timeout(Duration::from_secs(5)).unwrap()
-        else {
+        let ChatEvent::Tool { reply, .. } = next_content_event(&request) else {
             panic!("expected tool")
         };
         reply
@@ -769,9 +834,7 @@ mod tests {
             })
             .ok()
             .unwrap();
-        let ChatEvent::Tool { call, reply } =
-            request.events.recv_timeout(Duration::from_secs(5)).unwrap()
-        else {
+        let ChatEvent::Tool { call, reply } = next_content_event(&request) else {
             panic!("expected look after native video")
         };
         assert_eq!(call.function.name, "look");

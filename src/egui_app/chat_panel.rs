@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::agent_chat::{self, ChatEvent, ChatRequest, ToolResult};
+use crate::core::agent_context::{self, ContextUsage};
 use crate::state::AgentProviderEntry;
 use serde_json::{json, Value};
 
@@ -110,6 +111,9 @@ pub(super) struct ChatUi {
     pub composer_id: Option<egui::Id>,
     pub session: u64,
     pub stopping: bool,
+    pub context: ContextUsage,
+    pub context_owner: String,
+    pub compacting: bool,
     pub handles: crate::core::agent_tools::Handles,
     pub media: Option<super::chat_tools::PendingChatMedia>,
 }
@@ -130,10 +134,75 @@ impl Default for ChatUi {
             composer_id: None,
             session: u64::MAX,
             stopping: false,
+            context: Default::default(),
+            context_owner: String::new(),
+            compacting: false,
             handles: Default::default(),
             media: None,
         }
     }
+}
+
+fn context_wheel(ui: &mut Ui, context: ContextUsage) {
+    let fraction = context
+        .tokens
+        .zip(context.limit)
+        .filter(|(_, max)| *max > 0)
+        .map(|(n, max)| (n as f32 / max as f32).clamp(0.0, 1.0));
+    let label = fraction
+        .map(|f| format!("{:.0}%", f * 100.0))
+        .unwrap_or_else(|| "-".into());
+    let color = if context.full {
+        kit::DANGER
+    } else {
+        kit::PRIMARY
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(65.0, 30.0), egui::Sense::hover());
+    let center = Pos2::new(rect.left() + 12.0, rect.center().y);
+    ui.painter()
+        .circle_stroke(center, 9.0, egui::Stroke::new(3.0_f32, kit::BORDER_SOFT));
+    if let Some(fraction) = fraction.filter(|f| *f > 0.0) {
+        let points = (0..=48)
+            .map(|i| {
+                let angle = -std::f32::consts::FRAC_PI_2
+                    + std::f32::consts::TAU * fraction * i as f32 / 48.0;
+                center + Vec2::angled(angle) * 9.0
+            })
+            .collect();
+        ui.painter()
+            .add(egui::Shape::line(points, egui::Stroke::new(3.0_f32, color)));
+    }
+    ui.painter().text(
+        Pos2::new(rect.right(), rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        label,
+        egui::FontId::proportional(11.0),
+        kit::TEXT_MUTED,
+    );
+    let count = context
+        .tokens
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let limit = context
+        .limit
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let detail = if context.compacted {
+        "Compacted by OpenAI. Awaiting the next usage report."
+    } else if context.preflight {
+        "Counted prompt, including tools and media. Space is reserved for the reply."
+    } else {
+        "Last reported input + output tokens, including cached input and reasoning. Excludes unsent text."
+    };
+    let tooltip = format!("Context: {count} / {limit} tokens\n{detail}");
+    crate::core::automation::instrument_response(
+        response,
+        "context_usage",
+        Some(tooltip.clone()),
+        false,
+        false,
+    )
+    .on_hover_text(tooltip);
 }
 
 const CHAT_PANEL_W: f32 = 460.0;
@@ -297,6 +366,9 @@ impl LatentSlateApp {
         self.chat.composer.clear();
         self.chat.composer_id = None;
         self.chat.stopping = false;
+        self.chat.context = Default::default();
+        self.chat.context_owner.clear();
+        self.chat.compacting = false;
         self.chat.handles = Default::default();
         self.chat.media = None;
     }
@@ -374,6 +446,7 @@ impl LatentSlateApp {
                         "Agent is responding",
                     ));
                 }
+                Some(ChatEvent::Context(_) | ChatEvent::Compacting(_)) => {}
                 None => break,
             }
         }
@@ -384,6 +457,15 @@ impl LatentSlateApp {
                 .as_ref()
                 .and_then(|r| r.events.try_recv().ok());
             match event {
+                Some(ChatEvent::Context(mut context)) => {
+                    if context.tokens.is_none() && context.preflight && !context.full {
+                        context.tokens = self.chat.context.tokens;
+                        context.compacted = self.chat.context.compacted;
+                        context.preflight = self.chat.context.preflight;
+                    }
+                    self.chat.context = context;
+                }
+                Some(ChatEvent::Compacting(active)) => self.chat.compacting = active,
                 Some(ChatEvent::Text(text)) => {
                     if self
                         .chat
@@ -475,6 +557,7 @@ impl LatentSlateApp {
                 Some(ChatEvent::Finished { messages, error }) => {
                     self.chat.messages = messages;
                     self.chat.request = None;
+                    self.chat.compacting = false;
                     self.chat.stopping = false;
                     self.chat.media = None;
                     if let Some(error) = error {
@@ -566,6 +649,25 @@ impl LatentSlateApp {
                 },
             );
         });
+        let provider = self
+            .chat
+            .providers
+            .iter()
+            .find(|p| Some(p.id) == self.chat.selected);
+        let owner = provider
+            .map(crate::core::agent_responses::history_owner)
+            .unwrap_or_default();
+        if owner != self.chat.context_owner {
+            self.chat.context = ContextUsage {
+                limit: provider
+                    .filter(|p| {
+                        matches!(p.connection, crate::state::AgentConnection::OpenAi { .. })
+                    })
+                    .map(|_| agent_context::OPENAI_CEILING),
+                ..Default::default()
+            };
+            self.chat.context_owner = owner;
+        }
         if self.chat.selected.is_none() {
             ui.label("Add an agent in AI Providers to start chatting.");
             if kit::secondary_button(ui, "AI Providers", 120.0).clicked() {
@@ -741,6 +843,10 @@ impl LatentSlateApp {
             }
             ui.label(kit::caption(if self.chat.stopping {
                 "Stopping…"
+            } else if self.chat.compacting {
+                "Compacting context... You can keep typing."
+            } else if self.chat.context.full {
+                agent_context::FULL_MESSAGE
             } else if self.chat.media.is_some() {
                 "Preparing media for the assistant…"
             } else if busy {
@@ -755,8 +861,12 @@ impl LatentSlateApp {
             &mut self.chat.composer_id,
             composer_rows,
         );
-        let can_send = self.chat.selected.is_some() && !self.chat.composer.trim().is_empty();
-        ui.horizontal_wrapped(|ui| {
+        let can_send = !busy
+            && !self.chat.context.full
+            && self.chat.selected.is_some()
+            && !self.chat.composer.trim().is_empty();
+        let row_width = ui.available_width();
+        ui.horizontal(|ui| {
             if busy {
                 if kit::secondary_button(ui, "Stop", 65.0).clicked() {
                     self.chat.stopping = true;
@@ -769,7 +879,8 @@ impl LatentSlateApp {
                         request.stop();
                     }
                 }
-            } else if (ui
+            }
+            if (ui
                 .add_enabled_ui(can_send, |ui| kit::primary_button(ui, "Send", 80.0))
                 .inner
                 .clicked()
@@ -810,6 +921,14 @@ impl LatentSlateApp {
             {
                 self.clear_chat();
             }
+            let remaining = (row_width - (ui.cursor().left() - ui.max_rect().left())).max(0.0);
+            ui.allocate_ui_with_layout(
+                Vec2::new(remaining, 32.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    context_wheel(ui, self.chat.context);
+                },
+            );
         });
     }
 

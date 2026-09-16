@@ -1,5 +1,6 @@
 //! Responses wire format; the editor and chat UI continue to use the shared ChatEvent contract.
 use super::agent_chat::{ChatEvent, ToolCall, ToolFunction};
+use super::agent_context::{self, ContextUsage};
 use super::agent_openai;
 use crate::state::{AgentConnection, AgentProviderEntry, OpenAiAuth};
 use serde_json::{json, Value};
@@ -76,6 +77,10 @@ fn input(
             }
         }
     }
+    // Keep visible history; the latest native compaction item owns the earlier model context.
+    if let Some(index) = input.iter().rposition(|item| item["type"] == "compaction") {
+        input.drain(..index);
+    }
     Ok((instructions.join("\n\n"), input))
 }
 
@@ -85,6 +90,7 @@ pub async fn completion(
     messages: &[Value],
     tools: &[Value],
     events: &mpsc::Sender<ChatEvent>,
+    limit: Option<u64>,
 ) -> Result<Completion, String> {
     let model = provider.connection.model().trim();
     if model.is_empty() {
@@ -101,6 +107,27 @@ pub async fn completion(
         })
         .collect();
     let mut body = json!({"model":model,"instructions":instructions,"input":input,"tools":tools,"stream":true,"store":false});
+    let native_openai = matches!(provider.connection, AgentConnection::OpenAi { .. });
+    if native_openai {
+        let threshold =
+            agent_context::COMPACT_AT.min(limit.unwrap_or(agent_context::OPENAI_CEILING) * 3 / 4);
+        body["context_management"] = json!([{"type":"compaction", "compact_threshold":threshold}]);
+    } else if let Some(tokens) =
+        agent_context::local_input_tokens(client, provider, &body, true).await
+    {
+        let full = limit
+            .is_some_and(|max| tokens.saturating_add(agent_context::LOCAL_REPLY_RESERVE) >= max);
+        let _ = events.send(ChatEvent::Context(ContextUsage {
+            tokens: Some(tokens),
+            limit,
+            full,
+            preflight: true,
+            ..Default::default()
+        }));
+        if full {
+            return Err(agent_context::FULL_MESSAGE.into());
+        }
+    }
     if let AgentConnection::OpenAi {
         reasoning_effort: Some(effort),
         ..
@@ -158,7 +185,18 @@ pub async fn completion(
         "Could not connect to the Responses endpoint. Check the connection and model."
     })?;
     if !response.status().is_success() {
-        let hint = match response.status().as_u16() {
+        let status = response.status();
+        if let Ok(value) = agent_openai::limited_json(response).await {
+            if agent_context::context_error(&value) {
+                let _ = events.send(ChatEvent::Context(ContextUsage {
+                    limit,
+                    full: true,
+                    ..Default::default()
+                }));
+                return Err(agent_context::FULL_MESSAGE.into());
+            }
+        }
+        let hint = match status.as_u16() {
             401 | 403 => "Check the API key, or reconnect your ChatGPT account.",
             429 => "The account's usage or rate limit was reached. No alternative billing route was used.",
             404 => "Check the model and endpoint. For older local servers, select Chat Completions.",
@@ -166,7 +204,7 @@ pub async fn completion(
         };
         return Err(format!(
             "Responses request failed (HTTP {}). {hint}",
-            response.status().as_u16()
+            status.as_u16()
         ));
     }
     let mut decoder = ResponsesDecoder::default();
@@ -178,10 +216,21 @@ pub async fn completion(
         for text in decoder.push(&chunk)? {
             let _ = events.send(ChatEvent::Text(text));
         }
+        for compacting in std::mem::take(&mut decoder.compaction_events) {
+            let _ = events.send(ChatEvent::Compacting(compacting));
+        }
         if decoder.output.is_some() {
             break;
         }
     }
+    let mut context = ContextUsage::reported(&decoder.usage, limit, !native_openai);
+    if decoder.compacted {
+        // Usage includes the pre-compaction window; it cannot measure the encrypted replacement.
+        context.tokens = None;
+        context.compacted = true;
+        context.full = false;
+    }
+    let _ = events.send(ChatEvent::Context(context));
     decoder.finish()
 }
 
@@ -193,6 +242,9 @@ struct ResponsesDecoder {
     text: String,
     output: Option<Vec<Value>>,
     completed_items: std::collections::BTreeMap<usize, Value>,
+    usage: Value,
+    compacted: bool,
+    compaction_events: Vec<bool>,
 }
 
 impl ResponsesDecoder {
@@ -232,12 +284,19 @@ impl ResponsesDecoder {
         let event: Value =
             serde_json::from_slice(bytes).map_err(|_| "Invalid Responses streaming JSON.")?;
         match event["type"].as_str() {
+            Some("response.output_item.added") if event["item"]["type"] == "compaction" => {
+                self.compaction_events.push(true);
+            }
             Some("response.output_item.done") => {
                 let item = event.get("item").filter(|item| item.is_object())
                     .ok_or("Responses completed item is missing.")?;
                 let index = event["output_index"].as_u64()
                     .map(|index| index as usize).unwrap_or(self.completed_items.len());
                 self.completed_items.insert(index, item.clone());
+                if item["type"] == "compaction" {
+                    self.compacted = true;
+                    self.compaction_events.push(false);
+                }
             }
             Some("response.output_text.delta" | "response.refusal.delta") => {
                 let delta = event["delta"].as_str().ok_or("Responses text delta is missing.")?;
@@ -245,11 +304,13 @@ impl ResponsesDecoder {
                 emitted.push(delta.into());
             }
             Some("response.completed") => {
+                self.usage = event["response"]["usage"].clone();
                 if event["response"]["status"].as_str().is_some_and(|s| s != "completed") {
                     return Err("Agent response stopped before completion.".into());
                 }
                 let output = event["response"]["output"].as_array().filter(|items| !items.is_empty())
                     .cloned().unwrap_or_else(|| std::mem::take(&mut self.completed_items).into_values().collect());
+                self.compacted |= output.iter().any(|item| item["type"] == "compaction");
                 let final_text: String = output.iter().filter(|item| item["type"] == "message")
                     .filter_map(|item| item["content"].as_array()).flatten()
                     .filter_map(|part| part["text"].as_str().or(part["refusal"].as_str())).collect();
@@ -385,6 +446,46 @@ mod tests {
         let (_, replay) = input(&provider, &history).unwrap();
         assert!(!replay.iter().any(|item| item["type"] == "reasoning"));
         assert_eq!(replay[1]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn compaction_replaces_wire_history_without_erasing_transcript() {
+        let provider = AgentProviderEntry::default();
+        let compact = json!({"type":"compaction","encrypted_content":"opaque"});
+        let history = vec![
+            json!({"role":"system","content":"Persistent instructions"}),
+            json!({"role":"user","content":"Earlier request"}),
+            json!({"role":"assistant","content":"Earlier answer","responses_owner":history_owner(&provider),
+                "responses_output":[compact.clone()]}),
+            json!({"role":"user","content":"Next request"}),
+        ];
+        let (instructions, replay) = input(&provider, &history).unwrap();
+        assert_eq!(instructions, "Persistent instructions");
+        assert_eq!(replay.len(), 2);
+        assert_eq!(replay[0], compact);
+        assert_eq!(history[1]["content"], "Earlier request");
+        let mut decoder = ResponsesDecoder::default();
+        let mut emitted = vec![];
+        decoder
+            .event(
+                &serde_json::to_vec(
+                    &json!({"type":"response.output_item.added","item":{"type":"compaction"}}),
+                )
+                .unwrap(),
+                &mut emitted,
+            )
+            .unwrap();
+        decoder
+            .event(
+                &serde_json::to_vec(
+                    &json!({"type":"response.output_item.done","item":compact,"output_index":0}),
+                )
+                .unwrap(),
+                &mut emitted,
+            )
+            .unwrap();
+        assert_eq!(decoder.compaction_events, vec![true, false]);
+        assert!(decoder.compacted);
     }
 
     #[test]

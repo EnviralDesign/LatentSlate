@@ -32,6 +32,7 @@ pub struct AgentModel {
     pub video: Option<bool>,
     pub reasoning_efforts: Option<Vec<String>>,
     pub default_reasoning_effort: Option<String>,
+    pub context_window: Option<u64>,
 }
 
 pub enum SettingsAction {
@@ -378,7 +379,7 @@ pub fn endpoint(base: &str, path: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-async fn models(provider: &AgentProviderEntry) -> Result<Vec<AgentModel>, String> {
+pub(crate) async fn models(provider: &AgentProviderEntry) -> Result<Vec<AgentModel>, String> {
     let client = client()?;
     let mut request = match &provider.connection {
         AgentConnection::OpenAiCompatible {
@@ -440,6 +441,7 @@ async fn models(provider: &AgentProviderEntry) -> Result<Vec<AgentModel>, String
             .or(entry["architecture"]["input_modalities"].as_array());
         let mut model = AgentModel {
             id: id.into(),
+            context_window: super::agent_context::configured_window(entry),
             label: entry["display_name"].as_str().unwrap_or(id).into(),
             reasoning_efforts: entry["supported_reasoning_levels"]
                 .as_array()
@@ -470,7 +472,8 @@ async fn models(provider: &AgentProviderEntry) -> Result<Vec<AgentModel>, String
                 let mut url = endpoint(base_url, "models")?;
                 url.set_path("/props");
                 url.query_pairs_mut()
-                    .append_pair("model", provider.connection.model());
+                    .append_pair("model", provider.connection.model())
+                    .append_pair("autoload", "false");
                 let mut request = client.get(url);
                 if let Some(key) = api_key.as_deref().filter(|k| !k.trim().is_empty()) {
                     request = request.bearer_auth(key.trim());
@@ -480,6 +483,10 @@ async fn models(provider: &AgentProviderEntry) -> Result<Vec<AgentModel>, String
                         if let Ok(props) = limited_json(response).await {
                             model.image = props["modalities"]["vision"].as_bool().or(model.image);
                             model.video = props["modalities"]["video"].as_bool();
+                            model.context_window = props["default_generation_settings"]["n_ctx"]
+                                .as_u64()
+                                .filter(|n| *n > 0)
+                                .or(model.context_window);
                         }
                     }
                 }
