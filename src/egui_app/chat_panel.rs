@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 #[derive(Default)]
 pub(super) struct ChatRow {
     pub label: String,
+    pub agent_name: Option<String>,
     pub text: String,
     pub tool: bool,
     pub image: Option<egui::TextureHandle>,
@@ -392,6 +393,12 @@ impl LatentSlateApp {
                     {
                         self.chat.rows.push(ChatRow {
                             label: "Assistant".into(),
+                            agent_name: self
+                                .chat
+                                .providers
+                                .iter()
+                                .find(|p| Some(p.id) == self.chat.selected)
+                                .map(|p| p.name.clone()),
                             text: String::new(),
                             tool: false,
                             image: None,
@@ -420,6 +427,7 @@ impl LatentSlateApp {
                         text: format!("{}\n{}", call.function.arguments, result.text),
                         tool: true,
                         image: None,
+                        agent_name: None,
                     });
                     if result.media.is_empty() {
                         let _ = reply.send(result);
@@ -668,22 +676,53 @@ impl LatentSlateApp {
                             });
                     } else {
                         let user = row.label == "You";
-                        let response = egui::Frame::new()
-                            .fill(if user { kit::PANEL_RAISED } else { kit::PANEL })
-                            .corner_radius(8)
-                            .inner_margin(12)
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width().min(680.0));
-                                ui.label(
-                                    egui::RichText::new(&row.label).size(11.0).color(if user {
-                                        kit::TEXT_MUTED
-                                    } else {
-                                        kit::PRIMARY
-                                    }),
-                                );
-                                ui.add_space(5.0);
-                                ui.add(egui::Label::new(chat_text(&row.text)).wrap());
-                            });
+                        let assistant = row.label == "Assistant";
+                        let row_width = ui.available_width();
+                        let bubble_width =
+                            (row_width - if user { 32.0 } else { 20.0 }).clamp(32.0, 704.0);
+                        let accent = egui::Color32::from_rgb(66, 112, 86);
+                        let response = ui
+                            .horizontal(|ui| {
+                                if user {
+                                    ui.add_space(row_width - bubble_width);
+                                }
+                                egui::Frame::new()
+                                    .fill(if user { kit::PANEL_RAISED } else { kit::PANEL })
+                                    .corner_radius(8)
+                                    .inner_margin(12)
+                                    .show(ui, |ui| {
+                                        ui.with_layout(
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.set_width(bubble_width - 24.0);
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        row.agent_name
+                                                            .as_deref()
+                                                            .unwrap_or(&row.label),
+                                                    )
+                                                    .size(11.0)
+                                                    .color(kit::TEXT_MUTED),
+                                                );
+                                                ui.add_space(5.0);
+                                                ui.add(
+                                                    egui::Label::new(chat_text(&row.text)).wrap(),
+                                                );
+                                            },
+                                        );
+                                    })
+                            })
+                            .inner;
+                        if assistant {
+                            let rect = response.response.rect;
+                            ui.painter().line_segment(
+                                [
+                                    Pos2::new(rect.left() + 1.0, rect.top() + 9.0),
+                                    Pos2::new(rect.left() + 1.0, rect.bottom() - 9.0),
+                                ],
+                                egui::Stroke::new(2.0_f32, accent),
+                            );
+                        }
                         crate::core::automation::instrument_response(
                             response.response,
                             "chat_message",
