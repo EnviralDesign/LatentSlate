@@ -2448,11 +2448,11 @@ pub fn tool_button<'a>(
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub fn compact_slider(
+pub fn compact_slider<Num: egui::emath::Numeric>(
     ui: &mut Ui,
     label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
+    value: &mut Num,
+    range: std::ops::RangeInclusive<Num>,
     width: f32,
 ) -> Response {
     ui.scope(|ui| {

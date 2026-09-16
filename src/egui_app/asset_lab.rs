@@ -4887,7 +4887,20 @@ impl LatentSlateApp {
         preview: AssetLabComparePanePreview,
         action: &mut Option<AssetLabAction>,
     ) {
-        kit::bounded_horizontal_row(ui, 36.0, |ui, _| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let card = ui.max_rect();
+        ui.painter().rect_filled(card, 5, kit::PANEL_SUNKEN);
+        let header = Rect::from_min_size(card.min, Vec2::new(card.width(), 48.0));
+        ui.painter().rect_filled(header, 5, kit::PANEL);
+        kit::bounded_horizontal_row(ui, 48.0, |ui, _| {
+            ui.add_space(14.0);
+            let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
+            if side == AssetLabCompareSide::Baseline {
+                kit::paint_icon(ui, kit::Icon::Pin, icon_rect, kit::PRIMARY);
+            } else {
+                ui.painter()
+                    .circle_filled(icon_rect.center(), 3.0, kit::IMAGE);
+            }
             ui.label(kit::body(format!(
                 "{} · {}",
                 if side == AssetLabCompareSide::Baseline {
@@ -4897,16 +4910,19 @@ impl LatentSlateApp {
                 },
                 version.unwrap_or("No candidate")
             )));
-            if side == AssetLabCompareSide::Candidate {
-                if let Some(version) = version {
-                    if kit::primary_button(ui, "Use this output", 130.0).clicked() {
-                        self.pin_asset_lab_result_v4(asset.id, version);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(14.0);
+                if side == AssetLabCompareSide::Candidate {
+                    if let Some(version) = version {
+                        if kit::primary_button_sized(ui, "Use this output", 130.0, 32.0).clicked() {
+                            self.pin_asset_lab_result_v4(asset.id, version);
+                        }
                     }
                 }
-            }
-            if ended {
-                ui.label(kit::caption("Ended"));
-            }
+                if ended {
+                    ui.label(kit::caption("Ended"));
+                }
+            });
         });
         let desired_h = ui.available_height().max(70.0);
         let (rect, response) = ui.allocate_exact_size(
@@ -4914,15 +4930,15 @@ impl LatentSlateApp {
             Sense::click_and_drag(),
         );
         let painter = ui.painter().with_clip_rect(rect);
-        painter.rect_filled(rect, kit::field_radius(), kit::FIELD_BG);
-        painter.rect_stroke(
-            rect,
-            kit::field_radius(),
-            Stroke::new(1.0_f32, kit::BORDER_SOFT),
+        kit::paint_panel_edge(ui, header, kit::PanelEdge::Bottom);
+        ui.painter().rect_stroke(
+            card,
+            5,
+            Stroke::new(1.0_f32, kit::BORDER),
             egui::StrokeKind::Inside,
         );
         if let Some((texture_id, size)) = preview.texture {
-            let image_bounds = rect.shrink(8.0);
+            let image_bounds = rect.shrink(16.0);
             let fit = (image_bounds.width() / size.x.max(1.0))
                 .min(image_bounds.height() / size.y.max(1.0))
                 .max(0.01);
@@ -5048,15 +5064,25 @@ impl LatentSlateApp {
     }
 
     fn asset_lab_compare_transport(&mut self, ui: &mut Ui, max_duration: f64) {
-        ui.add_space(kit::FORM_ROW_GAP);
-        ui.horizontal(|ui| {
+        kit::bounded_horizontal_row(ui, 32.0, |ui, row_width| {
             let playing = self
                 .asset_lab
                 .compare
                 .as_ref()
                 .is_some_and(|compare| compare.playing);
             ui.add_enabled_ui(max_duration > 0.0, |ui| {
-                if kit::secondary_button(ui, if playing { "Pause" } else { "Play" }, 70.0).clicked()
+                if kit::Tooltip::new(if playing { "Pause" } else { "Play" })
+                    .description("Play or pause both outputs together.")
+                    .apply(kit::timeline_transport_icon_button(
+                        ui,
+                        if playing {
+                            kit::TimelineTransportIcon::Pause
+                        } else {
+                            kit::TimelineTransportIcon::Play
+                        },
+                        playing,
+                    ))
+                    .clicked()
                 {
                     if let Some(compare) = self.asset_lab.compare.as_mut() {
                         if !playing && compare.shared_time_seconds >= max_duration {
@@ -5083,22 +5109,29 @@ impl LatentSlateApp {
                 .size(10.5)
                 .color(kit::TEXT_MUTED),
             );
-        });
-        if let Some(compare) = self.asset_lab.compare.as_mut() {
-            let mut time = compare
-                .shared_time_seconds
-                .clamp(0.0, max_duration.max(0.0));
-            let response = ui.add_enabled(
-                max_duration > 0.0,
-                egui::Slider::new(&mut time, 0.0..=max_duration.max(0.0))
-                    .show_value(false)
-                    .clamping(egui::SliderClamping::Always),
-            );
-            if response.changed() {
-                compare.shared_time_seconds = time.max(0.0);
-                compare.last_playback_update = Some(std::time::Instant::now());
+            if let Some(compare) = self.asset_lab.compare.as_mut() {
+                let mut time = compare
+                    .shared_time_seconds
+                    .clamp(0.0, max_duration.max(0.0));
+                let response = ui
+                    .add_enabled_ui(max_duration > 0.0, |ui| {
+                        kit::Tooltip::new("Playback position")
+                            .description("Seek both outputs to the same time.")
+                            .apply(kit::compact_slider(
+                                ui,
+                                "Playback position",
+                                &mut time,
+                                0.0..=max_duration.max(0.0),
+                                (row_width - 210.0).max(40.0),
+                            ))
+                    })
+                    .inner;
+                if response.changed() {
+                    compare.shared_time_seconds = time.max(0.0);
+                    compare.last_playback_update = Some(std::time::Instant::now());
+                }
             }
-        }
+        });
     }
 
     pub(super) fn asset_lab_node_preview_texture(

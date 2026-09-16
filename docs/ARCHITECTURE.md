@@ -76,6 +76,11 @@ for Brush/Eraser and [ / ] for brush diameter (1–512 canvas pixels). These sho
 yield to text editing, dialogs/popups, result audition, and active pointer gestures;
 they do not change the saved authoring setup.
 
+Compare uses the same panel and canvas surfaces as Create, with padded image-card
+headers and separate linked-navigation and lineage areas. Its lineage divider and
+the timeline use native egui resizable panels, including hover/drag highlighting
+and resize cursors; static border painting must not cover that feedback.
+
 Source configuration uses `source_field`: a thumbnail, slot label, source value,
 binding badge, and trailing chevron. Asset Lab uses its 48-point compact form in
 a bounded grid; Attributes uses the comfortable form. Both open the same picker.

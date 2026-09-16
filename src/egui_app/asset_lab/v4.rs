@@ -999,7 +999,28 @@ impl LatentSlateApp {
         config: &GenerativeConfig,
         compact: bool,
     ) {
-        ui.label(kit::caption(format!("{} versions", config.versions.len())));
+        if compact {
+            kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
+                ui.label(kit::body("Lineage"));
+                ui.label(kit::caption(format!("{} versions", config.versions.len())));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::tool_button(
+                        ui,
+                        kit::Icon::Fit,
+                        kit::Tooltip::new("Fit lineage")
+                            .description("Show all completed versions in the lineage map."),
+                        false,
+                    )
+                    .clicked()
+                    {
+                        self.asset_lab.v4.compare_map_zoom = 1.0;
+                        self.asset_lab.v4.compare_map_pan = Vec2::ZERO;
+                    }
+                });
+            });
+        } else {
+            ui.label(kit::caption(format!("{} versions", config.versions.len())));
+        }
         let (rect, response) = ui.allocate_exact_size(
             ui.available_size().max(Vec2::splat(1.0)),
             Sense::click_and_drag(),
@@ -1165,135 +1186,153 @@ impl LatentSlateApp {
             return;
         };
         let total = ui.available_height();
-        let map_height = self.asset_lab.v4.map_height.min((total * 0.5).max(100.0));
-        StripBuilder::new(ui)
-            .size(Size::remainder())
-            .size(Size::exact(12.0))
-            .size(Size::exact(map_height))
-            .vertical(|mut strip| {
-                strip.cell(|ui| {
-                    let mut timings = Vec::new();
-                    for version in [
-                        Some(compare.baseline_version.as_str()),
-                        compare.candidate_version.as_deref(),
-                    ] {
-                        let record = asset_lab_record_for_version(Some(config), version);
-                        let timing = if asset.is_video() {
-                            version.and_then(|version| {
-                                match self.asset_lab_compare_version_timing(
-                                    ui.ctx(),
-                                    asset,
-                                    version,
-                                    record,
-                                ) {
-                                    AssetLabTimingLookup::Ready(timing) => Some(timing),
-                                    AssetLabTimingLookup::Pending => None,
-                                }
-                            })
-                        } else {
-                            Some(asset_lab_compare_resolve_timing(
-                                asset,
-                                record,
-                                &self.editor.provider_entries,
-                                None,
-                                self.editor.project.settings.fps,
-                            ))
-                        };
-                        timings.push(timing);
-                    }
-                    let max_duration = AssetLabCompareState::max_duration(
-                        timings[0].map(|t| t.duration_seconds).unwrap_or(0.0),
-                        timings[1].map(|t| t.duration_seconds),
-                    );
-                    if timings.iter().all(Option::is_some) {
-                        self.advance_asset_lab_compare_playback(ui.ctx(), max_duration);
-                    }
-                    let height = (ui.available_height()
-                        - if asset.is_video() { 76.0 } else { 34.0 })
-                    .max(80.0);
-                    let width = (ui.available_width() - 12.0) * 0.5;
-                    let mut action = None;
-                    kit::bounded_horizontal_row(ui, height, |ui, _| {
-                        for (index, side) in [
-                            AssetLabCompareSide::Baseline,
-                            AssetLabCompareSide::Candidate,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let version = if index == 0 {
-                                Some(compare.baseline_version.as_str())
-                            } else {
-                                compare.candidate_version.as_deref()
-                            };
-                            let duration = timings[index]
-                                .map(|timing| timing.duration_seconds)
-                                .unwrap_or(0.0);
-                            let preview = self.asset_lab_compare_pane_preview(
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        ui.painter()
+            .rect_filled(ui.available_rect_before_wrap(), 0, kit::PANEL_SUNKEN);
+        let map = egui::Panel::bottom(
+            ui.id()
+                .with(("compare_lineage", self.asset_lab.v4.session_id)),
+        )
+        .resizable(true)
+        .default_size(self.asset_lab.v4.map_height)
+        .size_range(100.0..=(total * 0.6).max(100.0))
+        .frame(
+            egui::Frame::new()
+                .fill(kit::PANEL_SUNKEN)
+                .inner_margin(egui::Margin::symmetric(16, 8)),
+        )
+        .show_inside(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
+            self.asset_lab_lineage_v4(ui, asset, config, true);
+        });
+        self.asset_lab.v4.map_height = map.response.rect.height();
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(12.0, 8.0);
+                let mut timings = Vec::new();
+                for version in [
+                    Some(compare.baseline_version.as_str()),
+                    compare.candidate_version.as_deref(),
+                ] {
+                    let record = asset_lab_record_for_version(Some(config), version);
+                    let timing = if asset.is_video() {
+                        version.and_then(|version| {
+                            match self.asset_lab_compare_version_timing(
                                 ui.ctx(),
                                 asset,
-                                side,
                                 version,
-                                self.asset_lab
-                                    .compare
-                                    .as_ref()
-                                    .map(|compare| compare.side_time(duration))
-                                    .unwrap_or(0.0),
-                                timings[index],
-                            );
-                            ui.allocate_ui_with_layout(
-                                Vec2::new(width, height),
-                                Layout::top_down(Align::Min),
-                                |ui| {
-                                    self.paint_asset_lab_compare_pane(
-                                        ui,
-                                        asset,
-                                        Some(config),
-                                        side,
-                                        version,
-                                        config.active_version.as_deref(),
-                                        duration,
-                                        compare.side_has_ended(duration, max_duration),
-                                        preview,
-                                        &mut action,
-                                    )
-                                },
-                            );
-                        }
-                    });
-                    if let Some(action) = action {
-                        self.handle_asset_lab_action(asset.id, action);
-                    }
-                    if asset.is_video() {
-                        self.asset_lab_compare_transport(ui, max_duration);
-                    } else {
-                        kit::bounded_horizontal_row(ui, 28.0, |ui, _| {
-                            ui.label(kit::caption(
-                                "Linked views · wheel to zoom · right-drag to pan",
-                            ));
-                            if kit::field_button(ui, "Fit", 60.0).clicked() {
-                                self.asset_lab.preview_auto_fit = true;
+                                record,
+                            ) {
+                                AssetLabTimingLookup::Ready(timing) => Some(timing),
+                                AssetLabTimingLookup::Pending => None,
                             }
-                        });
+                        })
+                    } else {
+                        Some(asset_lab_compare_resolve_timing(
+                            asset,
+                            record,
+                            &self.editor.provider_entries,
+                            None,
+                            self.editor.project.settings.fps,
+                        ))
+                    };
+                    timings.push(timing);
+                }
+                let max_duration = AssetLabCompareState::max_duration(
+                    timings[0].map(|t| t.duration_seconds).unwrap_or(0.0),
+                    timings[1].map(|t| t.duration_seconds),
+                );
+                if timings.iter().all(Option::is_some) {
+                    self.advance_asset_lab_compare_playback(ui.ctx(), max_duration);
+                }
+                let height =
+                    (ui.available_height() - if asset.is_video() { 84.0 } else { 44.0 }).max(80.0);
+                let width = (ui.available_width() - 12.0) * 0.5;
+                let mut action = None;
+                kit::bounded_horizontal_row(ui, height, |ui, _| {
+                    for (index, side) in [
+                        AssetLabCompareSide::Baseline,
+                        AssetLabCompareSide::Candidate,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let version = if index == 0 {
+                            Some(compare.baseline_version.as_str())
+                        } else {
+                            compare.candidate_version.as_deref()
+                        };
+                        let duration = timings[index]
+                            .map(|timing| timing.duration_seconds)
+                            .unwrap_or(0.0);
+                        let preview = self.asset_lab_compare_pane_preview(
+                            ui.ctx(),
+                            asset,
+                            side,
+                            version,
+                            self.asset_lab
+                                .compare
+                                .as_ref()
+                                .map(|compare| compare.side_time(duration))
+                                .unwrap_or(0.0),
+                            timings[index],
+                        );
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width, height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                self.paint_asset_lab_compare_pane(
+                                    ui,
+                                    asset,
+                                    Some(config),
+                                    side,
+                                    version,
+                                    config.active_version.as_deref(),
+                                    duration,
+                                    compare.side_has_ended(duration, max_duration),
+                                    preview,
+                                    &mut action,
+                                )
+                            },
+                        );
                     }
                 });
-                strip.cell(|ui| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(ui.available_size(), Sense::drag());
-                    ui.painter().line_segment(
-                        [
-                            rect.center() - Vec2::new(16.0, 0.0),
-                            rect.center() + Vec2::new(16.0, 0.0),
-                        ],
-                        Stroke::new(2.0_f32, kit::BORDER),
-                    );
-                    if response.dragged() {
-                        self.asset_lab.v4.map_height = (self.asset_lab.v4.map_height
-                            - response.drag_delta().y)
-                            .clamp(100.0, total * 0.6);
+                if let Some(action) = action {
+                    self.handle_asset_lab_action(asset.id, action);
+                }
+                kit::bounded_horizontal_row(ui, 36.0, |ui, row_width| {
+                    ui.label(kit::caption(
+                        "Linked views · wheel to zoom · right-drag to pan",
+                    ));
+                    let controls = 108.0;
+                    let start = ui.max_rect().left() + (row_width - controls) * 0.5;
+                    ui.add_space((start - ui.cursor().min.x).max(0.0));
+                    if kit::tool_button(ui, kit::Icon::Minus, "Zoom out", false).clicked() {
+                        self.asset_lab.preview_zoom =
+                            (self.asset_lab.preview_zoom / 1.2).clamp(0.1, PREVIEW_ZOOM_MAX);
+                        self.asset_lab.preview_auto_fit = false;
+                    }
+                    if kit::tool_button(
+                        ui,
+                        kit::Icon::Fit,
+                        kit::Tooltip::new("Fit both images")
+                            .description("Fit and center both images in their panes."),
+                        false,
+                    )
+                    .clicked()
+                    {
+                        self.asset_lab.preview_auto_fit = true;
+                    }
+                    if kit::tool_button(ui, kit::Icon::Plus, "Zoom in", false).clicked() {
+                        self.asset_lab.preview_zoom =
+                            (self.asset_lab.preview_zoom * 1.2).clamp(0.1, PREVIEW_ZOOM_MAX);
+                        self.asset_lab.preview_auto_fit = false;
                     }
                 });
-                strip.cell(|ui| self.asset_lab_lineage_v4(ui, asset, config, true));
+                if asset.is_video() {
+                    self.asset_lab_compare_transport(ui, max_duration);
+                }
             });
     }
 

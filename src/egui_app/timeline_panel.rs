@@ -24,7 +24,6 @@ impl LatentSlateApp {
                 self.paint_timeline(ui);
             });
         self.editor.layout.timeline_height = response.response.rect.height().clamp(150.0, 420.0);
-        kit::paint_panel_edge(root, response.response.rect, kit::PanelEdge::Top);
     }
 
     pub(super) fn timeline_header(&mut self, ui: &mut Ui, collapsed: bool) {
