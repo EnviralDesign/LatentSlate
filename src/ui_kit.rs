@@ -2403,10 +2403,14 @@ pub fn danger_button(ui: &mut Ui, label: &str, width: f32) -> Response {
 }
 
 pub fn icon_button(ui: &mut Ui, label: &str) -> Response {
+    icon_button_sized(ui, label, Vec2::new(ICON_BUTTON_W, ICON_BUTTON_H))
+}
+
+pub fn icon_button_sized(ui: &mut Ui, label: &str, size: Vec2) -> Response {
     painted_button(
         ui,
         label,
-        Vec2::new(ICON_BUTTON_W, ICON_BUTTON_H),
+        size,
         ButtonSkin {
             fill: Color32::from_rgb(27, 28, 32),
             hover_fill: Color32::from_rgb(38, 40, 45),

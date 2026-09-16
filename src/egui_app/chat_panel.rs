@@ -157,20 +157,20 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
     } else {
         kit::PRIMARY
     };
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
-    let center = rect.center();
+    let response = kit::icon_button_sized(ui, "", Vec2::splat(32.0));
+    let center = response.rect.center();
     ui.painter()
-        .circle_stroke(center, 9.0, egui::Stroke::new(3.0_f32, kit::BORDER_SOFT));
+        .circle_stroke(center, 7.0, egui::Stroke::new(2.0_f32, kit::TEXT_MUTED));
     if let Some(fraction) = fraction.filter(|f| *f > 0.0) {
         let points = (0..=48)
             .map(|i| {
                 let angle = -std::f32::consts::FRAC_PI_2
                     + std::f32::consts::TAU * fraction * i as f32 / 48.0;
-                center + Vec2::angled(angle) * 9.0
+                center + Vec2::angled(angle) * 7.0
             })
             .collect();
         ui.painter()
-            .add(egui::Shape::line(points, egui::Stroke::new(3.0_f32, color)));
+            .add(egui::Shape::line(points, egui::Stroke::new(2.0_f32, color)));
     }
     let count = context
         .tokens
@@ -188,6 +188,7 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
         "Last reported input + output tokens, including cached input and reasoning. Excludes unsent text."
     };
     let tooltip = format!("Context used: {label}\n{count} / {limit} tokens\n{detail}");
+    let tooltip_width = (ui.ctx().content_rect().width() - 48.0).clamp(120.0, 280.0);
     crate::core::automation::instrument_response(
         response,
         "context_usage",
@@ -195,7 +196,10 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
         false,
         false,
     )
-    .on_hover_text(tooltip);
+    .on_hover_ui(|ui| {
+        ui.set_max_width(tooltip_width);
+        ui.add(egui::Label::new(tooltip).wrap());
+    });
 }
 
 const CHAT_PANEL_W: f32 = 460.0;
@@ -574,9 +578,10 @@ impl LatentSlateApp {
     fn chat_contents(&mut self, ui: &mut Ui) {
         let busy = self.chat.request.is_some();
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("LatentSlate Chat").size(18.0).strong());
+            ui.set_min_height(kit::ICON_BUTTON_H);
+            ui.label(kit::section_label("CHAT"));
         });
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         ui.add_enabled_ui(!busy, |ui| {
             let provider = self
                 .chat
@@ -864,7 +869,9 @@ impl LatentSlateApp {
             (row_width - 64.0 - 2.0 * spacing - if busy { 65.0 + spacing } else { 0.0 }).max(32.0);
         ui.horizontal(|ui| {
             let new_chat = ui
-                .add_enabled_ui(!busy, |ui| kit::secondary_button(ui, "+", 32.0))
+                .add_enabled_ui(!busy, |ui| {
+                    kit::icon_button_sized(ui, "+", Vec2::splat(32.0))
+                })
                 .inner;
             if automation_button(new_chat, "New Chat")
                 .on_hover_text("New Chat")
