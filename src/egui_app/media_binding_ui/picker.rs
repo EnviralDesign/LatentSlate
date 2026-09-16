@@ -276,6 +276,7 @@ impl LatentSlateApp {
                                             "Configure selected input",
                                             ui.available_width(),
                                         )
+                                        .on_hover_text("Adjust sampling, timeline context, and sizing for this input. Changes remain local until Apply or a successful capture.")
                                         .clicked()
                                     {
                                         state.details = true;
@@ -293,18 +294,21 @@ impl LatentSlateApp {
                                         ui,
                                         kit::PRIMARY_BUTTON_H,
                                         |ui, _| {
-                                            if kit::secondary_button(ui, "Back", 80.0).clicked() {
+                                            if kit::secondary_button(ui, "Back", 80.0)
+                                                .on_hover_text("Return to source choices, keeping these uncommitted settings while the picker stays open.").clicked() {
                                                 state.details = false;
                                             }
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if kit::primary_button(ui, "Apply", 120.0)
+                                                        .on_hover_text("Save this source and its settings, then return to source choices.")
                                                         .clicked()
                                                     {
                                                         apply = true;
                                                     }
                                                     if kit::secondary_button(ui, "Cancel", 80.0)
+                                                        .on_hover_text("Discard these uncommitted settings and return to source choices.")
                                                         .clicked()
                                                     {
                                                         cancel_details = true;
@@ -696,7 +700,7 @@ impl LatentSlateApp {
         ui.add_space(10.0);
         let placements = generation_context_placements(&self.editor.project, state.asset_id);
         if placements.len() > 1 {
-            kit::labeled_combo_field(
+            let response = kit::labeled_combo_field(
                 ui,
                 "Target timeline placement",
                 "source_context",
@@ -725,12 +729,15 @@ impl LatentSlateApp {
                     }
                 },
             );
+            kit::Tooltip::new("Target timeline placement")
+                .description("Choose which placement of this generated asset provides its output timing and track context. This matters when the asset appears more than once on the timeline.")
+                .apply(response);
         }
         let Some(spec) = state.spec.as_mut() else {
             return;
         };
         if let MediaBindingSource::FollowTimeline { query } = &mut spec.source {
-            kit::labeled_combo_field(
+            let response = kit::labeled_combo_field(
                 ui,
                 "Timeline scope",
                 "source_scope",
@@ -761,7 +768,12 @@ impl LatentSlateApp {
                     }
                 },
             );
-            ui.checkbox(&mut query.prefer_touching, "Prefer touching clips");
+            kit::Tooltip::new("Timeline scope")
+                .description("Choose which tracks may supply this input relative to the target placement. Auto considers all eligible tracks; the other choices restrict the search. The resolved source below shows the actual choice. Inputs use raw source media and clip timing, not the composited timeline.")
+                .apply(response);
+            kit::Tooltip::new("Prefer touching clips")
+                .description("Prefer an eligible clip immediately before or after the target over one covering the requested time. Turn this off to prefer covering clips. Exact keyframes keep priority.")
+                .apply(ui.checkbox(&mut query.prefer_touching, "Prefer touching clips"));
         }
         if !matches!(spec.source, MediaBindingSource::FrozenArtifact { .. }) {
             let mut options = sample_options_for_field(&state.field);
@@ -774,7 +786,7 @@ impl LatentSlateApp {
                     at: MediaFramePoint::SourceTime { seconds: 0.0 },
                 });
             }
-            kit::labeled_combo_field(
+            let response = kit::labeled_combo_field(
                 ui,
                 "Sample",
                 "source_sample",
@@ -797,18 +809,31 @@ impl LatentSlateApp {
                     }
                 },
             );
+            let help = if state.field.input_type == ProviderInputType::Image {
+                "Output means this generated asset's timeline placement. Output first/last or +seconds samples the input clip at that output time, using its trim and timing.\n\nSource means the chosen input. Source first/last uses its trimmed clip boundaries, or the file boundaries for a project asset. Source seconds is an absolute time in the media file.\n\nWhole source requests the full input instead of a specific frame. For a particular video frame, choose a frame sample."
+            } else {
+                "Aligned range uses the input clip over the generated asset's timeline interval, applying clip timing. The clip must cover the full interval.\n\nSource range uses a start time and duration in the input file. Whole source uses the selected clip's visible span, or the full file for a project asset.\n\nThese inputs use raw source media, not the composited timeline."
+            };
+            kit::Tooltip::new("Sample")
+                .description(help)
+                .apply(response);
             match &mut spec.sample {
                 MediaSample::Frame {
-                    at:
-                        MediaFramePoint::OutputOffset { seconds }
-                        | MediaFramePoint::SourceTime { seconds },
-                } => source_time_field(ui, "Seconds", seconds),
+                    at: MediaFramePoint::OutputOffset { seconds },
+                } => source_time_field(ui, "Output offset (seconds)", seconds,
+                    "Seconds after the start of this generated asset's timeline placement. The resolver finds the matching time in the chosen input clip."),
+                MediaSample::Frame {
+                    at: MediaFramePoint::SourceTime { seconds },
+                } => source_time_field(ui, "Source time (seconds)", seconds,
+                    "Absolute time from the beginning of the input media file. For a timeline clip, the time must fall within its visible source span."),
                 MediaSample::SourceRange {
                     start_seconds,
                     duration_seconds,
                 } => {
-                    source_time_field(ui, "Start seconds", start_seconds);
-                    source_time_field(ui, "Duration seconds", duration_seconds);
+                    source_time_field(ui, "Start (source seconds)", start_seconds,
+                        "Start time measured from the beginning of the input media file, not from the output placement.");
+                    source_time_field(ui, "Duration (seconds)", duration_seconds,
+                        "Length of the source segment to use. The entire range must fit within the selected source or clip's visible span.");
                 }
                 _ => {}
             }
@@ -816,7 +841,7 @@ impl LatentSlateApp {
         if state.field.image_dimensions
             == Some(crate::state::ImageDimensionsRequirement::MatchOutputCanvas)
         {
-            kit::labeled_combo_field(
+            let response = kit::labeled_combo_field(
                 ui,
                 "Reference sizing",
                 "source_sizing",
@@ -838,15 +863,18 @@ impl LatentSlateApp {
                     }
                 },
             );
-            ui.label(kit::caption(
-                "Padding is black; cropping is centered. Original media is preserved.",
-            ));
+            kit::Tooltip::new("Reference sizing")
+                .description("Match the recipe's output canvas. Exact requires matching dimensions. Fit inside preserves proportions and pads with black; Fill preserves proportions and crops centrally; Stretch changes proportions. Original media is preserved.")
+                .apply(response);
         }
         ui.add_space(10.0);
-        ui.label(kit::caption(summary));
-        ui.label(kit::caption(
-            "Timeline inputs use source media and timing, not the composited timeline.",
-        ));
+        let (heading, detail) = summary.split_once('\n').unwrap_or((&summary, ""));
+        kit::card_frame().show(ui, |ui| {
+            ui.label(kit::section_label(heading));
+            if !detail.is_empty() {
+                ui.add(egui::Label::new(kit::body(detail)).wrap().selectable(true));
+            }
+        });
         let plan = resolve_media_binding(
             MediaResolveContext {
                 project: &self.editor.project,
@@ -860,6 +888,7 @@ impl LatentSlateApp {
         );
         if matches!(spec.source, MediaBindingSource::FrozenArtifact { .. }) {
             if kit::secondary_button(ui, "Restore original source binding", ui.available_width())
+                .on_hover_text("Restore the source selection and sampling saved before capture. This is a draft change until you Apply it.")
                 .clicked()
             {
                 match unfreeze_spec(spec) {
@@ -877,6 +906,7 @@ impl LatentSlateApp {
                     "Use currently resolved source",
                     ui.available_width(),
                 )
+                .on_hover_text("Replace this following source with the specific clip or asset version resolved now. Sampling still uses that source; it does not copy the sampled media. Apply to save the change.")
                 .clicked()
                 {
                     match lock_source_spec(&plan, spec) {
@@ -884,15 +914,14 @@ impl LatentSlateApp {
                         Err(err) => state.error = Some(err.message(&state.field.label)),
                     }
                 }
-                if kit::secondary_button(ui, "Capture current input", ui.available_width())
+                if kit::Tooltip::new("Capture current input")
+                    .description("Save an immutable project-local copy of the currently resolved frame or range. It stays the same if the original source changes. Capture commits only after the copy succeeds, then returns to source choices.")
+                    .apply(kit::secondary_button(ui, "Capture current input", ui.available_width()))
                     .clicked()
                 {
                     *capture = true;
                 }
             });
-            ui.label(kit::caption(
-                "Capture retains the exact current frame or range even if its source changes.",
-            ));
         }
     }
 }
@@ -905,15 +934,16 @@ fn source_badge(spec: Option<&MediaBindingSpec>) -> Option<&'static str> {
     }
 }
 
-fn source_time_field(ui: &mut Ui, label: &str, value: &mut f64) {
+fn source_time_field(ui: &mut Ui, label: &str, value: &mut f64, help: &str) {
     kit::field_label(ui, label);
     let rect = crate::egui_app::inspector_numeric_rect(ui, ui.available_width());
     crate::egui_app::inspector_numeric_field(ui, rect, |ui, width| {
-        ui.add_sized(
+        let response = ui.add_sized(
             [width, kit::FIELD_H],
             egui::DragValue::new(value)
                 .speed(0.01)
                 .range(0.0..=f64::MAX),
-        )
+        );
+        kit::Tooltip::new(label).description(help).apply(response)
     });
 }

@@ -90,6 +90,11 @@ capture commit and return to the list. Back retains the local draft.
 Scroll areas reserve a gutter instead of overlaying content. Full-body modal
 scrolling uses `modal_scroll_body`, which places content padding inside the viewport
 so the scrollbar stays at the modal edge. Nested pane scrollbars stay with their pane.
+Explain parameter meanings, actions, and shortcuts through hover help using the kit's
+tooltip treatment. Keep evaluated source identities, sampled times/ranges, conversions,
+readiness, and errors persistently visible. The shared source picker applies this rule
+to its configuration controls and selectable resolved-status card; help is per parameter,
+not repeated for every option.
 Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
 Lineage lays out complete branches together: a single continuation stays above its
 parent, while sibling subtrees receive separate space. The inspector uses the shared

@@ -2398,6 +2398,8 @@ pub fn paint_icon(ui: &Ui, icon: Icon, rect: Rect, tint: Color32) {
     );
 }
 
+/// Explain controls and shortcuts progressively. Keep evaluated identities, timing,
+/// readiness, and errors visible in the owning UI rather than hiding them in help.
 #[derive(Clone, Copy)]
 pub struct Tooltip<'a> {
     title: &'a str,
