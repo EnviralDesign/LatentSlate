@@ -606,7 +606,27 @@ impl LatentSlateApp {
             if pressed && self.source_picker.is_none() && self.asset_lab.v4.pending_adopt.is_none()
             {
                 response.request_focus();
-                if let Some(point) = pointer.filter(|point| image_rect.contains(*point)) {
+                let label_hit = pointer
+                    .filter(|point| {
+                        profile == AssetLabAuthoringProfile::Regions && rect.contains(*point)
+                    })
+                    .and_then(|point| {
+                        setup
+                            .authoring
+                            .regions
+                            .iter()
+                            .rev()
+                            .find(|region| {
+                                region_label_layout(&painter, region, image_rect, rect)
+                                    .0
+                                    .contains(point)
+                            })
+                            .map(|region| region.id)
+                    });
+                if let Some(id) = label_hit {
+                    canvas.selected = Some(id);
+                    canvas.tool = Tool::Select;
+                } else if let Some(point) = pointer.filter(|point| image_rect.contains(*point)) {
                     let point = canvas_point(point, image_rect, extent);
                     if profile == AssetLabAuthoringProfile::Mask
                         && aligned
@@ -804,17 +824,16 @@ impl LatentSlateApp {
                         ),
                         egui::StrokeKind::Inside,
                     );
-                    let label = painter.layout_no_wrap(
-                        region.name.clone(),
-                        FontId::proportional(12.0),
-                        kit::TEXT,
+                    let (label_rect, label) =
+                        region_label_layout(&painter, region, image_rect, rect);
+                    crate::core::automation::instrument_response(
+                        ui.interact(label_rect, response.id.with(region.id), Sense::hover())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand),
+                        "region_label",
+                        Some(region.name.clone()),
+                        false,
+                        false,
                     );
-                    let label_size = label.size() + Vec2::new(12.0, 6.0);
-                    let label_pos = Pos2::new(
-                        bounds.left().max(rect.left()),
-                        (bounds.top() - label_size.y).max(rect.top()),
-                    );
-                    let label_rect = Rect::from_min_size(label_pos, label_size);
                     painter.rect_filled(
                         label_rect,
                         3,
@@ -931,6 +950,22 @@ fn canvas_point(point: Pos2, rect: Rect, extent: Vec2) -> Pos2 {
     let relative = (point - rect.min) / rect.size() * extent;
     Pos2::new(relative.x, relative.y)
 }
+fn region_label_layout(
+    painter: &egui::Painter,
+    region: &AssetLabRegion,
+    image_rect: Rect,
+    viewport: Rect,
+) -> (Rect, std::sync::Arc<egui::Galley>) {
+    let bounds = region_rect(region.bounds, image_rect);
+    let label = painter.layout_no_wrap(region.name.clone(), FontId::proportional(12.0), kit::TEXT);
+    let size = label.size() + Vec2::new(12.0, 6.0);
+    let pos = Pos2::new(
+        bounds.left().max(viewport.left()),
+        (bounds.top() - size.y).max(viewport.top()),
+    );
+    (Rect::from_min_size(pos, size), label)
+}
+
 fn region_rect(bounds: [f32; 4], rect: Rect) -> Rect {
     Rect::from_min_size(
         rect.min + Vec2::new(bounds[0], bounds[1]) * rect.size(),

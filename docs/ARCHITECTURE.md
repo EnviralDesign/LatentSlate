@@ -203,7 +203,9 @@ stages changes for Apply/Cancel. Capture commits only after materialization succ
 Mask geometry records actual raster dimensions, resolved source/frame/crop, sizing, and
 source identity. Painting uses canvas coordinates under zoom/pan; incompatible geometry
 retains the document and requires matching alignment or explicit clearing. Region bounds
-are normalized separately on each axis. Content, effect switches, and visibility are
+are normalized separately on each axis. Canvas labels select their regions independently
+of box size, using the same label bounds for painting and hit testing.
+Content, effect switches, and visibility are
 independent. Authoring profiles select presentation only: they do not establish execution
 capability. Masked and spatial execution have no supported Engine contract in this phase;
 applicable enabled nonempty effects block submission, while disabled effects allow the
