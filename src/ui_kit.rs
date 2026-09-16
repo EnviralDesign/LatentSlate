@@ -1193,10 +1193,29 @@ pub fn paired_field_rects(ui: &mut Ui, options: FieldPairLayout) -> (Rect, Rect)
 }
 
 pub fn labeled_text_field(ui: &mut Ui, label: &str, value: &mut String) -> Response {
+    labeled_text_field_mode(ui, label, value, false)
+}
+
+pub fn labeled_password_field(ui: &mut Ui, label: &str, value: &mut String) -> Response {
+    labeled_text_field_mode(ui, label, value, true)
+}
+
+fn labeled_text_field_mode(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut String,
+    password: bool,
+) -> Response {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
         field_label(ui, label);
-        singleline_text_field_labeled(ui, value, ui.available_width(), Some(label.to_string()))
+        singleline_text_field_labeled(
+            ui,
+            value,
+            ui.available_width(),
+            Some(label.to_string()),
+            password,
+        )
     })
     .inner
 }
@@ -1673,6 +1692,7 @@ fn save_file_field_with_id(
                     value,
                     ui.available_width(),
                     Some(automation_label.to_string()),
+                    false,
                 );
             });
             strip.cell(|ui| {
@@ -1795,6 +1815,7 @@ fn field_text_edit(
     value: &mut String,
     rect: Rect,
     hint_text: Option<&str>,
+    password: bool,
 ) -> egui::text_edit::TextEditOutput {
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -1811,6 +1832,7 @@ fn field_text_edit(
 
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
     let mut edit = egui::TextEdit::singleline(value)
+        .password(password)
         .id(field_id)
         .desired_width(rect.width())
         .min_size(rect.size())
@@ -1826,7 +1848,7 @@ fn field_text_edit(
 }
 
 pub fn singleline_text_field(ui: &mut Ui, value: &mut String, width: f32) -> Response {
-    singleline_text_field_labeled(ui, value, width, None)
+    singleline_text_field_labeled(ui, value, width, None, false)
 }
 
 fn singleline_text_field_labeled(
@@ -1834,9 +1856,10 @@ fn singleline_text_field_labeled(
     value: &mut String,
     width: f32,
     automation_label: Option<String>,
+    password: bool,
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TEXT_FIELD_H), Sense::hover());
-    let mut output = field_text_edit(ui, value, rect, None);
+    let mut output = field_text_edit(ui, value, rect, None, password);
     let selected_text = value.clone();
     select_all_on_focus(&mut output, &selected_text);
     let mut response = output.response.response.clone();
@@ -1849,7 +1872,11 @@ fn singleline_text_field_labeled(
     );
     crate::core::automation::instrument_response(
         response,
-        "text_field",
+        if password {
+            "password_field"
+        } else {
+            "text_field"
+        },
         automation_label,
         true,
         true,
@@ -1866,7 +1893,7 @@ pub fn search_field(
     automation_label: &str,
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TEXT_FIELD_H), Sense::hover());
-    let mut output = field_text_edit(ui, value, rect, Some(hint_text));
+    let mut output = field_text_edit(ui, value, rect, Some(hint_text), false);
     if output.response.response.has_focus()
         && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {

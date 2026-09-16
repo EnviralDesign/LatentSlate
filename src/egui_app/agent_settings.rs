@@ -43,21 +43,7 @@ fn capabilities(draft: &mut AgentProviderEntry, models: &[AgentModel]) {
 }
 
 fn password(ui: &mut Ui, key: &mut Option<String>, label: &str) {
-    kit::field_label(ui, label);
-    let value = key.get_or_insert_default();
-    let mut response = ui.add(
-        egui::TextEdit::singleline(&mut *value)
-            .password(true)
-            .desired_width(f32::INFINITY),
-    );
-    crate::core::automation::apply_pending_text(&mut response, value);
-    crate::core::automation::instrument_response(
-        response,
-        "password_field",
-        Some(label.into()),
-        true,
-        true,
-    );
+    kit::labeled_password_field(ui, label, key.get_or_insert_default());
 }
 
 impl LatentSlateApp {
