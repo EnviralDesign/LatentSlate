@@ -3866,17 +3866,19 @@ impl LatentSlateApp {
                     ],
                     Stroke::new(1.0_f32, kit::BORDER_SOFT),
                 );
-                let scrub_x = egui::lerp(
-                    (preview_rect.left() + 8.0)..=(preview_rect.right() - 8.0),
-                    scrub_fraction,
-                );
-                painter.line_segment(
-                    [
-                        Pos2::new(scrub_x, preview_rect.top() + 7.0),
-                        Pos2::new(scrub_x, preview_rect.bottom() - 5.0),
-                    ],
-                    Stroke::new(1.4_f32, kit::MARKER),
-                );
+                if preview_response.hovered() {
+                    let scrub_x = egui::lerp(
+                        (preview_rect.left() + 8.0)..=(preview_rect.right() - 8.0),
+                        scrub_fraction,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(scrub_x, preview_rect.top() + 7.0),
+                            Pos2::new(scrub_x, preview_rect.bottom() - 5.0),
+                        ],
+                        Stroke::new(1.4_f32, kit::MARKER),
+                    );
+                }
             }
 
             if zoom >= 0.64 {
