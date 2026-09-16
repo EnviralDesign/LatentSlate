@@ -12,6 +12,7 @@ Key paths:
 
 - `src/main.rs` — entry point and automation startup
 - `src/egui_app.rs` / `src/egui_app/` — desktop shell and UI
+- `src/ui_kit.rs` — shared UI components, styling, sizing, and interaction conventions
 - `src/editor.rs` — editor operations shared by UI and automation
 - `src/state/` — project/asset/selection/provider/generative state
 - `src/core/` — non-UI logic, automation, FFmpeg, preview/export/audio
@@ -55,6 +56,16 @@ Follow normal Rust/rustfmt conventions. Keep code in its existing ownership boun
 - non-UI core logic belongs in `src/core/`;
 - prefer native egui widgets/custom painting over hidden parallel UI logic;
 - keep the opt-in automation surface Rust-native and invoke real egui widget responses through shared kit helpers instead of screenshot/click automation or duplicated hidden behavior.
+
+### UI kit first
+
+**Keep `src/ui_kit.rs` central to both UI design and implementation.** Inspect its components and representative existing uses before designing or building a control. The kit defines the application's visual and interaction language; do not invent fragmented, screen-specific replacements for shared controls.
+
+- **Reuse what fits.** If a kit component already serves the purpose and is a visual fit as-is, use it directly. Do not substitute a raw egui widget or locally painted lookalike with different typography, alignment, dimensions, spacing, colors, borders, or interaction behavior.
+- **Add missing shared components to the kit.** When a needed reusable control does not exist, implement it properly in `src/ui_kit.rs`, following the kit's styling, layout, interaction, and automation conventions. Compose screens from those components rather than introducing another styling system inside a panel.
+- **Extend existing components for small, compatible variations.** If an existing component is close, prefer a modest extension that preserves existing callers and defaults. Examples include configurable border color, variable height, automatic as well as explicit width, or masked input. Keep the current behavior intact unless changing it is explicitly part of the task; check both existing and new uses affected by the extension.
+- **Use judgment for substantial or bespoke differences.** Do not turn a small shared component into a complicated collection of modes and exceptions to accommodate a materially different control. For a specialized area, a small component owned by its larger component, or a deliberate fork with more substantial changes, can be the clearer choice. Base that decision on the actual differences in behavior and ownership, not convenience or superficial resemblance. Continue reusing kit primitives and visual conventions where they fit.
+- **Verify consistency in the result.** Compare new or changed controls with their existing counterparts in the running UI. Investigate sizing, font metrics, padding, and layout before adding local offsets or style overrides. Fix shared causes in the kit when appropriate rather than compensating independently in each screen.
 
 **egui width trap:** do not calculate remainder widths with `ui.available_width()` from inside `ui.horizontal(...)` or another horizontal layout. The main axis may be unbounded and repeated rows can progressively widen a scroll body. Capture the bounded parent width first or use `kit::bounded_horizontal_row` and its finite `row_width` argument.
 
