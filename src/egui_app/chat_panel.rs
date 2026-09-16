@@ -157,8 +157,8 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
     } else {
         kit::PRIMARY
     };
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(65.0, 30.0), egui::Sense::hover());
-    let center = Pos2::new(rect.left() + 12.0, rect.center().y);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+    let center = rect.center();
     ui.painter()
         .circle_stroke(center, 9.0, egui::Stroke::new(3.0_f32, kit::BORDER_SOFT));
     if let Some(fraction) = fraction.filter(|f| *f > 0.0) {
@@ -172,13 +172,6 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
         ui.painter()
             .add(egui::Shape::line(points, egui::Stroke::new(3.0_f32, color)));
     }
-    ui.painter().text(
-        Pos2::new(rect.right(), rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        label,
-        egui::FontId::proportional(11.0),
-        kit::TEXT_MUTED,
-    );
     let count = context
         .tokens
         .map(|n| n.to_string())
@@ -194,7 +187,7 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
     } else {
         "Last reported input + output tokens, including cached input and reasoning. Excludes unsent text."
     };
-    let tooltip = format!("Context: {count} / {limit} tokens\n{detail}");
+    let tooltip = format!("Context used: {label}\n{count} / {limit} tokens\n{detail}");
     crate::core::automation::instrument_response(
         response,
         "context_usage",
@@ -866,22 +859,21 @@ impl LatentSlateApp {
             && self.chat.selected.is_some()
             && !self.chat.composer.trim().is_empty();
         let row_width = ui.available_width();
+        let spacing = ui.spacing().item_spacing.x;
+        let send_width =
+            (row_width - 64.0 - 2.0 * spacing - if busy { 65.0 + spacing } else { 0.0 }).max(32.0);
         ui.horizontal(|ui| {
-            if busy {
-                if kit::secondary_button(ui, "Stop", 65.0).clicked() {
-                    self.chat.stopping = true;
-                    if let Some(media) = &self.chat.media {
-                        media
-                            .cancel
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    if let Some(request) = &self.chat.request {
-                        request.stop();
-                    }
-                }
+            let new_chat = ui
+                .add_enabled_ui(!busy, |ui| kit::secondary_button(ui, "+", 32.0))
+                .inner;
+            if automation_button(new_chat, "New Chat")
+                .on_hover_text("New Chat")
+                .clicked()
+            {
+                self.clear_chat();
             }
             if (ui
-                .add_enabled_ui(can_send, |ui| kit::primary_button(ui, "Send", 80.0))
+                .add_enabled_ui(can_send, |ui| kit::primary_button(ui, "Send", send_width))
                 .inner
                 .clicked()
                 || enter_pressed)
@@ -913,22 +905,18 @@ impl LatentSlateApp {
                     ui.ctx().request_repaint();
                 }
             }
-            if automation_button(
-                ui.add_enabled(!busy, egui::Button::new("New Chat")),
-                "New Chat",
-            )
-            .clicked()
-            {
-                self.clear_chat();
+            if busy && kit::secondary_button(ui, "Stop", 65.0).clicked() {
+                self.chat.stopping = true;
+                if let Some(media) = &self.chat.media {
+                    media
+                        .cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                if let Some(request) = &self.chat.request {
+                    request.stop();
+                }
             }
-            let remaining = (row_width - (ui.cursor().left() - ui.max_rect().left())).max(0.0);
-            ui.allocate_ui_with_layout(
-                Vec2::new(remaining, 32.0),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    context_wheel(ui, self.chat.context);
-                },
-            );
+            context_wheel(ui, self.chat.context);
         });
     }
 
