@@ -174,11 +174,11 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
     }
     let count = context
         .tokens
-        .map(|n| n.to_string())
+        .map(format_token_count)
         .unwrap_or_else(|| "unknown".into());
     let limit = context
         .limit
-        .map(|n| n.to_string())
+        .map(format_token_count)
         .unwrap_or_else(|| "unknown".into());
     let detail = if context.compacted {
         "Compacted by OpenAI. Awaiting the next usage report."
@@ -200,6 +200,18 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
         ui.set_max_width(tooltip_width);
         ui.add(egui::Label::new(tooltip).wrap());
     });
+}
+
+fn format_token_count(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
 }
 
 const CHAT_PANEL_W: f32 = 460.0;
