@@ -1504,10 +1504,33 @@ impl LatentSlateApp {
             return;
         }
 
-        let zoom_in = ui.input(|input| {
-            input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals)
+        let (zoom_in, zoom_out, scroll_to_start, scroll_to_end) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals),
+                input.key_pressed(egui::Key::Minus),
+                input.key_pressed(egui::Key::Home),
+                input.key_pressed(egui::Key::End),
+            )
         });
-        let zoom_out = ui.input(|input| input.key_pressed(egui::Key::Minus));
+
+        if scroll_to_start || scroll_to_end {
+            self.timeline_zoom_animation = None;
+            let content_w = (duration as f32
+                * self
+                    .editor
+                    .layout
+                    .timeline_zoom
+                    .max(TIMELINE_MIN_ZOOM_FLOOR))
+            .max(viewport_w);
+            self.editor.layout.timeline_scroll_x = if scroll_to_start {
+                0.0
+            } else {
+                (content_w - viewport_w).max(0.0)
+            };
+            ui.ctx().request_repaint();
+            return;
+        }
+
         if zoom_in {
             self.set_timeline_zoom_to_next_coarse(1, duration, viewport_w);
             ui.ctx().request_repaint();
