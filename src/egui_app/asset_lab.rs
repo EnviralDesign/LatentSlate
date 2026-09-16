@@ -3783,25 +3783,13 @@ impl LatentSlateApp {
             } else {
                 0.0
             };
-            let mut scrub_fraction = if asset.is_video() && video_duration > 0.0 {
-                (self.asset_lab.local_time_seconds / video_duration).clamp(0.0, 1.0) as f32
-            } else {
-                0.0
-            };
-            let mut preview_time = if selected && asset.is_video() {
-                self.asset_lab.local_time_seconds.min(video_duration)
-            } else {
-                0.0
-            };
+            let mut scrub_fraction = 0.0;
+            let mut preview_time = 0.0;
             if asset.is_video() && output_path.is_some() && preview_response.hovered() {
                 if let Some(pointer) = ui.ctx().pointer_hover_pos() {
                     scrub_fraction =
                         ((pointer.x - preview_rect.left()) / preview_rect.width()).clamp(0.0, 1.0);
                     preview_time = video_duration * scrub_fraction as f64;
-                    if selected {
-                        self.asset_lab.local_time_seconds = preview_time;
-                        self.asset_lab_preview_texture = None;
-                    }
                 }
             }
             let preview = if node.output_version.is_some() {
