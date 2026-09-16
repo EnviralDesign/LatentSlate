@@ -69,6 +69,13 @@ when their owning UI is reviewed; the application does not require two competing
 styles for the same new control. Text fields use consistent left alignment in
 both resting and focused states.
 
+`Tooltip` provides a shared title, optional description, and optional shortcut hint;
+tool buttons accept it directly, and other controls can apply it to their response.
+Disabled tool buttons can explain their state. Create's mask editor supports B/E
+for Brush/Eraser and [ / ] for brush diameter (1–512 canvas pixels). These shortcuts
+yield to text editing, dialogs/popups, result audition, and active pointer gestures;
+they do not change the saved authoring setup.
+
 Source configuration uses `source_field`: a thumbnail, slot label, source value,
 binding badge, and trailing chevron. Asset Lab uses its 48-point compact form in
 a bounded grid; Attributes uses the comfortable form. Both open the same picker.

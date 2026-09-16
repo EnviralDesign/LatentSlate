@@ -2346,12 +2346,69 @@ pub fn paint_icon(ui: &Ui, icon: Icon, rect: Rect, tint: Color32) {
     );
 }
 
-pub fn tool_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Response {
+#[derive(Clone, Copy)]
+pub struct Tooltip<'a> {
+    title: &'a str,
+    description: Option<&'a str>,
+    shortcut: Option<&'a str>,
+}
+
+impl<'a> Tooltip<'a> {
+    pub fn new(title: &'a str) -> Self {
+        Self {
+            title,
+            description: None,
+            shortcut: None,
+        }
+    }
+
+    pub fn description(mut self, description: &'a str) -> Self {
+        self.description = Some(description);
+        self
+    }
+
+    pub fn shortcut(mut self, shortcut: &'a str) -> Self {
+        self.shortcut = Some(shortcut);
+        self
+    }
+
+    pub fn apply(self, response: Response) -> Response {
+        let contents = |ui: &mut Ui| {
+            ui.set_max_width(260.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(self.title).strong().color(TEXT));
+                if let Some(shortcut) = self.shortcut {
+                    ui.label(RichText::new(shortcut).monospace().color(IMAGE));
+                }
+            });
+            if let Some(description) = self.description {
+                ui.label(RichText::new(description).color(TEXT_MUTED));
+            }
+        };
+        response
+            .on_hover_ui(contents)
+            .on_disabled_hover_ui(contents)
+    }
+}
+
+impl<'a> From<&'a str> for Tooltip<'a> {
+    fn from(title: &'a str) -> Self {
+        Self::new(title)
+    }
+}
+
+pub fn tool_button<'a>(
+    ui: &mut Ui,
+    icon: Icon,
+    hint: impl Into<Tooltip<'a>>,
+    selected: bool,
+) -> Response {
+    let hint = hint.into();
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
     let response = crate::core::automation::instrument_response(
         response,
         "tool_button",
-        Some(label.into()),
+        Some(hint.title.into()),
         ui.is_enabled(),
         false,
     );
@@ -2387,8 +2444,7 @@ pub fn tool_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Resp
         Rect::from_center_size(rect.center(), Vec2::splat(19.0)),
         color,
     );
-    response
-        .on_hover_text(label)
+    hint.apply(response)
         .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

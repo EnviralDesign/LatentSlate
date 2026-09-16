@@ -279,9 +279,43 @@ impl LatentSlateApp {
                 .is_some_and(|geometry| mask_geometry_matches(&mask.geometry, geometry))
         });
         let mut clear = false;
-        let mut undo = !ui.ctx().text_edit_focused()
+        let shortcuts_active = self.asset_lab.v4.view == AssetLabView::Create
+            && audition.is_none()
+            && self.source_picker.is_none()
+            && self.asset_lab.v4.pending_adopt.is_none()
+            && !ui.ctx().text_edit_focused()
+            && !ui.ctx().any_popup_open()
             && !self.asset_lab.v4.interacting
+            && canvas.gesture.is_none()
+            && ui.is_enabled()
+            && ui.input(|i| i.focused && !i.pointer.any_down());
+        let mut undo = shortcuts_active
             && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z));
+        if shortcuts_active && profile == AssetLabAuthoringProfile::Mask {
+            ui.input_mut(|input| {
+                if input.modifiers != egui::Modifiers::NONE {
+                    return;
+                }
+                for (key, tool) in [(egui::Key::B, Tool::Paint), (egui::Key::E, Tool::Erase)] {
+                    if input.consume_key(egui::Modifiers::NONE, key) {
+                        canvas.tool = tool;
+                        self.asset_lab.v4.mask_visible = true;
+                    }
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::OpenBracket) {
+                    canvas.brush = (canvas.brush * 0.8)
+                        .round()
+                        .min(canvas.brush - 1.0)
+                        .clamp(1.0, 512.0);
+                }
+                if input.consume_key(egui::Modifiers::NONE, egui::Key::CloseBracket) {
+                    canvas.brush = (canvas.brush * 1.25)
+                        .round()
+                        .max(canvas.brush + 1.0)
+                        .clamp(1.0, 512.0);
+                }
+            });
+        }
         if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
             if let Some(error) = &canvas.error {
                 ui.label(kit::caption(error));
@@ -353,11 +387,25 @@ impl LatentSlateApp {
             if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
                 ui.add_space(12.0);
                 ui.label(kit::caption("Size"));
+                let brush_hint = kit::Tooltip::new("Brush size")
+                    .description("Diameter in canvas pixels. [ makes it smaller; ] makes it larger. Active in Create when you are not typing.")
+                    .shortcut("[ / ]");
                 if width > 650.0 {
-                    kit::compact_slider(ui, "Brush size", &mut canvas.brush, 1.0..=512.0, 105.0);
+                    brush_hint.apply(kit::compact_slider(
+                        ui,
+                        "Brush size",
+                        &mut canvas.brush,
+                        1.0..=512.0,
+                        105.0,
+                    ));
                 }
                 let mut value = canvas.brush.round() as i64;
-                kit::integer_step_drag(ui, &mut value, 46.0, 1, Some(1), Some(512));
+                brush_hint.apply(
+                    ui.scope(|ui| {
+                        kit::integer_step_drag(ui, &mut value, 46.0, 1, Some(1), Some(512))
+                    })
+                    .response,
+                );
                 canvas.brush = value as f32;
                 ui.label(kit::caption("px"));
             }
@@ -430,7 +478,14 @@ impl LatentSlateApp {
                         _ => &[],
                     };
                     for (tool, icon, label) in tools {
-                        if kit::tool_button(ui, *icon, label, canvas.tool == *tool).clicked() {
+                        let hint = match tool {
+                            Tool::Paint => kit::Tooltip::new(label).shortcut("B").description("Paint the area to change. Use [ / ] to adjust brush size. Shortcut active in Create when you are not typing."),
+                            Tool::Erase => kit::Tooltip::new(label).shortcut("E").description("Erase painted mask areas. Use [ / ] to adjust brush size. Shortcut active in Create when you are not typing."),
+                            Tool::Select => kit::Tooltip::new(label).description("Select a prompt region, then drag to move it or drag its corner to resize."),
+                            Tool::Object => kit::Tooltip::new(label).description("Drag on the canvas to draw an object region, then describe it in the inspector."),
+                            Tool::Text => kit::Tooltip::new(label).description("Drag on the canvas to draw a text region, then enter its text in the inspector."),
+                        };
+                        if kit::tool_button(ui, *icon, hint, canvas.tool == *tool).clicked() {
                             canvas.tool = *tool;
                             if profile == AssetLabAuthoringProfile::Mask {
                                 self.asset_lab.v4.mask_visible = true;
@@ -442,17 +497,22 @@ impl LatentSlateApp {
                     ui.add_enabled_ui(
                         !self.asset_lab.v4.undo.is_empty() && audition.is_none(),
                         |ui| {
-                            undo |= kit::tool_button(ui, kit::Icon::Undo, "Undo", false).clicked();
+                            let hint = kit::Tooltip::new("Undo").shortcut("Ctrl+Z").description(
+                                if self.asset_lab.v4.undo.is_empty() { "No authoring changes to undo in this Create session." }
+                                else { "Undo the last authoring change in this Create session. Text fields keep their own undo." });
+                            undo |= kit::tool_button(ui, kit::Icon::Undo, hint, false).clicked();
                         },
                     );
                     if profile != AssetLabAuthoringProfile::Generic {
                         ui.add_enabled_ui(audition.is_none(), |ui| {
-                            clear =
-                                kit::tool_button(ui, kit::Icon::Trash, "Clear", false).clicked();
+                            let hint = kit::Tooltip::new("Clear").description(
+                                if profile == AssetLabAuthoringProfile::Mask { "Clear the entire painted mask. You can undo this in the current Create session." }
+                                else { "Clear all prompt regions. You can undo this in the current Create session." });
+                            clear = kit::tool_button(ui, kit::Icon::Trash, hint, false).clicked();
                         });
                     }
                     ui.add_space((rail_rect.bottom() - 40.0 - ui.cursor().min.y).max(0.0));
-                    if kit::tool_button(ui, kit::Icon::Fit, "Fit", false).clicked() {
+                    if kit::tool_button(ui, kit::Icon::Fit, kit::Tooltip::new("Fit").description("Fit the whole canvas in view. Use the wheel to zoom and right-drag to pan."), false).clicked() {
                         self.asset_lab.preview_auto_fit = true;
                     }
                 },
@@ -749,7 +809,8 @@ impl LatentSlateApp {
                         );
                     }
                 }
-                if response.has_focus()
+                if shortcuts_active
+                    && response.has_focus()
                     && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
                 {
                     setup
@@ -981,6 +1042,49 @@ mod tests {
         };
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
+        let key = |key, pressed| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        let press = |app: &mut LatentSlateApp, code| {
+            frame(app, vec![key(code, true)]);
+            frame(app, vec![key(code, false)]);
+        };
+        let original_setup =
+            AssetLabSnapshot::from_config(app.editor.project.generative_config(asset.id).unwrap());
+        press(&mut app, egui::Key::E);
+        assert_eq!(app.asset_lab.v4.canvas.tool, Tool::Erase);
+        press(&mut app, egui::Key::B);
+        assert_eq!(app.asset_lab.v4.canvas.tool, Tool::Paint);
+        press(&mut app, egui::Key::CloseBracket);
+        assert_eq!(app.asset_lab.v4.canvas.brush, 60.0);
+        press(&mut app, egui::Key::OpenBracket);
+        assert_eq!(app.asset_lab.v4.canvas.brush, 48.0);
+        app.asset_lab.v4.canvas.brush = 1.0;
+        press(&mut app, egui::Key::CloseBracket);
+        assert_eq!(app.asset_lab.v4.canvas.brush, 2.0);
+        press(&mut app, egui::Key::OpenBracket);
+        assert_eq!(app.asset_lab.v4.canvas.brush, 1.0);
+        app.asset_lab.v4.canvas.brush = 512.0;
+        press(&mut app, egui::Key::CloseBracket);
+        assert_eq!(app.asset_lab.v4.canvas.brush, 512.0);
+        app.asset_lab.v4.canvas.brush = 48.0;
+        app.asset_lab.v4.view = AssetLabView::Lineage;
+        press(&mut app, egui::Key::E);
+        press(&mut app, egui::Key::CloseBracket);
+        assert_eq!(
+            (app.asset_lab.v4.canvas.tool, app.asset_lab.v4.canvas.brush),
+            (Tool::Paint, 48.0)
+        );
+        app.asset_lab.v4.view = AssetLabView::Create;
+        frame(&mut app, vec![]);
+        assert_eq!(
+            AssetLabSnapshot::from_config(app.editor.project.generative_config(asset.id).unwrap()),
+            original_setup
+        );
         let point = Pos2::new(350.0, 300.0);
         let wheel = || egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
@@ -1003,6 +1107,12 @@ mod tests {
                 "picker and scrim shield canvas wheel input"
             );
         }
+        press(&mut app, egui::Key::E);
+        press(&mut app, egui::Key::CloseBracket);
+        assert_eq!(
+            (app.asset_lab.v4.canvas.tool, app.asset_lab.v4.canvas.brush),
+            (Tool::Paint, 48.0)
+        );
         app.source_picker = None;
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
@@ -1017,6 +1127,8 @@ mod tests {
             vec![egui::Event::PointerMoved(point), pointer(true)],
         );
         assert!(app.asset_lab.v4.interacting);
+        press(&mut app, egui::Key::E);
+        assert_eq!(app.asset_lab.v4.canvas.tool, Tool::Paint);
         frame(&mut app, vec![pointer(false)]);
         let config = app.editor.project.generative_config(asset.id).unwrap();
         let mask = config
@@ -1040,13 +1152,6 @@ mod tests {
             status: GenerationJobStatus::Succeeded,
         });
         frame(&mut app, vec![egui::Event::PointerGone]);
-        let key = |key, pressed| egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: Default::default(),
-        };
         for _ in 0..20 {
             frame(&mut app, vec![key(egui::Key::Tab, true)]);
             frame(&mut app, vec![key(egui::Key::Tab, false)]);
@@ -1055,6 +1160,8 @@ mod tests {
             }
         }
         assert_eq!(app.asset_lab.v4.preview.as_deref(), Some("v2"));
+        press(&mut app, egui::Key::E);
+        assert_eq!(app.asset_lab.v4.canvas.tool, Tool::Paint);
         frame(&mut app, vec![key(egui::Key::Escape, true)]);
         assert!(app.asset_lab.v4.preview.is_none());
         assert_eq!(
