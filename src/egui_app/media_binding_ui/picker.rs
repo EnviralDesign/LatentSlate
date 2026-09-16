@@ -10,6 +10,7 @@ pub(in crate::egui_app) struct SourcePickerState {
     spec: Option<MediaBindingSpec>,
     sizing: ReferenceSizing,
     context: Option<Uuid>,
+    saved_context: Option<Uuid>,
     project_revision: u64,
     details: bool,
     error: Option<String>,
@@ -26,6 +27,14 @@ impl LatentSlateApp {
         let Some(config) = self.editor.project.generative_config(asset_id) else {
             return;
         };
+        let context = resolve_generation_context(
+            &self.editor.project,
+            asset_id,
+            context,
+            self.generation_context_by_asset.get(&asset_id).copied(),
+        )
+        .ok()
+        .flatten();
         self.source_picker = Some(SourcePickerState {
             asset_id,
             provider: provider.clone(),
@@ -36,14 +45,8 @@ impl LatentSlateApp {
                 .get(&field.name)
                 .copied()
                 .unwrap_or_default(),
-            context: resolve_generation_context(
-                &self.editor.project,
-                asset_id,
-                context,
-                self.generation_context_by_asset.get(&asset_id).copied(),
-            )
-            .ok()
-            .flatten(),
+            context,
+            saved_context: context,
             project_revision: self.editor.project_session_revision,
             details: false,
             error: None,
@@ -220,7 +223,10 @@ impl LatentSlateApp {
             return;
         };
         let mut close = kit::dismissible_nested_modal_scrim(ctx, "source_picker", true);
-        close |= ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let escape =
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        let mut cancel_details = escape && state.details;
+        close |= escape && !state.details;
         let mut apply = false;
         let mut capture = false;
         let size = crate::egui_app::modal_size(ctx, [590.0, 820.0], [380.0, 300.0]);
@@ -240,47 +246,90 @@ impl LatentSlateApp {
                     None,
                     true,
                 );
-                kit::modal_body(ui, |ui| {
-                    let footer = if state.details { 44.0 } else { 0.0 };
-                    egui::ScrollArea::vertical()
-                        .id_salt("source_picker_scroll")
-                        .max_height((ui.available_height() - footer).max(80.0))
-                        .show(ui, |ui| {
-                            if let Some(error) = &state.error {
-                                ui.colored_label(kit::DANGER, error);
-                            }
-                            if state.details {
-                                self.source_picker_details(ui, &mut state, &config, &mut capture);
-                            } else {
-                                if state.spec.is_some()
-                                    && kit::secondary_button(
-                                        ui,
-                                        "Configure selected input",
-                                        ui.available_width(),
-                                    )
-                                    .clicked()
-                                {
-                                    state.details = true;
+                let details = state.details;
+                ui.spacing_mut().item_spacing.y = 0.0;
+                egui_extras::StripBuilder::new(ui)
+                    .size(egui_extras::Size::remainder())
+                    .size(egui_extras::Size::exact(if details {
+                        kit::PRIMARY_BUTTON_H + 32.0
+                    } else {
+                        0.0
+                    }))
+                    .vertical(|mut strip| {
+                        strip.cell(|ui| {
+                            kit::modal_scroll_body(ui, ("source_picker_scroll", details), |ui| {
+                                ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+                                if let Some(error) = &state.error {
+                                    ui.colored_label(kit::DANGER, error);
                                 }
-                                self.source_picker_choices(ui, &mut state, &config, &mut apply);
+                                if state.details {
+                                    self.source_picker_details(
+                                        ui,
+                                        &mut state,
+                                        &config,
+                                        &mut capture,
+                                    );
+                                } else {
+                                    if state.spec.is_some()
+                                        && kit::secondary_button(
+                                            ui,
+                                            "Configure selected input",
+                                            ui.available_width(),
+                                        )
+                                        .clicked()
+                                    {
+                                        state.details = true;
+                                    }
+                                    self.source_picker_choices(ui, &mut state, &config, &mut apply);
+                                }
+                            });
+                        });
+                        strip.cell(|ui| {
+                            if details {
+                                let rect = ui.max_rect();
+                                kit::modal_body(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    kit::bounded_horizontal_row(
+                                        ui,
+                                        kit::PRIMARY_BUTTON_H,
+                                        |ui, _| {
+                                            if kit::secondary_button(ui, "Back", 80.0).clicked() {
+                                                state.details = false;
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if kit::primary_button(ui, "Apply", 120.0)
+                                                        .clicked()
+                                                    {
+                                                        apply = true;
+                                                    }
+                                                    if kit::secondary_button(ui, "Cancel", 80.0)
+                                                        .clicked()
+                                                    {
+                                                        cancel_details = true;
+                                                    }
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+                                kit::paint_panel_edge(ui, rect, kit::PanelEdge::Top);
                             }
                         });
-                    if state.details {
-                        ui.separator();
-                        kit::bounded_horizontal_row(ui, kit::FIELD_H, |ui, _| {
-                            if kit::secondary_button(ui, "Back", 80.0).clicked() {
-                                state.details = false;
-                            }
-                            if kit::secondary_button(ui, "Cancel", 80.0).clicked() {
-                                close = true;
-                            }
-                            if kit::primary_button(ui, "Apply", 120.0).clicked() {
-                                apply = true;
-                            }
-                        });
-                    }
-                });
+                    });
             });
+        if cancel_details {
+            state.spec = lookup_media_binding(&config, &state.field, &self.editor.project);
+            state.sizing = config
+                .reference_sizing
+                .get(&state.field.name)
+                .copied()
+                .unwrap_or_default();
+            state.context = state.saved_context;
+            state.details = false;
+            state.error = None;
+        }
         if capture {
             let result = (|| {
                 let spec = state
@@ -339,7 +388,13 @@ impl LatentSlateApp {
                         self.generation_context_by_asset
                             .insert(state.asset_id, context);
                     }
-                    close = true;
+                    if state.details {
+                        state.details = false;
+                        state.saved_context = state.context;
+                        state.error = None;
+                    } else {
+                        close = true;
+                    }
                 }
                 Err(error) => state.error = Some(error),
             }
@@ -380,7 +435,7 @@ impl LatentSlateApp {
                 preview,
                 source_badge(candidate.as_ref()),
                 selected,
-                (width - 42.0).max(1.0),
+                (width - 88.0).max(1.0),
             )
             .on_hover_text(summary)
             .clicked()
@@ -389,8 +444,9 @@ impl LatentSlateApp {
                 *apply = true;
             }
             ui.add_enabled_ui(candidate.is_some(), |ui| {
-                if kit::icon_button_sized(ui, "⚙", Vec2::new(32.0, 32.0))
-                    .on_hover_text("Configure this source")
+                if kit::Tooltip::new("Configure source")
+                    .description("Review sampling, timeline context, and sizing before applying this source.")
+                    .apply(kit::icon_button_sized(ui, "Configure", Vec2::new(80.0, 64.0)))
                     .clicked()
                 {
                     state.spec = candidate;

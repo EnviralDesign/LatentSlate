@@ -275,6 +275,9 @@ pub fn configure_style(ctx: &Context) {
         style.spacing.button_padding = Vec2::new(10.0, 5.0);
         style.spacing.menu_margin = Margin::symmetric(8, 8);
         // Scroll bodies in this editor should feel like clipped panes, not faded web views.
+        style.spacing.scroll.floating = false;
+        style.spacing.scroll.bar_inner_margin = 8.0;
+        style.spacing.scroll.bar_outer_margin = 4.0;
         style.spacing.scroll.fade.strength = 0.0;
     });
 }
@@ -906,9 +909,7 @@ fn clipped_scroll_body_with_scroll_bar_visibility(
     viewport_ui.shrink_clip_rect(clip_rect);
     viewport_ui.set_width(viewport_width);
     viewport_ui.set_height(viewport_height);
-    if scroll_bar_visibility == egui::scroll_area::ScrollBarVisibility::AlwaysVisible {
-        viewport_ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-    }
+    viewport_ui.spacing_mut().scroll.floating = false;
     viewport_ui.spacing_mut().scroll.fade.strength = 0.0;
 
     egui::ScrollArea::vertical()
@@ -2650,6 +2651,16 @@ pub fn modal_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
         .corner_radius(MODAL_BOTTOM_RADIUS)
         .inner_margin(Margin::symmetric(18, 16))
         .show(ui, add_contents);
+}
+
+/// Full-width modal viewport: padding belongs to its content, not its scrollbar.
+pub fn modal_scroll_body(ui: &mut Ui, id_salt: impl Hash, add_contents: impl FnOnce(&mut Ui)) {
+    Frame::new()
+        .fill(PANEL)
+        .show(ui, |ui| {
+            ui.spacing_mut().scroll.content_margin = Margin::symmetric(18, 16);
+            clipped_scroll_body(ui, id_salt, add_contents);
+        });
 }
 
 /// Renders a panel title with compact, right-aligned panel-level actions.

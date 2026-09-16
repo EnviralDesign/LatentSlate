@@ -84,6 +84,12 @@ and resize cursors; static border painting must not cover that feedback.
 Source configuration uses `source_field`: a thumbnail, slot label, source value,
 binding badge, and trailing chevron. Asset Lab uses its 48-point compact form in
 a bounded grid; Attributes uses the comfortable form. Both open the same picker.
+Quick choices commit and close; Configure opens a local draft with an anchored
+footer. Cancel discards the draft and returns to the list; Apply and successful
+capture commit and return to the list. Back retains the local draft.
+Scroll areas reserve a gutter instead of overlaying content. Full-body modal
+scrolling uses `modal_scroll_body`, which places content padding inside the viewport
+so the scrollbar stays at the modal edge. Nested pane scrollbars stay with their pane.
 Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
 Preview, Asset Lab Create/Compare, and lineage share `canvas_wheel_zoom_factor`
 and its sensitivity multiplier. Wheel input respects UI clipping and foreground
