@@ -9,7 +9,6 @@ pub(super) struct ChatRow {
     pub text: String,
     pub tool: bool,
     pub image: Option<egui::TextureHandle>,
-    pub media_path: Option<PathBuf>,
     pub summary: String,
     pub failed: bool,
 }
@@ -417,19 +416,6 @@ impl LatentSlateApp {
                             &result.text,
                         ),
                         failed: tool_error(&result.text).is_some(),
-                        media_path: if video.is_some() {
-                            None
-                        } else {
-                            result
-                                .media
-                                .first()
-                                .and_then(|m| {
-                                    m.get("host_image_path")
-                                        .or_else(|| m.get("host_video_path"))
-                                })
-                                .and_then(Value::as_str)
-                                .map(PathBuf::from)
-                        },
                         label: call.function.name,
                         text: format!("{}\n{}", call.function.arguments, result.text),
                         tool: true,
@@ -646,24 +632,11 @@ impl LatentSlateApp {
                                 );
                                 if let Some(texture) = &row.image {
                                     ui.add_space(8.0);
-                                    // Keep individual cutsheet frames legible in a narrow chat window.
-                                    egui::ScrollArea::horizontal()
-                                        .id_salt(("chat_media", index))
-                                        .show(ui, |ui| {
-                                            let size = texture.size_vec2();
-                                            let scale = (960.0 / size.x).min(1.0);
-                                            ui.add(
-                                                egui::Image::new(texture)
-                                                    .fit_to_exact_size(size * scale),
-                                            );
-                                        });
-                                }
-                                if let Some(path) = &row.media_path {
-                                    if kit::secondary_button(ui, "Open media", 100.0).clicked() {
-                                        if let Err(error) = open_path_in_file_manager(path) {
-                                            self.editor.status = error;
-                                        }
-                                    }
+                                    let size = texture.size_vec2();
+                                    let scale = (ui.available_width() / size.x).min(1.0);
+                                    ui.add(
+                                        egui::Image::new(texture).fit_to_exact_size(size * scale),
+                                    );
                                 }
                                 let response = egui::CollapsingHeader::new("Details")
                                     .id_salt(("chat_tool", index))
