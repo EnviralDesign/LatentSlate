@@ -2729,6 +2729,14 @@ pub fn section_label(label: &str) -> RichText {
         .strong()
 }
 
+/// Read-only inspector data with wrapping labels and selectable values.
+pub fn property_row(ui: &mut Ui, label: &str, value: &str) {
+    ui.columns(2, |columns| {
+        columns[0].add(egui::Label::new(caption(label)).wrap());
+        columns[1].add(egui::Label::new(body(value)).wrap().selectable(true));
+    });
+}
+
 pub fn field_label(ui: &mut Ui, label: &str) {
     ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
 }

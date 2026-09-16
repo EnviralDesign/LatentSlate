@@ -277,12 +277,26 @@ impl LatentSlateApp {
                 );
             }
             AssetLabView::Lineage => {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
                 egui_extras::StripBuilder::new(ui)
                     .size(Size::remainder())
-                    .size(Size::exact(300.0))
+                    .size(Size::exact(340.0))
                     .horizontal(|mut strip| {
-                        strip.cell(|ui| self.asset_lab_lineage_v4(ui, asset, &config, false));
-                        strip.cell(|ui| self.asset_lab_lineage_details_v4(ui, asset, &config));
+                        strip.cell(|ui| {
+                            ui.painter()
+                                .rect_filled(ui.max_rect(), 0, kit::PANEL_SUNKEN);
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin::symmetric(16, 8))
+                                .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
+                                    self.asset_lab_lineage_v4(ui, asset, &config, false);
+                                });
+                        });
+                        strip.cell(|ui| {
+                            ui.painter().rect_filled(ui.max_rect(), 0, kit::PANEL);
+                            kit::paint_panel_edge(ui, ui.max_rect(), kit::PanelEdge::Left);
+                            self.asset_lab_lineage_details_v4(ui, asset, &config);
+                        });
                     });
             }
             AssetLabView::Compare => {
@@ -835,142 +849,204 @@ impl LatentSlateApp {
             ui.label(kit::caption("Select a completed version."));
             return;
         };
-        let body = (ui.available_height() - 90.0).max(80.0);
-        let body_bottom = ui.cursor().min.y + body;
-        egui::ScrollArea::vertical()
-            .max_height(body)
-            .min_scrolled_height(body)
-            .show(ui, |ui| {
-                ui.heading(&record.version);
-                if config.active_version.as_ref() == Some(&record.version) {
-                    ui.colored_label(kit::PRIMARY, "◆ Current output");
-                }
-                ui.add_space(18.0);
-                kit::field_label(ui, "Recipe");
-                ui.label(
-                    self.editor
-                        .provider_entries
-                        .iter()
-                        .find(|provider| provider.id == record.provider_id)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("Unavailable recipe"),
-                );
-                let provider = self
-                    .editor
-                    .provider_entries
-                    .iter()
-                    .find(|p| p.id == record.provider_id)
-                    .cloned();
-                let mut settings = Vec::new();
-                let mut values: Vec<_> = record.inputs_snapshot.iter().collect();
-                values.sort_by_key(|(name, _)| *name);
-                for (name, value) in values {
-                    let field = provider
-                        .as_ref()
-                        .and_then(|p| p.inputs.iter().find(|f| f.name == *name));
-                    let is_prompt = field.is_some_and(|f| {
-                        f.input_type == ProviderInputType::Text
-                            && !f.ui.as_ref().is_some_and(|ui| ui.advanced)
-                    });
-                    if let InputValue::Literal { value } = value {
-                        let text = value
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| value.to_string());
-                        let label = field.map(|f| f.label.as_str()).unwrap_or(name);
-                        if is_prompt {
+        StripBuilder::new(ui)
+            .clip(true)
+            .size(Size::remainder())
+            .size(Size::exact(if config.active_version.is_none() {
+                144.0
+            } else {
+                104.0
+            }))
+            .vertical(|mut strip| {
+                strip.cell(|ui| {
+                    ui.spacing_mut().scroll.content_margin = egui::Margin::symmetric(20, 16);
+                    kit::clipped_scroll_body(ui, "lineage_inspector", |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                        ui.label(kit::body(&record.version).size(18.0).strong());
+                        if config.active_version.as_ref() == Some(&record.version) {
+                            kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
+                                let (rect, _) =
+                                    ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                kit::paint_icon(ui, kit::Icon::Pin, rect, kit::PRIMARY);
+                                ui.label(kit::caption("Current output").color(kit::PRIMARY));
+                            });
+                        }
+                        if let Some(parent) = record
+                            .lab_node_id
+                            .and_then(|id| completed_parent(config, id))
+                            .and_then(|id| {
+                                config.versions.iter().find(|r| r.lab_node_id == Some(id))
+                            })
+                        {
+                            ui.label(kit::caption(format!("Created from {}", parent.version)));
+                        }
+                        ui.separator();
+                        ui.add_space(4.0);
+                        kit::field_label(ui, "Recipe");
+                        ui.label(kit::body(
+                            self.editor
+                                .provider_entries
+                                .iter()
+                                .find(|provider| provider.id == record.provider_id)
+                                .map(|p| p.name.as_str())
+                                .unwrap_or("Unavailable recipe"),
+                        ));
+                        let provider = self
+                            .editor
+                            .provider_entries
+                            .iter()
+                            .find(|p| p.id == record.provider_id)
+                            .cloned();
+                        let mut settings = Vec::new();
+                        let mut values: Vec<_> = record.inputs_snapshot.iter().collect();
+                        values.sort_by_key(|(name, _)| *name);
+                        for (name, value) in values {
+                            let field = provider
+                                .as_ref()
+                                .and_then(|p| p.inputs.iter().find(|f| f.name == *name));
+                            let is_prompt = field.is_some_and(|f| {
+                                f.input_type == ProviderInputType::Text
+                                    && !f.ui.as_ref().is_some_and(|ui| ui.advanced)
+                            });
+                            if let InputValue::Literal { value } = value {
+                                let text = value
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| value.to_string());
+                                let label = field.map(|f| f.label.as_str()).unwrap_or(name);
+                                if is_prompt {
+                                    ui.add_space(16.0);
+                                    kit::field_label(ui, label);
+                                    ui.add(
+                                        egui::Label::new(kit::body(text)).wrap().selectable(true),
+                                    );
+                                } else if !record.resolved_media_inputs.contains_key(name) {
+                                    settings.push((label.to_string(), text));
+                                }
+                            }
+                        }
+                        if !record.resolved_media_inputs.is_empty() {
                             ui.add_space(16.0);
-                            kit::field_label(ui, label);
-                            ui.label(text);
-                        } else if !record.resolved_media_inputs.contains_key(name) {
-                            settings.push((label.to_string(), text));
+                            kit::field_label(ui, "Inputs used");
                         }
-                    }
-                }
-                if !record.resolved_media_inputs.is_empty() {
-                    ui.add_space(16.0);
-                    kit::field_label(ui, "Inputs used");
-                }
-                let mut sources: Vec<_> = record.resolved_media_inputs.iter().collect();
-                sources.sort_by_key(|(name, _)| *name);
-                for (name, source) in sources {
-                    let path = self
-                        .editor
-                        .project
-                        .project_path
-                        .as_ref()
-                        .map(|root| root.join(&source.materialized_path))
-                        .unwrap_or_else(|| source.materialized_path.clone());
-                    let source_asset = match source.media_type {
-                        crate::state::BoundMediaType::Image => {
-                            Asset::new_image("Submitted input", path.clone())
+                        let mut sources: Vec<_> = record.resolved_media_inputs.iter().collect();
+                        sources.sort_by_key(|(name, _)| *name);
+                        for (name, source) in sources {
+                            let path = self
+                                .editor
+                                .project
+                                .project_path
+                                .as_ref()
+                                .map(|root| root.join(&source.materialized_path))
+                                .unwrap_or_else(|| source.materialized_path.clone());
+                            let source_asset = match source.media_type {
+                                crate::state::BoundMediaType::Image => {
+                                    Asset::new_image("Submitted input", path.clone())
+                                }
+                                crate::state::BoundMediaType::Video => {
+                                    Asset::new_video("Submitted input", path.clone())
+                                }
+                                crate::state::BoundMediaType::Audio => {
+                                    Asset::new_audio("Submitted input", path.clone())
+                                }
+                            };
+                            let mut source_asset = source_asset;
+                            source_asset.id = source.source_asset_id.unwrap_or(asset.id);
+                            let thumbnail = self.asset_lab_path_preview_texture(
+                                ui.ctx(),
+                                &source_asset,
+                                source.source_version.as_deref(),
+                                0.0,
+                                &path,
+                            );
+                            let title =
+                                source.source_version.as_deref().unwrap_or("Project source");
+                            let detail = format!("{name} · resolved at submission");
+                            kit::source_row(
+                                ui,
+                                ("submitted_source", &record.version, name),
+                                title,
+                                &detail,
+                                thumbnail,
+                                None,
+                                false,
+                                ui.available_width(),
+                            );
                         }
-                        crate::state::BoundMediaType::Video => {
-                            Asset::new_video("Submitted input", path.clone())
-                        }
-                        crate::state::BoundMediaType::Audio => {
-                            Asset::new_audio("Submitted input", path.clone())
-                        }
-                    };
-                    let mut source_asset = source_asset;
-                    source_asset.id = source.source_asset_id.unwrap_or(asset.id);
-                    let thumbnail = self.asset_lab_path_preview_texture(
-                        ui.ctx(),
-                        &source_asset,
-                        source.source_version.as_deref(),
-                        0.0,
-                        &path,
-                    );
-                    let title = source.source_version.as_deref().unwrap_or("Project source");
-                    let detail = format!("{name} · resolved at submission");
-                    kit::source_row(
-                        ui,
-                        ("submitted_source", &record.version, name),
-                        title,
-                        &detail,
-                        thumbnail,
-                        None,
-                        false,
-                        ui.available_width(),
-                    );
-                }
-                ui.add_space(16.0);
-                egui::CollapsingHeader::new("Settings")
-                    .id_salt(("lineage_settings", &record.version))
-                    .show(ui, |ui| {
-                        for (label, value) in settings {
-                            kit::field_label(ui, &label);
-                            ui.label(value);
+                        if !settings.is_empty() {
+                            ui.add_space(12.0);
+                            ui.separator();
+                            let disclosure =
+                                egui::CollapsingHeader::new(kit::body("Generation settings"))
+                                    .id_salt("lineage_settings")
+                                    .show(ui, |ui| {
+                                        ui.label(kit::caption("Values used for this version"));
+                                        kit::card_frame().show(ui, |ui| {
+                                            for (index, (label, value)) in
+                                                settings.iter().enumerate()
+                                            {
+                                                if index > 0 {
+                                                    ui.separator();
+                                                }
+                                                kit::property_row(ui, label, value);
+                                            }
+                                        });
+                                    });
+                            crate::core::automation::instrument_response(
+                                disclosure.header_response,
+                                "disclosure",
+                                Some("Generation settings".into()),
+                                false,
+                                false,
+                            );
                         }
                     });
+                });
+                strip.cell(|ui| {
+                    kit::paint_panel_edge(ui, ui.max_rect(), kit::PanelEdge::Top);
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(20, 16))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+                            if kit::primary_button(
+                                ui,
+                                &format!("Create from {}", record.version),
+                                ui.available_width(),
+                            )
+                            .clicked()
+                            {
+                                self.request_asset_lab_adopt(asset.id, &record.version);
+                            }
+                            ui.add_enabled_ui(
+                                config
+                                    .active_version
+                                    .as_ref()
+                                    .is_some_and(|active| *active != record.version),
+                                |ui| {
+                                    if kit::secondary_button(
+                                        ui,
+                                        "Compare with current",
+                                        ui.available_width(),
+                                    )
+                                    .clicked()
+                                    {
+                                        self.enter_asset_lab_compare_v4(asset.id, &record.version);
+                                    }
+                                },
+                            );
+                            if config.active_version.is_none()
+                                && kit::secondary_button(
+                                    ui,
+                                    "Use this output",
+                                    ui.available_width(),
+                                )
+                                .clicked()
+                            {
+                                self.pin_asset_lab_result_v4(asset.id, &record.version);
+                            }
+                        });
+                });
             });
-        ui.add_space((body_bottom - ui.cursor().min.y).max(0.0));
-        if kit::primary_button(
-            ui,
-            &format!("Create from {}", record.version),
-            ui.available_width(),
-        )
-        .clicked()
-        {
-            self.request_asset_lab_adopt(asset.id, &record.version);
-        }
-        ui.add_enabled_ui(
-            config
-                .active_version
-                .as_ref()
-                .is_some_and(|active| *active != record.version),
-            |ui| {
-                if kit::secondary_button(ui, "Compare with current", ui.available_width()).clicked()
-                {
-                    self.enter_asset_lab_compare_v4(asset.id, &record.version);
-                }
-            },
-        );
-        if config.active_version.is_none()
-            && kit::secondary_button(ui, "Use this output", ui.available_width()).clicked()
-        {
-            self.pin_asset_lab_result_v4(asset.id, &record.version);
-        }
     }
 
     pub(in crate::egui_app::asset_lab) fn pin_asset_lab_result_v4(
@@ -999,9 +1075,11 @@ impl LatentSlateApp {
         config: &GenerativeConfig,
         compact: bool,
     ) {
-        if compact {
+        {
             kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
-                ui.label(kit::body("Lineage"));
+                if compact {
+                    ui.label(kit::body("Lineage"));
+                }
                 ui.label(kit::caption(format!("{} versions", config.versions.len())));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if kit::tool_button(
@@ -1013,13 +1091,16 @@ impl LatentSlateApp {
                     )
                     .clicked()
                     {
-                        self.asset_lab.v4.compare_map_zoom = 1.0;
-                        self.asset_lab.v4.compare_map_pan = Vec2::ZERO;
+                        if compact {
+                            self.asset_lab.v4.compare_map_zoom = 1.0;
+                            self.asset_lab.v4.compare_map_pan = Vec2::ZERO;
+                        } else {
+                            self.asset_lab.graph_zoom = 1.0;
+                            self.asset_lab.graph_pan = Vec2::ZERO;
+                        }
                     }
                 });
             });
-        } else {
-            ui.label(kit::caption(format!("{} versions", config.versions.len())));
         }
         let (rect, response) = ui.allocate_exact_size(
             ui.available_size().max(Vec2::splat(1.0)),
@@ -1541,38 +1622,120 @@ fn completed_parent(config: &GenerativeConfig, id: Uuid) -> Option<Uuid> {
 }
 
 fn lineage_positions(config: &GenerativeConfig) -> Vec<(Uuid, f32, usize)> {
-    let mut rows: std::collections::BTreeMap<usize, Vec<Uuid>> = Default::default();
-    for record in &config.versions {
-        let Some(id) = record.lab_node_id else {
-            continue;
-        };
-        let mut depth = 0;
-        let mut current = id;
-        let mut seen = std::collections::HashSet::new();
-        while seen.insert(current) {
-            let parent = completed_parent(config, current);
-            let Some(parent) = parent else {
-                break;
-            };
-            depth += 1;
-            current = parent;
+    fn place(
+        id: Uuid,
+        depth: usize,
+        children: &HashMap<Uuid, Vec<Uuid>>,
+        seen: &mut std::collections::HashSet<Uuid>,
+        next_leaf: &mut f32,
+        positions: &mut Vec<(Uuid, f32, usize)>,
+    ) -> Option<f32> {
+        if !seen.insert(id) {
+            return None;
         }
-        rows.entry(depth).or_default().push(id);
+        let child_positions: Vec<_> = children
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter_map(|child| place(*child, depth + 1, children, seen, next_leaf, positions))
+            .collect();
+        let x = if let (Some(first), Some(last)) = (child_positions.first(), child_positions.last())
+        {
+            (first + last) * 0.5
+        } else {
+            let x = *next_leaf;
+            *next_leaf += 1.0;
+            x
+        };
+        positions.push((id, x, depth));
+        Some(x)
     }
-    let width = rows.values().map(Vec::len).max().unwrap_or(1) as f32;
-    rows.into_iter()
-        .flat_map(|(depth, ids)| {
-            let offset = (width - ids.len() as f32) * 0.5;
-            ids.into_iter()
-                .enumerate()
-                .map(move |(index, id)| (id, index as f32 + offset, depth))
-        })
-        .collect()
+
+    let ids: Vec<_> = config
+        .versions
+        .iter()
+        .filter_map(|r| r.lab_node_id)
+        .collect();
+    let mut children: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    let mut roots = Vec::new();
+    for id in &ids {
+        if let Some(parent) = completed_parent(config, *id) {
+            children.entry(parent).or_default().push(*id);
+        } else {
+            roots.push(*id);
+        }
+    }
+    let mut positions = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut next_leaf = 0.0;
+    // The second pass also keeps malformed cyclic legacy nodes visible, once each.
+    for id in roots.into_iter().chain(ids) {
+        place(id, 0, &children, &mut seen, &mut next_leaf, &mut positions);
+    }
+    positions
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_lab_v4_lineage_keeps_continuations_above_parents() {
+        let mut config = GenerativeConfig::default();
+        let mut ids = Vec::new();
+        // v1 -> v2 -> (v3, v4, v5), v3 -> v6, v6 -> (v7, v8), plus another root.
+        for parent in [
+            None,
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(5),
+            Some(5),
+            None,
+        ] {
+            let mut node = AssetLabNode::new(None);
+            node.parent_node_id = parent.map(|index| ids[index]);
+            let version = format!("v{}", ids.len() + 1);
+            node.output_version = Some(version.clone());
+            config.versions.push(
+                serde_json::from_value(serde_json::json!({
+                    "version": version, "timestamp": chrono::Utc::now(),
+                    "provider_id": Uuid::nil(), "inputs_snapshot": {}, "lab_node_id": node.id,
+                }))
+                .unwrap(),
+            );
+            ids.push(node.id);
+            config.lab_graph.nodes.push(node);
+        }
+        let positions = lineage_positions(&config);
+        let at = |index| {
+            positions
+                .iter()
+                .find(|(id, _, _)| *id == ids[index])
+                .unwrap()
+        };
+        assert_eq!(positions.len(), 9);
+        assert_eq!(at(0).1, at(1).1);
+        assert_eq!(at(2).1, at(5).1, "v6 must stay directly above v3");
+        assert_eq!(at(5).2, at(2).2 + 1);
+        assert!(at(2).1 < at(3).1 && at(3).1 < at(4).1);
+        assert!(at(6).1 < at(5).1 && at(5).1 < at(7).1);
+        for (i, (_, x, depth)) in positions.iter().enumerate() {
+            for (_, other_x, other_depth) in positions.iter().skip(i + 1) {
+                if depth == other_depth {
+                    assert!((x - other_x).abs() >= 1.0, "branches must not overlap");
+                }
+            }
+        }
+        // Legacy unfinished nodes are skipped without changing visible ancestry.
+        let mut unfinished = AssetLabNode::new(None);
+        unfinished.parent_node_id = Some(ids[2]);
+        config.lab_graph.nodes[5].parent_node_id = Some(unfinished.id);
+        config.lab_graph.nodes.push(unfinished);
+        assert_eq!(lineage_positions(&config), positions);
+    }
 
     #[test]
     fn asset_lab_v4_late_completion_cannot_replace_edits_or_audition() {

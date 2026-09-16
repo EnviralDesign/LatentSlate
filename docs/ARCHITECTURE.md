@@ -91,6 +91,9 @@ Scroll areas reserve a gutter instead of overlaying content. Full-body modal
 scrolling uses `modal_scroll_body`, which places content padding inside the viewport
 so the scrollbar stays at the modal edge. Nested pane scrollbars stay with their pane.
 Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
+Lineage lays out complete branches together: a single continuation stays above its
+parent, while sibling subtrees receive separate space. The inspector uses the shared
+panel surface, a padded anchored footer, and selectable property rows for submitted settings.
 Preview, Asset Lab Create/Compare, and lineage share `canvas_wheel_zoom_factor`
 and its sensitivity multiplier. Wheel input respects UI clipping and foreground
 layers, so an open picker or dialog shields the canvas behind it.
