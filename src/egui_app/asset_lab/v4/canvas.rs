@@ -591,6 +591,12 @@ impl LatentSlateApp {
                     Color32::WHITE,
                 );
             }
+            painter.rect_stroke(
+                image_rect,
+                0,
+                Stroke::new(1.0_f32, kit::BORDER),
+                egui::StrokeKind::Inside,
+            );
             let pointer = ui.input(|i| i.pointer.interact_pos());
             let pressed = !over_notice
                 && response.is_pointer_button_down_on()
