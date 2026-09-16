@@ -677,6 +677,55 @@ pub fn compact_operation_banner(
     result
 }
 
+/// A selectable bottom-left notice that never participates in viewport layout.
+pub struct ViewportNotice {
+    pub rect: Rect,
+    text: Arc<egui::Galley>,
+}
+
+impl ViewportNotice {
+    pub fn new(ui: &Ui, viewport: Rect, message: &str) -> Self {
+        let width = (viewport.width() - 48.0).clamp(1.0, 440.0);
+        let text = ui
+            .painter()
+            .layout(message.to_owned(), FontId::proportional(12.0), TEXT, width);
+        let size = text.size() + Vec2::new(24.0, 20.0);
+        let rect = Rect::from_min_size(
+            Pos2::new(viewport.left() + 12.0, viewport.bottom() - 12.0 - size.y),
+            size,
+        );
+        Self { rect, text }
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("viewport_notice")
+                .max_rect(self.rect.shrink2(Vec2::new(12.0, 10.0)))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        child.painter().rect_filled(self.rect, RADIUS, PANEL_RAISED);
+        child.painter().rect_stroke(
+            self.rect,
+            RADIUS,
+            Stroke::new(1.0_f32, BORDER),
+            StrokeKind::Inside,
+        );
+        child.interact(
+            self.rect,
+            child.id().with("background"),
+            Sense::click_and_drag(),
+        );
+        crate::core::automation::instrument_response(
+            child.add(egui::Label::new(self.text).selectable(true)),
+            "viewport_notice",
+            None,
+            false,
+            false,
+        )
+    }
+}
+
 /// Anchors copyable technical detail to a compact trigger without changing the
 /// surrounding surface's layout.
 pub fn technical_details_popup(trigger: &Response, id_salt: impl Hash, detail: &str) -> bool {

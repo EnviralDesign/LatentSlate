@@ -316,13 +316,12 @@ impl LatentSlateApp {
                 }
             });
         }
-        if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
-            if let Some(error) = &canvas.error {
-                ui.label(kit::caption(error));
-            } else if !aligned {
-                ui.label(kit::caption("Mask unavailable or aligned to a different source/canvas. Restore its artifact and matching source, or explicitly clear the mask to paint here."));
-            }
-        }
+        let message = if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
+            canvas.error.clone().or_else(|| (!aligned).then(||
+                "Mask unavailable or aligned to a different source/canvas. Restore its artifact and matching source, or explicitly clear the mask to paint here.".to_owned()))
+        } else {
+            None
+        };
         let mut preview = if let Some(version) = &audition {
             self.asset_lab_preview_texture(ui.ctx(), asset, Some(version))
         } else if profile == AssetLabAuthoringProfile::Mask {
@@ -542,6 +541,16 @@ impl LatentSlateApp {
             );
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 0, kit::PANEL_SUNKEN);
+            let notice = message
+                .as_deref()
+                .map(|message| kit::ViewportNotice::new(ui, rect, message));
+            let over_notice = notice.as_ref().is_some_and(|notice| {
+                ui.input(|i| {
+                    i.pointer
+                        .interact_pos()
+                        .is_some_and(|point| notice.rect.contains(point))
+                })
+            });
             let fit = ((rect.width() - 32.0) / extent.x)
                 .min((rect.height() - 32.0) / extent.y)
                 .max(0.001);
@@ -549,7 +558,11 @@ impl LatentSlateApp {
                 self.asset_lab.preview_zoom = fit;
                 self.asset_lab.preview_pan = Vec2::ZERO;
             }
-            let scroll = preview_scroll_delta(ui, rect);
+            let scroll = if over_notice {
+                0.0
+            } else {
+                preview_scroll_delta(ui, rect)
+            };
             if scroll != 0.0 {
                 let old = self.asset_lab.preview_zoom;
                 let next = (old * canvas_wheel_zoom_factor(scroll)).clamp(0.001, 32.0);
@@ -561,7 +574,7 @@ impl LatentSlateApp {
                 self.asset_lab.preview_zoom = next;
                 self.asset_lab.preview_auto_fit = false;
             }
-            if response.dragged_by(egui::PointerButton::Secondary) {
+            if !over_notice && response.dragged_by(egui::PointerButton::Secondary) {
                 self.asset_lab.preview_pan += response.drag_delta();
                 self.asset_lab.preview_auto_fit = false;
             }
@@ -579,7 +592,8 @@ impl LatentSlateApp {
                 );
             }
             let pointer = ui.input(|i| i.pointer.interact_pos());
-            let pressed = response.is_pointer_button_down_on()
+            let pressed = !over_notice
+                && response.is_pointer_button_down_on()
                 && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
             let down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
             if audition.is_some() {
@@ -759,6 +773,7 @@ impl LatentSlateApp {
                 }
                 if let Some(pointer) = response
                     .hover_pos()
+                    .filter(|_| !over_notice)
                     .filter(|_| matches!(canvas.tool, Tool::Paint | Tool::Erase))
                 {
                     painter.circle_stroke(
@@ -828,6 +843,9 @@ impl LatentSlateApp {
                         .retain(|r| Some(r.id) != canvas.selected);
                     commit_regions = true;
                 }
+            }
+            if let Some(notice) = notice {
+                notice.show(ui);
             }
         });
         if asset.is_video() {

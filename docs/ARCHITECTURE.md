@@ -94,6 +94,8 @@ Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
 Preview, Asset Lab Create/Compare, and lineage share `canvas_wheel_zoom_factor`
 and its sensitivity multiplier. Wheel input respects UI clipping and foreground
 layers, so an open picker or dialog shields the canvas behind it.
+Create's mask/source notices use the kit's selectable `ViewportNotice`, anchored
+inside the viewport at bottom left without reflow. Its bounds shield canvas input.
 
 ## Project Model
 
