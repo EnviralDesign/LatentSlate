@@ -914,6 +914,7 @@ impl LatentSlateApp {
     fn modal_background_input_blocked(&self) -> bool {
         self.editor.show_startup()
             || self.editor.overlays.new_project
+            || self.editor.overlays.open_project
             || self.editor.overlays.project_settings
             || self.editor.overlays.generative_video
             || self.editor.overlays.export_video

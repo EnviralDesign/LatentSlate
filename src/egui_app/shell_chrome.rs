@@ -21,14 +21,7 @@ impl LatentSlateApp {
                             if automation_button(ui.button("Open Project..."), "Open Project...")
                                 .clicked()
                             {
-                                let initial_dir = default_projects_dir();
-                                let options = kit::BrowsePathOptions::new()
-                                    .id_salt("menu_open_project")
-                                    .initial_dir(initial_dir.as_path())
-                                    .remember_last_dir();
-                                if let Some(folder) = kit::pick_folder_dialog(ui, options) {
-                                    this.open_project_folder(folder);
-                                }
+                                this.editor.overlays.open_project = true;
                                 ui.close();
                             }
                             ui.add_enabled_ui(this.editor.project.project_path.is_some(), |ui| {
@@ -371,6 +364,9 @@ impl LatentSlateApp {
         }
         if self.editor.overlays.new_project {
             self.new_project_modal(ctx, false);
+        }
+        if self.editor.overlays.open_project {
+            self.open_project_modal(ctx);
         }
         if self.editor.overlays.project_settings {
             self.project_settings_modal(ctx);

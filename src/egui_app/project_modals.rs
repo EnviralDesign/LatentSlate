@@ -99,6 +99,7 @@ impl LatentSlateApp {
         let card_h = ui.available_height().min(PROJECT_WIZARD_CARD_H).max(360.0);
         let left_w = ((available_w - gap) * 2.0 / 3.0).max(360.0);
         let right_w = (available_w - gap - left_w).max(180.0);
+        let mut project_opened = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.allocate_ui_with_layout(
@@ -115,74 +116,110 @@ impl LatentSlateApp {
                 |ui| {
                     ui.set_width(right_w);
                     kit::card_panel(ui, card_h, |ui| {
-                        kit::field_label(ui, "Recent Projects");
-                        let recent = recent_projects(&self.new_project_parent);
-                        let mut selected_project: Option<PathBuf> = None;
-                        let mut delete_project: Option<PathBuf> = None;
-                        let mut browse_clicked = false;
-                        kit::body_with_footer(
-                            ui,
-                            120.0,
-                            kit::SECONDARY_BUTTON_H,
-                            |ui| {
-                                ui.add_space(kit::FORM_ROW_GAP);
-                                kit::scroll_body_with_persistent_scroll_bar(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-                                    if recent.is_empty() {
-                                        kit::empty_state(
-                                            ui,
-                                            "No recent projects",
-                                            "Browse to open an existing project folder.",
-                                        );
-                                    }
-                                    for folder in recent {
-                                        let name = folder
-                                            .file_name()
-                                            .and_then(|v| v.to_str())
-                                            .unwrap_or("Project");
-                                        let row_action = recent_project_row(ui, name, &folder);
-                                        if row_action.delete_clicked {
-                                            delete_project = Some(folder.clone());
-                                        } else if row_action.open_clicked {
-                                            selected_project = Some(folder.clone());
-                                        }
-                                    }
-                                });
-                            },
-                            |ui| {
-                                if kit::secondary_button(
-                                    ui,
-                                    "Browse for Project...",
-                                    ui.available_width(),
-                                )
-                                .clicked()
-                                {
-                                    browse_clicked = true;
-                                }
-                            },
-                        );
-                        if let Some(folder) = delete_project {
-                            self.request_delete_project_folder(folder);
-                        } else if let Some(folder) = selected_project {
-                            if self.open_project_folder(folder) {
-                                self.editor.overlays.new_project = false;
-                            }
-                        } else if browse_clicked {
-                            let initial_dir = self.new_project_parent.clone();
-                            let options = kit::BrowsePathOptions::new()
-                                .id_salt("new_project_open_existing")
-                                .initial_dir(initial_dir.as_path())
-                                .remember_last_dir();
-                            if let Some(folder) = kit::pick_folder_dialog(ui, options) {
-                                if self.open_project_folder(folder) {
-                                    self.editor.overlays.new_project = false;
-                                }
-                            }
-                        }
+                        project_opened = self.project_picker_card(ui, "Recent Projects");
                     });
                 },
             );
         });
+        if project_opened {
+            self.editor.overlays.new_project = false;
+        }
+    }
+
+    pub(super) fn open_project_modal(&mut self, ctx: &Context) {
+        let mut open = true;
+        let mut close_clicked = false;
+        let mut project_opened = false;
+        let wizard_size = project_wizard_size(ctx);
+        let outside_clicked = kit::dismissible_modal_scrim(ctx, "open_project", true);
+        egui::Window::new("Open Project")
+            .title_bar(false)
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(wizard_size)
+            .frame(kit::modal_frame())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                close_clicked = kit::modal_header_with_close(
+                    ui,
+                    "Open Project",
+                    Some("Choose a recent project or browse to an existing project folder."),
+                    true,
+                );
+                kit::modal_body(ui, |ui| {
+                    let card_h = ui.available_height().min(PROJECT_WIZARD_CARD_H).max(360.0);
+                    kit::card_panel(ui, card_h, |ui| {
+                        project_opened = self.project_picker_card(ui, "Recent Projects");
+                    });
+                });
+            });
+        if project_opened || close_clicked || outside_clicked || !open {
+            self.editor.overlays.open_project = false;
+        }
+    }
+
+    fn project_picker_card(&mut self, ui: &mut Ui, title: &str) -> bool {
+        kit::field_label(ui, title);
+        let recent = recent_projects(&self.new_project_parent);
+        let mut selected_project: Option<PathBuf> = None;
+        let mut delete_project: Option<PathBuf> = None;
+        let mut browse_clicked = false;
+        kit::body_with_footer(
+            ui,
+            120.0,
+            kit::SECONDARY_BUTTON_H,
+            |ui| {
+                ui.add_space(kit::FORM_ROW_GAP);
+                kit::scroll_body_with_persistent_scroll_bar(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                    if recent.is_empty() {
+                        kit::empty_state(
+                            ui,
+                            "No recent projects",
+                            "Browse to open an existing project folder.",
+                        );
+                    }
+                    for folder in recent {
+                        let name = folder
+                            .file_name()
+                            .and_then(|v| v.to_str())
+                            .unwrap_or("Project");
+                        let row_action = recent_project_row(ui, name, &folder);
+                        if row_action.delete_clicked {
+                            delete_project = Some(folder.clone());
+                        } else if row_action.open_clicked {
+                            selected_project = Some(folder.clone());
+                        }
+                    }
+                });
+            },
+            |ui| {
+                if kit::secondary_button(ui, "Browse for Project...", ui.available_width())
+                    .clicked()
+                {
+                    browse_clicked = true;
+                }
+            },
+        );
+
+        if let Some(folder) = delete_project {
+            self.request_delete_project_folder(folder);
+            false
+        } else if let Some(folder) = selected_project {
+            self.open_project_folder(folder)
+        } else if browse_clicked {
+            let initial_dir = self.new_project_parent.clone();
+            let options = kit::BrowsePathOptions::new()
+                .id_salt("project_picker_open_existing")
+                .initial_dir(initial_dir.as_path())
+                .remember_last_dir();
+            kit::pick_folder_dialog(ui, options)
+                .is_some_and(|folder| self.open_project_folder(folder))
+        } else {
+            false
+        }
     }
 
     pub(super) fn new_project_create_card(&mut self, ui: &mut Ui) {
@@ -351,7 +388,7 @@ impl LatentSlateApp {
         let mut close_clicked = false;
         let mut save_clicked = false;
         let mut cancel_clicked = false;
-        let outside_clicked = kit::dismissible_modal_scrim(ctx, "project_description", true);
+        let outside_clicked = kit::dismissible_nested_modal_scrim(ctx, "project_description", true);
         let size = modal_size(ctx, PROJECT_DESCRIPTION_MODAL_SIZE, [560.0, 420.0]);
 
         egui::Window::new("Project Description")

@@ -142,6 +142,7 @@ pub struct EditorOverlays {
     pub providers: bool,
     pub project_settings: bool,
     pub new_project: bool,
+    pub open_project: bool,
     pub queue: bool,
     pub agent_api: bool,
     pub chat: bool,

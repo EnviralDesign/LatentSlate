@@ -1761,7 +1761,7 @@ pub fn sunken_frame() -> Frame {
 
 pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> Response {
     let value = value.into();
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect_filled(rect, field_radius(), PANEL_SUNKEN);
     ui.painter().rect_stroke(
         rect,
@@ -1778,22 +1778,23 @@ pub fn readonly_value_box(ui: &mut Ui, value: impl Into<String>, size: Vec2) -> 
     );
     child.set_min_size(content_rect.size());
     child.shrink_clip_rect(content_rect);
-    let label_response = child.add_sized(
-        content_rect.size(),
-        egui::Label::new(
-            RichText::new(&value)
-                .color(TEXT_MUTED)
-                .size(FIELD_TEXT_SIZE),
-        )
-        .halign(FIELD_TEXT_ALIGN)
-        .selectable(true)
-        .truncate(),
-    );
+    configure_field_widget_style(&mut child, content_rect.width());
+    let mut read_only_value = value.as_str();
+    let output = egui::TextEdit::singleline(&mut read_only_value)
+        .id(child.id().with("readonly_value_text"))
+        .desired_width(content_rect.width())
+        .min_size(content_rect.size())
+        .horizontal_align(FIELD_TEXT_ALIGN)
+        .vertical_align(Align::Center)
+        .text_color(TEXT_MUTED)
+        .font(FontId::proportional(FIELD_TEXT_SIZE))
+        .frame(field_text_frame())
+        .show(&mut child);
     crate::core::automation::instrument_response(
-        response.union(label_response).on_hover_text(value.clone()),
+        output.response.response.on_hover_text(value.clone()),
         "readonly_field",
         Some(value),
-        false,
+        true,
         false,
     )
 }
@@ -2175,12 +2176,26 @@ fn field_stroke(output: &egui::text_edit::TextEditOutput) -> Stroke {
 }
 
 pub fn modal_scrim(ctx: &Context, id: &'static str) -> Response {
-    modal_scrim_in_rect(ctx, id, ctx.content_rect())
+    modal_scrim_in_rect(ctx, id, ctx.content_rect(), egui::Order::Middle)
 }
 
-fn modal_scrim_in_rect(ctx: &Context, id: &'static str, rect: Rect) -> Response {
+/// Dims an already-open modal before showing a nested modal above it.
+///
+/// Regular modal scrims live in the middle layer so their windows remain above
+/// the app. Nested dialogs need a foreground scrim to also dim that parent
+/// window while keeping the child dialog on top.
+pub fn nested_modal_scrim(ctx: &Context, id: &'static str) -> Response {
+    modal_scrim_in_rect(ctx, id, ctx.content_rect(), egui::Order::Foreground)
+}
+
+fn modal_scrim_in_rect(
+    ctx: &Context,
+    id: &'static str,
+    rect: Rect,
+    order: egui::Order,
+) -> Response {
     let area = egui::Area::new(egui::Id::new(format!("modal_scrim_{id}")))
-        .order(egui::Order::Middle)
+        .order(order)
         .fixed_pos(rect.min);
 
     area.show(ctx, |ui| {
@@ -2202,6 +2217,16 @@ fn modal_scrim_in_rect(ctx: &Context, id: &'static str, rect: Rect) -> Response 
 
 pub fn dismissible_modal_scrim(ctx: &Context, id: &'static str, close_enabled: bool) -> bool {
     let response = modal_scrim(ctx, id);
+    close_enabled && response.clicked()
+}
+
+/// Like [`dismissible_modal_scrim`], but dims an open parent modal too.
+pub fn dismissible_nested_modal_scrim(
+    ctx: &Context,
+    id: &'static str,
+    close_enabled: bool,
+) -> bool {
+    let response = nested_modal_scrim(ctx, id);
     close_enabled && response.clicked()
 }
 
@@ -2736,7 +2761,7 @@ pub fn top_bar_menu_button<R>(
 
 /// Dims and intercepts clicks below the top bar for its menus and panes.
 pub fn top_bar_scrim(ctx: &Context, rect: Rect) -> Response {
-    modal_scrim_in_rect(ctx, "top_bar", rect)
+    modal_scrim_in_rect(ctx, "top_bar", rect, egui::Order::Middle)
 }
 
 fn top_bar_text_button_width(label: &str) -> f32 {
