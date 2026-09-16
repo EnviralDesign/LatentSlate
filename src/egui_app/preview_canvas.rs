@@ -513,9 +513,7 @@ impl LatentSlateApp {
         );
         let pointer = ui.ctx().pointer_hover_pos().unwrap_or(rect.center());
         let canvas_point = (pointer - old_canvas_rect.min) / old_scale.max(0.0001);
-        let zoom_factor = (1.0
-            + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY * PREVIEW_WHEEL_ZOOM_MULTIPLIER)
-            .clamp(0.5, 2.0);
+        let zoom_factor = canvas_wheel_zoom_factor(scroll_delta);
 
         self.preview_auto_fit = false;
         self.preview_zoom = (old_scale * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);

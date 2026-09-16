@@ -483,7 +483,7 @@ impl LatentSlateApp {
             let scroll = preview_scroll_delta(ui, rect);
             if scroll != 0.0 {
                 let old = self.asset_lab.preview_zoom;
-                let next = (old * (1.0 + scroll * 0.002).clamp(0.5, 2.0)).clamp(0.001, 32.0);
+                let next = (old * canvas_wheel_zoom_factor(scroll)).clamp(0.001, 32.0);
                 if let Some(pointer) = response.hover_pos() {
                     self.asset_lab.preview_pan = pointer
                         - (pointer - rect.center() - self.asset_lab.preview_pan) * (next / old)
@@ -975,12 +975,37 @@ mod tests {
                 |ui| {
                     ui.set_max_size(Vec2::new(1024.0, 768.0));
                     app.asset_lab_v4_contents(ui, &asset);
+                    app.source_picker_modal(&ctx);
                 },
             );
         };
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
         let point = Pos2::new(350.0, 300.0);
+        let wheel = || egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Default::default(),
+        };
+        let before_zoom = app.asset_lab.preview_zoom;
+        frame(&mut app, vec![egui::Event::PointerMoved(point), wheel()]);
+        let zoomed = app.asset_lab.preview_zoom;
+        assert!((zoomed / before_zoom - 1.048).abs() < 0.0001);
+        let provider = app.editor.provider_entries[0].clone();
+        app.open_source_picker(asset.id, None, &provider, &provider.inputs[0]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        for pointer in [point, Pos2::new(80.0, 300.0)] {
+            frame(&mut app, vec![egui::Event::PointerMoved(pointer), wheel()]);
+            assert_eq!(
+                app.asset_lab.preview_zoom, zoomed,
+                "picker and scrim shield canvas wheel input"
+            );
+        }
+        app.source_picker = None;
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
         let pointer = |pressed| egui::Event::PointerButton {
             pos: point,
             button: egui::PointerButton::Primary,

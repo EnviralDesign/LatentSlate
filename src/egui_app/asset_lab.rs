@@ -25,8 +25,7 @@ use super::asset_panel::{
 use super::preview_transform::preview_scroll_delta;
 use super::{
     inspector_meta_row, path_label, ASSET_LAB_PREVIEW_H, ASSET_LAB_VERSION_ROW_H, AUDIO_EXTENSIONS,
-    IMAGE_EXTENSIONS, PREVIEW_SCROLL_ZOOM_SENSITIVITY, PREVIEW_ZOOM_MAX, PREVIEW_ZOOM_MIN,
-    VIDEO_EXTENSIONS,
+    IMAGE_EXTENSIONS, PREVIEW_ZOOM_MAX, PREVIEW_ZOOM_MIN, VIDEO_EXTENSIONS,
 };
 
 #[derive(Clone, Debug)]
@@ -1061,9 +1060,7 @@ pub(super) fn asset_lab_preview(
         let scroll_delta = preview_scroll_delta(ui, rect);
         if scroll_delta.abs() > f32::EPSILON {
             let old_zoom = state.preview_zoom.max(PREVIEW_ZOOM_MIN);
-            let zoom_factor = (1.0
-                + scroll_delta * PREVIEW_SCROLL_ZOOM_SENSITIVITY * PREVIEW_WHEEL_ZOOM_MULTIPLIER)
-                .clamp(0.5, 2.0);
+            let zoom_factor = canvas_wheel_zoom_factor(scroll_delta);
             let new_zoom = (old_zoom * zoom_factor).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
             if let Some(pointer) = ui.ctx().pointer_hover_pos() {
                 let old_center = image_bounds.center() + state.preview_pan;
@@ -4941,11 +4938,7 @@ impl LatentSlateApp {
             let scroll_delta = preview_scroll_delta(ui, rect);
             if scroll_delta.abs() > f32::EPSILON {
                 let old_zoom = self.asset_lab.preview_zoom.max(0.1);
-                let zoom_factor = (1.0
-                    + scroll_delta
-                        * PREVIEW_SCROLL_ZOOM_SENSITIVITY
-                        * PREVIEW_WHEEL_ZOOM_MULTIPLIER)
-                    .clamp(0.5, 2.0);
+                let zoom_factor = canvas_wheel_zoom_factor(scroll_delta);
                 self.asset_lab.preview_zoom = (old_zoom * zoom_factor).clamp(0.1, PREVIEW_ZOOM_MAX);
                 self.asset_lab.preview_auto_fit = false;
             }

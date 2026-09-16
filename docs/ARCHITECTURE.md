@@ -73,6 +73,9 @@ Source configuration uses `source_field`: a thumbnail, slot label, source value,
 binding badge, and trailing chevron. Asset Lab uses its 48-point compact form in
 a bounded grid; Attributes uses the comfortable form. Both open the same picker.
 Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
+Preview, Asset Lab Create/Compare, and lineage share `canvas_wheel_zoom_factor`
+and its sensitivity multiplier. Wheel input respects UI clipping and foreground
+layers, so an open picker or dialog shields the canvas behind it.
 
 ## Project Model
 

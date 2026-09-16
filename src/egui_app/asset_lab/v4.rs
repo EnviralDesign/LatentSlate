@@ -1049,7 +1049,7 @@ impl LatentSlateApp {
         let scroll = preview_scroll_delta(ui, rect);
         if scroll != 0.0 {
             let old_zoom = zoom;
-            let factor = (1.0 + scroll * 0.015 * PREVIEW_WHEEL_ZOOM_MULTIPLIER).clamp(0.28, 1.88);
+            let factor = canvas_wheel_zoom_factor(scroll);
             zoom = (old_zoom * factor).clamp(0.2, 6.0);
             if let Some(pointer) = ui.ctx().pointer_hover_pos() {
                 pan = pointer - rect.center() - (pointer - rect.center() - pan) * (zoom / old_zoom);

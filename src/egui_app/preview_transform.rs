@@ -117,13 +117,15 @@ pub(super) fn preview_geometry_for_clip(
     }
 }
 
+pub(super) fn canvas_wheel_zoom_factor(scroll_delta: f32) -> f32 {
+    (1.0 + scroll_delta
+        * super::PREVIEW_SCROLL_ZOOM_SENSITIVITY
+        * super::PREVIEW_WHEEL_ZOOM_MULTIPLIER)
+        .clamp(0.5, 2.0)
+}
+
 pub(super) fn preview_scroll_delta(ui: &Ui, rect: Rect) -> f32 {
-    let pointer_in_rect = ui
-        .ctx()
-        .pointer_hover_pos()
-        .map(|pointer| rect.contains(pointer))
-        .unwrap_or(false);
-    if !pointer_in_rect {
+    if !ui.is_enabled() || !ui.rect_contains_pointer(rect) {
         return 0.0;
     }
     ui.input(|input| {
