@@ -365,22 +365,20 @@ pub enum PanelEdge {
 }
 
 pub fn paint_panel_edge(ui: &Ui, rect: Rect, edge: PanelEdge) {
-    let stroke = Stroke::new(1.0_f32, BORDER);
-    let painter = ui.painter();
-    match edge {
-        PanelEdge::Top => {
-            painter.line_segment([rect.left_top(), rect.right_top()], stroke);
-        }
-        PanelEdge::Right => {
-            painter.line_segment([rect.right_top(), rect.right_bottom()], stroke);
-        }
-        PanelEdge::Bottom => {
-            painter.line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
-        }
-        PanelEdge::Left => {
-            painter.line_segment([rect.left_top(), rect.left_bottom()], stroke);
-        }
-    }
+    // Keep the divider inside its owner so the adjacent panel cannot cover it.
+    let edge_rect = match edge {
+        PanelEdge::Top => Rect::from_min_size(rect.min, Vec2::new(rect.width(), 1.0)),
+        PanelEdge::Right => Rect::from_min_size(
+            rect.right_top() - Vec2::new(1.0, 0.0),
+            Vec2::new(1.0, rect.height()),
+        ),
+        PanelEdge::Bottom => Rect::from_min_size(
+            rect.left_bottom() - Vec2::new(0.0, 1.0),
+            Vec2::new(rect.width(), 1.0),
+        ),
+        PanelEdge::Left => Rect::from_min_size(rect.min, Vec2::new(1.0, rect.height())),
+    };
+    ui.painter().rect_filled(edge_rect, 0, BORDER);
 }
 
 pub fn modal_frame() -> Frame {
@@ -2897,16 +2895,17 @@ pub fn tab_bar(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 
 pub fn workspace_tab(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> Response {
     let height = ui.max_rect().height().clamp(40.0, 72.0);
-    let width = ui
+    let text_width = ui
         .painter()
         .layout_no_wrap(label.into(), FontId::proportional(13.0), TEXT)
         .size()
-        .x
-        + 32.0;
+        .x;
     let response = ui
         .add_enabled_ui(enabled, |ui| {
-            let (rect, response) =
-                ui.allocate_exact_size(Vec2::new(width.max(80.0), height), Sense::click());
+            let (rect, response) = ui.allocate_exact_size(
+                Vec2::new((text_width + 32.0).max(80.0), height),
+                Sense::click(),
+            );
             if response.hovered() || response.has_focus() {
                 ui.painter()
                     .rect_filled(rect.shrink2(Vec2::new(0.0, 5.0)), 4, PANEL_RAISED);
@@ -2925,10 +2924,13 @@ pub fn workspace_tab(ui: &mut Ui, label: &str, selected: bool, enabled: bool) ->
                 },
             );
             if selected {
-                let line = rect.shrink2(Vec2::new(16.0, 0.0));
-                ui.painter().line_segment(
-                    [line.left_bottom(), line.right_bottom()],
-                    Stroke::new(2.0_f32, IMAGE),
+                ui.painter().rect_filled(
+                    Rect::from_center_size(
+                        Pos2::new(rect.center().x, rect.bottom() - 1.0),
+                        Vec2::new(text_width, 2.0),
+                    ),
+                    0,
+                    IMAGE,
                 );
             }
             response
