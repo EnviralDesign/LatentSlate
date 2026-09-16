@@ -377,6 +377,7 @@ impl LatentSlateApp {
 
         let version = output.version.clone();
         let record = GenerationRecord {
+            label: String::new(),
             authoring_snapshot: job.authoring_snapshot.clone(),
             engine_execution: output.engine_execution,
             version: version.clone(),

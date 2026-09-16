@@ -1905,6 +1905,7 @@ mod tests {
             node.inputs = inputs.clone();
             config.lab_graph.nodes.push(node);
             config.versions.push(GenerationRecord {
+                label: String::new(),
                 authoring_snapshot: None,
                 version: "v1".into(),
                 timestamp: chrono::Utc::now(),

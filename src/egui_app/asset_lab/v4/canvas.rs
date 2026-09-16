@@ -1074,6 +1074,7 @@ mod tests {
         );
         for version in ["v1", "v2"] {
             config.versions.push(GenerationRecord {
+                label: String::new(),
                 version: version.into(),
                 timestamp: chrono::Utc::now(),
                 provider_id: provider.id,

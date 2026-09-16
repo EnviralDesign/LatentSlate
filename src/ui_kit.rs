@@ -2348,6 +2348,7 @@ pub enum Icon {
     ChevronRight,
     Plus,
     Minus,
+    Compare,
 }
 
 pub fn paint_icon(ui: &Ui, icon: Icon, rect: Rect, tint: Color32) {
@@ -2373,6 +2374,7 @@ pub fn paint_icon(ui: &Ui, icon: Icon, rect: Rect, tint: Color32) {
                 Icon::ChevronRight => include_bytes!("../assets/icons/chevron-right.png"),
                 Icon::Plus => include_bytes!("../assets/icons/plus.png"),
                 Icon::Minus => include_bytes!("../assets/icons/minus.png"),
+                Icon::Compare => include_bytes!("../assets/icons/compare.png"),
             };
             let decoded = image::load_from_memory(bytes)
                 .expect("bundled UI icon")
@@ -2453,8 +2455,18 @@ pub fn tool_button<'a>(
     hint: impl Into<Tooltip<'a>>,
     selected: bool,
 ) -> Response {
+    tool_button_sized(ui, icon, hint, selected, 32.0)
+}
+
+pub fn tool_button_sized<'a>(
+    ui: &mut Ui,
+    icon: Icon,
+    hint: impl Into<Tooltip<'a>>,
+    selected: bool,
+    size: f32,
+) -> Response {
     let hint = hint.into();
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let response = crate::core::automation::instrument_response(
         response,
         "tool_button",
@@ -2491,7 +2503,7 @@ pub fn tool_button<'a>(
     paint_icon(
         ui,
         icon,
-        Rect::from_center_size(rect.center(), Vec2::splat(19.0)),
+        Rect::from_center_size(rect.center(), Vec2::splat((size * 0.6).min(19.0))),
         color,
     );
     hint.apply(response)
@@ -2921,6 +2933,24 @@ pub fn source_tile(
     pinned: bool,
     size: Vec2,
 ) -> Response {
+    source_tile_with_details(ui, id, label, preview, selected, pinned, size, None).0
+}
+
+pub struct SourceTileDetails<'a> {
+    pub caption: &'a str,
+    pub can_compare: bool,
+}
+
+pub fn source_tile_with_details(
+    ui: &mut Ui,
+    id: impl Hash,
+    label: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    selected: bool,
+    pinned: bool,
+    size: Vec2,
+    details: Option<SourceTileDetails<'_>>,
+) -> (Response, bool) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
     let response = crate::core::automation::instrument_response(
@@ -2954,7 +2984,11 @@ pub fn source_tile(
         StrokeKind::Inside,
     );
     let pad = (rect.width() * 0.04).clamp(1.0, 6.0);
-    let footer = (rect.height() * 0.25).clamp(8.0, 27.0);
+    let footer = if details.is_some() {
+        (rect.height() * 0.29).clamp(10.0, 42.0)
+    } else {
+        (rect.height() * 0.25).clamp(8.0, 27.0)
+    };
     paint_contained_thumbnail(
         ui,
         Rect::from_min_max(
@@ -2963,6 +2997,96 @@ pub fn source_tile(
         ),
         preview,
     );
+    if let Some(details) = details {
+        let footer_rect = Rect::from_min_max(
+            Pos2::new(rect.left() + 1.0, rect.bottom() - footer),
+            rect.max - Vec2::splat(1.0),
+        );
+        painter.rect_filled(footer_rect, 3, CHROME);
+        let font = FontId::proportional((footer * 0.45).clamp(6.0, 14.0));
+        let version = painter.layout_no_wrap(label.into(), font.clone(), TEXT);
+        let text_pos = Pos2::new(
+            rect.left() + pad + 2.0,
+            footer_rect.center().y - version.size().y * 0.5,
+        );
+        let version_width = version.size().x;
+        painter.galley(text_pos, version, TEXT);
+        let button_size = (footer - 8.0).clamp(8.0, 28.0);
+        let trailing = if details.can_compare {
+            button_size + pad + 4.0
+        } else if pinned {
+            18.0
+        } else {
+            pad
+        };
+        let caption_rect = Rect::from_min_max(
+            Pos2::new(text_pos.x + version_width + 6.0, footer_rect.top()),
+            Pos2::new(
+                (rect.right() - trailing).max(text_pos.x + version_width + 6.0),
+                footer_rect.bottom(),
+            ),
+        );
+        let caption =
+            egui::WidgetText::from(RichText::new(details.caption).font(font).color(TEXT_MUTED))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Truncate),
+                    caption_rect.width(),
+                    egui::TextStyle::Body,
+                );
+        painter.galley(
+            Pos2::new(
+                caption_rect.left(),
+                caption_rect.center().y - caption.size().y * 0.5,
+            ),
+            caption,
+            TEXT_MUTED,
+        );
+        let mut compare_clicked = false;
+        if details.can_compare
+            && (ui.rect_contains_pointer(rect) || selected || response.has_focus())
+        {
+            let button_rect = Rect::from_center_size(
+                Pos2::new(
+                    rect.right() - pad - button_size * 0.5,
+                    footer_rect.center().y,
+                ),
+                Vec2::splat(button_size),
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(response.id.with("compare"))
+                    .max_rect(button_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            compare_clicked = tool_button_sized(
+                &mut child,
+                Icon::Compare,
+                Tooltip::new(&format!("Compare {label} with current"))
+                    .description("Compare this version with the pinned output."),
+                false,
+                button_size,
+            )
+            .clicked();
+        }
+        if pinned {
+            paint_icon(
+                ui,
+                Icon::Pin,
+                Rect::from_center_size(
+                    Pos2::new(rect.right() - pad - 6.0, footer_rect.center().y),
+                    Vec2::splat((footer * 0.45).min(13.0)),
+                ),
+                PRIMARY,
+            );
+        }
+        let response = if details.caption.is_empty() {
+            response
+        } else {
+            response.on_hover_text(format!("{label} · {}", details.caption))
+        };
+        return (response, compare_clicked);
+    }
     painter.text(
         rect.left_bottom() + Vec2::new(pad, -footer * 0.5),
         egui::Align2::LEFT_CENTER,
@@ -2979,7 +3103,7 @@ pub fn source_tile(
             PRIMARY,
         );
     }
-    response
+    (response, false)
 }
 
 pub fn paint_contained_thumbnail(ui: &Ui, rect: Rect, preview: Option<(egui::TextureId, Vec2)>) {

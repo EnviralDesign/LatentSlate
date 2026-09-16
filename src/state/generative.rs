@@ -127,6 +127,9 @@ fn default_batch_count() -> u32 {
 /// A single generation record for a generative asset.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationRecord {
+    /// Editable presentation metadata, separate from the immutable submitted setup.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authoring_snapshot: Option<super::AssetLabSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

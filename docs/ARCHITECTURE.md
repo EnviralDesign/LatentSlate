@@ -94,6 +94,11 @@ Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
 Lineage lays out complete branches together: a single continuation stays above its
 parent, while sibling subtrees receive separate space. The inspector uses the shared
 panel surface, a padded anchored footer, and selectable property rows for submitted settings.
+Completed records have an optional, blank-by-default `label`, editable only in the
+Lineage inspector through `EditorState::set_generation_version_label`. This is mutable
+presentation metadata, excluded from submitted snapshots and Create-session dirtiness.
+Node captions show it beside the stable version identifier, with the full text on hover.
+The node's contextual Compare action targets that node against the pinned output.
 Preview, Asset Lab Create/Compare, and lineage share `canvas_wheel_zoom_factor`
 and its sensitivity multiplier. Wheel input respects UI clipping and foreground
 layers, so an open picker or dialog shields the canvas behind it.

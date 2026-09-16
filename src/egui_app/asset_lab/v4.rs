@@ -863,6 +863,16 @@ impl LatentSlateApp {
                     kit::clipped_scroll_body(ui, "lineage_inspector", |ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
                         ui.label(kit::body(&record.version).size(18.0).strong());
+                        ui.push_id(("version_label", &record.version), |ui| {
+                            let mut label = record.label.clone();
+                            if kit::labeled_text_field(ui, "Version label (optional)", &mut label)
+                                .on_hover_text("A short note to help you recognize this result. Does not change its submitted prompt or settings.")
+                                .changed() {
+                                if let Err(error) = self.editor.set_generation_version_label(asset.id, &record.version, &label) {
+                                    self.editor.status = error;
+                                }
+                            }
+                        });
                         if config.active_version.as_ref() == Some(&record.version) {
                             kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
                                 let (rect, _) =
@@ -1119,9 +1129,9 @@ impl LatentSlateApp {
         }
         let positions = lineage_positions(config);
         let node_size = if compact {
-            Vec2::new(76.0, 52.0)
+            Vec2::new(76.0, 56.0)
         } else {
-            Vec2::new(136.0, 102.0)
+            Vec2::new(136.0, 108.0)
         };
         let step = node_size
             + if compact {
@@ -1218,7 +1228,7 @@ impl LatentSlateApp {
                     .layout(Layout::top_down(Align::Min)),
             );
             child.set_clip_rect(rect.intersect(node_rect));
-            let response = kit::source_tile(
+            let (response, compare_clicked) = kit::source_tile_with_details(
                 &mut child,
                 ("lineage", compact, &record.version),
                 &record.version,
@@ -1226,14 +1236,24 @@ impl LatentSlateApp {
                 self.asset_lab.selected_version.as_ref() == Some(&record.version),
                 config.active_version.as_ref() == Some(&record.version),
                 node_rect.size(),
+                Some(kit::SourceTileDetails {
+                    caption: &record.label,
+                    can_compare: !compact
+                        && config
+                            .active_version
+                            .as_ref()
+                            .is_some_and(|active| *active != record.version),
+                }),
             );
-            if response.clicked() {
+            if compare_clicked {
+                self.enter_asset_lab_compare_v4(asset.id, &record.version);
+            } else if response.clicked() {
                 self.asset_lab.selected_version = Some(record.version.clone());
                 if compact {
                     self.enter_asset_lab_compare_v4(asset.id, &record.version);
                 }
             }
-            if response.double_clicked() {
+            if !compare_clicked && response.double_clicked() {
                 self.request_asset_lab_adopt(asset.id, &record.version);
             }
             response.context_menu(|ui| {

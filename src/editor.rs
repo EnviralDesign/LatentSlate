@@ -419,6 +419,41 @@ impl EditorState {
         Ok(())
     }
 
+    pub fn set_generation_version_label(
+        &mut self,
+        asset_id: Uuid,
+        version: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let previous = self
+            .project
+            .generative_config(asset_id)
+            .cloned()
+            .ok_or("Asset has no generation configuration")?;
+        let record = previous
+            .versions
+            .iter()
+            .find(|record| record.version == version)
+            .ok_or("Completed version not found")?;
+        if record.label == label {
+            return Ok(());
+        }
+        self.project.update_generative_config(asset_id, |config| {
+            if let Some(record) = config
+                .versions
+                .iter_mut()
+                .find(|record| record.version == version)
+            {
+                record.label = label.to_owned();
+            }
+        });
+        if let Err(error) = self.project.save_generative_config(asset_id) {
+            self.project.generative_configs.insert(asset_id, previous);
+            return Err(format!("Could not save the version label: {error}"));
+        }
+        Ok(())
+    }
+
     pub fn set_generation_source(
         &mut self,
         asset_id: Uuid,
@@ -3857,6 +3892,53 @@ mod tests {
     use crate::state::ProviderInputField;
 
     #[test]
+    fn version_labels_persist_without_changing_generation_or_authoring() {
+        let root = std::env::temp_dir().join(format!("ls-version-label-{}", Uuid::new_v4()));
+        let folder = PathBuf::from("generated/image/test");
+        let asset = Asset::new_generative_image("Label fixture", folder.clone());
+        let mut editor = EditorState::new();
+        editor.project = Project::new("Labels");
+        editor.project.project_path = Some(root.clone());
+        editor.project.assets.push(asset.clone());
+        let mut config = GenerativeConfig::default();
+        config.lab_authoring.initialized = true;
+        let record: crate::state::GenerationRecord = serde_json::from_value(json!({
+            "version": "V01", "timestamp": chrono::Utc::now(), "provider_id": Uuid::nil(),
+            "inputs_snapshot": {"prompt": {"type": "literal", "value": "Original prompt"}},
+            "authoring_snapshot": crate::state::AssetLabSnapshot::from_config(&config),
+        }))
+        .unwrap();
+        assert!(
+            record.label.is_empty(),
+            "legacy records default to no label"
+        );
+        config.versions.push(record);
+        config.normalize_lab_graph_lineage();
+        editor
+            .project
+            .generative_configs
+            .insert(asset.id, config.clone());
+        editor
+            .set_generation_version_label(asset.id, "V01", "Warmer light")
+            .unwrap();
+        let mut loaded = GenerativeConfig::load(&root.join(&folder)).unwrap();
+        assert_eq!(loaded.versions[0].label, "Warmer light");
+        loaded.versions[0].label.clear();
+        assert_eq!(
+            loaded, config,
+            "labels must not alter snapshots, identities, or lineage"
+        );
+        editor
+            .set_generation_version_label(asset.id, "V01", "")
+            .unwrap();
+        assert_eq!(GenerativeConfig::load(&root.join(&folder)).unwrap(), config);
+        assert!(editor
+            .set_generation_version_label(asset.id, "missing", "No")
+            .is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn redacts_custom_http_provider_api_key() {
         let provider = ProviderEntry::new(
             "custom",
@@ -3938,6 +4020,7 @@ mod tests {
         );
         editor.project.update_generative_config(asset_id, |config| {
             config.versions.push(crate::state::GenerationRecord {
+                label: String::new(),
                 authoring_snapshot: None,
                 engine_execution: None,
                 version: "v1".to_string(),
@@ -4143,6 +4226,7 @@ mod tests {
         );
         editor.project.update_generative_config(asset_id, |config| {
             config.versions.push(crate::state::GenerationRecord {
+                label: String::new(),
                 authoring_snapshot: None,
                 engine_execution: None,
                 version: "v1".to_string(),

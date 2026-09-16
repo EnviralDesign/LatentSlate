@@ -538,6 +538,7 @@ mod tests {
                 .unwrap()
                 .versions
                 .push(GenerationRecord {
+                    label: String::new(),
                     authoring_snapshot: None,
                     engine_execution: None,
                     version: version.into(),
