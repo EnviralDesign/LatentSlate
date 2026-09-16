@@ -46,6 +46,34 @@ contains raw base64; backend presets determine sampling FPS. Each attachment is
 limited to 32 MiB before base64 and the complete serialized request to 48 MiB.
 These are app limits, not guarantees about backend context capacity.
 
+## Shared UI language
+
+`src/ui_kit.rs` owns shared surfaces, typography, fields, headers, tabs, and
+interaction treatments. Choose surfaces by purpose, not nesting depth:
+
+- `APP_BG`: application backdrop; `PANEL_SUNKEN`: media wells and editable fields.
+- `PANEL`: panel and modal bodies; `PANEL_RAISED`: grouped cards and source entries.
+- `CHROME`: headers and persistent navigation. Use borders to separate adjacent
+  roles; do not add another shade for each nested container.
+
+Modal headers share a left-aligned title, optional subtitle and icon, and one
+right-aligned close control. They are 56 points high, or 72 with a subtitle;
+`modal_header_layout` also reserves centered navigation and trailing actions.
+`tab_bar` supplies a bounded 40-point strip and divider; `workspace_tab` anchors
+its selection underline to the bottom. Asset Lab and AI Providers use these tabs.
+
+Image-backed tool symbols live in `assets/icons` as transparent 96-pixel PNGs
+with editable SVG masters. The kit caches textures and owns their tint, hit area,
+hover, focus, and selected states. Existing unrelated icon controls can migrate
+when their owning UI is reviewed; the application does not require two competing
+styles for the same new control. Text fields use consistent left alignment in
+both resting and focused states.
+
+Source configuration uses `source_field`: a thumbnail, slot label, source value,
+binding badge, and trailing chevron. Asset Lab uses its 48-point compact form in
+a bounded grid; Attributes uses the comfortable form. Both open the same picker.
+Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
+
 ## Project Model
 
 A project is a folder. The app stores imported and generated media inside that

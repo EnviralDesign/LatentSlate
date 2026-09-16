@@ -518,23 +518,23 @@ impl LatentSlateApp {
         });
         ui.add_space(kit::FORM_ROW_GAP);
 
-        ui.horizontal(|ui| {
+        kit::tab_bar(ui, |ui| {
             let catalog_label = format!("Catalog ({})", tools.len());
-            if kit::timeline_tool_text_button(
+            if kit::workspace_tab(
                 ui,
                 &catalog_label,
-                104.0,
                 self.engine_inspector_tab == EngineInspectorTab::Catalog,
+                true,
             )
             .clicked()
             {
                 self.engine_inspector_tab = EngineInspectorTab::Catalog;
             }
-            if kit::timeline_tool_text_button(
+            if kit::workspace_tab(
                 ui,
                 "Connection",
-                104.0,
                 self.engine_inspector_tab == EngineInspectorTab::Connection,
+                true,
             )
             .clicked()
             {
@@ -548,8 +548,6 @@ impl LatentSlateApp {
                 )));
             });
         });
-        ui.add_space(kit::ACTION_GAP);
-        ui.separator();
         ui.add_space(kit::ACTION_GAP);
 
         let (save_clicked, delete_clicked) = match self.engine_inspector_tab {
@@ -1248,16 +1246,12 @@ impl LatentSlateApp {
     pub(super) fn provider_builder_tabs(&mut self, ui: &mut Ui) {
         self.provider_builder.ensure_valid_tab();
 
-        ui.horizontal(|ui| {
+        kit::tab_bar(ui, |ui| {
             for step in ProviderBuilderTab::ALL {
                 let active = self.provider_builder.tab == step;
                 let enabled = self.provider_builder.tab_available(step);
                 let label = format!("{}. {}", step.step_number(), step.label());
-                let response = ui
-                    .add_enabled_ui(enabled, |ui| {
-                        kit::timeline_tool_text_button(ui, &label, 104.0, active)
-                    })
-                    .inner;
+                let response = kit::workspace_tab(ui, &label, active, enabled);
                 let clicked = response.clicked();
                 if !enabled {
                     if let Some(reason) = self.provider_builder.tab_unavailable_reason(step) {

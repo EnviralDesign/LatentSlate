@@ -11,18 +11,19 @@ use eframe::egui::{
 };
 use egui_extras::{Size, StripBuilder};
 
-pub const APP_BG: Color32 = Color32::from_rgb(8, 9, 10);
-pub const CHROME: Color32 = Color32::from_rgb(19, 20, 22);
-pub const PANEL: Color32 = Color32::from_rgb(17, 18, 20);
-pub const PANEL_RAISED: Color32 = Color32::from_rgb(24, 25, 28);
-pub const PANEL_SUNKEN: Color32 = Color32::from_rgb(10, 11, 13);
-pub const FIELD_BG: Color32 = Color32::from_rgb(14, 16, 19);
+// Surface roles, not nesting counters: wells, panel bodies, grouped cards, and chrome.
+pub const APP_BG: Color32 = Color32::from_rgb(10, 13, 15);
+pub const CHROME: Color32 = Color32::from_rgb(29, 34, 38);
+pub const PANEL: Color32 = Color32::from_rgb(23, 28, 31);
+pub const PANEL_RAISED: Color32 = Color32::from_rgb(31, 37, 41);
+pub const PANEL_SUNKEN: Color32 = Color32::from_rgb(15, 19, 22);
+pub const FIELD_BG: Color32 = PANEL_SUNKEN;
 pub const FIELD_BG_HOVER: Color32 = Color32::from_rgb(18, 20, 24);
 pub const FIELD_BG_ACTIVE: Color32 = Color32::from_rgb(20, 24, 26);
 pub const DROPDOWN_ROW_HOVER: Color32 = Color32::from_rgb(32, 35, 40);
 pub const DROPDOWN_ROW_ACTIVE: Color32 = Color32::from_rgb(25, 39, 32);
-pub const BORDER: Color32 = Color32::from_rgb(43, 45, 51);
-pub const BORDER_SOFT: Color32 = Color32::from_rgb(31, 33, 38);
+pub const BORDER: Color32 = Color32::from_rgb(48, 58, 64);
+pub const BORDER_SOFT: Color32 = Color32::from_rgb(38, 46, 51);
 pub const BORDER_FOCUS: Color32 = Color32::from_rgb(39, 190, 111);
 pub const TEXT: Color32 = Color32::from_rgb(236, 239, 243);
 pub const TEXT_ON_ACCENT: Color32 = Color32::from_rgb(248, 250, 249);
@@ -43,7 +44,7 @@ pub const SECTION_PAD: i8 = 12;
 pub const RADIUS: u8 = 7;
 pub const MODAL_RADIUS: u8 = RADIUS;
 pub const MODAL_STROKE: Color32 = Color32::from_rgb(54, 57, 64);
-pub const MODAL_HEADER_FILL: Color32 = Color32::from_rgb(31, 32, 36);
+pub const MODAL_HEADER_FILL: Color32 = CHROME;
 pub const MODAL_TOP_RADIUS: CornerRadius = CornerRadius {
     nw: MODAL_RADIUS,
     ne: MODAL_RADIUS,
@@ -60,7 +61,7 @@ pub const FIELD_H: f32 = 30.0;
 pub const TEXT_FIELD_H: f32 = FIELD_H;
 pub const VALUE_FIELD_H: f32 = FIELD_H;
 pub const FIELD_LABEL_H: f32 = 12.0;
-pub const FIELD_TEXT_SIZE: f32 = 12.5;
+pub const FIELD_TEXT_SIZE: f32 = 13.0;
 pub const FIELD_INNER_MARGIN_X: i8 = 8;
 pub const FIELD_INNER_MARGIN_Y: i8 = 5;
 pub const MULTILINE_FIELD_ROW_H: f32 = 20.0;
@@ -74,10 +75,7 @@ pub const ICON_BUTTON_W: f32 = 24.0;
 pub const ICON_BUTTON_H: f32 = 22.0;
 pub const CLOSE_BUTTON_SIZE: f32 = STANDALONE_BUTTON_H;
 pub const CLOSE_BUTTON_RADIUS: u8 = STANDALONE_BUTTON_RADIUS;
-pub const CLOSE_BUTTON_ICON_SIZE: f32 = 11.0;
-pub const CLOSE_BUTTON_ICON_STROKE: f32 = 1.35;
 pub const MODAL_CLOSE_BUTTON_INSET_X: f32 = 12.0;
-pub const MODAL_CLOSE_BUTTON_INSET_Y: f32 = 12.0;
 pub const MODAL_CLOSE_BUTTON_TITLE_GAP: f32 = 12.0;
 pub const MODAL_SCRIM_FILL: Color32 = Color32::from_rgba_unmultiplied_const(7, 9, 13, 184);
 pub const MODAL_SCRIM_SOFT_WASH: Color32 = Color32::from_rgba_unmultiplied_const(24, 31, 38, 34);
@@ -92,7 +90,7 @@ pub const MODAL_SHADOW: Shadow = Shadow {
 };
 pub const BROWSE_BUTTON_W: f32 = 76.0;
 pub const FIELD_COMPOUND_GAP: f32 = 8.0;
-pub const FIELD_TEXT_ALIGN: Align = Align::Center;
+pub const FIELD_TEXT_ALIGN: Align = Align::Min;
 pub const FIELD_LABEL_GAP: f32 = 6.0;
 pub const FIELD_GRID_ROW_CLIP_GUARD: f32 = 3.0;
 pub const FORM_ROW_GAP: f32 = 8.0;
@@ -396,7 +394,7 @@ pub fn modal_frame() -> Frame {
 
 pub fn card_frame() -> Frame {
     Frame::new()
-        .fill(Color32::from_rgb(20, 21, 24))
+        .fill(PANEL_RAISED)
         .stroke(Stroke::new(1.0_f32, BORDER_SOFT))
         .corner_radius(CornerRadius::same(RADIUS))
         .inner_margin(Margin::same(SECTION_PAD))
@@ -422,11 +420,8 @@ pub fn fixed_panel_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) -> Resp
 pub fn card_panel(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui)) -> Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(RADIUS),
-        Color32::from_rgb(20, 21, 24),
-    );
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(RADIUS), PANEL_RAISED);
     ui.painter().rect_stroke(
         rect,
         CornerRadius::same(RADIUS),
@@ -2285,6 +2280,218 @@ fn paint_modal_vignette(painter: &egui::Painter, rect: Rect) {
     }
 }
 
+/// Image-backed symbols share one optical size and can be tinted for each state.
+/// The 96px transparent assets retain their SVG masters under assets/icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Icon {
+    Lab,
+    Brush,
+    Erase,
+    Select,
+    Object,
+    Text,
+    Undo,
+    Trash,
+    Fit,
+    Eye,
+    EyeOff,
+    Close,
+    Pin,
+    ChevronRight,
+    Plus,
+    Minus,
+}
+
+pub fn paint_icon(ui: &Ui, icon: Icon, rect: Rect, tint: Color32) {
+    let id = egui::Id::new(("kit_icon", icon));
+    let texture = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<egui::TextureHandle>(id))
+        .unwrap_or_else(|| {
+            let bytes: &[u8] = match icon {
+                Icon::Lab => include_bytes!("../assets/icons/lab.png"),
+                Icon::Brush => include_bytes!("../assets/icons/brush.png"),
+                Icon::Erase => include_bytes!("../assets/icons/erase.png"),
+                Icon::Select => include_bytes!("../assets/icons/select.png"),
+                Icon::Object => include_bytes!("../assets/icons/object.png"),
+                Icon::Text => include_bytes!("../assets/icons/text.png"),
+                Icon::Undo => include_bytes!("../assets/icons/undo.png"),
+                Icon::Trash => include_bytes!("../assets/icons/trash.png"),
+                Icon::Fit => include_bytes!("../assets/icons/fit.png"),
+                Icon::Eye => include_bytes!("../assets/icons/eye.png"),
+                Icon::EyeOff => include_bytes!("../assets/icons/eye-off.png"),
+                Icon::Close => include_bytes!("../assets/icons/close.png"),
+                Icon::Pin => include_bytes!("../assets/icons/pin.png"),
+                Icon::ChevronRight => include_bytes!("../assets/icons/chevron-right.png"),
+                Icon::Plus => include_bytes!("../assets/icons/plus.png"),
+                Icon::Minus => include_bytes!("../assets/icons/minus.png"),
+            };
+            let decoded = image::load_from_memory(bytes)
+                .expect("bundled UI icon")
+                .to_rgba8();
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [decoded.width() as usize, decoded.height() as usize],
+                decoded.as_raw(),
+            );
+            let texture =
+                ui.ctx()
+                    .load_texture(format!("kit_{icon:?}"), image, egui::TextureOptions::LINEAR);
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(id, texture.clone()));
+            texture
+        });
+    ui.painter().image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        tint,
+    );
+}
+
+pub fn tool_button(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response,
+        "tool_button",
+        Some(label.into()),
+        ui.is_enabled(),
+        false,
+    );
+    let active = selected || response.has_focus();
+    let fill = if selected {
+        Color32::from_rgb(29, 56, 63)
+    } else if response.hovered() {
+        PANEL_RAISED
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, 5, fill);
+    if active || response.hovered() {
+        ui.painter().rect_stroke(
+            rect,
+            5,
+            Stroke::new(1.0_f32, if active { IMAGE } else { BORDER }),
+            StrokeKind::Inside,
+        );
+    }
+    let color = if !ui.is_enabled() {
+        TEXT_DIM
+    } else if selected {
+        IMAGE
+    } else if response.hovered() {
+        TEXT
+    } else {
+        TEXT_MUTED
+    };
+    paint_icon(
+        ui,
+        icon,
+        Rect::from_center_size(rect.center(), Vec2::splat(19.0)),
+        color,
+    );
+    response
+        .on_hover_text(label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+pub fn compact_slider(
+    ui: &mut Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+) -> Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().slider_width = width;
+        let visuals = ui.visuals_mut();
+        visuals.selection.bg_fill = IMAGE;
+        visuals.widgets.inactive.bg_fill = BORDER;
+        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_MUTED);
+        visuals.widgets.hovered.bg_fill = IMAGE;
+        visuals.widgets.active.bg_fill = IMAGE;
+        let response = ui.add(
+            egui::Slider::new(value, range)
+                .show_value(false)
+                .handle_shape(egui::style::HandleShape::Circle)
+                .trailing_fill(true),
+        );
+        crate::core::automation::instrument_response(
+            response,
+            "slider",
+            Some(label.into()),
+            ui.is_enabled(),
+            true,
+        )
+    })
+    .inner
+}
+
+pub struct ModalHeaderLayout {
+    pub close_clicked: bool,
+    pub navigation: Rect,
+    pub trailing: Rect,
+}
+
+pub fn selectable_icon_row(
+    ui: &mut Ui,
+    id: impl Hash,
+    icon: Icon,
+    label: &str,
+    selected: bool,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::hover());
+    let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response,
+        "selection_row",
+        Some(label.into()),
+        ui.is_enabled(),
+        false,
+    );
+    if selected || response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(
+            rect,
+            4,
+            if selected {
+                Color32::from_rgb(29, 50, 56)
+            } else {
+                PANEL_RAISED
+            },
+        );
+        ui.painter().rect_stroke(
+            rect,
+            4,
+            Stroke::new(
+                1.0_f32,
+                if selected || response.has_focus() {
+                    IMAGE
+                } else {
+                    BORDER
+                },
+            ),
+            StrokeKind::Inside,
+        );
+    }
+    paint_icon(
+        ui,
+        icon,
+        Rect::from_center_size(rect.left_center() + Vec2::new(16.0, 0.0), Vec2::splat(15.0)),
+        TEXT_MUTED,
+    );
+    let text = egui::WidgetText::from(RichText::new(label).size(13.0).color(TEXT)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (rect.width() - 42.0).max(1.0),
+        FontId::proportional(13.0),
+    );
+    ui.painter().galley(
+        Pos2::new(rect.left() + 32.0, rect.center().y - text.size().y * 0.5),
+        text,
+        TEXT,
+    );
+    response
+}
+
 pub fn modal_header(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
     let _ = modal_header_with_close(ui, title, subtitle, false);
 }
@@ -2295,17 +2502,43 @@ pub fn modal_header_with_close(
     subtitle: Option<&str>,
     close_enabled: bool,
 ) -> bool {
+    modal_header_layout(ui, title, subtitle, None, 0.0, 0.0, close_enabled).close_clicked
+}
+
+/// Shared modal identity and optional centered navigation, with reserved trailing actions.
+pub fn modal_header_layout(
+    ui: &mut Ui,
+    title: &str,
+    subtitle: Option<&str>,
+    icon: Option<Icon>,
+    navigation_width: f32,
+    trailing_width: f32,
+    close_enabled: bool,
+) -> ModalHeaderLayout {
     let height = if subtitle.is_some() { 72.0 } else { 56.0 };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     ui.painter()
         .rect_filled(rect, MODAL_TOP_RADIUS, MODAL_HEADER_FILL);
 
-    let content_rect = rect.shrink2(Vec2::new(18.0, 12.0));
+    paint_panel_edge(ui, rect, PanelEdge::Bottom);
+    let mut content_rect = rect.shrink2(Vec2::new(20.0, 12.0));
+    if let Some(icon) = icon {
+        let mark = Rect::from_center_size(
+            Pos2::new(content_rect.left() + 15.0, rect.center().y),
+            Vec2::splat(30.0),
+        );
+        ui.painter()
+            .rect_filled(mark, 6, Color32::from_rgb(29, 47, 53));
+        ui.painter()
+            .rect_stroke(mark, 6, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
+        paint_icon(ui, icon, mark.shrink(6.0), IMAGE);
+        content_rect.min.x += 42.0;
+    }
     let close_clicked = if close_enabled {
         let button_rect = Rect::from_min_size(
             Pos2::new(
                 rect.right() - MODAL_CLOSE_BUTTON_INSET_X - CLOSE_BUTTON_SIZE,
-                rect.top() + MODAL_CLOSE_BUTTON_INSET_Y,
+                rect.center().y - CLOSE_BUTTON_SIZE * 0.5,
             ),
             Vec2::splat(CLOSE_BUTTON_SIZE),
         );
@@ -2323,6 +2556,16 @@ pub fn modal_header_with_close(
     } else {
         content_rect.right()
     };
+    let navigation = Rect::from_center_size(rect.center(), Vec2::new(navigation_width, height));
+    let trailing = Rect::from_min_max(
+        Pos2::new(title_right - trailing_width, rect.top()),
+        Pos2::new(title_right, rect.bottom()),
+    );
+    let title_right = if navigation_width > 0.0 {
+        navigation.left() - 16.0
+    } else {
+        trailing.left()
+    };
     let title_rect = Rect::from_min_max(
         content_rect.left_top(),
         Pos2::new(title_right.max(content_rect.left()), content_rect.bottom()),
@@ -2332,23 +2575,24 @@ pub fn modal_header_with_close(
             .max_rect(title_rect)
             .layout(Layout::top_down(Align::Min)),
     );
-    child.add_sized(
-        [title_rect.width(), 20.0],
-        egui::Label::new(RichText::new(title).color(TEXT).strong().size(17.0)).truncate(),
-    );
+    child.set_width(title_rect.width());
+    child.add_space(if subtitle.is_some() { 2.0 } else { 4.0 });
+    child.add(egui::Label::new(RichText::new(title).color(TEXT).strong().size(16.0)).truncate());
     if let Some(subtitle) = subtitle {
         child.add_space(3.0);
-        child.add_sized(
-            [title_rect.width(), 18.0],
-            egui::Label::new(RichText::new(subtitle).color(TEXT_MUTED).size(12.0)).truncate(),
-        );
+        child
+            .add(egui::Label::new(RichText::new(subtitle).color(TEXT_MUTED).size(12.0)).truncate());
     }
-    close_clicked
+    ModalHeaderLayout {
+        close_clicked,
+        navigation,
+        trailing,
+    }
 }
 
 pub fn modal_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     Frame::new()
-        .fill(PANEL_RAISED)
+        .fill(PANEL)
         .corner_radius(MODAL_BOTTOM_RADIUS)
         .inner_margin(Margin::symmetric(18, 16))
         .show(ui, add_contents);
@@ -2372,10 +2616,96 @@ pub fn section_label(label: &str) -> RichText {
 }
 
 pub fn field_label(ui: &mut Ui, label: &str) {
-    ui.label(RichText::new(label).size(11.5).color(TEXT_MUTED));
+    ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
 }
 
-/// A selectable source with a contained thumbnail and two compact text lines.
+/// Compact source fields retain a two-line label and a contained thumbnail.
+pub const COMPACT_SOURCE_FIELD_H: f32 = 48.0;
+
+/// A source configuration entry point, distinct from a selectable picker row.
+pub fn source_field(
+    ui: &mut Ui,
+    id: impl Hash,
+    title: &str,
+    value: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    badge: Option<&str>,
+    compact: bool,
+    width: f32,
+) -> Response {
+    let height = if compact {
+        COMPACT_SOURCE_FIELD_H
+    } else {
+        64.0
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(1.0), height), Sense::hover());
+    let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response,
+        "source_field",
+        Some(title.into()),
+        ui.is_enabled(),
+        false,
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(
+        rect,
+        5,
+        if response.hovered() {
+            FIELD_BG_ACTIVE
+        } else {
+            PANEL_RAISED
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        5,
+        Stroke::new(1.0_f32, if response.has_focus() { IMAGE } else { BORDER }),
+        StrokeKind::Inside,
+    );
+    let thumb_size = if compact { 30.0 } else { 42.0 };
+    let thumb = Rect::from_center_size(
+        Pos2::new(rect.left() + 10.0 + thumb_size * 0.5, rect.center().y),
+        Vec2::splat(thumb_size),
+    );
+    paint_contained_thumbnail(ui, thumb, preview);
+    if let Some(badge) = badge {
+        let badge_rect = Rect::from_min_size(thumb.max - Vec2::splat(14.0), Vec2::splat(14.0));
+        painter.rect_filled(badge_rect, 3, FIELD_BG_ACTIVE);
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            badge,
+            FontId::proportional(11.0),
+            IMAGE,
+        );
+    }
+    let left = thumb.right() + 9.0;
+    for (text, y, font, color) in [
+        (title, rect.center().y - 16.0, 10.5, TEXT_MUTED),
+        (value, rect.center().y, 12.0, TEXT),
+    ] {
+        let galley = egui::WidgetText::from(RichText::new(text).size(font).color(color))
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                (rect.right() - left - 26.0).max(1.0),
+                FontId::proportional(font),
+            );
+        painter.galley(Pos2::new(left, y), galley, color);
+    }
+    paint_icon(
+        ui,
+        Icon::ChevronRight,
+        Rect::from_center_size(
+            rect.right_center() - Vec2::new(14.0, 0.0),
+            Vec2::splat(12.0),
+        ),
+        TEXT_MUTED,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 pub fn source_row(
     ui: &mut Ui,
     id: impl Hash,
@@ -2552,15 +2882,40 @@ pub fn paint_contained_thumbnail(ui: &Ui, rect: Rect, preview: Option<(egui::Tex
     }
 }
 
+/// A bounded tab strip always owns its bottom divider.
+pub fn tab_bar(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::hover());
+    paint_panel_edge(ui, rect, PanelEdge::Bottom);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 4.0;
+    add_contents(&mut child);
+}
+
 pub fn workspace_tab(ui: &mut Ui, label: &str, selected: bool, enabled: bool) -> Response {
+    let height = ui.max_rect().height().clamp(40.0, 72.0);
+    let width = ui
+        .painter()
+        .layout_no_wrap(label.into(), FontId::proportional(13.0), TEXT)
+        .size()
+        .x
+        + 32.0;
     let response = ui
         .add_enabled_ui(enabled, |ui| {
-            let (rect, response) = ui.allocate_exact_size(Vec2::new(84.0, 38.0), Sense::click());
+            let (rect, response) =
+                ui.allocate_exact_size(Vec2::new(width.max(80.0), height), Sense::click());
+            if response.hovered() || response.has_focus() {
+                ui.painter()
+                    .rect_filled(rect.shrink2(Vec2::new(0.0, 5.0)), 4, PANEL_RAISED);
+            }
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                FontId::proportional(12.0),
+                FontId::proportional(13.0),
                 if !enabled {
                     TEXT_DIM
                 } else if selected {
@@ -2570,8 +2925,9 @@ pub fn workspace_tab(ui: &mut Ui, label: &str, selected: bool, enabled: bool) ->
                 },
             );
             if selected {
+                let line = rect.shrink2(Vec2::new(16.0, 0.0));
                 ui.painter().line_segment(
-                    [rect.left_bottom(), rect.right_bottom()],
+                    [line.left_bottom(), line.right_bottom()],
                     Stroke::new(2.0_f32, IMAGE),
                 );
             }
@@ -2581,7 +2937,7 @@ pub fn workspace_tab(ui: &mut Ui, label: &str, selected: bool, enabled: bool) ->
     crate::core::automation::instrument_response(
         response,
         "tab",
-        Some(label.to_string()),
+        Some(label.into()),
         enabled,
         false,
     )
@@ -3322,22 +3678,11 @@ pub fn close_button(ui: &mut Ui) -> Response {
         );
     }
 
-    let half = CLOSE_BUTTON_ICON_SIZE * 0.5;
-    let center = rect.center();
-    let stroke = Stroke::new(CLOSE_BUTTON_ICON_STROKE, icon_color);
-    ui.painter().line_segment(
-        [
-            Pos2::new(center.x - half, center.y - half),
-            Pos2::new(center.x + half, center.y + half),
-        ],
-        stroke,
-    );
-    ui.painter().line_segment(
-        [
-            Pos2::new(center.x + half, center.y - half),
-            Pos2::new(center.x - half, center.y + half),
-        ],
-        stroke,
+    paint_icon(
+        ui,
+        Icon::Close,
+        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+        icon_color,
     );
 
     crate::core::automation::instrument_response(
@@ -3612,9 +3957,9 @@ pub fn row_fill(selected: bool, hovered: bool) -> Color32 {
     if selected {
         Color32::from_rgb(25, 74, 54)
     } else if hovered {
-        Color32::from_rgb(29, 31, 35)
+        FIELD_BG_ACTIVE
     } else {
-        PANEL_RAISED
+        PANEL
     }
 }
 
@@ -3690,12 +4035,23 @@ pub fn integer_step_drag(
     min: Option<i64>,
     max: Option<i64>,
 ) -> bool {
+    integer_step_drag_sized(ui, value, Vec2::new(width, FIELD_H), step, min, max)
+}
+
+pub fn integer_step_drag_sized(
+    ui: &mut Ui,
+    value: &mut i64,
+    size: Vec2,
+    step: i64,
+    min: Option<i64>,
+    max: Option<i64>,
+) -> bool {
     let step = step.max(1);
     let before = *value;
     let lo = min.unwrap_or(i64::MIN / 4);
     let hi = max.unwrap_or(i64::MAX / 4);
     let mut display = *value;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(0.0), FIELD_H), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(size.max(Vec2::splat(1.0)), Sense::hover());
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
@@ -3705,7 +4061,7 @@ pub fn integer_step_drag(
     child.shrink_clip_rect(rect);
     configure_field_widget_style(&mut child, rect.width());
     let response = child.add_sized(
-        [rect.width(), FIELD_H],
+        [rect.width(), rect.height()],
         egui::DragValue::new(&mut display)
             .speed(step as f64)
             .range(lo as f64..=hi as f64)
