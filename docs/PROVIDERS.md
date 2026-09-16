@@ -34,12 +34,39 @@ to get these fields. See the [official image API guide](https://developers.opena
 
 ## Chat Agent Providers
 
-In AI Providers, choose **OpenAI-compatible Agent**, add it, then set its base URL
-(including `/v1`), model, and optional Bearer key. A blank key sends no
-Authorization header. Save and Test the agent, then select it in Chat. Definitions
-live in `LatentSlateData/providers/agents/<uuid>.json`; they never enter generation
-provider selectors or queues. Keys are stored in that local JSON, like existing
-cloud generation provider keys.
+In AI Providers, choose **OpenAI Agent** for OpenAI, or **OpenAI-compatible Agent**
+for a local/custom endpoint. Both retain a user-chosen name and model. Save and
+Test the agent, then select it in Chat. Definitions live in
+`LatentSlateData/providers/agents/<uuid>.json`; they never enter generation
+provider selectors or queues. API keys are stored in that local JSON, like
+existing cloud generation provider keys.
+
+OpenAI offers **ChatGPT subscription** browser sign-in and **OpenAI API key**
+authentication. Both use Responses, with fixed OpenAI endpoints and separate
+subscription/API billing; there is no automatic fallback between them. Browser
+sign-in uses OAuth PKCE and a loopback callback on port 1455 (finish other pending
+Codex sign-ins if that port is busy). LatentSlate owns and refreshes its tokens;
+it does not import the Codex app/CLI login. On Windows, tokens are DPAPI-encrypted
+in `providers/agents/accounts/<uuid>.bin`. Sign out clears this local login.
+Subscription credential storage currently requires Windows; other platforms can
+use API keys. This direct Codex Responses integration does not launch a Codex
+runtime or give the agent additional shell/filesystem tools.
+
+Compatible agents accept a base URL including `/v1` and an optional Bearer key;
+a blank key sends no Authorization header. New entries default to **Responses**.
+Existing entries without an API-format setting retain **Chat Completions**, which
+is also selectable explicitly. Requests replay full history (`store: false` for
+Responses), including function-call results and provider-specific reasoning
+items. Responses and Chat Completions share the editor tool execution loop and
+UI events, with separate wire-format implementations.
+
+**Refresh models** loads available model IDs. Reported image capabilities and
+loaded llama.cpp model video capabilities set read-only controls. Missing
+metadata leaves manual controls available. llama.cpp `/props` is queried only
+for a selected model already reported as loaded, to avoid loading other models.
+OpenAI native video is always disabled. Compatible Responses also disables native
+video: llama.cpp's Responses adapter currently supports text, images and function
+tools but rejects `input_video`. Use **Chat Completions** for native video.
 
 Enable image/video understanding only when the endpoint supports those inputs.
 Image understanding offers rendered frames and contact sheets. Video understanding

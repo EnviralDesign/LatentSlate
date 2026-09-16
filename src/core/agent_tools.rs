@@ -266,7 +266,7 @@ pub fn schemas(provider: &AgentProviderEntry) -> Vec<Value> {
     if provider.capabilities.image_input {
         tools.push(tool("look","Inspect an original image asset (mode asset), a rendered frame, or an annotated contact sheet. source: asset a1, timeline (visible viewer composite), track t1 (isolated, even if hidden), or clip c1 (composite at clip-relative time). time is seconds; frame is a zero-based project-FPS index, mutually exclusive with time. Timeline/track time is absolute, asset/clip time is relative. Default mode: asset for image assets, frame when time/frame supplied, otherwise 8-frame cutsheet. Does not move the playhead.",json!({"source":s,"version":s,"mode":{"enum":["asset","frame","cutsheet"]},"time":n,"frame":{"type":"integer","minimum":0},"times":{"type":"array","items":n,"maxItems":8}}),json!([])));
     }
-    if provider.capabilities.video_input {
+    if provider.capabilities.video_input && provider.connection.supports_native_video() {
         tools.push(tool("watch_video","Watch native video: source a1 (video asset), timeline (visible viewer composite), or t1 (isolated video track, even if hidden). Optional version for assets. start/end are seconds, end exclusive: asset-relative or absolute timeline time. Timeline/track require both; omit both for a whole asset only if <=12 seconds. Maximum 12 seconds, 32 MiB; request a smaller range if exceeded. Prepared as silent H.264, up to 320x320 preserving aspect. Backend controls sampling FPS; exact frame inspection uses look.",json!({"source":s,"asset":s,"version":s,"start":n,"end":n}),json!([])));
     }
     tools
@@ -662,6 +662,15 @@ mod tests {
             .iter()
             .any(|t| t["function"]["name"] == "watch_video"));
         p.capabilities.video_input = true;
+        assert_eq!(
+            schemas(&p).len(),
+            7,
+            "Responses must not offer native video"
+        );
+        if let crate::state::AgentConnection::OpenAiCompatible { protocol, .. } = &mut p.connection
+        {
+            *protocol = crate::state::AgentProtocol::ChatCompletions;
+        }
         assert_eq!(schemas(&p).len(), 8);
         p.capabilities.image_input = false;
         assert_eq!(schemas(&p).len(), 7);

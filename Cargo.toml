@@ -26,6 +26,7 @@ cpal = "0.15"
 tokio-tungstenite = "0.23"
 futures-util = "0.3"
 base64 = "0.22"
+sha2 = "0.10" # OAuth PKCE S256 challenge
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_Shell"] }
 
 [target.'cfg(windows)'.build-dependencies]

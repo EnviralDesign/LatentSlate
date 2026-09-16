@@ -1,5 +1,5 @@
 //! The bounded OpenAI-compatible conversation loop. Editor work is requested through events.
-use crate::state::{AgentConnection, AgentProviderEntry};
+use crate::state::{AgentConnection, AgentProtocol, AgentProviderEntry};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::mpsc, time::Duration};
@@ -109,11 +109,31 @@ async fn conversation(
         .map_err(|_| "Unable to initialize Chat connection.")?;
     let mut visuals = 0;
     for round in 0..=MAX_TOOL_ROUNDS {
-        let result = completion(&client, provider, messages, tools, events).await;
+        let responses = !matches!(
+            provider.connection,
+            AgentConnection::OpenAiCompatible {
+                protocol: AgentProtocol::ChatCompletions,
+                ..
+            }
+        );
+        let result = if responses {
+            super::agent_responses::completion(&client, provider, messages, tools, events)
+                .await
+                .map(|result| (result.text, result.calls, Some(result.output)))
+        } else {
+            completion(&client, provider, messages, tools, events)
+                .await
+                .map(|(text, calls)| (text, calls, None))
+        };
         compact_media(messages);
-        let (text, calls) = result?;
+        let (text, calls, output) = result?;
+        let mut assistant = json!({"role":"assistant", "content":text});
+        if let Some(output) = output {
+            assistant["responses_output"] = json!(output);
+            assistant["responses_owner"] = json!(super::agent_responses::history_owner(provider));
+        }
         if calls.is_empty() {
-            messages.push(json!({"role":"assistant", "content":text}));
+            messages.push(assistant);
             return Ok(());
         }
         if round == MAX_TOOL_ROUNDS {
@@ -123,7 +143,8 @@ async fn conversation(
             return Err("Too many tool calls in one response.".into());
         }
         // Only publish a complete assistant/tool block: Stop never leaves unmatched calls in history.
-        let mut block = vec![json!({"role":"assistant", "content":text, "tool_calls":calls})];
+        assistant["tool_calls"] = json!(calls);
+        let mut block = vec![assistant];
         let mut attachments = Vec::new();
         for call in calls {
             let is_visual = matches!(call.function.name.as_str(), "look" | "watch_video");
@@ -195,7 +216,11 @@ async fn completion(
         base_url,
         model,
         api_key,
-    } = &provider.connection;
+        ..
+    } = &provider.connection
+    else {
+        return Err("Chat Completions requires a compatible provider.".into());
+    };
     if model.trim().is_empty() {
         return Err("Configure an agent model first.".into());
     }
@@ -214,6 +239,10 @@ async fn completion(
     }
     let mut compatible_messages = messages.to_vec();
     for message in &mut compatible_messages {
+        if let Some(object) = message.as_object_mut() {
+            object.remove("responses_output");
+            object.remove("responses_owner");
+        }
         if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
             for part in parts {
                 if (part["type"] == "image_url" && !provider.capabilities.image_input)
@@ -419,6 +448,7 @@ mod tests {
         provider.connection = AgentConnection::OpenAiCompatible {
             base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
             model: "fixture".into(),
+            protocol: AgentProtocol::ChatCompletions,
             api_key: None,
         };
         let (tx, rx) = mpsc::channel();
@@ -543,7 +573,9 @@ mod tests {
             Some("  ".to_string()),
         ] {
             let (mut provider, requests, server) = server(vec![(200, text_stream("hello"))]);
-            let AgentConnection::OpenAiCompatible { api_key, .. } = &mut provider.connection;
+            let AgentConnection::OpenAiCompatible { api_key, .. } = &mut provider.connection else {
+                unreachable!()
+            };
             *api_key = key.clone();
             let request = start(
                 provider,
@@ -656,6 +688,7 @@ mod tests {
         provider.connection = AgentConnection::OpenAiCompatible {
             base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
             model: "fixture".into(),
+            protocol: AgentProtocol::ChatCompletions,
             api_key: None,
         };
         provider.capabilities.video_input = true;

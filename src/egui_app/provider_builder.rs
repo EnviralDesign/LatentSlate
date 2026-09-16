@@ -21,6 +21,7 @@ use super::{
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProviderTemplateKind {
+    OpenAiNativeAgent,
     OpenAiAgent,
     LatentSlateEngine,
     ComfyUi,
@@ -37,7 +38,8 @@ impl Default for ProviderTemplateKind {
 }
 
 impl ProviderTemplateKind {
-    pub(super) const ALL: [ProviderTemplateKind; 7] = [
+    pub(super) const ALL: [ProviderTemplateKind; 8] = [
+        ProviderTemplateKind::OpenAiNativeAgent,
         ProviderTemplateKind::OpenAiAgent,
         ProviderTemplateKind::LatentSlateEngine,
         ProviderTemplateKind::ComfyUi,
@@ -1608,6 +1610,7 @@ fn provider_summary_hover_text(summary: &ProviderFileSummary) -> String {
 
 pub(super) fn provider_template_label(kind: ProviderTemplateKind) -> &'static str {
     match kind {
+        ProviderTemplateKind::OpenAiNativeAgent => "OpenAI Agent",
         ProviderTemplateKind::OpenAiAgent => "OpenAI-compatible Agent",
         ProviderTemplateKind::LatentSlateEngine => "LatentSlate Engine",
         ProviderTemplateKind::ComfyUi => "ComfyUI Workflow",

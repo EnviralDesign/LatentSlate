@@ -130,12 +130,11 @@ impl LatentSlateApp {
                             );
                             let is_selected =
                                 selected == Some(ProviderModalSelection::Agent(provider.id));
-                            let crate::state::AgentConnection::OpenAiCompatible { model, .. } =
-                                &provider.connection;
+                            let model = provider.connection.model();
                             let subtitle = if model.trim().is_empty() {
-                                "Model not configured"
+                                format!("{} · Choose model", provider.connection.label())
                             } else {
-                                model
+                                format!("{} · {model}", provider.connection.label())
                             };
                             let accent = if is_selected {
                                 kit::PRIMARY
@@ -155,7 +154,7 @@ impl LatentSlateApp {
                                     paint_truncated_row_text_bottom(
                                         ui,
                                         Pos2::new(rect.left(), rect.bottom() - 2.0),
-                                        kit::caption(subtitle),
+                                        kit::caption(&subtitle),
                                         11.0,
                                         rect.width(),
                                         kit::TEXT_MUTED,
@@ -881,7 +880,8 @@ impl LatentSlateApp {
 
     pub(super) fn create_selected_provider_template(&mut self) {
         match self.provider_template_kind {
-            ProviderTemplateKind::OpenAiAgent => self.create_agent_provider(),
+            ProviderTemplateKind::OpenAiAgent => self.create_agent_provider(false),
+            ProviderTemplateKind::OpenAiNativeAgent => self.create_agent_provider(true),
             ProviderTemplateKind::LatentSlateEngine => self.create_engine_connection(),
             ProviderTemplateKind::ComfyUi => self.open_provider_builder(None),
             ProviderTemplateKind::OpenAiImage => self.save_provider_template(

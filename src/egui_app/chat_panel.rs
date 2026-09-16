@@ -1,6 +1,6 @@
 use super::*;
 use crate::core::agent_chat::{self, ChatEvent, ChatRequest, ToolResult};
-use crate::state::{AgentConnection, AgentProviderEntry};
+use crate::state::AgentProviderEntry;
 use serde_json::{json, Value};
 
 #[derive(Default)]
@@ -99,6 +99,7 @@ mod tests {
 pub(super) struct ChatUi {
     pub providers: Vec<AgentProviderEntry>,
     pub draft: Option<AgentProviderEntry>,
+    pub settings: super::agent_settings::AgentSettingsUi,
     pub provider_status: Option<kit::OperationPresentation>,
     pub test: Option<(ChatRequest, Instant)>,
     pub selected: Option<Uuid>,
@@ -118,6 +119,7 @@ impl Default for ChatUi {
         Self {
             providers: crate::core::agent_provider_store::load(),
             draft: None,
+            settings: Default::default(),
             provider_status: None,
             test: None,
             selected: None,
@@ -288,173 +290,7 @@ fn chat_text(text: &str) -> egui::text::LayoutJob {
 }
 
 impl LatentSlateApp {
-    pub(super) fn create_agent_provider(&mut self) {
-        let provider = AgentProviderEntry::default();
-        match crate::core::agent_provider_store::save(&provider) {
-            Ok(()) => {
-                self.selected_provider = Some(ProviderModalSelection::Agent(provider.id));
-                self.chat.draft = Some(provider.clone());
-                self.chat.providers.push(provider);
-                self.chat.provider_status = None;
-                self.chat.test = None;
-            }
-            Err(_) => self.editor.status = "Unable to save agent provider.".into(),
-        }
-    }
-
-    pub(super) fn agent_provider_inspector(&mut self, ui: &mut Ui, id: Uuid) {
-        if self.chat.draft.as_ref().is_none_or(|p| p.id != id) {
-            self.chat.draft = self.chat.providers.iter().find(|p| p.id == id).cloned();
-            self.chat.provider_status = None;
-            self.chat.test = None;
-        }
-        let Some(draft) = self.chat.draft.as_mut() else {
-            return;
-        };
-        ui.label(kit::section_label("OpenAI-compatible Agent"));
-        ui.add_space(kit::FORM_ROW_GAP);
-        kit::scroll_body(ui, |ui| {
-            ui.add_enabled_ui(self.chat.test.is_none(), |ui| {
-                kit::labeled_text_field(ui, "Agent name", &mut draft.name);
-                let AgentConnection::OpenAiCompatible {
-                    base_url,
-                    model,
-                    api_key,
-                } = &mut draft.connection;
-                kit::labeled_text_field(ui, "Endpoint / Base URL (including /v1)", base_url);
-                kit::labeled_text_field(ui, "Agent model", model);
-                kit::field_label(ui, "API / Bearer key (optional)");
-                let mut key = api_key.clone().unwrap_or_default();
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut key)
-                            .password(true)
-                            .desired_width(f32::INFINITY),
-                    )
-                    .changed()
-                {
-                    *api_key = (!key.trim().is_empty()).then_some(key);
-                }
-                ui.label(kit::caption("Leave blank for anonymous local endpoints."));
-                automation_checkbox(ui, &mut draft.enabled, "Enabled");
-                automation_checkbox(
-                    ui,
-                    &mut draft.capabilities.image_input,
-                    "Image understanding",
-                );
-                automation_checkbox(
-                    ui,
-                    &mut draft.capabilities.video_input,
-                    "Video understanding",
-                );
-                if draft.capabilities.video_input {
-                    ui.label(kit::caption(
-                        "Requires native input_video support (llama.cpp). Silent proxies: up to 12 seconds, 320×320. Sampling FPS comes from the server preset.",
-                    ));
-                }
-            });
-            ui.add_space(kit::FORM_ROW_GAP);
-            let mut save = false;
-            let mut test = false;
-            let mut cancel_test = false;
-            let mut delete = false;
-            ui.horizontal_wrapped(|ui| {
-                save = ui
-                    .add_enabled_ui(self.chat.test.is_none(), |ui| {
-                        kit::primary_button(ui, "Save agent", 100.0)
-                    })
-                    .inner
-                    .clicked();
-                if self.chat.test.is_some() {
-                    cancel_test = kit::secondary_button(ui, "Cancel test", 100.0).clicked();
-                } else {
-                    test = kit::secondary_button(ui, "Test agent", 100.0).clicked();
-                }
-                delete = ui
-                    .add_enabled_ui(self.chat.test.is_none(), |ui| {
-                        kit::secondary_button(ui, "Delete agent", 100.0)
-                    })
-                    .inner
-                    .clicked();
-            });
-            if save {
-                match crate::core::agent_provider_store::save(draft) {
-                    Ok(()) => {
-                        self.chat.providers = crate::core::agent_provider_store::load();
-                        self.chat.provider_status = Some(kit::OperationPresentation::new(
-                            kit::OperationPhase::Succeeded,
-                            kit::OperationSeverity::Success,
-                            "Agent saved",
-                        ));
-                    }
-                    Err(_) => {
-                        self.chat.provider_status = Some(
-                            kit::OperationPresentation::new(
-                                kit::OperationPhase::Failed,
-                                kit::OperationSeverity::Error,
-                                "Unable to save agent",
-                            )
-                            .detail("Previous settings remain active."),
-                        );
-                    }
-                }
-            }
-            if test {
-                self.chat.test = Some((
-                    agent_chat::start(
-                        draft.clone(),
-                        vec![
-                            json!({"role":"user", "content":"Reply briefly to confirm this connection works."}),
-                        ],
-                        vec![],
-                    ),
-                    Instant::now(),
-                ));
-                self.chat.provider_status = Some(kit::OperationPresentation::new(
-                    kit::OperationPhase::Waiting,
-                    kit::OperationSeverity::Neutral,
-                    "Waiting for agent response",
-                ));
-            }
-            if cancel_test {
-                self.chat.test = None;
-                self.chat.provider_status = Some(kit::OperationPresentation::new(
-                    kit::OperationPhase::Canceled,
-                    kit::OperationSeverity::Neutral,
-                    "Connection test canceled",
-                ));
-            }
-            if delete {
-                match crate::core::agent_provider_store::delete(id) {
-                    Ok(()) => {
-                        self.chat.providers.retain(|p| p.id != id);
-                        self.selected_provider = None;
-                    }
-                    Err(_) => {
-                        self.chat.provider_status = Some(kit::OperationPresentation::new(
-                            kit::OperationPhase::Failed,
-                            kit::OperationSeverity::Error,
-                            "Unable to delete agent provider",
-                        ))
-                    }
-                }
-            }
-            if let Some(status) = &mut self.chat.provider_status {
-                if let Some((_, started)) = &self.chat.test {
-                    let seconds = started.elapsed().as_secs();
-                    status.detail = Some(if status.phase == kit::OperationPhase::Running {
-                        format!("Receiving the response · {seconds}s elapsed")
-                    } else {
-                        format!("{seconds}s elapsed · No response yet. The server may be loading the model or waiting for capacity. Cold starts can take a minute or more; this request allows up to 15 minutes.")
-                    });
-                }
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::operation_banner(ui, "agent_provider_status", status);
-            }
-        });
-    }
-
-    fn clear_chat(&mut self) {
+    pub(super) fn clear_chat(&mut self) {
         self.chat.request = None;
         self.chat.rows.clear();
         self.chat.messages = vec![json!({"role":"system", "content":agent_chat::SYSTEM_PROMPT})];
@@ -466,6 +302,7 @@ impl LatentSlateApp {
     }
 
     pub(super) fn poll_chat(&mut self, ctx: &Context) {
+        self.poll_agent_settings(ctx);
         if self.chat.session != self.editor.project_session_revision {
             self.clear_chat();
             self.chat.session = self.editor.project_session_revision;
@@ -683,7 +520,12 @@ impl LatentSlateApp {
             if let Some(provider) = provider {
                 for (enabled, label, color) in [
                     (provider.capabilities.image_input, "Images", kit::IMAGE),
-                    (provider.capabilities.video_input, "Video", kit::VIDEO),
+                    (
+                        provider.capabilities.video_input
+                            && provider.connection.supports_native_video(),
+                        "Video",
+                        kit::VIDEO,
+                    ),
                 ] {
                     if enabled {
                         indicators.push((
@@ -731,7 +573,7 @@ impl LatentSlateApp {
             );
         });
         if self.chat.selected.is_none() {
-            ui.label("Add an OpenAI-compatible Agent in AI Providers to start chatting.");
+            ui.label("Add an agent in AI Providers to start chatting.");
             if kit::secondary_button(ui, "AI Providers", 120.0).clicked() {
                 self.editor.overlays.providers = true;
             }
