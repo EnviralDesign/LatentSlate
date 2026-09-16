@@ -289,6 +289,8 @@ mod tests {
         let asset_id = asset.id;
         e.project.assets.push(asset);
         let make_job = |asset_id, root: &std::path::Path| crate::state::GenerationJob {
+            authoring_snapshot: None,
+            lab_submission: None,
             id: Uuid::new_v4(),
             created_at: chrono::Utc::now(),
             status: crate::state::GenerationJobStatus::Succeeded,
@@ -536,6 +538,7 @@ mod tests {
                 .unwrap()
                 .versions
                 .push(GenerationRecord {
+                    authoring_snapshot: None,
                     engine_execution: None,
                     version: version.into(),
                     timestamp: chrono::Utc::now(),

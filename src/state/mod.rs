@@ -9,6 +9,7 @@
 
 mod agent_provider;
 mod asset;
+mod asset_lab;
 mod generative;
 mod media_binding;
 mod project;
@@ -17,6 +18,7 @@ mod selection;
 
 pub use agent_provider::*;
 pub use asset::*;
+pub use asset_lab::*;
 #[allow(unused_imports)]
 pub use generative::*;
 pub use media_binding::*;

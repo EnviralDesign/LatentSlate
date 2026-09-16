@@ -52,6 +52,32 @@ pub struct GenerationPreflightIssue {
     pub message: String,
 }
 
+pub fn freeze_asset_lab_snapshot(
+    project: &Project,
+    folder: &Path,
+    config: &GenerativeConfig,
+) -> Result<crate::state::AssetLabSnapshot, String> {
+    let mut snapshot = crate::state::AssetLabSnapshot::from_config(config);
+    if let Some(mask) = snapshot.authoring.mask.as_mut() {
+        let root = project
+            .project_path
+            .as_ref()
+            .ok_or("Save the project before submitting a mask document.")?;
+        let source = if mask.path.is_absolute() {
+            mask.path.clone()
+        } else {
+            root.join(&mask.path)
+        };
+        let directory = folder.join("inputs").join("masks");
+        std::fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
+        let path = directory.join(format!("{}.png", Uuid::new_v4()));
+        std::fs::copy(source, &path)
+            .map_err(|err| format!("Cannot preserve submitted mask: {err}"))?;
+        mask.path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+    }
+    Ok(snapshot)
+}
+
 pub struct GenerationControlInputs<'a> {
     pub variation: Vec<&'a ProviderInputField>,
     pub timing: Vec<&'a ProviderInputField>,
@@ -407,6 +433,12 @@ pub fn preflight_provider_config(
         .flatten();
     let mut values = HashMap::new();
     let mut issues = Vec::new();
+    if let Some(message) = crate::state::asset_lab_submission_blocker(&config, provider) {
+        issues.push(GenerationPreflightIssue {
+            section: GenerationControlSection::Inputs,
+            message: message.to_string(),
+        });
+    }
 
     for input in &provider.inputs {
         if matches!(

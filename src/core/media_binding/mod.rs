@@ -518,6 +518,12 @@ pub fn resolve_media_binding(
     }
 
     match &binding.source {
+        MediaBindingSource::WorkingOutput => {
+            match (ctx.target_asset_id, ctx.config.and_then(|config| config.lab_authoring.working_version.as_deref())) {
+                (Some(asset_id), Some(version)) => resolve_project_asset(ctx, &mut plan, asset_id, Some(version)),
+                _ => plan.errors.push(MediaBindingError::SourceMissing { detail: "No working output is available. Continue from a completed result in Asset Lab.".to_string() }),
+            }
+        }
         MediaBindingSource::FrozenArtifact {
             path,
             media_type: frozen_type,
@@ -581,7 +587,9 @@ fn validate_sample_for_field(
         (BoundMediaType::Video | BoundMediaType::Audio, MediaSample::Whole) => {
             if matches!(
                 source,
-                MediaBindingSource::ProjectAsset { .. } | MediaBindingSource::TimelineClip { .. }
+                MediaBindingSource::ProjectAsset { .. }
+                    | MediaBindingSource::TimelineClip { .. }
+                    | MediaBindingSource::WorkingOutput
             ) {
                 Ok(())
             } else {
@@ -2213,6 +2221,7 @@ pub fn default_follow_spec() -> MediaBindingSpec {
 /// Collect Follow/Lock/Freeze labels for inspector menus.
 pub fn source_menu_label(spec: &MediaBindingSpec, project: &Project) -> String {
     match &spec.source {
+        MediaBindingSource::WorkingOutput => "Working output".to_string(),
         MediaBindingSource::FollowTimeline { query } => {
             format!("Follow Timeline / {}", query.scope.label())
         }

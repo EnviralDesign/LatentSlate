@@ -1886,6 +1886,7 @@ mod tests {
             node.inputs = inputs.clone();
             config.lab_graph.nodes.push(node);
             config.versions.push(GenerationRecord {
+                authoring_snapshot: None,
                 version: "v1".into(),
                 timestamp: chrono::Utc::now(),
                 provider_id: original.id,

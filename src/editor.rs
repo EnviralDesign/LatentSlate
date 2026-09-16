@@ -369,6 +369,168 @@ impl EditorState {
         }
     }
 
+    pub fn initialize_asset_lab_authoring(&mut self, asset_id: Uuid) -> Result<(), String> {
+        let config = self
+            .project
+            .generative_config(asset_id)
+            .ok_or("Asset has no generation configuration")?;
+        if config.lab_authoring.initialized {
+            return Ok(());
+        }
+        let mut setup = crate::state::AssetLabSnapshot::from_config(config);
+        let selected = config
+            .lab_graph
+            .selected_node_id
+            .and_then(|id| config.lab_graph.nodes.iter().find(|node| node.id == id));
+        if let Some(node) = selected.filter(|node| node.output_version.is_none()) {
+            setup.provider_id = node.provider_id;
+            setup.inputs = node.inputs.clone();
+            setup.media_bindings = node.media_bindings.clone();
+            setup.reference_sizing = node.reference_sizing.clone();
+            setup.authoring.working_version = node
+                .parent_node_id
+                .and_then(|id| config.lab_graph.nodes.iter().find(|node| node.id == id))
+                .and_then(|node| node.output_version.clone());
+        }
+        setup.authoring.working_version = setup
+            .authoring
+            .working_version
+            .or_else(|| config.active_version.clone());
+        setup.authoring.initialized = true;
+        self.set_asset_lab_setup(asset_id, &setup)
+    }
+
+    pub fn set_asset_lab_setup(
+        &mut self,
+        asset_id: Uuid,
+        setup: &crate::state::AssetLabSnapshot,
+    ) -> Result<(), String> {
+        let previous = self
+            .project
+            .generative_config(asset_id)
+            .cloned()
+            .ok_or("Asset has no generation configuration")?;
+        self.project
+            .update_generative_config(asset_id, |config| setup.apply(config));
+        if let Err(err) = self.project.save_generative_config(asset_id) {
+            self.project.generative_configs.insert(asset_id, previous);
+            return Err(format!("Could not save the current setup: {err}"));
+        }
+        Ok(())
+    }
+
+    pub fn set_generation_source(
+        &mut self,
+        asset_id: Uuid,
+        field: &crate::state::ProviderInputField,
+        binding: Option<crate::state::MediaBindingSpec>,
+        sizing: Option<crate::state::ReferenceSizing>,
+    ) -> Result<(), String> {
+        let config = self
+            .project
+            .generative_config(asset_id)
+            .ok_or("Asset has no generation configuration")?;
+        let mut setup = crate::state::AssetLabSnapshot::from_config(config);
+        let old = crate::core::media_binding::lookup_media_binding(config, field, &self.project);
+        if old != binding
+            || sizing.is_some_and(|sizing| {
+                config
+                    .reference_sizing
+                    .get(&field.name)
+                    .copied()
+                    .unwrap_or_default()
+                    != sizing
+            })
+        {
+            if setup
+                .authoring
+                .mask
+                .as_ref()
+                .is_some_and(|mask| mask.geometry.input_field == field.name)
+            {
+                setup.authoring.mask_enabled = false;
+            }
+        }
+        match binding {
+            Some(binding) => {
+                setup.media_bindings.insert(field.name.clone(), binding);
+            }
+            None => {
+                let mut names = vec![field.name.as_str()];
+                if let Some(alias) = crate::core::generation::semantic_reference_slot(field) {
+                    names.push(alias);
+                }
+                for name in names {
+                    setup.media_bindings.remove(name);
+                    setup.inputs.remove(name);
+                    setup.reference_slots.remove(name);
+                }
+            }
+        }
+        if let Some(sizing) = sizing {
+            setup.reference_sizing.insert(field.name.clone(), sizing);
+        }
+        self.set_asset_lab_setup(asset_id, &setup)
+    }
+
+    pub fn asset_lab_setup_from_version(
+        &self,
+        asset_id: Uuid,
+        version: &str,
+    ) -> Result<crate::state::AssetLabSnapshot, String> {
+        let config = self
+            .project
+            .generative_config(asset_id)
+            .ok_or("Asset has no generation configuration")?;
+        let record = config
+            .versions
+            .iter()
+            .find(|record| record.version == version)
+            .ok_or("Version is unavailable")?;
+        let mut setup = record.authoring_snapshot.clone().unwrap_or_else(|| {
+            let mut legacy = crate::state::AssetLabSnapshot::from_config(
+                &crate::state::GenerativeConfig::default(),
+            );
+            legacy.provider_id = Some(record.provider_id);
+            legacy.inputs = record.inputs_snapshot.clone();
+            legacy.media_bindings = record.media_bindings_snapshot.clone();
+            if let Some(node) = record
+                .lab_node_id
+                .and_then(|id| config.lab_graph.nodes.iter().find(|node| node.id == id))
+            {
+                legacy.reference_sizing = node.reference_sizing.clone();
+            }
+            legacy
+        });
+        setup.authoring.initialized = true;
+        setup.authoring.working_version = Some(version.to_string());
+        if let Some(provider) = self
+            .provider_entries
+            .iter()
+            .find(|provider| Some(provider.id) == setup.provider_id)
+        {
+            if setup.batch.seed_strategy == crate::state::SeedStrategy::Increment {
+                if let Some(field) = crate::core::generation::resolve_seed_field(provider) {
+                    if let Some(crate::state::InputValue::Literal { value }) =
+                        record.inputs_snapshot.get(&field)
+                    {
+                        if let Some(seed) = value.as_u64() {
+                            setup.inputs.insert(
+                                field,
+                                crate::state::InputValue::Literal {
+                                    value: crate::core::generation::seed_input_value(
+                                        crate::core::generation::increment_seed(seed, 1),
+                                    ),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(setup)
+    }
+
     /// Synchronize prospective asset timing without overwriting generated-media requests.
     pub fn sync_generative_video_timing_inputs(&mut self, asset_id: Uuid) -> Result<bool, String> {
         let project = &mut self.project;
@@ -3729,6 +3891,7 @@ mod tests {
         );
         editor.project.update_generative_config(asset_id, |config| {
             config.versions.push(crate::state::GenerationRecord {
+                authoring_snapshot: None,
                 engine_execution: None,
                 version: "v1".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -3933,6 +4096,7 @@ mod tests {
         );
         editor.project.update_generative_config(asset_id, |config| {
             config.versions.push(crate::state::GenerationRecord {
+                authoring_snapshot: None,
                 engine_execution: None,
                 version: "v1".to_string(),
                 timestamp: chrono::Utc::now(),

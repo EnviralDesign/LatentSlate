@@ -7281,6 +7281,7 @@ impl LatentSlateApp {
         }
 
         let new_record = GenerationRecord {
+            authoring_snapshot: source_record.authoring_snapshot.clone(),
             engine_execution: source_record.engine_execution,
             version: new_version.clone(),
             timestamp: chrono::Utc::now(),
@@ -8383,6 +8384,7 @@ mod asset_lab_compare_tests {
         node_id: Option<Uuid>,
     ) -> GenerationRecord {
         GenerationRecord {
+            authoring_snapshot: None,
             engine_execution: None,
             version: version.to_string(),
             timestamp: chrono::Utc::now(),

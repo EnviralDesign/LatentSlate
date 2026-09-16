@@ -374,6 +374,7 @@ impl LatentSlateApp {
 
         let version = output.version.clone();
         let record = GenerationRecord {
+            authoring_snapshot: job.authoring_snapshot.clone(),
             engine_execution: output.engine_execution,
             version: version.clone(),
             timestamp: chrono::Utc::now(),
@@ -635,6 +636,11 @@ impl LatentSlateApp {
         };
         let mut jobs = Vec::new();
         let mut graph_save_needed = false;
+        let authored = crate::core::generation::freeze_asset_lab_snapshot(
+            &self.editor.project,
+            &folder_path,
+            &config_snapshot,
+        )?;
 
         for index in 0..batch_count {
             let (inputs, inputs_snapshot, seed_advance) =
@@ -731,7 +737,11 @@ impl LatentSlateApp {
                 None
             };
 
+            let mut authoring_snapshot = authored.clone();
+            authoring_snapshot.inputs = inputs_snapshot.clone();
             jobs.push(GenerationJob {
+                authoring_snapshot: Some(authoring_snapshot),
+                lab_submission: None,
                 id: Uuid::new_v4(),
                 created_at: chrono::Utc::now(),
                 status: GenerationJobStatus::Queued,
@@ -928,6 +938,8 @@ mod cancellation_tests {
             },
         );
         GenerationJob {
+            authoring_snapshot: None,
+            lab_submission: None,
             id: Uuid::new_v4(),
             created_at: chrono::Utc::now(),
             status,

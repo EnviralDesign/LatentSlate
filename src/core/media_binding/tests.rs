@@ -12,6 +12,84 @@ fn uid(n: u128) -> Uuid {
     Uuid::from_u128(n)
 }
 
+#[test]
+fn asset_lab_v4_working_output_follows_setup_without_rewriting_fixed_sources() {
+    let mut harness = Harness::new();
+    let field = video_field();
+    let rolling = MediaBindingSpec {
+        source: MediaBindingSource::WorkingOutput,
+        sample: MediaSample::Whole,
+        coverage: Default::default(),
+    };
+    let fixed = MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: harness.target.id,
+            version: Some("v1".into()),
+        },
+        ..rolling.clone()
+    };
+    assert!(!resolve_media_binding(harness.ctx(&field), &rolling).is_ok());
+    harness.config.lab_authoring.working_version = Some("v1".into());
+    let first = resolve_media_binding(harness.ctx(&field), &rolling);
+    assert!(first.is_ok(), "{:?}", first.errors);
+    let root = harness.project.project_path.as_ref().unwrap();
+    let next_path = first
+        .source_path_absolute
+        .as_ref()
+        .unwrap()
+        .with_file_name("v2.mp4");
+    write_file(&next_path);
+    assert!(next_path.starts_with(root));
+    harness.config.lab_authoring.working_version = Some("v2".into());
+    assert_eq!(
+        resolve_media_binding(harness.ctx(&field), &rolling)
+            .source_version
+            .as_deref(),
+        Some("v2")
+    );
+    assert_eq!(
+        resolve_media_binding(harness.ctx(&field), &fixed)
+            .source_version
+            .as_deref(),
+        Some("v1")
+    );
+    assert_eq!(first.source_version.as_deref(), Some("v1"));
+}
+
+#[test]
+fn asset_lab_v4_recapture_cannot_overwrite_an_earlier_input() {
+    let mut harness = Harness::new();
+    let asset = harness.add_image(991, "Still", "media/still.png");
+    let field = image_field(None);
+    let spec = MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: asset.id,
+            version: None,
+        },
+        sample: MediaSample::Whole,
+        coverage: Default::default(),
+    };
+    let plan = resolve_media_binding(harness.ctx(&field), &spec);
+    assert!(plan.is_ok(), "{:?}", plan.errors);
+    let root = harness.project.project_path.as_ref().unwrap();
+    let folder = root.join("generated/captures");
+    let source = plan.source_path_absolute.as_ref().unwrap();
+    std::fs::write(source, b"first pixels").unwrap();
+    let first = freeze_binding(&harness.project, &folder, &field.name, &spec, &plan).unwrap();
+    std::fs::write(source, b"later pixels").unwrap();
+    let second = freeze_binding(&harness.project, &folder, &field.name, &spec, &plan).unwrap();
+    let (
+        MediaBindingSource::FrozenArtifact { path: first, .. },
+        MediaBindingSource::FrozenArtifact { path: second, .. },
+    ) = (first.source, second.source)
+    else {
+        panic!("expected captures")
+    };
+    assert_ne!(first, second);
+    assert_eq!(std::fs::read(root.join(first)).unwrap(), b"first pixels");
+    assert_eq!(std::fs::read(root.join(second)).unwrap(), b"later pixels");
+}
+
 fn image_field(role: Option<InputRole>) -> ProviderInputField {
     ProviderInputField {
         ordered_collection: false,

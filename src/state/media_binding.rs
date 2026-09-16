@@ -292,6 +292,7 @@ pub struct FrozenMediaOrigin {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MediaBindingSource {
+    WorkingOutput,
     FollowTimeline {
         #[serde(default)]
         query: TimelineSourceQuery,
@@ -325,7 +326,7 @@ impl MediaBindingSource {
 
     pub fn stability(&self) -> MediaBindingStability {
         match self {
-            Self::FollowTimeline { .. } => MediaBindingStability::Follow,
+            Self::FollowTimeline { .. } | Self::WorkingOutput => MediaBindingStability::Follow,
             Self::TimelineClip { .. } | Self::ProjectAsset { .. } => {
                 MediaBindingStability::LockSource
             }

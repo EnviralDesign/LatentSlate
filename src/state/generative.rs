@@ -128,6 +128,8 @@ fn default_batch_count() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authoring_snapshot: Option<super::AssetLabSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_execution: Option<crate::state::EngineExecutionProvenance>,
     pub version: String,
     pub timestamp: DateTime<Utc>,
@@ -321,6 +323,8 @@ impl ReferenceSizing {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenerativeConfig {
     #[serde(default)]
+    pub lab_authoring: super::AssetLabAuthoring,
+    #[serde(default)]
     pub provider_id: Option<Uuid>,
     #[serde(default)]
     pub inputs: HashMap<String, InputValue>,
@@ -343,6 +347,7 @@ pub struct GenerativeConfig {
 impl Default for GenerativeConfig {
     fn default() -> Self {
         Self {
+            lab_authoring: Default::default(),
             provider_id: None,
             inputs: HashMap::new(),
             reference_slots: HashMap::new(),
@@ -556,6 +561,9 @@ pub struct GenerationProgressStage {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GenerationJob {
+    pub authoring_snapshot: Option<super::AssetLabSnapshot>,
+    #[serde(skip)]
+    pub lab_submission: Option<super::AssetLabSubmission>,
     pub id: Uuid,
     pub created_at: DateTime<Utc>,
     pub status: GenerationJobStatus,

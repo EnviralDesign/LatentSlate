@@ -97,7 +97,11 @@ pub fn freeze_binding(
     fs::create_dir_all(&dest_dir).map_err(|err| MediaBindingError::MaterializationFailed {
         detail: format!("failed to create frozen input folder: {err}"),
     })?;
-    let dest = dest_dir.join(format!("{}.{extension}", sanitize_name(field_name)));
+    let dest = dest_dir.join(format!(
+        "{}-{}.{extension}",
+        sanitize_name(field_name),
+        uuid::Uuid::new_v4()
+    ));
     copy_atomic(&materialized, &dest)?;
     let relative = dest
         .strip_prefix(root)

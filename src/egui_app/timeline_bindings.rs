@@ -257,7 +257,9 @@ impl LatentSlateApp {
                 MediaBindingSource::FrozenArtifact { .. } => {
                     Some(BindingLocalSource::FrozenArtifact)
                 }
-                MediaBindingSource::ProjectAsset { .. } => Some(BindingLocalSource::ProjectAsset),
+                MediaBindingSource::ProjectAsset { .. } | MediaBindingSource::WorkingOutput => {
+                    Some(BindingLocalSource::ProjectAsset)
+                }
                 _ => None,
             };
             if let Some(local_source) = local_source {
@@ -311,6 +313,7 @@ impl LatentSlateApp {
                 MediaBindingSource::TimelineClip { clip_id, .. } => Some(*clip_id),
                 MediaBindingSource::FollowTimeline { .. } => plan.source_clip_id,
                 MediaBindingSource::ProjectAsset { .. }
+                | MediaBindingSource::WorkingOutput
                 | MediaBindingSource::FrozenArtifact { .. } => None,
             };
             let Some(source_clip_id) = source_clip_id else {

@@ -481,6 +481,8 @@ mod operation_mapping_tests {
 
     fn job(status: GenerationJobStatus, error: Option<&str>) -> GenerationJob {
         GenerationJob {
+            authoring_snapshot: None,
+            lab_submission: None,
             id: Uuid::new_v4(),
             created_at: Utc::now(),
             status,
