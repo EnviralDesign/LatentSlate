@@ -204,20 +204,6 @@ fn context_wheel(ui: &mut Ui, context: ContextUsage) {
 
 const CHAT_PANEL_W: f32 = 460.0;
 
-fn tool_title(name: &str) -> &str {
-    match name {
-        "project_context" => "Project overview",
-        "inspect" => "Inspect project item",
-        "timeline_edit" => "Timeline edit",
-        "asset_edit" => "Asset edit",
-        "generation" => "Generation",
-        "save_project" => "Save project",
-        "look" => "Visual review",
-        "watch_video" => "Watch video",
-        _ => name,
-    }
-}
-
 fn tool_error(result: &str) -> Option<String> {
     serde_json::from_str::<Value>(result)
         .ok()?
@@ -232,56 +218,72 @@ fn tool_summary(name: &str, arguments: &str, result: &str) -> String {
     }
     let args: Value = serde_json::from_str(arguments).unwrap_or_default();
     let data: Value = serde_json::from_str(result).unwrap_or_default();
-    let source = args["source"]
+    let subject = data["asset"]["name"]
         .as_str()
-        .or(args["asset"].as_str())
-        .or(args["handle"].as_str())
-        .unwrap_or("timeline");
+        .or(data["name"].as_str())
+        .or(data["asset"]["asset"]["name"].as_str())
+        .or(args["name"].as_str())
+        .or(args["source"]
+            .as_str()
+            .or(args["asset"].as_str())
+            .or(args["handle"].as_str()))
+        .unwrap_or("project");
+    let action = args["action"].as_str().unwrap_or_default();
     match name {
-        "project_context" => "Read assets, tracks, settings, and available generators.".into(),
-        "inspect" => format!("Read details for {source}."),
-        "look" => {
-            let times = args["times"].as_array().map(|times| {
-                times
-                    .iter()
-                    .map(|t| format!("{}s", t))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            });
-            format!(
-                "{} · {}{}",
-                source,
-                data["kind"]
-                    .as_str()
-                    .or(args["mode"].as_str())
-                    .unwrap_or("cutsheet"),
-                times.map(|t| format!(" · {t}")).unwrap_or_default()
-            )
-        }
-        "watch_video" => format!(
-            "{} · silent video{}{}",
-            source,
-            data["duration_seconds"]
-                .as_f64()
-                .map(|d| format!(" · {d:.1}s"))
-                .unwrap_or_default(),
-            data["start_seconds"]
-                .as_f64()
-                .zip(data["end_seconds_exclusive"].as_f64())
-                .map(|(start, end)| format!(" · {start:.3}–{end:.3}s"))
-                .unwrap_or_default()
-        ),
-        "save_project" => "Project saved.".into(),
-        _ => format!(
-            "{}{}",
-            args["action"].as_str().unwrap_or("Completed"),
-            args["asset"]
-                .as_str()
-                .or(args["clip"].as_str())
-                .map(|s| format!(" · {s}"))
-                .unwrap_or_default()
-        ),
+        "project_context" => "Read project overview".into(),
+        "inspect" => format!("Inspected {subject}"),
+        "timeline_edit" => match action {
+            "place" => format!("Placed {subject} on the timeline"),
+            "move" => format!("Moved {subject} on the timeline"),
+            "resize" => format!("Resized {subject} on the timeline"),
+            "add_track" => "Added a timeline track".into(),
+            _ => "Updated the timeline".into(),
+        },
+        "asset_edit" => match action {
+            "import" => format!("Imported {subject}"),
+            "rename" => format!("Renamed {subject}"),
+            "create_generative" => format!("Created {subject}"),
+            "extract_still" => format!("Extracted a still from {subject}"),
+            _ => format!("Updated {subject}"),
+        },
+        "generation" => match action {
+            "configure" => format!("Configured generation for {subject}"),
+            "start" => format!("Started generation for {subject}"),
+            "status" => format!("Checked generation for {subject}"),
+            "activate_version" => format!("Activated a version for {subject}"),
+            _ => format!("Updated generation for {subject}"),
+        },
+        "save_project" => "Saved project".into(),
+        "look" => format!("Reviewed {subject}"),
+        "watch_video" => format!("Reviewed video from {subject}"),
+        _ => format!("Completed {name}"),
     }
+}
+
+fn paint_chat_surface_hover(ui: &Ui, response: &egui::Response) {
+    if response.hovered() {
+        ui.painter().rect_filled(
+            response.rect,
+            egui::CornerRadius::same(8),
+            Color32::from_rgba_unmultiplied(255, 255, 255, 6),
+        );
+        ui.painter().rect_stroke(
+            response.rect,
+            egui::CornerRadius::same(8),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(82, 88, 99, 112)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn paint_chat_accent(ui: &Ui, rect: Rect, accent: Color32) {
+    ui.painter().line_segment(
+        [
+            Pos2::new(rect.left() + 1.0, rect.top() + 8.0),
+            Pos2::new(rect.left() + 1.0, rect.bottom() - 8.0),
+        ],
+        Stroke::new(2.0_f32, accent),
+    );
 }
 
 // A small presentation layer for streamed prose; wire messages remain untouched.
@@ -698,82 +700,121 @@ impl LatentSlateApp {
                 ui.set_min_height(transcript_height);
                 for (index, row) in self.chat.rows.iter().enumerate() {
                     if row.tool {
-                        egui::Frame::new()
-                            .fill(kit::PANEL_RAISED)
-                            .stroke(egui::Stroke::new(1.0_f32, kit::BORDER_SOFT))
+                        let surface = egui::Frame::new()
+                            .fill(kit::PANEL)
                             .corner_radius(8)
-                            .inner_margin(12)
+                            .inner_margin(egui::Margin::symmetric(12, 8))
                             .show(ui, |ui| {
                                 ui.set_width((ui.available_width()).max(1.0));
                                 let running =
                                     self.chat.media.as_ref().is_some_and(|p| p.row == index);
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(tool_title(&row.label))
-                                            .strong()
-                                            .size(13.0),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(if running {
-                                            "Running"
-                                        } else if row.failed {
-                                            "Error"
-                                        } else {
-                                            "Done"
-                                        })
-                                        .size(11.0)
-                                        .color(
-                                            if row.failed {
-                                                kit::DANGER
-                                            } else if running {
-                                                kit::TEXT_MUTED
-                                            } else {
-                                                kit::PRIMARY
-                                            },
-                                        ),
-                                    );
-                                });
-                                ui.label(
-                                    egui::RichText::new(&row.summary)
-                                        .size(13.0)
-                                        .color(kit::TEXT_MUTED),
+                                let details_id = ui.make_persistent_id(("chat_tool", index));
+                                let mut details = egui::collapsing_header::CollapsingState::load_with_default_open(
+                                    ui.ctx(),
+                                    details_id,
+                                    false,
                                 );
-                                if let Some(texture) = &row.image {
-                                    ui.add_space(8.0);
-                                    let size = texture.size_vec2();
-                                    let scale = (ui.available_width() / size.x).min(1.0);
-                                    ui.add(
-                                        egui::Image::new(texture).fit_to_exact_size(size * scale),
-                                    );
-                                }
-                                let response = egui::CollapsingHeader::new("Details")
-                                    .id_salt(("chat_tool", index))
-                                    .show(ui, |ui| {
-                                        crate::core::automation::instrument_response(
-                                            ui.add(egui::Label::new(&row.text).wrap()),
-                                            "chat_tool_result",
-                                            Some(row.text.clone()),
-                                            false,
-                                            false,
-                                        );
-                                    });
-                                let real_clicked = response.header_response.clicked();
-                                let header = automation_button(
-                                    response.header_response,
-                                    &format!("Chat tool {index}: {}", row.label),
-                                );
-                                if header.clicked() && !real_clicked {
-                                    if let Some(mut state) =
-                                        egui::collapsing_header::CollapsingState::load(
-                                            ui.ctx(),
-                                            header.id,
+                                let status = if running {
+                                    "Running"
+                                } else if row.failed {
+                                    "Error"
+                                } else {
+                                    "Done"
+                                };
+                                let status_color = if row.failed {
+                                    kit::DANGER
+                                } else if running {
+                                    kit::TEXT_MUTED
+                                } else {
+                                    kit::PRIMARY
+                                };
+                                let mut toggle_details = false;
+                                kit::bounded_horizontal_row(ui, 20.0, |ui, row_width| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    let status_width = 48.0;
+                                    let details_width = 66.0;
+                                    let summary_width = (row_width
+                                        - status_width
+                                        - details_width
+                                        - ui.spacing().item_spacing.x * 2.0)
+                                        .max(0.0);
+                                    let summary = ui.add_sized(
+                                        [summary_width, 20.0],
+                                        egui::Label::new(
+                                            egui::RichText::new(&row.summary)
+                                                .size(12.0)
+                                                .color(kit::TEXT),
                                         )
-                                    {
-                                        state.toggle(ui);
-                                        state.store(ui.ctx());
+                                        .truncate(),
+                                    );
+                                    summary.on_hover_text(&row.summary);
+                                    ui.add_sized(
+                                        [status_width, 20.0],
+                                        egui::Label::new(
+                                            egui::RichText::new(status)
+                                                .size(10.5)
+                                                .color(status_color),
+                                        )
+                                        .truncate(),
+                                    );
+                                    let details_label = if details.is_open() {
+                                        "▾ Details"
+                                    } else {
+                                        "▸ Details"
+                                    };
+                                    let trigger = automation_button(
+                                        ui.add_sized(
+                                            [details_width, 20.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(details_label)
+                                                    .size(10.5)
+                                                    .color(kit::TEXT_MUTED),
+                                            )
+                                            .frame(false),
+                                        ),
+                                        &format!("Chat tool {index}: {}", row.label),
+                                    );
+                                    toggle_details = trigger.clicked();
+                                });
+                                if toggle_details {
+                                    details.toggle(ui);
+                                    details.store(ui.ctx());
+                                }
+                                if details.is_open() {
+                                    ui.add_space(8.0);
+                                    if let Some(texture) = &row.image {
+                                        let size = texture.size_vec2();
+                                        let scale = (ui.available_width() / size.x).min(1.0);
+                                        ui.add(
+                                            egui::Image::new(texture)
+                                                .fit_to_exact_size(size * scale),
+                                        );
+                                        ui.add_space(8.0);
                                     }
+                                    crate::core::automation::instrument_response(
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&row.text)
+                                                    .size(10.0)
+                                                    .color(kit::TEXT_MUTED)
+                                                    .monospace(),
+                                            )
+                                            .wrap()
+                                            .selectable(true),
+                                        ),
+                                        "chat_tool_result",
+                                        Some(row.text.clone()),
+                                        false,
+                                        false,
+                                    );
                                 }
                             });
+                        paint_chat_surface_hover(ui, &surface.response);
+                        paint_chat_accent(
+                            ui,
+                            surface.response.rect,
+                            Color32::from_rgb(71, 137, 201),
+                        );
                     } else {
                         let user = row.label == "You";
                         let assistant = row.label == "Assistant";
@@ -814,14 +855,8 @@ impl LatentSlateApp {
                             })
                             .inner;
                         if assistant {
-                            let rect = response.response.rect;
-                            ui.painter().line_segment(
-                                [
-                                    Pos2::new(rect.left() + 1.0, rect.top() + 9.0),
-                                    Pos2::new(rect.left() + 1.0, rect.bottom() - 9.0),
-                                ],
-                                egui::Stroke::new(2.0_f32, accent),
-                            );
+                            paint_chat_surface_hover(ui, &response.response);
+                            paint_chat_accent(ui, response.response.rect, accent);
                         }
                         crate::core::automation::instrument_response(
                             response.response,
