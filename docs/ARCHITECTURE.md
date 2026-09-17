@@ -62,6 +62,11 @@ right-aligned close control. They are 56 points high, or 72 with a subtitle;
 `tab_bar` supplies a bounded 40-point strip and divider; `workspace_tab` anchors
 its selection underline to the bottom. Asset Lab and AI Providers use these tabs.
 
+Escape is handled after widgets and popups: their bound actions take priority, then
+the shell dismisses only the topmost modal using its normal close/cancel behavior.
+Source-picker details return to choices; result audition dismisses before Asset Lab.
+An Escape that closes a popup never also closes its parent modal in the same frame.
+
 Image-backed tool symbols live in `assets/icons` as transparent 96-pixel PNGs
 with editable SVG masters. The kit caches textures and owns their tint, hit area,
 hover, focus, and selected states. Existing unrelated icon controls can migrate

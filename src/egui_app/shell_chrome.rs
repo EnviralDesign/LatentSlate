@@ -428,6 +428,62 @@ impl LatentSlateApp {
         }
     }
 
+    // Run after widgets and popups have had first refusal. This mirrors the modal
+    // draw order above, closing only its topmost entry with normal cancel semantics.
+    pub(super) fn dismiss_top_modal_on_escape(
+        &mut self,
+        ctx: &Context,
+        popup_was_open: bool,
+        lab_preview_before: Option<String>,
+    ) {
+        if popup_was_open
+            || ctx.any_popup_open()
+            || !ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            return;
+        }
+        if self.provider_builder_open {
+            self.provider_builder_open = false;
+            self.provider_builder.error = None;
+            self.provider_builder.workflow_error = None;
+        } else if self.provider_json_editor_path.is_some() {
+            self.provider_json_editor_path = None;
+            self.provider_json_error = None;
+        } else if self.bridge_keyframe_confirmation.is_some() {
+            self.bridge_keyframe_confirmation = None;
+        } else if self.track_delete_confirmation.is_some() {
+            self.track_delete_confirmation = None;
+        } else if self.asset_delete_confirmation.is_some() {
+            self.asset_delete_confirmation = None;
+        } else if self.project_delete_confirmation.is_some() {
+            self.project_delete_confirmation = None;
+        } else if self.unsaved_close_confirmation_open {
+            self.unsaved_close_confirmation_open = false;
+        } else if self.project_description_editor.is_some() {
+            self.project_description_editor = None;
+        } else if self.source_picker.is_some() {
+            self.dismiss_source_picker_on_escape();
+        } else if self.editor.overlays.asset_lab {
+            self.dismiss_asset_lab_on_escape(lab_preview_before);
+        } else if self.editor.overlays.providers {
+            self.close_providers_modal(ctx);
+        } else if self.editor.overlays.agent_api {
+            self.editor.overlays.agent_api = false;
+        } else if self.editor.overlays.queue {
+            self.editor.overlays.queue = false;
+        } else if self.editor.overlays.export_video {
+            self.close_or_cancel_export_modal();
+        } else if self.editor.overlays.generative_video {
+            self.editor.overlays.generative_video = false;
+        } else if self.editor.overlays.project_settings {
+            self.editor.overlays.project_settings = false;
+        } else if self.editor.overlays.open_project {
+            self.editor.overlays.open_project = false;
+        } else if self.editor.overlays.new_project && self.editor.project_root().is_some() {
+            self.editor.overlays.new_project = false;
+        }
+    }
+
     pub(super) fn status_bar(&mut self, root: &mut Ui) {
         let response = egui::Panel::bottom("status")
             .exact_size(kit::STATUS_BAR_H)
@@ -569,6 +625,8 @@ impl eframe::App for LatentSlateApp {
     }
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let popup_was_open = ctx.any_popup_open();
+        let lab_preview_before = self.asset_lab.v4.preview.clone();
         self.editor.refresh_project_dirty_state();
         self.handle_viewport_close_request(&ctx);
         self.update_window_dirty_title(&ctx);
@@ -600,6 +658,7 @@ impl eframe::App for LatentSlateApp {
         if self.editor.overlays.chat {
             self.chat_panel(&ctx);
         }
+        self.dismiss_top_modal_on_escape(&ctx, popup_was_open, lab_preview_before);
         self.service_audio_decode_warmup(&ctx);
         self.finish_automation_ui_actions();
         self.editor.refresh_project_dirty_state();

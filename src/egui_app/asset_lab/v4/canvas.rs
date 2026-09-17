@@ -1115,9 +1115,12 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
+                    let popup_was_open = ctx.any_popup_open();
+                    let lab_preview_before = app.asset_lab.v4.preview.clone();
                     ui.set_max_size(Vec2::new(1024.0, 768.0));
                     app.asset_lab_v4_contents(ui, &asset);
                     app.source_picker_modal(&ctx);
+                    app.dismiss_top_modal_on_escape(&ctx, popup_was_open, lab_preview_before);
                 },
             );
         };
@@ -1257,7 +1260,15 @@ mod tests {
             Some("v1")
         );
         app.asset_lab.v4.view = AssetLabView::Create;
+        app.asset_lab.compare = None;
         frame(&mut app, vec![]);
+        for _ in 0..20 {
+            press(&mut app, egui::Key::Tab);
+            if app.asset_lab.v4.preview.is_some() {
+                break;
+            }
+        }
+        assert_eq!(app.asset_lab.v4.preview.as_deref(), Some("v2"));
         press(&mut app, egui::Key::E);
         assert_eq!(app.asset_lab.v4.canvas.tool, Tool::Paint);
         frame(&mut app, vec![key(egui::Key::Escape, true)]);

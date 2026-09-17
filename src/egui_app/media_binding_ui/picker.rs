@@ -16,7 +16,32 @@ pub(in crate::egui_app) struct SourcePickerState {
     error: Option<String>,
 }
 
+impl SourcePickerState {
+    fn cancel_details(&mut self, config: &GenerativeConfig, project: &crate::state::Project) {
+        self.spec = lookup_media_binding(config, &self.field, project);
+        self.sizing = config
+            .reference_sizing
+            .get(&self.field.name)
+            .copied()
+            .unwrap_or_default();
+        self.context = self.saved_context;
+        self.details = false;
+        self.error = None;
+    }
+}
+
 impl LatentSlateApp {
+    pub(in crate::egui_app) fn dismiss_source_picker_on_escape(&mut self) {
+        if let Some(mut state) = self.source_picker.take() {
+            if state.details {
+                if let Some(config) = self.editor.project.generative_config(state.asset_id) {
+                    state.cancel_details(config, &self.editor.project);
+                    self.source_picker = Some(state);
+                }
+            }
+        }
+    }
+
     pub(in crate::egui_app) fn open_source_picker(
         &mut self,
         asset_id: Uuid,
@@ -367,10 +392,7 @@ impl LatentSlateApp {
             return;
         };
         let mut close = kit::dismissible_nested_modal_scrim(ctx, "source_picker", true);
-        let escape =
-            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        let mut cancel_details = escape && state.details;
-        close |= escape && !state.details;
+        let mut cancel_details = false;
         let mut apply = false;
         let mut capture = false;
         let size = crate::egui_app::modal_size(ctx, [590.0, 820.0], [380.0, 300.0]);
@@ -469,15 +491,7 @@ impl LatentSlateApp {
                     });
             });
         if cancel_details {
-            state.spec = lookup_media_binding(&config, &state.field, &self.editor.project);
-            state.sizing = config
-                .reference_sizing
-                .get(&state.field.name)
-                .copied()
-                .unwrap_or_default();
-            state.context = state.saved_context;
-            state.details = false;
-            state.error = None;
+            state.cancel_details(&config, &self.editor.project);
         }
         if capture {
             let result = (|| {

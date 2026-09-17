@@ -79,15 +79,16 @@ impl LatentSlateApp {
                 });
             });
         if close_clicked || outside_clicked || !open {
-            match self.persist_engine_connection_draft() {
-                Ok(changed) => {
-                    if changed {
-                        self.launch_pending_provider_refresh(ctx);
-                    }
-                    self.editor.overlays.providers = false;
-                }
-                Err(_) => {}
+            self.close_providers_modal(ctx);
+        }
+    }
+
+    pub(super) fn close_providers_modal(&mut self, ctx: &Context) {
+        if let Ok(changed) = self.persist_engine_connection_draft() {
+            if changed {
+                self.launch_pending_provider_refresh(ctx);
             }
+            self.editor.overlays.providers = false;
         }
     }
 

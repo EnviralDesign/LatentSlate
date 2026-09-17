@@ -378,9 +378,6 @@ impl LatentSlateApp {
                 );
             }
         }
-        if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.asset_lab.v4.dismissed_preview = self.asset_lab.v4.preview.take();
-        }
         if let Some(version) = self.asset_lab.v4.pending_adopt.clone() {
             kit::nested_modal_scrim(ui.ctx(), "asset_lab_adopt_confirmation");
             egui::Window::new("Continue from result?")
@@ -400,6 +397,18 @@ impl LatentSlateApp {
                         self.asset_lab.v4.pending_adopt = None;
                     }
                 });
+        }
+    }
+
+    pub(in crate::egui_app) fn dismiss_asset_lab_on_escape(&mut self, preview_before: Option<String>) {
+        if self.asset_lab.v4.pending_adopt.take().is_some() {
+            return;
+        }
+        // Escape can release the audition tile's focus before this frame renders.
+        if let Some(preview) = self.asset_lab.v4.preview.take().or(preview_before) {
+            self.asset_lab.v4.dismissed_preview = Some(preview);
+        } else {
+            self.close_asset_lab();
         }
     }
 
