@@ -208,6 +208,15 @@ artifacts. A successful attempt contributes one version and one completed lineag
 batch siblings share their submitted parent. Native integer seeds and reservations remain
 authoritative.
 
+Text inputs may use `InputValue::Prompt { text, references }`. Readable `@{alias}` markers
+map to provider UUID/input-key identities; aliases are not source assets or compacted
+ordinals. Exact matching is applied on explicit writes, not deserialization. Registrations
+remain when their text is removed so native text undo restores the same identity. The
+media resolver supplies availability previews; final interpolation uses the prepared
+request's media set and catalog `prompt_reference_token` metadata. `inputs_snapshot`
+records the resolved literal prompt; `authoring_snapshot.inputs` retains the authored
+references for continuation. This does not add an Engine interpreter or general templates.
+
 The Lab session owns its result strip, revision, pending associations, and up to 20
 coalesced undo actions with an approximate memory guard. Closing clears those; submission
 clears undo without deleting authored content. Cameras, overlay visibility, and result

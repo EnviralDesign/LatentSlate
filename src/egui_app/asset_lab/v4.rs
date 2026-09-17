@@ -1071,10 +1071,17 @@ impl LatentSlateApp {
                                 let label = field.map(|f| f.label.as_str()).unwrap_or(name);
                                 if is_prompt {
                                     ui.add_space(16.0);
-                                    kit::field_label(ui, label);
+                                    let authored = record.authoring_snapshot.as_ref().and_then(|snapshot| snapshot.inputs.get(name));
+                                    let has_references = matches!(authored, Some(InputValue::Prompt { .. }));
+                                    kit::field_label(ui, &if has_references { format!("{label} sent") } else { label.to_string() });
                                     ui.add(
                                         egui::Label::new(kit::body(text)).wrap().selectable(true),
                                     );
+                                    if let Some(InputValue::Prompt { text, .. }) = authored {
+                                        egui::CollapsingHeader::new("Authored prompt").id_salt((record.version.as_str(), name)).show(ui, |ui| {
+                                            ui.add(egui::Label::new(text).wrap().selectable(true));
+                                        });
+                                    }
                                 } else if !record.resolved_media_inputs.contains_key(name) {
                                     settings.push((label.to_string(), text));
                                 }

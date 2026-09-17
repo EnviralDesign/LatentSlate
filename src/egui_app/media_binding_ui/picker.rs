@@ -104,7 +104,7 @@ impl LatentSlateApp {
             field,
         );
         let title = match token {
-            Some(token) => format!("{token} · {}", field.label),
+            Some(token) => format!("@{} · {token}", field.label),
             None => format!(
                 "{}{}",
                 field.label,
@@ -273,7 +273,7 @@ impl LatentSlateApp {
             .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));
     }
 
-    fn source_choice_preview(
+    pub(in crate::egui_app) fn source_choice_preview(
         &mut self,
         ui: &Ui,
         asset_id: Uuid,

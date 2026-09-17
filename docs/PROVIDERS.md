@@ -127,14 +127,25 @@ sampling. A separate source override remains paired with the declared video but 
 its own sampling; an ordinary audio input remains independent even when using the same
 file. Video-sourced independent/override audio is prepared as an audio-only artifact.
 
-H3 reference-to-video exposes mixed image/video/audio slots. Its prompt syntax remains
-literal: `<Picture N>` and `<Video N>` count occupied slots in order; `<Audio N>` counts
+H3 reference-to-video exposes mixed image/video/audio slots. Its submitted notation
+uses `<Picture N>` and `<Video N>` for occupied slots in order; `<Audio N>` counts
 enabled video soundtracks in video order, then occupied standalone audio slots.
-Removing earlier references can change these effective numbers. Catalog descriptions
-provide hover help; LatentSlate does not insert or rewrite prompt tokens. Optional
-`prompt_reference_token` templates (for example `<Audio {index}>`) display effective
+Removing earlier references can change these effective numbers. Literal provider tokens
+remain untouched. Explicit authored `@{Input label}` references instead bind to a stable
+provider ID and input key and resolve only after submission media are prepared. Optional
+`prompt_reference_token` templates (for example `<Audio {index}>`) supply effective
 1-based numbers for occupied fields sharing the exact template, in catalog declaration
-order. This is display metadata, not authored prompt interpolation or stable variables.
+order; a template without `{index}` stays literal (for example Qwen's fixed `Picture 3`).
+Only catalog-declared notation is offered; model names never imply support. Missing
+sources or incompatible recipe identities block submission and require a source,
+explicit reassignment, or removal. Source changes retain the authored input identity.
+
+The shared prompt field offers `@` autocomplete with fuzzy input/source matching,
+readable highlighted mentions, and an inspectable prompt-to-send preview. Exact
+`@{input_name}` or `@{Input label}` matches bind on explicit chat/API writes and human
+edits. Legacy literal prompts are not parsed on project load. Existing registrations
+survive text undo and recipe changes; copy/paste into a different prompt is a new write
+against that prompt's recipe. Submitted snapshots retain both authored and resolved text.
 
 User tools may fix either canvas dimension and the request duration in catalog
 metadata. These values participate in preflight and output prediction without

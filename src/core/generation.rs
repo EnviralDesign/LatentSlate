@@ -661,6 +661,17 @@ pub fn preflight_provider_config(
             }
         }
     }
+    for input in &provider.inputs {
+        if let Some(value @ InputValue::Prompt { .. }) = config.inputs.get(&input.name) {
+            if let Err(errors) = crate::core::prompt_references::preview_prompt(
+                value, provider, project, &config, target_asset_id, context_clip_id,
+            ) {
+                issues.extend(errors.into_iter().map(|message| GenerationPreflightIssue {
+                    section: GenerationControlSection::Inputs, message,
+                }));
+            }
+        }
+    }
     issues.dedup();
     issues
 }
@@ -1143,6 +1154,21 @@ pub fn resolve_provider_inputs(
         }
     }
 
+    // Resolve explicit mentions only after the concrete media set has been prepared.
+    for input in &provider.inputs {
+        if let Some(InputValue::Prompt { text, references }) = config.inputs.get(&input.name) {
+            match crate::core::prompt_references::resolve_prompt(text, references, provider, |field| {
+                values.get(&field.name).and_then(Value::as_str).is_some_and(|path| !path.is_empty())
+            }) {
+                Ok(text) => {
+                    let value = Value::String(text);
+                    values.insert(input.name.clone(), value.clone());
+                    snapshot.insert(input.name.clone(), InputValue::Literal { value });
+                }
+                Err(errors) => input_errors.extend(errors),
+            }
+        }
+    }
     ResolvedInputs {
         values,
         snapshot,
@@ -1480,7 +1506,7 @@ fn image_input_binding_is_resolvable(project: &Project, binding: &InputValue) ->
                 && generative_asset_source_path(root, asset, Some(version))
                     .is_some_and(|path| path.exists())
         }),
-        InputValue::Literal { .. } => false,
+        InputValue::Literal { .. } | InputValue::Prompt { .. } => false,
     }
 }
 
@@ -1549,7 +1575,7 @@ fn reference_frame_time(project: &Project, reference: &InputValue, fps: f64) -> 
                 source_media_fps(asset, fps),
             ))
         }
-        InputValue::Literal { .. } => None,
+        InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
     }
 }
 
@@ -1656,7 +1682,7 @@ fn resolve_unpinned_asset_ref(
             }
         }
         InputValue::GenerationRef { .. } => Some(value),
-        InputValue::Literal { .. } => None,
+        InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
     }
 }
 
@@ -1864,7 +1890,7 @@ fn asset_ref_path(
             }
             generative_asset_source_path(root, asset, Some(version))
         }
-        InputValue::Literal { .. } => None,
+        InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
     }
 }
 
@@ -2200,6 +2226,7 @@ pub fn next_version_label(config: &GenerativeConfig) -> String {
 
 fn literal_input_value(config: &GenerativeConfig, name: &str) -> Option<Value> {
     config.inputs.get(name).and_then(|input| match input {
+        InputValue::Prompt { text, .. } => Some(Value::String(text.clone())),
         InputValue::Literal { value } => Some(value.clone()),
         _ => None,
     })

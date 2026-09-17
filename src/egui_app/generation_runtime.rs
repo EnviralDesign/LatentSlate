@@ -430,7 +430,10 @@ impl LatentSlateApp {
                     config.active_version = Some(version.clone());
                     for (name, value) in &job.inputs_snapshot {
                         if matches!(value, InputValue::Literal { .. }) {
-                            config.inputs.insert(name.clone(), value.clone());
+                            let authored = job.authoring_snapshot.as_ref()
+                                .and_then(|snapshot| snapshot.inputs.get(name))
+                                .filter(|value| matches!(value, InputValue::Prompt { .. }));
+                            config.inputs.insert(name.clone(), authored.unwrap_or(value).clone());
                         }
                     }
                 }
@@ -772,6 +775,11 @@ impl LatentSlateApp {
                 .media_bindings
                 .extend(resolved.media_bindings_snapshot.clone());
             authoring_snapshot.inputs = inputs_snapshot.clone();
+            for (name, value) in &authored.inputs {
+                if matches!(value, InputValue::Prompt { .. }) {
+                    authoring_snapshot.inputs.insert(name.clone(), value.clone());
+                }
+            }
             jobs.push(GenerationJob {
                 authoring_snapshot: Some(authoring_snapshot),
                 lab_submission: lab_submission.clone(),
@@ -1118,6 +1126,35 @@ mod cancellation_tests {
     }
 
     #[test]
+    fn prompt_references_completion_retains_authoring_and_submitted_text() {
+        let mut app = LatentSlateApp::new(&eframe::CreationContext::_new_kittest(Context::default()));
+        let root = std::env::temp_dir().join(format!("ls-prompt-completion-{}", Uuid::new_v4()));
+        let folder = PathBuf::from("generated/image/fixture");
+        std::fs::create_dir_all(root.join(&folder)).unwrap();
+        app.editor.project = crate::state::Project::new("Prompt completion");
+        app.editor.project.project_path = Some(root.clone());
+        let asset = Asset::new_generative_image("Synthetic result", folder.clone());
+        let mut job = test_generation_job(GenerationJobStatus::Running);
+        job.asset_id = asset.id;
+        let authored = InputValue::Prompt { text: "Use @{Image 1}".into(), references: HashMap::from([("Image 1".into(), crate::state::PromptReference {provider_id:job.provider.id,input_name:"image1".into()})]) };
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert("prompt".into(), authored.clone());
+        job.authoring_snapshot = Some(crate::state::AssetLabSnapshot::from_config(&config));
+        job.inputs_snapshot.insert("prompt".into(), InputValue::Literal {value:serde_json::json!("Use <Picture 1>")});
+        app.editor.project.generative_configs.insert(asset.id,config);
+        app.editor.project.assets.push(asset);
+        let path = root.join(folder).join("v1.png");
+        image::RgbImage::new(32,32).save(&path).unwrap();
+        app.finish_generation_success(job.clone(), GenerationOutput {path,version:"v1".into(),engine_execution:None});
+        let config = app.editor.project.generative_config(job.asset_id).unwrap();
+        assert_eq!(config.inputs["prompt"],authored);
+        let record = &config.versions[0];
+        assert_eq!(record.inputs_snapshot["prompt"],job.inputs_snapshot["prompt"]);
+        assert_eq!(crate::state::generation_record_source_inputs(config,record)["prompt"],authored);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cancelled_running_job_keeps_the_queue_slot_until_provider_finishes() {
         let mut running = test_generation_job(GenerationJobStatus::Running);
         let queued = test_generation_job(GenerationJobStatus::Queued);
@@ -1180,7 +1217,7 @@ mod cancellation_tests {
         assert_eq!(
             config.inputs.get("seed").and_then(|value| match value {
                 InputValue::Literal { value } => input_value_as_u64(value),
-                InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
+                InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } | InputValue::Prompt { .. } => None,
             }),
             Some(u64::MAX)
         );

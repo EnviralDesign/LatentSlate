@@ -1,0 +1,86 @@
+{
+  "id": "a7489e73-3bb9-4bb9-888f-fa592c8f4430",
+  "key": "flux2_klein9b.two_image_to_image",
+  "schema_revision": 3,
+  "name": "FLUX.2 Klein 9B Image to Image",
+  "description": "Generate an image with FLUX.2 Klein 9B distilled.",
+  "workflow_kind": "image_to_image",
+  "output": {
+    "type": "image"
+  },
+  "inputs": [
+    {
+      "key": "prompt",
+      "label": "Prompt",
+      "type": "text",
+      "required": true,
+      "ui": {
+        "multiline": true,
+        "placeholder": "Describe the image"
+      }
+    },
+    {
+      "key": "image_1",
+      "label": "Image 1",
+      "type": "image",
+      "required": true,
+      "prompt_reference_token": "image {index}"
+    },
+    {
+      "key": "image_2",
+      "label": "Image 2",
+      "type": "image",
+      "required": false,
+      "prompt_reference_token": "image {index}",
+      "nullable": true
+    },
+    {
+      "key": "image_3",
+      "label": "Image 3",
+      "type": "image",
+      "required": false,
+      "prompt_reference_token": "image {index}",
+      "nullable": true
+    },
+    {
+      "key": "width",
+      "label": "Width",
+      "type": "integer",
+      "required": true,
+      "default": 768,
+      "role": "width",
+      "ui": {
+        "min": 256,
+        "step": 16
+      }
+    },
+    {
+      "key": "height",
+      "label": "Height",
+      "type": "integer",
+      "required": true,
+      "default": 768,
+      "role": "height",
+      "ui": {
+        "min": 256,
+        "step": 16
+      }
+    },
+    {
+      "key": "seed",
+      "label": "Seed",
+      "type": "integer",
+      "required": true,
+      "default": 0,
+      "role": "seed"
+    }
+  ],
+  "canvas": {
+    "alignment": 16,
+    "min_side": 256,
+    "max_pixels": 1048576,
+    "max_aspect": 4.0
+  },
+  "schema_hash": "sha256:3e7dc45793550975bc2743fbb36b4a3f432c0bc172a542fbea112771f7ac47b8",
+  "available": true
+}

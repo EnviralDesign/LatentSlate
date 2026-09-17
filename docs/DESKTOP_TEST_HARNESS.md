@@ -85,6 +85,16 @@ Versioned agent endpoints are also available:
 
 UI commands are consumed by registered egui widgets during normal rendering. Semantic commands are applied through the editor state/controller path where possible.
 
+Prompt references are shared with chat tools: asset `inspect` and `get_generative_config`
+return `prompt_references`, including supported input identities, canonical syntax,
+current bindings, resolved notation, and errors. Write text such as `Use @{reference_image_3}`
+through chat `generation.configure`, or a literal text value through
+`set_generative_config`/`replace_generative_config`; exact supported names or labels
+upgrade to `InputValue::Prompt`. Existing registrations retain their provider/input
+identity, so switching recipes requires explicit reassignment. Structured prompt values
+can also be read/written through the API. Job and version inspection distinguish authored
+references from submitted plain text. No generation call is needed to inspect resolution.
+
 For canvas gestures and keyboard focus, `input_ui` queues a real egui raw-input event
 for the next native frame. Its acknowledgment means queued, not yet rendered. Pointer
 coordinates use logical window points; send separate press, move, and release commands.
@@ -96,6 +106,7 @@ For example:
 {"type":"input_ui","event":{"kind":"pointer","x":400,"y":330,"button":"primary","pressed":false}}
 {"type":"input_ui","event":{"kind":"scroll","x":0,"y":120}}
 {"type":"input_ui","event":{"kind":"key","key":"Escape","pressed":true}}
+{"type":"input_ui","event":{"kind":"text","text":"Match @img3"}}
 ```
 
 Use registered widget IDs for ordinary controls. Offline Asset Lab tests also exercise

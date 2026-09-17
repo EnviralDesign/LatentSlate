@@ -1704,3 +1704,33 @@ fn reference_tokens_follow_occupied_catalog_order_without_rewriting_prompt() {
         }
     );
 }
+
+#[test]
+fn prompt_references_submission_uses_prepared_media_and_keeps_authored_snapshot() {
+    use crate::core::prompt_references::*;
+    use crate::core::generation::{resolve_provider_inputs, preflight_provider_config};
+    use serde_json::json;
+    let mut h=Harness::new();
+    let mut one=image_field(None); one.name="image1".into(); one.required=false; one.prompt_reference_token=Some("<Picture {index}>".into());
+    let mut three=one.clone(); three.name="image3".into(); three.label="Image 3".into();
+    let prompt:ProviderInputField=serde_json::from_value(json!({"name":"prompt","label":"Prompt","input_type":{"type":"text"},"required":true})).unwrap();
+    h.provider=provider_with(vec![prompt,one,three.clone()]); h.config.provider_id=Some(h.provider.id);
+    let image=h.add_image(989,"Reference","media/reference.png");
+    image::RgbaImage::new(32,32).save(h.project.project_path.as_ref().unwrap().join("media/reference.png")).unwrap();
+    let binding=MediaBindingSpec {source:MediaBindingSource::ProjectAsset{asset_id:image.id,version:None},sample:MediaSample::Whole,coverage:Default::default()};
+    h.config.media_bindings.insert(three.name.clone(),binding);
+    let authored=upgrade_written_prompt(InputValue::Literal{value:json!("Use @{image3}; literal <Picture 9>")},None,&h.provider);
+    h.config.inputs.insert("prompt".into(),authored.clone());
+    let snapshot=crate::state::AssetLabSnapshot::from_config(&h.config);
+    let resolved=resolve_provider_inputs(&h.project,Some(h.target.id),None,&h.provider,&h.config);
+    assert!(resolved.media_errors.is_empty(),"{:?}",resolved.media_errors);
+    assert!(resolved.input_errors.is_empty());
+    assert_eq!(resolved.values["prompt"],json!("Use <Picture 1>; literal <Picture 9>"));
+    assert_eq!(resolved.snapshot["prompt"],InputValue::Literal{value:resolved.values["prompt"].clone()});
+    assert_eq!(snapshot.inputs["prompt"],authored);
+    let mut restored=GenerativeConfig::default();snapshot.apply(&mut restored);assert_eq!(restored.inputs["prompt"],authored);
+    h.config.media_bindings.clear();
+    assert!(preflight_provider_config(&h.project,Some(h.target.id),None,&h.provider,&h.config).iter().any(|issue|issue.message.contains("needs a valid source")));
+    let missing=resolve_provider_inputs(&h.project,Some(h.target.id),None,&h.provider,&h.config);
+    assert!(!missing.input_errors.is_empty());
+}

@@ -1623,6 +1623,28 @@ mod tests {
     }
 
     #[test]
+    fn prompt_references_qwen_catalog_keeps_fixed_slot_notation() {
+        let tool: EngineTool = serde_json::from_str(include_str!("../../tests/fixtures/catalog-qwen2511-edit.json")).unwrap();
+        let provider = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
+        let input = provider.inputs.iter().find(|input| input.prompt_reference_token.as_deref() == Some("Picture 3")).unwrap();
+        let reference = crate::state::PromptReference { provider_id: provider.id, input_name: input.name.clone() };
+        assert_eq!(crate::core::prompt_references::resolve_reference(&reference, &provider, |field| field.name == input.name).unwrap(), "Picture 3");
+    }
+
+    #[test]
+    fn prompt_references_klein_catalog_packs_one_to_three_references() {
+        let tool: EngineTool = serde_json::from_str(include_str!("../../tests/fixtures/catalog-klein9b-edit.json")).unwrap();
+        let provider = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
+        let fields: Vec<_> = provider.inputs.iter().filter(|input| input.prompt_reference_token.is_some()).collect();
+        assert_eq!(fields.len(), 3);
+        assert!(fields[0].required);
+        assert!(!fields[1].required && !fields[2].required);
+        let reference = crate::state::PromptReference { provider_id: provider.id, input_name: fields[2].name.clone() };
+        assert_eq!(crate::core::prompt_references::resolve_reference(&reference, &provider, |field| field.name != fields[1].name).unwrap(), "image 2");
+        assert_eq!(crate::core::prompt_references::resolve_reference(&reference, &provider, |_| true).unwrap(), "image 3");
+    }
+
+    #[test]
     fn published_recipe_catalog_consumes_all_eight_operations_and_fixed_contracts() {
         use crate::core::generation::{
             effective_canvas_dimensions, predicted_output_timing, provider_request_duration,

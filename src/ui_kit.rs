@@ -2027,6 +2027,18 @@ pub fn multiline_text_field(
     width: f32,
     options: MultilineTextFieldOptions,
 ) -> Response {
+    multiline_text_field_highlighted(ui, value, width, options, &[]).0
+}
+
+/// Text editor with byte-range highlights and a character cursor for contextual completions.
+/// Existing callers keep the same field, scrolling, focus and automation behavior.
+pub fn multiline_text_field_highlighted(
+    ui: &mut Ui,
+    value: &mut String,
+    width: f32,
+    options: MultilineTextFieldOptions,
+    highlights: &[(std::ops::Range<usize>, Color32)],
+) -> (Response, Option<egui::text::CCursorRange>) {
     let rows = options.rows.max(1);
     let height = multiline_text_field_height(rows);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -2046,6 +2058,7 @@ pub fn multiline_text_field(
 
     ui.painter().rect_filled(rect, field_radius(), FIELD_BG);
     let mut text_response: Option<Response> = None;
+    let mut cursor = None;
     egui::ScrollArea::vertical()
         .id_salt(field_id.with("scroll"))
         .max_width(rect.width())
@@ -2057,6 +2070,23 @@ pub fn multiline_text_field(
             ui.set_width(rect.width());
             ui.set_min_width(rect.width());
             ui.set_max_width(rect.width());
+            let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                let text = text.as_str();
+                let mut job = egui::text::LayoutJob::default();
+                job.wrap.max_width = wrap_width;
+                let mut offset = 0;
+                for (range, color) in highlights {
+                    if range.start < offset || range.end > text.len()
+                        || !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) { continue; }
+                    job.append(&text[offset..range.start], 0.0, egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), TEXT));
+                    let mut format = egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), *color);
+                    format.background = color.gamma_multiply(0.12);
+                    job.append(&text[range.clone()], 0.0, format);
+                    offset = range.end;
+                }
+                job.append(&text[offset..], 0.0, egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), TEXT));
+                ui.fonts_mut(|fonts| fonts.layout_job(job))
+            };
             let output = egui::TextEdit::multiline(value)
                 .id(field_id)
                 .desired_width(rect.width())
@@ -2065,7 +2095,9 @@ pub fn multiline_text_field(
                 .text_color(TEXT)
                 .font(FontId::proportional(FIELD_TEXT_SIZE))
                 .frame(field_text_frame())
+                .layouter(&mut layouter)
                 .show(ui);
+            cursor = output.cursor_range;
             text_response = Some(output.response.response);
         });
 
@@ -2086,7 +2118,7 @@ pub fn multiline_text_field(
     };
     ui.painter()
         .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
-    crate::core::automation::instrument_response(response, "multiline_text_field", None, true, true)
+    (crate::core::automation::instrument_response(response, "multiline_text_field", None, true, true), cursor)
 }
 
 pub fn multiline_text_field_height(rows: usize) -> f32 {

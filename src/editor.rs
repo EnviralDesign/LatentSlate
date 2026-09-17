@@ -2651,6 +2651,8 @@ impl EditorState {
                             "config": config,
                             "context_clip_id": context_clip_id,
                             "media_bindings": media_bindings,
+                            "prompt_references": config.provider_id.and_then(|id| self.provider_entries.iter().find(|provider| provider.id == id))
+                                .map(|provider| crate::core::prompt_references::inspect_references(&self.project, config, provider, *asset_id, context_clip_id)),
                         }))
                     }
                     None => AutomationResponse::not_found("Generative config not found."),
@@ -2714,7 +2716,14 @@ impl EditorState {
                 }
                 let updated = self.project.update_generative_config(*asset_id, |config| {
                     if let Some(inputs) = patch.inputs.clone() {
-                        config.inputs.extend(inputs);
+                        for (name, value) in inputs {
+                            let value = target_provider_id.and_then(|id| self.provider_entries.iter().find(|provider| provider.id == id))
+                                .filter(|provider| provider.inputs.iter().any(|field| field.name == name && field.input_type == ProviderInputType::Text))
+                                .map(|provider| crate::core::prompt_references::upgrade_written_prompt(value.clone(),
+                                    config.inputs.get(&name).filter(|value| matches!(value, InputValue::Prompt { .. })), provider))
+                                .unwrap_or(value);
+                            config.inputs.insert(name, value);
+                        }
                     }
                     if let Some(reference_slots) = patch.reference_slots.clone() {
                         config.reference_slots.extend(reference_slots);
@@ -2817,6 +2826,15 @@ impl EditorState {
                         .find(|provider| provider.id == provider_id)
                 });
                 normalize_media_reference_slots_to_inputs(&mut next, next_provider);
+                if let Some(provider) = next_provider {
+                    for field in provider.inputs.iter().filter(|field| field.input_type == ProviderInputType::Text) {
+                        if let Some(value) = next.inputs.get(&field.name).cloned() {
+                            let previous = self.project.generative_config(*asset_id).and_then(|config| config.inputs.get(&field.name))
+                                .filter(|value| matches!(value, InputValue::Prompt { .. }));
+                            next.inputs.insert(field.name.clone(), crate::core::prompt_references::upgrade_written_prompt(value, previous, provider));
+                        }
+                    }
+                }
                 let updated = self.project.update_generative_config(*asset_id, |config| {
                     *config = next;
                 });
@@ -3612,6 +3630,7 @@ pub(crate) fn compact_generation_job_json(job: &GenerationJob) -> Value {
     json!({
         "id": job.id,
         "job_id": job.id,
+        "prompts": crate::core::prompt_references::submitted_prompts(job.authoring_snapshot.as_ref(), &job.inputs_snapshot),
         "created_at": job.created_at,
         "status": job.status,
         "progress": job.progress_overall.as_ref().map(|lane| lane.progress),
@@ -3816,7 +3835,7 @@ fn apply_active_generation_version_to_config(config: &mut GenerativeConfig, vers
     config.active_version = Some(version.to_string());
     if !config.lab_authoring.initialized {
         config.provider_id = Some(record.provider_id);
-        config.inputs = record.inputs_snapshot;
+        config.inputs = crate::state::generation_record_source_inputs(config, &record);
     }
     if let Some(node_id) = record.lab_node_id {
         config.lab_graph.selected_node_id = Some(node_id);
@@ -3881,7 +3900,7 @@ fn validate_generative_input_refs(
                     ));
                 }
             }
-            InputValue::Literal { .. } => {}
+            InputValue::Literal { .. } | InputValue::Prompt { .. } => {}
         }
     }
     Ok(())

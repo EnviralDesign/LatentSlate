@@ -2359,7 +2359,7 @@ impl LatentSlateApp {
                             .iter()
                             .find(|record| record.version == *version)
                         {
-                            config.inputs = record.inputs_snapshot.clone();
+                            config.inputs = generation_record_source_inputs(config, record);
                             config.provider_id = Some(record.provider_id);
                         }
                     }
@@ -3444,6 +3444,14 @@ impl LatentSlateApp {
                     }
                 }
                 ProviderInputType::Text => {
+                    if input.ui.as_ref().is_some_and(|ui| ui.multiline)
+                        || matches!(config_snapshot.inputs.get(&input.name), Some(InputValue::Prompt { .. }))
+                    {
+                        if let Some(value) = self.prompt_reference_field(ui, asset_id, context_clip_id, provider, config_snapshot, input, &label) {
+                            updates.push((input.name.clone(), value));
+                        }
+                        continue;
+                    }
                     let mut value = current_value
                         .as_ref()
                         .and_then(input_value_as_string)
@@ -3828,7 +3836,7 @@ impl LatentSlateApp {
                     asset.name, version, frame_suffix
                 ))
             }
-            InputValue::Literal { .. } => None,
+            InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
         }
     }
 
@@ -4443,7 +4451,7 @@ fn clamp_provider_input_number(value: f64, input: &ProviderInputField) -> f64 {
 }
 
 fn retain_literal_inputs(inputs: &mut HashMap<String, InputValue>) {
-    inputs.retain(|_, value| matches!(value, InputValue::Literal { .. }));
+    inputs.retain(|_, value| matches!(value, InputValue::Literal { .. } | InputValue::Prompt { .. }));
 }
 
 fn provider_choice_menu_row(ui: &mut Ui, provider: &ProviderEntry) -> egui::Response {

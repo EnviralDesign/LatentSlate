@@ -346,7 +346,7 @@ pub fn legacy_input_to_binding(
 ) -> Option<MediaBindingSpec> {
     let sample = sample_from_legacy_frame(value, input);
     match value {
-        InputValue::Literal { .. } => None,
+        InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
         InputValue::AssetRef {
             asset_id,
             source_clip_id,
@@ -412,7 +412,7 @@ fn sample_from_legacy_frame(value: &InputValue, _input: &ProviderInputField) -> 
         | InputValue::GenerationRef {
             frame_reference, ..
         } => *frame_reference,
-        InputValue::Literal { .. } => None,
+        InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
     };
     match frame {
         Some(SourceFrameReference::First) => MediaSample::Frame {

@@ -811,6 +811,7 @@ fn asset_lab_input_value_valid_for_field(value: &InputValue, input: &ProviderInp
         return matches!(value, InputValue::Literal { value } if value.is_array());
     }
     match value {
+        InputValue::Prompt { .. } => input.input_type == ProviderInputType::Text,
         InputValue::Literal { value } => match &input.input_type {
             ProviderInputType::Text => value.is_string(),
             ProviderInputType::Number | ProviderInputType::Integer
@@ -883,7 +884,7 @@ fn asset_lab_node_seed_value(node: &AssetLabNode, seed_field: &ProviderInputFiel
         .get(&seed_field.name)
         .and_then(|input| match input {
             InputValue::Literal { value } => Some(value),
-            InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
+            InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } | InputValue::Prompt { .. } => None,
         })
         .or(seed_field.default.as_ref())
         .and_then(input_value_as_u64)
@@ -2107,6 +2108,7 @@ impl LatentSlateApp {
             .inputs
             .get(&input.name)
             .and_then(|value| match value {
+                InputValue::Prompt { text, .. } => Some(serde_json::Value::String(text.clone())),
                 InputValue::Literal { value } => Some(value.clone()),
                 InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
             })
@@ -2143,6 +2145,20 @@ impl LatentSlateApp {
                 }
             }
             ProviderInputType::Text => {
+                let provider = node.provider_id.and_then(|id| self.editor.provider_entries.iter().find(|p| p.id == id)).cloned();
+                if let Some(provider) = provider.filter(|_| input.ui.as_ref().is_some_and(|ui| ui.multiline)
+                    || matches!(node.inputs.get(&input.name), Some(InputValue::Prompt { .. }))) {
+                    let mut config = self.editor.project.generative_configs.get(&asset.id).cloned().unwrap_or_default();
+                    config.inputs = node.inputs.clone();
+                    config.media_bindings = node.media_bindings.clone();
+                    if let Some(value) = self.prompt_reference_field(ui, asset.id, None,
+                        &provider, &config, input, &label) {
+                        *action = Some(AssetLabAction::UpdateNodeInput {
+                            node_id: node.id, input_name: input.name.clone(), value,
+                        });
+                    }
+                    return;
+                }
                 let mut value = current_value
                     .as_ref()
                     .and_then(input_value_as_string)
@@ -2489,7 +2505,7 @@ impl LatentSlateApp {
             InputValue::AssetRef { .. } => self
                 .asset_input_label(value, None)
                 .map(|label| format!("External · {label}")),
-            InputValue::Literal { .. } => None,
+            InputValue::Literal { .. } | InputValue::Prompt { .. } => None,
         }
     }
 

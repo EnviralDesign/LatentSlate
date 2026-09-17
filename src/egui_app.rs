@@ -73,6 +73,7 @@ mod export_modal;
 mod export_modal_ui;
 mod generation_runtime;
 mod media_binding_ui;
+mod prompt_reference_ui;
 mod preview_canvas;
 mod preview_runtime;
 mod preview_transform;
@@ -1723,6 +1724,7 @@ fn generative_output_for_asset(
 
 fn literal_config_input(config: &GenerativeConfig, name: &str) -> Option<serde_json::Value> {
     config.inputs.get(name).and_then(|input| match input {
+        InputValue::Prompt { text, .. } => Some(serde_json::Value::String(text.clone())),
         InputValue::Literal { value } => Some(value.clone()),
         InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } => None,
     })

@@ -78,7 +78,10 @@ impl Handles {
     pub fn inspect(&self, e: &EditorState, v: &Value) -> Result<Value, String> {
         let id = self.id(v, "handle", "")?;
         let result = if let Some(a) = e.project.assets.iter().find(|a| a.id == id) {
-            json!({"asset":asset(a),"generation":e.project.generative_configs.get(&id).map(|g|json!({"provider":g.provider_id,"inputs":g.inputs,"media_bindings":g.media_bindings,"reference_slots":g.reference_slots,"batch":g.batch,"active_version":g.active_version,"versions":g.versions.iter().rev().take(20).map(|r|json!({"version":r.version})).collect::<Vec<_>>(),"version_count":g.versions.len()}))})
+            let explicit_clip = v.get("clip").map(|_| self.id(v, "clip", "c")).transpose()?;
+            let selected_clip = e.selected_clip_id().filter(|clip_id| e.project.clips.iter().any(|clip| clip.id == *clip_id && clip.asset_id == id));
+            let context_clip = crate::core::media_binding::resolve_generation_context(&e.project, id, explicit_clip.or(selected_clip), None).ok().flatten();
+            json!({"asset":asset(a),"generation":e.project.generative_configs.get(&id).map(|g|json!({"provider":g.provider_id,"inputs":g.inputs,"prompt_references":g.provider_id.and_then(|id| e.provider_entries.iter().find(|p|p.id==id)).map(|p|crate::core::prompt_references::inspect_references(&e.project,g,p,id,context_clip)),"media_bindings":g.media_bindings,"reference_slots":g.reference_slots,"batch":g.batch,"active_version":g.active_version,"versions":g.versions.iter().rev().take(20).map(|r|json!({"version":r.version,"prompts":crate::core::prompt_references::submitted_prompts(r.authoring_snapshot.as_ref(),&r.inputs_snapshot)})).collect::<Vec<_>>(),"version_count":g.versions.len()}))})
         } else if let Some(c) = e.project.clips.iter().find(|c| c.id == id) {
             json!(c)
         } else if let Some(t) = e.project.tracks.iter().find(|t| t.id == id) {
@@ -239,7 +242,7 @@ fn asset(a: &crate::state::Asset) -> Value {
     json!({"id":a.id,"name":a.name,"kind":kind,"active_version":active,"duration_seconds":a.duration_seconds})
 }
 fn job(j: &crate::state::GenerationJob) -> Value {
-    json!({"id":j.id,"asset":j.asset_id,"status":j.status,"progress":j.progress_overall,"version":j.version})
+    json!({"id":j.id,"asset":j.asset_id,"status":j.status,"progress":j.progress_overall,"version":j.version,"prompts":crate::core::prompt_references::submitted_prompts(j.authoring_snapshot.as_ref(),&j.inputs_snapshot)})
 }
 pub fn string<'a>(v: &'a Value, k: &str) -> Result<&'a str, String> {
     v.get(k)
@@ -257,10 +260,10 @@ pub fn schemas(provider: &AgentProviderEntry) -> Vec<Value> {
     let tool = |name, description, properties, required| json!({"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}});
     let mut tools=vec![
         tool("project_context","Read compact project state and stable handles before editing.",json!({}),json!([])),
-        tool("inspect","Read one asset, clip, track, generation provider or job by handle. Provider details include input names and types.",json!({"handle":s}),json!(["handle"])),
+        tool("inspect","Read one asset, clip, track, generation provider or job by handle. Provider details include input names and types. Optional clip chooses the target asset placement when inspecting timeline-based prompt references.",json!({"handle":s,"clip":s}),json!(["handle"])),
         tool("timeline_edit","Place an asset, move or resize a clip (seconds), or add a track. Mutations stay unsaved.",json!({"action":{"enum":["place","move","resize","add_track"]},"asset":s,"clip":s,"track":s,"time":n,"duration":n,"track_type":{"enum":["Video","Audio"]},"name":s}),json!(["action"])),
         tool("asset_edit","Import a user-specified file, rename, create a generative asset, or extract a rendered still from timeline/c1/a1 at time seconds.",json!({"action":{"enum":["import","rename","create_generative","extract_still"]},"path":s,"asset":s,"name":s,"source":s,"time":n,"version":s,"output_type":{"enum":["image","video","audio"]},"duration":n,"fps":n}),json!(["action"])),
-        tool("generation","Configure inputs, start asynchronously (optional context clip), read status, or activate a version. Inspect provider first. inputs maps exact provider field names to literal values or {asset:a1,version:optional}, which locks that project asset/version as the media source rather than following the timeline. Generation sidecars use normal immediate persistence.",json!({"action":{"enum":["configure","start","status","activate_version"]},"asset":s,"provider":s,"clip":s,"version":s,"inputs":{"type":"object"}}),json!(["action"])),
+        tool("generation","Configure inputs, start asynchronously (optional context clip), read status, or activate a version. Inspect provider first. inputs maps exact provider field names to literal values or {asset:a1,version:optional}, which locks that project asset/version as the media source rather than following the timeline. For prompt references inspect the asset: prompt_references lists canonical @{input_name} syntax, source context, effective notation and errors. Exact matches in new prompt strings bind to stable inputs; existing bindings never retarget on recipe changes. Inspect again after configure. Generation sidecars use normal immediate persistence.",json!({"action":{"enum":["configure","start","status","activate_version"]},"asset":s,"provider":s,"clip":s,"version":s,"inputs":{"type":"object"}}),json!(["action"])),
         tool("save_project","Save the current project document and clear its unsaved-project changes.",json!({}),json!([])),
     ];
     if provider.capabilities.image_input {
@@ -276,6 +279,34 @@ pub fn schemas(provider: &AgentProviderEntry) -> Vec<Value> {
 mod tests {
     use super::*;
     use crate::state::{Asset, Project, ProviderConnection, ProviderEntry, ProviderOutputType};
+
+    #[test]
+    fn prompt_references_chat_writes_and_api_discovery_share_stable_bindings() {
+        let root=std::env::temp_dir().join(format!("prompt-agent-{}",Uuid::new_v4()));
+        let mut e=EditorState::new();e.project=Project::new("Prompt references");e.project.project_path=Some(root.clone());e.save().unwrap();
+        let mut provider=crate::core::provider_store::default_openai_image_edit_provider_entry();
+        provider.inputs.iter_mut().find(|field|field.name=="image").unwrap().prompt_reference_token=Some("the reference image".into());
+        let provider_id=provider.id;e.provider_entries=vec![provider];
+        let create:AutomationCommand=serde_json::from_value(json!({"type":"create_generative_asset","output_type":"image","name":"Mention test"})).unwrap();
+        assert!(e.apply_automation_command(&create).ok);
+        let asset_id=e.project.assets[0].id;
+        let mut handles=Handles::default();handles.sync(&e);
+        let write=handles.command("generation",&json!({"action":"configure","asset":"a1","provider":"p1","inputs":{"prompt":"Edit @{image}"}})).unwrap();
+        assert!(e.apply_automation_command(&write).ok);
+        let config=e.project.generative_config(asset_id).unwrap();
+        let crate::state::InputValue::Prompt {references,..}=&config.inputs["prompt"] else {panic!("chat must bind references")};
+        assert_eq!(references["image"].provider_id,provider_id);
+        let discovery=handles.inspect(&e,&json!({"handle":"a1"})).unwrap();
+        assert_eq!(discovery["generation"]["prompt_references"]["inputs"][0]["syntax"],"@{image}");
+        assert!(!discovery["generation"]["prompt_references"]["prompts"]["prompt"]["errors"].as_array().unwrap().is_empty());
+        let api=e.apply_automation_command(&AutomationCommand::GetGenerativeConfig{asset_id});assert!(api.ok);
+        assert_eq!(api.data["prompt_references"]["inputs"][0]["input_name"],"image");
+        let folder=root.join("generated");
+        let mut saved=crate::state::GenerativeConfig::default();saved.inputs=e.project.generative_config(asset_id).unwrap().inputs.clone();
+        std::fs::create_dir_all(&folder).unwrap();saved.save(&folder).unwrap();
+        assert_eq!(crate::state::GenerativeConfig::load(&folder).unwrap().inputs,saved.inputs);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn chat_jobs_follow_project_ownership_without_changing_the_global_queue() {

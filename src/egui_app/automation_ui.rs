@@ -1931,7 +1931,7 @@ fn validate_agent_input_refs(
                     ));
                 }
             }
-            InputValue::Literal { .. } => {}
+            InputValue::Literal { .. } | InputValue::Prompt { .. } => {}
         }
     }
     Ok(())
