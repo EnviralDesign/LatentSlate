@@ -419,9 +419,10 @@ impl LatentSlateApp {
             .iter()
             .find(|provider| Some(provider.id) == config.provider_id)
             .cloned();
-        let reference_workflow = provider.as_ref().is_some_and(|provider| {
+        let condensed_shelf = provider.as_ref().is_some_and(|provider| {
             provider.resolved_workflow_kind()
                 == crate::state::ProviderWorkflowKind::ReferenceToVideo
+                || provider.inputs.iter().filter(|field| field.paired_video_input.is_none() && crate::core::media_binding::bound_media_type_for_input(field).is_some()).count() > 1
         });
         let expansion_id =
             egui::Id::new(("reference_slots_expanded", asset.id, config.provider_id));
@@ -433,22 +434,25 @@ impl LatentSlateApp {
                     provider,
                     config,
                     &self.editor.project,
-                    !reference_workflow || expanded,
+                    !condensed_shelf || expanded,
                 )
                 .into_iter()
                 .cloned()
                 .collect()
             })
             .unwrap_or_default();
+        let ctx = ui.ctx().clone();
         let row_height = |row: &[ProviderInputField]| {
             let paired = provider.as_ref().is_some_and(|provider| {
                 row.iter().any(|video| {
+                    if !ctx.data(|data| data.get_temp::<bool>(Self::source_card_details_id(asset.id, provider.id, &video.name)).unwrap_or(false)) { return false; }
                     provider.inputs.iter().any(|input| {
                         input.paired_video_input.as_deref() == Some(video.name.as_str())
                     })
                 })
             });
-            kit::COMPACT_SOURCE_FIELD_H + if paired { 76.0 } else if row.iter().any(|field| field.input_type == ProviderInputType::Audio) { 36.0 } else { 0.0 }
+            let audio_open = provider.as_ref().is_some_and(|provider| row.iter().any(|field| field.input_type == ProviderInputType::Audio && ctx.data(|data| data.get_temp::<bool>(Self::source_card_details_id(asset.id, provider.id, &field.name)).unwrap_or(false))));
+            kit::COMPACT_SOURCE_FIELD_H + if paired { 76.0 } else if audio_open { 36.0 } else { 0.0 }
         };
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         StripBuilder::new(ui)
@@ -458,8 +462,8 @@ impl LatentSlateApp {
                 strip.cell(|ui| {
                     let columns = if media_fields.len() == 4 { 2 } else { media_fields.len().clamp(1, 3) };
                     let rows = media_fields.len().div_ceil(columns);
-                    let inputs_height = if rows == 0 { if reference_workflow { 80.0 } else { 0.0 } } else {
-                        (media_fields.chunks(columns).map(|row| row_height(row) + 8.0).sum::<f32>() + 12.0 + if reference_workflow { 40.0 } else { 0.0 }).min(if reference_workflow { 240.0 } else { 220.0 })
+                    let inputs_height = if rows == 0 { if condensed_shelf { 128.0 } else { 0.0 } } else {
+                        (media_fields.chunks(columns).map(|row| row_height(row) + 8.0).sum::<f32>() + 12.0 + if condensed_shelf { 112.0 } else { 0.0 }).min(if condensed_shelf { 240.0 } else { 220.0 })
                     };
                     let results_height = if self.asset_lab.v4.results.is_empty() { 0.0 } else { 126.0 };
                     StripBuilder::new(ui)
@@ -467,7 +471,7 @@ impl LatentSlateApp {
                         .size(Size::exact(results_height))
                         .vertical(|mut strip| {
                             strip.cell(|ui| {
-                                if let Some(provider) = provider.as_ref().filter(|_| reference_workflow || !media_fields.is_empty()) {
+                                if let Some(provider) = provider.as_ref().filter(|_| condensed_shelf || !media_fields.is_empty()) {
                                     let maximum = (ui.available_height() - 160.0).max(72.0);
                                     egui::Panel::bottom(ui.id().with(("asset_lab_references", asset.id, config.provider_id)))
                                         .resizable(true)
@@ -476,18 +480,20 @@ impl LatentSlateApp {
                                         .frame(egui::Frame::new().fill(kit::PANEL).inner_margin(egui::Margin::symmetric(12, 10)))
                                         .show_inside(ui, |ui| {
                                         ui.spacing_mut().item_spacing = Vec2::splat(8.0);
-                                        if reference_workflow {
+                                        if condensed_shelf {
                                             kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
-                                                ui.label(kit::caption("References"));
+                                                ui.label(kit::body("References"));
+                                                let help = provider.inputs.iter().find(|input| input.name == "prompt")
+                                                    .and_then(|input| input.description.as_deref()).unwrap_or("Choose reference sources for this recipe. Add opens the lowest unused slot of that type.");
+                                                ui.label(kit::caption("(?)")).on_hover_text(help).on_hover_cursor(egui::CursorIcon::Help);
+                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                                 if kit::secondary_button(ui, if expanded { "Show used slots" } else { "Show all slots" }, 120.0).clicked() {
                                                     expanded = !expanded;
                                                     ui.data_mut(|data| data.insert_temp(expansion_id, expanded));
                                                 }
-                                                let help = provider.inputs.iter().find(|input| input.name == "prompt")
-                                                    .and_then(|input| input.description.as_deref()).unwrap_or("Use the recipe's documented reference syntax. Prompts are submitted unchanged.");
-                                                kit::Tooltip::new("Reference syntax").description(help)
-                                                    .apply(ui.label(kit::caption("Reference syntax")));
+                                                });
                                             });
+                                            ui.separator();
                                         }
                                         kit::scroll_body(ui, |ui| {
                                             if media_fields.is_empty() {
@@ -502,6 +508,16 @@ impl LatentSlateApp {
                                                             Layout::top_down(Align::Min), |ui| {
                                                                 self.media_source_picker_field_sized(ui, asset.id, None, provider, field, true);
                                                             });
+                                                    }
+                                                });
+                                            }
+                                            if condensed_shelf && !expanded {
+                                                ui.horizontal_wrapped(|ui| {
+                                                    for field in next_reference_slots(provider, config, &self.editor.project) {
+                                                        let label = match field.input_type { ProviderInputType::Image => "+ Add image", ProviderInputType::Video => "+ Add video", _ => "+ Add audio" };
+                                                        if kit::secondary_button(ui, label, 112.0).on_hover_text(format!("Choose a source for {}. Existing references keep their slot identities.", field.label)).clicked() {
+                                                            self.open_source_picker(asset.id, None, provider, field);
+                                                        }
                                                     }
                                                 });
                                             }
@@ -2017,6 +2033,26 @@ mod tests {
 }
 
 /// Keep source identities and catalog order while progressively revealing optional slots.
+fn next_reference_slots<'a>(
+    provider: &'a ProviderEntry,
+    config: &GenerativeConfig,
+    project: &crate::state::Project,
+) -> Vec<&'a ProviderInputField> {
+    let used = reference_shelf_fields(provider, config, project, false);
+    let mut kinds = Vec::new();
+    reference_shelf_fields(provider, config, project, true)
+        .into_iter()
+        .filter(|field| {
+            let kind = crate::core::media_binding::bound_media_type_for_input(field).unwrap();
+            if used.iter().any(|used| used.name == field.name) || kinds.contains(&kind) {
+                return false;
+            }
+            kinds.push(kind);
+            true
+        })
+        .collect()
+}
+
 fn reference_shelf_fields<'a>(
     provider: &'a ProviderEntry,
     config: &GenerativeConfig,
@@ -2116,7 +2152,15 @@ mod reference_shelf_tests {
             ["image_3", "image_6", "video_2", "audio_3"]
         );
         assert_eq!(names(&config, true).len(), 15);
+        let next = |config: &GenerativeConfig| next_reference_slots(&provider, config, &project).iter().map(|field| field.name.clone()).collect::<Vec<_>>();
+        assert_eq!(next(&config), ["image_1", "video_1", "audio_1"]);
+        for index in 1..=9 {
+            config.media_bindings.insert(format!("image_{index}"), crate::state::MediaBindingSpec { source: crate::state::MediaBindingSource::WorkingOutput, ..Default::default() });
+            if index == 1 { assert_eq!(next(&config)[0], "image_2"); }
+        }
+        assert_eq!(next(&config), ["video_1", "audio_1"]);
         config.media_bindings.remove("image_3");
+        assert_eq!(next(&config)[0], "image_3");
         assert!(names(&config, false).contains(&"image_6".into()));
     }
 }

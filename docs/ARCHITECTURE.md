@@ -92,6 +92,9 @@ a bounded grid; Attributes uses the comfortable form. Both open the same picker.
 Video soundtrack controls and audio status use `source_field_with_details`, contained
 inside their source card. The Create reference shelf uses the same native resizable
 bottom panel as Compare's lineage and the timeline; its height is presentation state.
+Compact source cards share a 48-point collapsed height. Their audio status control
+discloses source-owned details; warnings/errors remain indicated while collapsed.
+Attributes retains the expanded detail treatment. Disclosure state is presentation only.
 Quick choices commit and close; Configure opens a local draft with an anchored
 footer. Cancel discards the draft and returns to the list; Apply and successful
 capture commit and return to the list. Back retains the local draft.
@@ -240,9 +243,11 @@ operations for both Attributes and Asset Lab. Quick selections commit directly; 
 stages changes for Apply/Cancel. Capture commits only after materialization succeeds.
 
 Reference-to-video uses an explicit workflow category; input media do not imply it.
-Its bounded Create shelf preserves catalog slot identities and shows only occupied
-slots, including videos with an enabled paired soundtrack. Show all slots remains
-available even when no references are selected, so empty slots can be configured.
+Recipes with multiple media inputs use a bounded Create shelf that preserves catalog
+slot identities and shows occupied slots, including videos with an enabled paired
+soundtrack. Add image/video/audio opens the first unused catalog slot of that type;
+the action disappears at capacity. Show all slots exposes the full catalog for direct
+slot selection. Both remain available when no references are selected.
 New direct references default to Whole source; new timeline references retain native
 output-aligned sampling. Back-to-back output clips can follow a longer underlying
 source clip and resolve only their own covered interval, including source trim/retiming.

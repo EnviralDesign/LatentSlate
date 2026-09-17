@@ -31,6 +31,14 @@ impl SourcePickerState {
 }
 
 impl LatentSlateApp {
+    pub(in crate::egui_app) fn source_card_details_id(
+        asset_id: Uuid,
+        provider_id: Uuid,
+        field: &str,
+    ) -> egui::Id {
+        egui::Id::new(("source_card_details", asset_id, provider_id, field))
+    }
+
     pub(in crate::egui_app) fn dismiss_source_picker_on_escape(&mut self) {
         if let Some(mut state) = self.source_picker.take() {
             if state.details {
@@ -155,7 +163,45 @@ impl LatentSlateApp {
                 .iter()
                 .any(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()));
         let response = if has_details {
-            kit::source_field_with_details(
+            let details_id = Self::source_card_details_id(asset_id, provider.id, &field.name);
+            let mut open = ui.data(|data| data.get_temp::<bool>(details_id).unwrap_or(false));
+            let audio = provider
+                .inputs
+                .iter()
+                .find(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()))
+                .unwrap_or(field);
+            let audio_spec = lookup_media_binding(&config, audio, &self.editor.project);
+            let fallback = if audio.paired_video_input.is_some() {
+                if audio_spec.is_some() {
+                    "Soundtrack on"
+                } else {
+                    "Video only"
+                }
+            } else if audio_spec.is_some() {
+                "Audio ready"
+            } else {
+                "No audio"
+            };
+            let (status, color) = self.audio_source_status_text(
+                ui,
+                asset_id,
+                resolved_context,
+                provider,
+                &config,
+                audio,
+                audio_spec.as_ref(),
+                fallback,
+            );
+            let short_status = if status.starts_with("Checking audio") {
+                "Checking audio"
+            } else if color == kit::DANGER {
+                "Audio error"
+            } else if color != kit::TEXT_MUTED {
+                "Check audio"
+            } else {
+                fallback
+            };
+            let response = kit::source_field_with_details(
                 ui,
                 ("source_field", asset_id, &field.name),
                 &title,
@@ -164,6 +210,7 @@ impl LatentSlateApp {
                 source_badge(spec.as_ref()),
                 compact,
                 width,
+                compact.then_some((&mut open, short_status, color)),
                 |ui| {
                     self.media_source_card_details(
                         ui,
@@ -176,6 +223,9 @@ impl LatentSlateApp {
                     )
                 },
             )
+            .on_hover_text(status);
+            ui.data_mut(|data| data.insert_temp(details_id, open));
+            response
         } else {
             kit::source_field(
                 ui,
@@ -280,6 +330,24 @@ impl LatentSlateApp {
         spec: Option<&MediaBindingSpec>,
         fallback: &str,
     ) {
+        let (text, color) = self.audio_source_status_text(ui, asset_id, context, provider, config, field, spec, fallback);
+        kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
+            ui.add(egui::Label::new(kit::caption(&text).color(color)).truncate())
+                .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));
+        });
+    }
+
+    fn audio_source_status_text(
+        &self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context: Option<Uuid>,
+        provider: &ProviderEntry,
+        config: &GenerativeConfig,
+        field: &ProviderInputField,
+        spec: Option<&MediaBindingSpec>,
+        fallback: &str,
+    ) -> (String, egui::Color32) {
         let mut text = fallback.to_string();
         let mut color = kit::TEXT_MUTED;
         if let Some(spec) = spec {
@@ -336,10 +404,7 @@ impl LatentSlateApp {
                 }
             }
         }
-        kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
-            ui.add(egui::Label::new(kit::caption(&text).color(color)).truncate())
-            .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));
-        });
+        (text, color)
     }
 
     pub(in crate::egui_app) fn source_choice_preview(

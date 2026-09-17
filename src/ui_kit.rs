@@ -2895,6 +2895,7 @@ pub fn source_field_with_details(
     badge: Option<&str>,
     compact: bool,
     width: f32,
+    disclosure: Option<(&mut bool, &str, Color32)>,
     details: impl FnOnce(&mut Ui),
 ) -> Response {
     Frame::new()
@@ -2904,24 +2905,68 @@ pub fn source_field_with_details(
         .show(ui, |ui| {
             ui.set_width((width - 2.0).max(1.0));
             ui.spacing_mut().item_spacing.y = 0.0;
-            let response = source_field_header(
-                ui,
-                id,
-                title,
-                value,
-                preview,
-                badge,
-                compact,
-                ui.available_width(),
-                true,
-            );
-            paint_panel_edge(ui, response.rect, PanelEdge::Bottom);
-            Frame::new()
-                .inner_margin(Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    details(ui);
+            let mut show_details = true;
+            let header_width = ui.available_width();
+            let response = if let Some((open, status, color)) = disclosure {
+                show_details = *open;
+                let response = bounded_horizontal_row(ui, COMPACT_SOURCE_FIELD_H - 2.0, |ui, _| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let response = source_field_header(
+                        ui,
+                        &id,
+                        title,
+                        value,
+                        preview,
+                        badge,
+                        compact,
+                        (header_width - 116.0).max(1.0),
+                        true,
+                    );
+                    let label = format!("{} {}", status, if *open { "▴" } else { "▾" });
+                    let trigger = popover_button(ui, &label, 104.0, true).on_hover_text(format!(
+                        "{status}\nShow or hide audio details and soundtrack controls."
+                    ));
+                    if color != TEXT_MUTED {
+                        ui.painter().line_segment(
+                            [trigger.rect.left_bottom(), trigger.rect.right_bottom()],
+                            Stroke::new(2.0_f32, color),
+                        );
+                    }
+                    if trigger.clicked() {
+                        *open = !*open;
+                    }
+                    response
                 });
+                response
+            } else {
+                source_field_header(
+                    ui,
+                    id,
+                    title,
+                    value,
+                    preview,
+                    badge,
+                    compact,
+                    ui.available_width(),
+                    true,
+                )
+            };
+            if show_details {
+                paint_panel_edge(
+                    ui,
+                    Rect::from_min_max(
+                        response.rect.min,
+                        Pos2::new(response.rect.left() + header_width, response.rect.bottom()),
+                    ),
+                    PanelEdge::Bottom,
+                );
+                Frame::new()
+                    .inner_margin(Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        details(ui);
+                    });
+            }
             response
         })
         .inner
@@ -2938,11 +2983,11 @@ fn source_field_header(
     width: f32,
     attached: bool,
 ) -> Response {
-    let height = if compact {
+    let height = (if compact {
         COMPACT_SOURCE_FIELD_H
     } else {
         64.0
-    };
+    }) - if attached { 2.0 } else { 0.0 };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(1.0), height), Sense::hover());
     let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
     let response = crate::core::automation::instrument_response(
