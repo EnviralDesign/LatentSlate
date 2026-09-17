@@ -1152,20 +1152,7 @@ fn automation_button(response: egui::Response, label: &str) -> egui::Response {
 }
 
 fn automation_checkbox(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
-    let response = ui.checkbox(value, label);
-    let real_clicked = response.clicked();
-    let mut response = crate::core::automation::instrument_response(
-        response,
-        "checkbox",
-        Some(label.to_string()),
-        true,
-        false,
-    );
-    if response.clicked() && !real_clicked {
-        *value = !*value;
-        response.mark_changed();
-    }
-    response
+    kit::checkbox(ui, value, label)
 }
 
 fn automation_selectable_value<T>(

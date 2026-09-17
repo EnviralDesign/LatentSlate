@@ -121,14 +121,20 @@ existing behavior for ComfyUI, Klein, and Wan.
 `workflow_kind: "reference_to_video"` is distinct from video-to-video and bridge
 workflows. Reference image sizing is independent of the output canvas unless the
 catalog explicitly declares otherwise. An optional audio input may declare
-`paired_video_input: "video_input_key"`; LatentSlate then offers Include soundtrack
-on that video's source control and preserves both streams through sampling.
+`paired_video_input: "video_input_key"`; LatentSlate then offers a soundtrack checkbox
+and source picker beneath that video. The default preserves both streams through video
+sampling. A separate source override remains paired with the declared video but retains
+its own sampling; an ordinary audio input remains independent even when using the same
+file. Video-sourced independent/override audio is prepared as an audio-only artifact.
 
 H3 reference-to-video exposes mixed image/video/audio slots. Its prompt syntax remains
 literal: `<Picture N>` and `<Video N>` count occupied slots in order; `<Audio N>` counts
 enabled video soundtracks in video order, then occupied standalone audio slots.
 Removing earlier references can change these effective numbers. Catalog descriptions
-provide hover help; LatentSlate does not insert or rewrite prompt tokens.
+provide hover help; LatentSlate does not insert or rewrite prompt tokens. Optional
+`prompt_reference_token` templates (for example `<Audio {index}>`) display effective
+1-based numbers for occupied fields sharing the exact template, in catalog declaration
+order. This is display metadata, not authored prompt interpolation or stable variables.
 
 User tools may fix either canvas dimension and the request duration in catalog
 metadata. These values participate in preflight and output prediction without

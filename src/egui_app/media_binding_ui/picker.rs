@@ -97,11 +97,20 @@ impl LatentSlateApp {
             &config,
             spec.as_ref(),
         );
-        let title = format!(
-            "{}{}",
-            field.label,
-            if field.required { "" } else { " · optional" }
+        let token = crate::core::media_binding::effective_reference_token(
+            provider,
+            &config,
+            &self.editor.project,
+            field,
         );
+        let title = match token {
+            Some(token) => format!("{token} · {}", field.label),
+            None => format!(
+                "{}{}",
+                field.label,
+                if field.required { "" } else { " · optional" }
+            ),
+        };
         let mut label = spec
             .as_ref()
             .map(|spec| source_menu_label(spec, &self.editor.project))
@@ -133,27 +142,135 @@ impl LatentSlateApp {
         {
             self.open_source_picker(asset_id, context, provider, field);
         }
+        if field.input_type == ProviderInputType::Audio {
+            self.audio_source_status(
+                ui,
+                asset_id,
+                resolved_context,
+                provider,
+                &config,
+                field,
+                spec.as_ref(),
+                "Audio file or video soundtrack",
+            );
+        }
         if let Some(soundtrack) = provider
             .inputs
             .iter()
             .find(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()))
         {
-            let enabled = lookup_media_binding(&config, soundtrack, &self.editor.project).is_some();
+            let soundtrack_spec = lookup_media_binding(&config, soundtrack, &self.editor.project);
+            let mut enabled = soundtrack_spec.is_some();
+            let token = crate::core::media_binding::effective_reference_token(
+                provider,
+                &config,
+                &self.editor.project,
+                soundtrack,
+            );
+            let label = token
+                .map(|token| format!("Soundtrack {token}"))
+                .unwrap_or_else(|| "Soundtrack".into());
             ui.push_id(("soundtrack", asset_id, &soundtrack.name), |ui| {
-                let hint = format!("Use the audio from this video's exact sampled interval. It follows the video's source, trim and retiming. A video without audio cannot supply a soundtrack.\n\n{}",
-                    soundtrack.description.as_deref().unwrap_or(""));
-                if kit::tool_toggle_button(ui, "Include soundtrack", kit::Tooltip::new("Include soundtrack")
-                    .description(&hint), enabled, width.min(166.0)).clicked() {
-                    let spec = (!enabled).then(|| MediaBindingSpec {
-                        source: MediaBindingSource::PairedVideoInput { field: field.name.clone() },
-                        sample: MediaSample::Whole, coverage: MediaCoveragePolicy::Strict,
+                kit::bounded_horizontal_row(ui, kit::SECONDARY_BUTTON_H, |ui, row_width| {
+                    ui.add_enabled_ui(spec.is_some() || enabled, |ui| {
+                        if kit::Tooltip::new("Paired soundtrack")
+                            .description("Use audio together with this video as one paired reference. By default it follows this video's exact source, trim and retiming. Choose Source to use separately configured audio instead; its timing is left as selected.")
+                            .apply(kit::checkbox(ui, &mut enabled, &label)).changed() {
+                            let binding = enabled.then(|| MediaBindingSpec {
+                                source: MediaBindingSource::PairedVideoInput { field: field.name.clone() },
+                                sample: MediaSample::Whole, coverage: MediaCoveragePolicy::Strict,
+                            });
+                            if let Err(error) = self.editor.set_generation_source(asset_id, soundtrack, binding, None) { self.editor.status = error; }
+                        }
                     });
-                    if let Err(error) = self.editor.set_generation_source(asset_id, soundtrack, spec, None) {
-                        self.editor.status = error;
+                    if enabled {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if kit::secondary_button(ui, "Source…", row_width.min(72.0))
+                                .on_hover_text("Choose a separate soundtrack source, configure its sample, or return to this video's own soundtrack.").clicked() {
+                                self.open_source_picker(asset_id, context, provider, soundtrack);
+                            }
+                        });
                     }
-                }
+                });
+                let source = match soundtrack_spec.as_ref().map(|spec| &spec.source) {
+                    Some(MediaBindingSource::PairedVideoInput { .. }) => "This video's soundtrack".into(),
+                    Some(_) => format!("Separate · {}", source_menu_label(soundtrack_spec.as_ref().unwrap(), &self.editor.project)),
+                    None => "Video only".into(),
+                };
+                self.audio_source_status(ui, asset_id, resolved_context, provider, &config, soundtrack, soundtrack_spec.as_ref(), &source);
             });
         }
+    }
+
+    fn audio_source_status(
+        &self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context: Option<Uuid>,
+        provider: &ProviderEntry,
+        config: &GenerativeConfig,
+        field: &ProviderInputField,
+        spec: Option<&MediaBindingSpec>,
+        fallback: &str,
+    ) {
+        let mut text = fallback.to_string();
+        let mut color = kit::TEXT_MUTED;
+        if let Some(spec) = spec {
+            let plan = resolve_media_binding(
+                MediaResolveContext {
+                    project: &self.editor.project,
+                    target_asset_id: Some(asset_id),
+                    context_clip_id: context,
+                    field,
+                    provider: Some(provider),
+                    config: Some(config),
+                },
+                spec,
+            );
+            if let Some(error) = plan.error_messages().first() {
+                text = error.clone();
+                color = kit::DANGER;
+            } else if let Some(status) =
+                crate::core::media_binding::audio_reference_inspection(&plan)
+            {
+                use crate::core::media_binding::AudioInspection;
+                match &status {
+                    AudioInspection::Checking | AudioInspection::Analyzing => {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(200));
+                        text = status.label().into();
+                    }
+                    AudioInspection::MissingTrack => {
+                        text = status.label().into();
+                        color = kit::DANGER;
+                    }
+                    AudioInspection::Invalid(error) => {
+                        text = error.clone();
+                        color = kit::DANGER;
+                    }
+                    AudioInspection::Quiet
+                    | AudioInspection::LevelUnavailable
+                    | AudioInspection::MultipleTracks => {
+                        text = status.label().into();
+                        color = kit::OperationSeverity::Warning.color();
+                    }
+                    AudioInspection::Ready => {
+                        if field.paired_video_input.is_none() {
+                            text = if plan.source_media_type
+                                == Some(crate::state::BoundMediaType::Video)
+                            {
+                                "Using video's audio track"
+                            } else {
+                                "Audio ready"
+                            }
+                            .into();
+                        }
+                    }
+                }
+            }
+        }
+        ui.add_sized([ui.available_width(), 20.0], egui::Label::new(kit::caption(&text).color(color)).truncate())
+            .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));
     }
 
     fn source_choice_preview(
@@ -308,6 +425,7 @@ impl LatentSlateApp {
                                     {
                                         state.details = true;
                                     }
+                                    if state.field.input_type == ProviderInputType::Audio { ui.label(kit::caption("Audio file or video soundtrack")); }
                                     self.source_picker_choices(ui, &mut state, &config, &mut apply);
                                 }
                             });
@@ -499,7 +617,11 @@ impl LatentSlateApp {
         config: &GenerativeConfig,
         apply: &mut bool,
     ) {
-        let sample = state.spec.as_ref().map(|spec| spec.sample.clone());
+        let sample = state
+            .spec
+            .as_ref()
+            .filter(|spec| !matches!(spec.source, MediaBindingSource::PairedVideoInput { .. }))
+            .map(|spec| spec.sample.clone());
         let reference_workflow = state.provider.resolved_workflow_kind()
             == crate::state::ProviderWorkflowKind::ReferenceToVideo;
         let timeline_sample = default_sample_for_field(&state.field);
@@ -529,6 +651,21 @@ impl LatentSlateApp {
             None,
             apply,
         );
+        if let Some(video) = state.field.paired_video_input.clone() {
+            self.source_picker_choice(
+                ui,
+                state,
+                config,
+                "This video's soundtrack",
+                "Paired with the video input; follows its source, trim and retiming.",
+                Some(MediaBindingSpec {
+                    source: MediaBindingSource::PairedVideoInput { field: video },
+                    sample: MediaSample::Whole,
+                    coverage: MediaCoveragePolicy::Strict,
+                }),
+                apply,
+            );
+        }
         let working = config
             .lab_authoring
             .working_version
@@ -816,7 +953,10 @@ impl LatentSlateApp {
                 .description("Prefer an eligible clip immediately before or after the target over one covering the requested time. Turn this off to prefer covering clips. Exact keyframes keep priority.")
                 .apply(ui.checkbox(&mut query.prefer_touching, "Prefer touching clips"));
         }
-        if !matches!(spec.source, MediaBindingSource::FrozenArtifact { .. }) {
+        if !matches!(
+            spec.source,
+            MediaBindingSource::FrozenArtifact { .. } | MediaBindingSource::PairedVideoInput { .. }
+        ) {
             let mut options = sample_options_for_field(&state.field);
             if state.field.input_type == ProviderInputType::Image {
                 options.push(MediaSample::Whole);
@@ -924,6 +1064,18 @@ impl LatentSlateApp {
             },
             spec,
         );
+        if state.field.input_type == ProviderInputType::Audio {
+            self.audio_source_status(
+                ui,
+                state.asset_id,
+                state.context,
+                &state.provider,
+                config,
+                &state.field,
+                Some(spec),
+                "Audio file or video soundtrack",
+            );
+        }
         if matches!(spec.source, MediaBindingSource::FrozenArtifact { .. }) {
             if kit::secondary_button(ui, "Restore original source binding", ui.available_width())
                 .on_hover_text("Restore the source selection and sampling saved before capture. This is a draft change until you Apply it.")

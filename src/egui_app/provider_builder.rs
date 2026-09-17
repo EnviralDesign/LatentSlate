@@ -190,6 +190,7 @@ pub(super) struct ProviderNodeSelectorDraft {
 #[derive(Clone, Debug)]
 pub(super) struct ProviderBuilderInput {
     paired_video_input: Option<String>,
+    prompt_reference_token: Option<String>,
     image_dimensions: Option<crate::state::ImageDimensionsRequirement>,
     pub(super) name: String,
     pub(super) label: String,
@@ -1097,6 +1098,7 @@ impl ProviderBuilderState {
             manifest_inputs.push(ManifestInput {
                 image_dimensions: input.image_dimensions,
                 paired_video_input: input.paired_video_input.clone(),
+                prompt_reference_token: input.prompt_reference_token.clone(),
                 name: input.name.clone(),
                 label: input.label.clone(),
                 description: optional_trimmed_string(&input.description),
@@ -1114,6 +1116,7 @@ impl ProviderBuilderState {
                 ordered_collection: false,
                 image_dimensions: input.image_dimensions,
                 paired_video_input: input.paired_video_input.clone(),
+                prompt_reference_token: input.prompt_reference_token.clone(),
                 name: input.name.clone(),
                 label: input.label.clone(),
                 description: optional_trimmed_string(&input.description),
@@ -1222,6 +1225,7 @@ impl ProviderBuilderInput {
         Self {
             image_dimensions: None,
             paired_video_input: None,
+            prompt_reference_token: None,
             name,
             label,
             description: String::new(),
@@ -1252,6 +1256,7 @@ impl ProviderBuilderInput {
         Self {
             image_dimensions: input.image_dimensions,
             paired_video_input: input.paired_video_input.clone(),
+            prompt_reference_token: input.prompt_reference_token.clone(),
             name: input.name.clone(),
             label: input.label.clone(),
             description: input.description.clone().unwrap_or_default(),
@@ -1291,6 +1296,7 @@ impl ProviderBuilderInput {
         Self {
             image_dimensions: input.image_dimensions,
             paired_video_input: input.paired_video_input.clone(),
+            prompt_reference_token: input.prompt_reference_token.clone(),
             name: input.name,
             label: input.label,
             description: input.description.unwrap_or_default(),
@@ -1330,6 +1336,7 @@ impl ProviderBuilderInput {
         Self {
             image_dimensions: None,
             paired_video_input: None,
+            prompt_reference_token: None,
             name: input.name,
             label: input.label,
             description: input.description.unwrap_or_default(),

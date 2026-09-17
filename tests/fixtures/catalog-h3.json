@@ -196,7 +196,7 @@
   {
     "id": "93697824-bf07-52b5-941e-62faba78b7d4",
     "key": "h3.r2v",
-    "schema_revision": 3,
+    "schema_revision": 4,
     "name": "MiniMax H3 Reference to Video",
     "description": "Generate MiniMax H3 video with synchronized audio.",
     "workflow_kind": "reference_to_video",
@@ -273,6 +273,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -281,6 +282,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -289,6 +291,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -297,6 +300,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -305,6 +309,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -313,6 +318,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -321,6 +327,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -329,6 +336,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -337,6 +345,7 @@
         "type": "image",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Picture {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -345,6 +354,7 @@
         "type": "video",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Video {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -353,6 +363,7 @@
         "type": "video",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Video {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -361,6 +372,7 @@
         "type": "video",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Video {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -369,8 +381,9 @@
         "type": "audio",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Audio {index}>",
         "paired_video_input": "reference_video_1",
-        "description": "Optional soundtrack from the paired video. Use the same sampled video source and interval; this is not a separate audio reference."
+        "description": "Optional soundtrack paired with this video. Use its embedded audio with the same sample and interval, or select a separate audio source aligned to the video. This remains paired conditioning, not a standalone audio reference."
       },
       {
         "key": "reference_video_audio_2",
@@ -378,8 +391,9 @@
         "type": "audio",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Audio {index}>",
         "paired_video_input": "reference_video_2",
-        "description": "Optional soundtrack from the paired video. Use the same sampled video source and interval; this is not a separate audio reference."
+        "description": "Optional soundtrack paired with this video. Use its embedded audio with the same sample and interval, or select a separate audio source aligned to the video. This remains paired conditioning, not a standalone audio reference."
       },
       {
         "key": "reference_video_audio_3",
@@ -387,8 +401,9 @@
         "type": "audio",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Audio {index}>",
         "paired_video_input": "reference_video_3",
-        "description": "Optional soundtrack from the paired video. Use the same sampled video source and interval; this is not a separate audio reference."
+        "description": "Optional soundtrack paired with this video. Use its embedded audio with the same sample and interval, or select a separate audio source aligned to the video. This remains paired conditioning, not a standalone audio reference."
       },
       {
         "key": "reference_audio_1",
@@ -396,6 +411,7 @@
         "type": "audio",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Audio {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -404,6 +420,7 @@
         "type": "audio",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Audio {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       },
       {
@@ -412,6 +429,7 @@
         "type": "audio",
         "required": false,
         "nullable": true,
+        "prompt_reference_token": "<Audio {index}>",
         "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
       }
     ],
@@ -432,6 +450,6 @@
         "frame_offset": 5
       }
     },
-    "schema_hash": "sha256:b111a5f511ca7ff346931dfa6079810f2daa841a7792c78f44558e9f264e9dbd"
+    "schema_hash": "sha256:920eda5791e7047be8110774d0a29257ac3d4d12b9fb5da486fe5e1f6cd50bb2"
   }
 ]

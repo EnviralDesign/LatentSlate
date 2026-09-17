@@ -228,12 +228,24 @@ slots plus the next empty slot of each media type, with an option to show all sl
 New direct references default to Whole source; new timeline references retain native
 output-aligned sampling. Back-to-back output clips can follow a longer underlying
 source clip and resolve only their own covered interval, including source trim/retiming.
-Declared optional audio fields with `paired_video_input` use a `PairedVideoInput`
-binding and a shared Include soundtrack control beneath the video picker. They follow
-the video's exact source, sample and retiming, and submit the same prepared video file.
-Absent audio fails explicitly. Clearing a video keeps the enabled pairing unresolved
-until the video is replaced or its soundtrack is disabled. The relationship is authored
-state; completed provenance records the concrete source and sampled interval.
+Declared optional audio fields with `paired_video_input` have a shared soundtrack
+checkbox beneath the video picker. Enabling defaults to `PairedVideoInput`: it follows
+the video's exact source, sample and retiming and submits the same prepared video file.
+The soundtrack picker can instead use an ordinary binding as a separate paired source;
+its selected range is not automatically trimmed or stretched to the video. Pairing remains
+explicit and never comes from a generic audio alias or matching filenames. Clearing the
+video leaves either pairing unresolved until the video is replaced or soundtrack disabled.
+Independent audio inputs accept audio or video sources and prepare audio-only media from
+video containers, including Whole source. Captures and submitted provenance retain the
+chosen binding and actual sampled interval. Embedded-audio capture becomes audio-only;
+restoring its original binding resumes following the video.
+
+Audio reference presence and selected-range levels are derived asynchronous checks with
+a bounded ephemeral cache, not authored state. Missing tracks block submission; quiet
+ranges are advisory. Multiple audio streams retain presence validation but skip level
+classification because no stream-selection contract exists. Materialization validates
+presence again. Timeline source ranking and strict coverage remain authoritative; an
+invalid selected source is reported rather than silently replaced.
 
 Mask geometry records actual raster dimensions, resolved source/frame/crop, sizing, and
 source identity. Painting uses canvas coordinates under zoom/pan; incompatible geometry

@@ -5380,6 +5380,7 @@ mod asset_lab_compare_tests {
             ordered_collection: false,
             image_dimensions: None,
             paired_video_input: None,
+            prompt_reference_token: None,
             name: name.to_string(),
             label: name.to_string(),
             description: None,

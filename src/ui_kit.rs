@@ -1513,6 +1513,24 @@ fn paint_combo_field(
     ui.painter().galley(text_pos, galley, visuals.text_color());
 }
 
+/// Shared checkbox with the same native behavior and automation path as other kit controls.
+pub fn checkbox(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
+    let response = ui.checkbox(value, label);
+    let real_clicked = response.clicked();
+    let mut response = crate::core::automation::instrument_response(
+        response,
+        "checkbox",
+        Some(label.to_string()),
+        true,
+        false,
+    );
+    if response.clicked() && !real_clicked {
+        *value = !*value;
+        response.mark_changed();
+    }
+    response
+}
+
 /// A native combo option exposed to the opt-in desktop harness.
 pub fn combo_option(ui: &mut Ui, selected: bool, label: &str) -> Response {
     let response = ui.selectable_label(selected, label);

@@ -1,14 +1,16 @@
 //! Timeline-aware media binding resolution, migration, and materialization.
 #![allow(dead_code)]
 
+mod audio;
 mod materialize;
+pub use audio::{audio_reference_inspection, AudioInspection};
 
 #[cfg(test)]
 mod tests;
 
 #[allow(unused_imports)]
 pub use materialize::{
-    freeze_binding, materialize_plan, prepare_reference_image, require_soundtrack,
+    freeze_binding, materialize_plan, prepare_reference_image, require_audio_stream,
     MEDIA_MATERIALIZER_REVISION,
 };
 
@@ -270,7 +272,7 @@ pub fn source_compatible_with_field(asset: &Asset, media_type: BoundMediaType) -
     match media_type {
         BoundMediaType::Image => asset.is_image() || asset.is_video(),
         BoundMediaType::Video => asset.is_video(),
-        BoundMediaType::Audio => asset.is_audio(),
+        BoundMediaType::Audio => asset.is_audio() || asset.is_video(),
     }
 }
 
@@ -473,6 +475,7 @@ fn placeholder_input(name: &str) -> ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: name.to_string(),
         label: name.to_string(),
         description: None,
@@ -501,10 +504,21 @@ pub fn resolve_media_binding(
         });
         return plan;
     };
-    if ctx.field.paired_video_input.is_some()
-        || matches!(binding.source, MediaBindingSource::PairedVideoInput { .. })
-    {
+    if matches!(binding.source, MediaBindingSource::PairedVideoInput { .. }) {
         return resolve_paired_video(ctx, binding, plan);
+    }
+    if let Some(video_field) = &ctx.field.paired_video_input {
+        let linked = MediaBindingSpec {
+            source: MediaBindingSource::PairedVideoInput {
+                field: video_field.clone(),
+            },
+            ..Default::default()
+        };
+        let video_plan = resolve_paired_video(ctx, &linked, empty_plan(ctx, &linked));
+        if !video_plan.is_ok() {
+            plan.errors = video_plan.errors;
+            return plan;
+        }
     }
     plan.media_type = media_type;
     plan.normalized_sample = normalize_sample(&binding.sample, ctx.field);
@@ -2441,4 +2455,27 @@ pub fn inspect_config_media_bindings(
         }
     }
     map
+}
+
+/// Display-only, catalog-declared numbering. Authored prompt text is never changed.
+pub fn effective_reference_token(
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
+    project: &Project,
+    field: &ProviderInputField,
+) -> Option<String> {
+    let template = field.prompt_reference_token.as_deref()?;
+    let mut index = 0;
+    for input in &provider.inputs {
+        if input.prompt_reference_token.as_deref() != Some(template) {
+            continue;
+        }
+        if lookup_media_binding(config, input, project).is_some() {
+            index += 1;
+            if input.name == field.name {
+                return Some(template.replace("{index}", &index.to_string()));
+            }
+        }
+    }
+    None
 }

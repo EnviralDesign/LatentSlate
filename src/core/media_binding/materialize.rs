@@ -12,7 +12,7 @@ use crate::core::media_binding::{frozen_origin_from_plan, MediaBindingError, Med
 use crate::state::{BoundMediaType, MediaBindingSource, MediaBindingSpec, Project};
 
 /// Bump when materializer command/filter behavior changes so cache keys miss.
-pub const MEDIA_MATERIALIZER_REVISION: u32 = 3;
+pub const MEDIA_MATERIALIZER_REVISION: u32 = 4;
 
 pub fn materialize_plan(
     project: &Project,
@@ -23,30 +23,32 @@ pub fn materialize_plan(
         video_plan.field_name = field.clone();
         video_plan.media_type = BoundMediaType::Video;
         let path = materialize_source(project, &video_plan)?;
-        require_soundtrack(&path)?;
+        require_audio_stream(&path)?;
         return Ok(path);
     }
     materialize_source(project, plan)
 }
 
-pub fn require_soundtrack(path: &Path) -> Result<(), MediaBindingError> {
+pub fn require_audio_stream(path: &Path) -> Result<(), MediaBindingError> {
+    if audio_stream_count(path)? == 0 {
+        return Err(MediaBindingError::MaterializationFailed {
+            detail:
+                "The selected source has no audio track. Choose another source or clear this input."
+                    .into(),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn audio_stream_count(path: &Path) -> Result<usize, MediaBindingError> {
     crate::core::ffmpeg_runtime::init_ffmpeg()
         .map_err(|detail| MediaBindingError::MaterializationFailed { detail })?;
     let media = ffmpeg_next::format::input(path).map_err(|err| {
         MediaBindingError::MaterializationFailed {
-            detail: format!("Cannot read the paired video: {err}"),
+            detail: format!("Cannot read the audio source: {err}"),
         }
     })?;
-    if media
-        .streams()
-        .best(ffmpeg_next::media::Type::Audio)
-        .is_none()
-    {
-        return Err(MediaBindingError::MaterializationFailed {
-                detail: "The selected video has no soundtrack. Turn off Include soundtrack or choose a video with audio.".into(),
-            });
-    }
-    Ok(())
+    Ok(media.streams().filter(|stream| stream.parameters().medium() == ffmpeg_next::media::Type::Audio).count())
 }
 
 fn materialize_source(
@@ -66,7 +68,14 @@ fn materialize_source(
         .ok_or_else(|| MediaBindingError::SourceMissing {
             detail: "project folder is unavailable.".to_string(),
         })?;
-    if plan.uses_original_source {
+    let audio_from_video = plan.media_type == BoundMediaType::Audio
+        && plan.source_media_type == Some(BoundMediaType::Video);
+    if plan.media_type == BoundMediaType::Audio {
+        if let Some(path) = &plan.source_path_absolute {
+            require_audio_stream(path)?;
+        }
+    }
+    if plan.uses_original_source && !audio_from_video {
         if let Some(path) = plan
             .source_path_absolute
             .clone()
@@ -110,7 +119,11 @@ pub fn freeze_binding(
     spec: &MediaBindingSpec,
     plan: &MediaResolvePlan,
 ) -> Result<MediaBindingSpec, MediaBindingError> {
-    let materialized = materialize_plan(project, plan)?;
+    let materialized = if matches!(spec.source, MediaBindingSource::PairedVideoInput { .. }) {
+        materialize_source(project, plan)?
+    } else {
+        materialize_plan(project, plan)?
+    };
     let root = project
         .project_path
         .as_ref()
@@ -292,13 +305,13 @@ fn materialize_audio_range(
     plan: &MediaResolvePlan,
     source: &Path,
 ) -> Result<PathBuf, MediaBindingError> {
-    let range = plan
-        .source_range
-        .ok_or_else(|| MediaBindingError::UnsupportedSample {
-            detail: "audio materialization needs a source range.".to_string(),
-        })?;
-    let duration = range.duration().max(1.0 / 120.0);
-    let target_duration = plan.retime_to_duration.unwrap_or(duration);
+    let range = if plan.uses_original_source {
+        None
+    } else {
+        plan.source_range
+    };
+    let duration = range.map(|range| range.duration().max(1.0 / 120.0));
+    let target_duration = plan.retime_to_duration.or(duration);
     let cache_dir = root.join(".cache").join("media_inputs");
     fs::create_dir_all(&cache_dir).map_err(|err| MediaBindingError::MaterializationFailed {
         detail: format!("failed to create media input cache: {err}"),
@@ -308,20 +321,25 @@ fn materialize_audio_range(
         return Ok(output);
     }
     let tmp = temp_sibling(&output);
-    let tempo = duration / target_duration.max(1e-6);
+    let tempo = duration
+        .zip(target_duration)
+        .map(|(duration, target)| duration / target.max(1e-6))
+        .unwrap_or(1.0);
     let mut command = Command::new("ffmpeg");
     command
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
-        .arg("-y")
-        .arg("-ss")
-        .arg(format!("{:.6}", range.start_seconds.max(0.0)))
-        .arg("-t")
-        .arg(format!("{:.6}", duration))
-        .arg("-i")
-        .arg(source)
-        .arg("-vn");
+        .arg("-y");
+    if let Some(range) = range {
+        command.args([
+            "-ss",
+            &format!("{:.6}", range.start_seconds.max(0.0)),
+            "-t",
+            &format!("{:.6}", range.duration().max(1.0 / 120.0)),
+        ]);
+    }
+    command.arg("-i").arg(source).arg("-vn");
     if (tempo - 1.0).abs() > 0.001 {
         let filter = atempo_filter(tempo)?;
         command.arg("-filter:a").arg(filter);

@@ -180,6 +180,7 @@ pub fn default_openai_image_edit_provider_entry() -> ProviderEntry {
             ordered_collection: false,
             image_dimensions: None,
             paired_video_input: None,
+            prompt_reference_token: None,
         },
     );
     entry
@@ -264,6 +265,7 @@ fn text_input(
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: name.to_string(),
         label: label.to_string(),
         description: placeholder.clone(),
@@ -289,6 +291,7 @@ fn enum_input(
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: name.to_string(),
         label: label.to_string(),
         description: None,
@@ -313,6 +316,7 @@ fn integer_input(
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: name.to_string(),
         label: label.to_string(),
         description: None,

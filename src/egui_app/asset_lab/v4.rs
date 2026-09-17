@@ -439,7 +439,7 @@ impl LatentSlateApp {
                     })
                 })
             });
-            kit::COMPACT_SOURCE_FIELD_H + if paired { 40.0 } else { 0.0 }
+            kit::COMPACT_SOURCE_FIELD_H + if paired { 68.0 } else if row.iter().any(|field| field.input_type == ProviderInputType::Audio) { 28.0 } else { 0.0 }
         };
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         StripBuilder::new(ui)
@@ -450,7 +450,7 @@ impl LatentSlateApp {
                     let columns = if media_fields.len() == 4 { 2 } else { media_fields.len().clamp(1, 3) };
                     let rows = media_fields.len().div_ceil(columns);
                     let inputs_height = if rows == 0 { 0.0 } else {
-                        (media_fields.chunks(columns).map(|row| row_height(row) + 8.0).sum::<f32>() + 12.0 + if reference_workflow { 40.0 } else { 0.0 }).min(220.0)
+                        (media_fields.chunks(columns).map(|row| row_height(row) + 8.0).sum::<f32>() + 12.0 + if reference_workflow { 40.0 } else { 0.0 }).min(if reference_workflow { 240.0 } else { 220.0 })
                     };
                     let results_height = if self.asset_lab.v4.results.is_empty() { 0.0 } else { 126.0 };
                     StripBuilder::new(ui)
@@ -2061,6 +2061,7 @@ mod reference_shelf_tests {
                     ui: None,
                     image_dimensions: None,
                     paired_video_input: None,
+                    prompt_reference_token: None,
                     ordered_collection: false,
                 });
             }

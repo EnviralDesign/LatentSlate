@@ -588,6 +588,7 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
         ordered_collection: input.collection,
         image_dimensions: input.image_dimensions,
         paired_video_input: input.paired_video_input.clone(),
+        prompt_reference_token: input.prompt_reference_token.clone(),
         name: input.key.clone(),
         label: input.label.clone(),
         description: input.description.clone(),
@@ -1390,6 +1391,8 @@ struct EngineInput {
     image_dimensions: Option<crate::state::ImageDimensionsRequirement>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     paired_video_input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_reference_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1608,6 +1611,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("<Picture"));
+        assert_eq!(provider.inputs.iter().find(|input| input.name == "reference_video_audio_2").unwrap().prompt_reference_token.as_deref(), Some("<Audio {index}>"));
         let mut invalid = tool.clone();
         invalid
             .inputs

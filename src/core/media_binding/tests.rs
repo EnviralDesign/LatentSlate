@@ -177,6 +177,7 @@ fn image_field(role: Option<InputRole>) -> ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: match role {
             Some(InputRole::EndImage) => "end_image".into(),
             _ => "start_image".into(),
@@ -199,6 +200,7 @@ fn audio_field() -> ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: "audio".into(),
         label: "Audio".into(),
         description: None,
@@ -215,6 +217,7 @@ fn video_field() -> ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
         paired_video_input: None,
+        prompt_reference_token: None,
         name: "video".into(),
         label: "Video".into(),
         description: None,
@@ -1381,7 +1384,7 @@ fn paired_soundtrack_uses_exact_trimmed_retimed_video_and_rejects_silent_media()
         failed
             .media_errors
             .iter()
-            .any(|error| error.contains("no soundtrack")),
+            .any(|error| error.contains("no audio track")),
         "{:?}",
         failed.media_errors
     );
@@ -1482,4 +1485,222 @@ fn reference_timeline_back_to_back_outputs_sample_only_their_overlap() {
             assert_eq!(paired.target_range, plan.target_range);
         }
     }
+}
+
+#[test]
+fn soundtrack_override_and_independent_video_audio_keep_separate_sampling() {
+    use crate::core::generation::resolve_provider_inputs;
+    use std::process::Command;
+    let mut h = Harness::new();
+    let video = video_field();
+    let mut paired = audio_field();
+    paired.name = "soundtrack".into();
+    paired.required = false;
+    paired.paired_video_input = Some(video.name.clone());
+    let independent = audio_field();
+    h.provider = provider_with(vec![video.clone(), paired.clone(), independent.clone()]);
+    let source = h.add_video(9980, "AV source", "media/av.mp4", 4.0);
+    let silent = h.add_video(9981, "Silent video", "media/silent.mp4", 4.0);
+    let root = h.project.project_path.clone().unwrap();
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=96x64:rate=24:duration=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-shortest"
+        ])
+        .arg(root.join("media/av.mp4"))
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(root.join("media/av.mp4"))
+        .args(["-an", "-c:v", "copy"])
+        .arg(root.join("media/silent.mp4"))
+        .status()
+        .unwrap()
+        .success());
+    let whole = |id| MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: id,
+            version: None,
+        },
+        sample: MediaSample::Whole,
+        coverage: Default::default(),
+    };
+    let override_spec = MediaBindingSpec {
+        sample: MediaSample::SourceRange {
+            start_seconds: 1.0,
+            duration_seconds: 2.0,
+        },
+        ..whole(source.id)
+    };
+    h.config
+        .media_bindings
+        .insert(video.name.clone(), whole(silent.id));
+    h.config
+        .media_bindings
+        .insert(paired.name.clone(), override_spec.clone());
+    h.config
+        .media_bindings
+        .insert(independent.name.clone(), whole(source.id));
+    let result = resolve_provider_inputs(
+        &h.project,
+        Some(h.target.id),
+        Some(h.context.id),
+        &h.provider,
+        &h.config,
+    );
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    for (field, duration) in [("soundtrack", 2.0), ("audio", 4.0)] {
+        let path = PathBuf::from(result.values[field].as_str().unwrap());
+        let media = ffmpeg_next::format::input(&path).unwrap();
+        assert!(media
+            .streams()
+            .best(ffmpeg_next::media::Type::Audio)
+            .is_some());
+        assert!(media
+            .streams()
+            .best(ffmpeg_next::media::Type::Video)
+            .is_none());
+        assert!(
+            (crate::core::media::probe_duration_seconds(&path).unwrap() - duration).abs() < 0.12
+        );
+    }
+    assert_ne!(result.values["video"], result.values["soundtrack"]);
+    assert_eq!(result.media_bindings_snapshot["soundtrack"], override_spec);
+    let plan = resolve_media_binding(h.ctx(&paired), &override_spec);
+    assert_eq!(plan.source_range, Some(MediaTimeRange::new(1.0, 3.0)));
+    assert!(plan.retime_to_duration.is_none());
+    let frozen = freeze_binding(
+        &h.project,
+        &root.join("generated/test"),
+        "soundtrack",
+        &override_spec,
+        &plan,
+    )
+    .unwrap();
+    assert_eq!(unfreeze_spec(&frozen).unwrap(), override_spec);
+    h.config.media_bindings.remove("video");
+    assert!(!resolve_media_binding(h.ctx(&paired), &override_spec).is_ok());
+    assert!(resolve_media_binding(h.ctx(&independent), &whole(source.id)).is_ok());
+    // Embedded default can still be restored; a silent video cannot supply it.
+    h.config
+        .media_bindings
+        .insert(video.name.clone(), whole(silent.id));
+    let embedded = MediaBindingSpec {
+        source: MediaBindingSource::PairedVideoInput {
+            field: video.name.clone(),
+        },
+        ..Default::default()
+    };
+    h.config
+        .media_bindings
+        .insert(paired.name.clone(), embedded.clone());
+    let failed = resolve_provider_inputs(
+        &h.project,
+        Some(h.target.id),
+        Some(h.context.id),
+        &h.provider,
+        &h.config,
+    );
+    assert!(failed
+        .media_errors
+        .iter()
+        .any(|error| error.contains("no audio track")));
+    h.config
+        .media_bindings
+        .insert(video.name.clone(), whole(source.id));
+    let plan = resolve_media_binding(h.ctx(&paired), &embedded);
+    let captured = freeze_binding(
+        &h.project,
+        &root.join("generated/test"),
+        "soundtrack",
+        &embedded,
+        &plan,
+    )
+    .unwrap();
+    let MediaBindingSource::FrozenArtifact { path, .. } = &captured.source else {
+        panic!("capture");
+    };
+    let media = ffmpeg_next::format::input(&root.join(path)).unwrap();
+    assert!(media
+        .streams()
+        .best(ffmpeg_next::media::Type::Video)
+        .is_none());
+    assert_eq!(unfreeze_spec(&captured).unwrap(), embedded);
+}
+
+#[test]
+fn reference_tokens_follow_occupied_catalog_order_without_rewriting_prompt() {
+    let mut h = Harness::new();
+    let mut image1 = image_field(None);
+    image1.name = "image1".into();
+    image1.prompt_reference_token = Some("<Picture {index}>".into());
+    let mut image2 = image1.clone();
+    image2.name = "image2".into();
+    let mut soundtrack = audio_field();
+    soundtrack.name = "paired".into();
+    soundtrack.paired_video_input = Some("video".into());
+    soundtrack.prompt_reference_token = Some("<Audio {index}>".into());
+    let mut audio = audio_field();
+    audio.prompt_reference_token = soundtrack.prompt_reference_token.clone();
+    h.provider = provider_with(vec![
+        image1.clone(),
+        image2.clone(),
+        soundtrack.clone(),
+        audio.clone(),
+    ]);
+    h.config.inputs.insert(
+        "prompt".into(),
+        InputValue::Literal {
+            value: serde_json::json!("<Picture 2> hears <Audio 2>"),
+        },
+    );
+    for field in [&image1, &image2, &soundtrack, &audio] {
+        h.config.media_bindings.insert(
+            field.name.clone(),
+            MediaBindingSpec {
+                source: MediaBindingSource::WorkingOutput,
+                ..Default::default()
+            },
+        );
+    }
+    assert_eq!(
+        effective_reference_token(&h.provider, &h.config, &h.project, &image2).as_deref(),
+        Some("<Picture 2>")
+    );
+    assert_eq!(
+        effective_reference_token(&h.provider, &h.config, &h.project, &audio).as_deref(),
+        Some("<Audio 2>")
+    );
+    h.config.media_bindings.remove(&image1.name);
+    h.config.media_bindings.remove(&soundtrack.name);
+    assert_eq!(
+        effective_reference_token(&h.provider, &h.config, &h.project, &image2).as_deref(),
+        Some("<Picture 1>")
+    );
+    assert_eq!(
+        effective_reference_token(&h.provider, &h.config, &h.project, &audio).as_deref(),
+        Some("<Audio 1>")
+    );
+    assert_eq!(
+        h.config.inputs["prompt"],
+        InputValue::Literal {
+            value: serde_json::json!("<Picture 2> hears <Audio 2>")
+        }
+    );
 }

@@ -20,9 +20,9 @@ use crate::core::timeline_bridge::{
 };
 use crate::core::video_decode::VideoDecodeWorker;
 use crate::state::{
-    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, MediaBindingSpec, Project,
-    ProviderConnection, ProviderDurationTiming, ProviderEntry, ProviderInputField,
-    ProviderInputType, ResolvedMediaInput, SourceFrameReference,
+    Asset, AssetKind, Clip, GenerativeConfig, InputRole, InputValue, MediaBindingSource,
+    MediaBindingSpec, Project, ProviderConnection, ProviderDurationTiming, ProviderEntry,
+    ProviderInputField, ProviderInputType, ResolvedMediaInput, SourceFrameReference,
 };
 
 #[derive(Debug, Clone)]
@@ -458,6 +458,15 @@ pub fn preflight_provider_config(
                         },
                         &spec,
                     );
+                    if let Some(message) =
+                        crate::core::media_binding::audio_reference_inspection(&plan)
+                            .and_then(|status| status.blocking_error().map(str::to_string))
+                    {
+                        issues.push(GenerationPreflightIssue {
+                            section: GenerationControlSection::Media,
+                            message: format!("{}: {message}", input.label),
+                        });
+                    }
                     issues.extend(plan.error_messages().into_iter().map(|message| {
                         GenerationPreflightIssue {
                             section: GenerationControlSection::Media,
@@ -477,7 +486,7 @@ pub fn preflight_provider_config(
                     .and_then(|value| asset_ref_path(project, &value, input, provider, &config))
                     .is_some()
             } else if let Some(spec) = lookup_media_binding(&config, input, project) {
-                resolve_media_binding(
+                let plan = resolve_media_binding(
                     MediaResolveContext {
                         project,
                         target_asset_id,
@@ -487,8 +496,16 @@ pub fn preflight_provider_config(
                         config: Some(&config),
                     },
                     &spec,
-                )
-                .is_ok()
+                );
+                if let Some(message) = crate::core::media_binding::audio_reference_inspection(&plan)
+                    .and_then(|status| status.blocking_error().map(str::to_string))
+                {
+                    issues.push(GenerationPreflightIssue {
+                        section: GenerationControlSection::Media,
+                        message: format!("{}: {message}", input.label),
+                    });
+                }
+                plan.is_ok()
             } else {
                 false
             };
@@ -958,7 +975,9 @@ pub fn resolve_provider_inputs(
                     plan.media_type,
                     plan.preserve_video_audio
                 );
-                let path = if let Some(video_field) = &input.paired_video_input {
+                let path = if let MediaBindingSource::PairedVideoInput { field: video_field } =
+                    &plan.spec.source
+                {
                     let Some(path) = values
                         .get(video_field)
                         .and_then(Value::as_str)
@@ -971,7 +990,7 @@ pub fn resolve_provider_inputs(
                         ));
                         continue;
                     };
-                    if let Err(error) = crate::core::media_binding::require_soundtrack(&path) {
+                    if let Err(error) = crate::core::media_binding::require_audio_stream(&path) {
                         media_errors.push(error.message(&input.label));
                         continue;
                     }
@@ -1535,6 +1554,10 @@ fn reference_frame_time(project: &Project, reference: &InputValue, fps: f64) -> 
 }
 
 pub fn semantic_reference_slot(input: &ProviderInputField) -> Option<&'static str> {
+    // A soundtrack is an explicit relationship, never a migrated generic audio alias.
+    if input.paired_video_input.is_some() {
+        return None;
+    }
     match input.role {
         Some(InputRole::StartImage) => return Some("start_image"),
         Some(InputRole::EndImage) => return Some("end_image"),
@@ -2253,6 +2276,7 @@ mod tests {
             ordered_collection: false,
             image_dimensions: None,
             paired_video_input: None,
+            prompt_reference_token: None,
             name: name.to_string(),
             label: name.to_string(),
             description: None,
@@ -2320,6 +2344,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "source_image".to_string(),
                 label: "Source Image".to_string(),
                 description: None,
@@ -2333,6 +2358,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -2346,6 +2372,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -2382,6 +2409,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "steps".to_string(),
                 label: "Steps".to_string(),
                 description: None,
@@ -2664,6 +2692,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "prompt".to_string(),
                 label: "Prompt".to_string(),
                 description: None,
@@ -2679,6 +2708,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "duration_seconds".to_string(),
                 label: "Duration".to_string(),
                 description: None,
@@ -2698,6 +2728,7 @@ mod tests {
                 ordered_collection: false,
                 image_dimensions: None,
                 paired_video_input: None,
+                prompt_reference_token: None,
                 name: "seed".to_string(),
                 label: "Seed".to_string(),
                 description: None,
@@ -2818,6 +2849,7 @@ mod tests {
             ordered_collection: false,
             image_dimensions: None,
             paired_video_input: None,
+            prompt_reference_token: None,
             name: "steps".to_string(),
             label: "Steps".to_string(),
             description: None,
