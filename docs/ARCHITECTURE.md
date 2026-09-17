@@ -240,8 +240,9 @@ operations for both Attributes and Asset Lab. Quick selections commit directly; 
 stages changes for Apply/Cancel. Capture commits only after materialization succeeds.
 
 Reference-to-video uses an explicit workflow category; input media do not imply it.
-Its bounded Create shelf preserves catalog slot identities and shows occupied/required
-slots plus the next empty slot of each media type, with an option to show all slots.
+Its bounded Create shelf preserves catalog slot identities and shows only occupied
+slots, including videos with an enabled paired soundtrack. Show all slots remains
+available even when no references are selected, so empty slots can be configured.
 New direct references default to Whole source; new timeline references retain native
 output-aligned sampling. Back-to-back output clips can follow a longer underlying
 source clip and resolve only their own covered interval, including source trim/retiming.

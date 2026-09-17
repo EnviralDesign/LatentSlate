@@ -458,7 +458,7 @@ impl LatentSlateApp {
                 strip.cell(|ui| {
                     let columns = if media_fields.len() == 4 { 2 } else { media_fields.len().clamp(1, 3) };
                     let rows = media_fields.len().div_ceil(columns);
-                    let inputs_height = if rows == 0 { 0.0 } else {
+                    let inputs_height = if rows == 0 { if reference_workflow { 80.0 } else { 0.0 } } else {
                         (media_fields.chunks(columns).map(|row| row_height(row) + 8.0).sum::<f32>() + 12.0 + if reference_workflow { 40.0 } else { 0.0 }).min(if reference_workflow { 240.0 } else { 220.0 })
                     };
                     let results_height = if self.asset_lab.v4.results.is_empty() { 0.0 } else { 126.0 };
@@ -467,7 +467,7 @@ impl LatentSlateApp {
                         .size(Size::exact(results_height))
                         .vertical(|mut strip| {
                             strip.cell(|ui| {
-                                if let Some(provider) = provider.as_ref().filter(|_| !media_fields.is_empty()) {
+                                if let Some(provider) = provider.as_ref().filter(|_| reference_workflow || !media_fields.is_empty()) {
                                     let maximum = (ui.available_height() - 160.0).max(72.0);
                                     egui::Panel::bottom(ui.id().with(("asset_lab_references", asset.id, config.provider_id)))
                                         .resizable(true)
@@ -490,6 +490,9 @@ impl LatentSlateApp {
                                             });
                                         }
                                         kit::scroll_body(ui, |ui| {
+                                            if media_fields.is_empty() {
+                                                ui.label(kit::caption("No references selected."));
+                                            }
                                             for row in media_fields.chunks(columns) {
                                                 let row_height = row_height(row);
                                                 kit::bounded_horizontal_row(ui, row_height, |ui, row_width| {
@@ -2020,12 +2023,11 @@ fn reference_shelf_fields<'a>(
     project: &crate::state::Project,
     expanded: bool,
 ) -> Vec<&'a ProviderInputField> {
-    let mut empty_types = Vec::new();
     provider
         .inputs
         .iter()
         .filter(|field| {
-            let Some(kind) = crate::core::media_binding::bound_media_type_for_input(field) else {
+            let Some(_) = crate::core::media_binding::bound_media_type_for_input(field) else {
                 return false;
             };
             if field.paired_video_input.is_some() {
@@ -2038,14 +2040,7 @@ fn reference_shelf_fields<'a>(
                         && crate::core::media_binding::lookup_media_binding(config, paired, project)
                             .is_some()
                 });
-            if expanded || field.required || occupied {
-                return true;
-            }
-            if empty_types.contains(&kind) {
-                return false;
-            }
-            empty_types.push(kind);
-            true
+            expanded || occupied
         })
         .collect()
 }
@@ -2054,7 +2049,7 @@ fn reference_shelf_fields<'a>(
 mod reference_shelf_tests {
     use super::*;
     #[test]
-    fn reference_shelf_keeps_sparse_identities_and_exposes_next_empty_type() {
+    fn reference_shelf_shows_only_used_slots_and_preserves_sparse_identities() {
         let mut provider = ProviderEntry::new(
             "Mixed references",
             crate::state::ProviderOutputType::Video,
@@ -2097,7 +2092,7 @@ mod reference_shelf_tests {
                 .map(|field| field.name.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(&config, false), ["image_1", "video_1", "audio_1"]);
+        assert!(names(&config, false).is_empty());
         for name in ["image_3", "image_6", "audio_3"] {
             config.media_bindings.insert(
                 name.into(),
@@ -2118,7 +2113,7 @@ mod reference_shelf_tests {
         );
         assert_eq!(
             names(&config, false),
-            ["image_1", "image_3", "image_6", "video_1", "video_2", "audio_1", "audio_3"]
+            ["image_3", "image_6", "video_2", "audio_3"]
         );
         assert_eq!(names(&config, true).len(), 15);
         config.media_bindings.remove("image_3");
