@@ -132,6 +132,71 @@ impl AssetLabV4State {
 }
 
 impl LatentSlateApp {
+    pub(in crate::egui_app) fn set_asset_lab_review_results(
+        &mut self,
+        versions: Vec<String>,
+        states: Vec<String>,
+    ) -> Result<(), String> {
+        let states: Vec<_> = states
+            .iter()
+            .map(|state| match state.as_str() {
+                "queued" => Ok(GenerationJobStatus::Queued),
+                "running" => Ok(GenerationJobStatus::Running),
+                "canceling" => Ok(GenerationJobStatus::Canceling),
+                "failed" => Ok(GenerationJobStatus::Failed),
+                "canceled" => Ok(GenerationJobStatus::Canceled),
+                _ => Err(
+                    "Review states must be queued, running, canceling, failed, or canceled."
+                        .to_string(),
+                ),
+            })
+            .collect::<Result<_, _>>()?;
+        let asset_id = self.asset_lab.asset_id.ok_or("Open Asset Lab first.")?;
+        let config = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .ok_or("Asset unavailable.")?;
+        if versions.iter().any(|version| {
+            !config
+                .versions
+                .iter()
+                .any(|record| record.version == *version)
+        }) {
+            return Err("Review results require existing completed versions; placeholder states cannot be Succeeded.".into());
+        }
+        if self.editor.generation_queue.iter().any(|job| {
+            job.asset_id == asset_id
+                && matches!(
+                    job.status,
+                    GenerationJobStatus::Queued
+                        | GenerationJobStatus::Running
+                        | GenerationJobStatus::Canceling
+                )
+        }) {
+            return Err(
+                "Wait for this asset's real jobs to finish before reviewing a fixture strip."
+                    .into(),
+            );
+        }
+        self.asset_lab.v4.results = versions
+            .into_iter()
+            .map(|version| LabResult {
+                job_id: Uuid::new_v4(),
+                version: Some(version),
+                status: GenerationJobStatus::Succeeded,
+            })
+            .chain(states.into_iter().map(|status| LabResult {
+                job_id: Uuid::new_v4(),
+                version: None,
+                status,
+            }))
+            .collect();
+        self.asset_lab.v4.preview = None;
+        self.asset_lab.v4.dismissed_preview = None;
+        Ok(())
+    }
+
     pub(in crate::egui_app) fn asset_lab_v4_input_guard(&mut self, ctx: &Context) {
         self.asset_lab.v4.input_busy = ctx.any_popup_open()
             || ctx.input(|input| {
@@ -398,7 +463,11 @@ impl LatentSlateApp {
                             });
                             strip.cell(|ui| {
                                 ui.spacing_mut().item_spacing = Vec2::splat(8.0);
-                                self.asset_lab_results_v4(ui, asset);
+                                ui.painter().rect_filled(ui.max_rect(), 0, kit::PANEL);
+                                egui::Frame::new().fill(kit::PANEL).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                                    self.asset_lab_results_v4(ui, asset);
+                                });
+                                kit::paint_panel_edge(ui, ui.max_rect(), kit::PanelEdge::Top);
                             });
                         });
                 });
@@ -723,9 +792,6 @@ impl LatentSlateApp {
         if self.asset_lab.v4.results.is_empty() {
             return;
         }
-        ui.label(kit::caption(
-            "Results · hover to preview · click to continue",
-        ));
         for result in &mut self.asset_lab.v4.results {
             if let Some(job) = self
                 .editor
@@ -737,6 +803,18 @@ impl LatentSlateApp {
                 result.version = job.version.clone();
             }
         }
+        let ready = self
+            .asset_lab
+            .v4
+            .results
+            .iter()
+            .filter(|result| {
+                result.status == GenerationJobStatus::Succeeded && result.version.is_some()
+            })
+            .count();
+        kit::Tooltip::new("Session results")
+            .description("Hover or focus a result to preview it. Click to continue from it, or use its Compare shortcut. Escape dismisses the preview. Closing Asset Lab clears this strip, not your saved versions.")
+            .apply(ui.label(kit::caption(format!("Results · {ready} ready"))));
         let session = self.asset_lab.v4.session_id;
         let mut preview = None;
         egui::ScrollArea::horizontal()
@@ -756,35 +834,60 @@ impl LatentSlateApp {
                                         Some(&version),
                                         0.0,
                                     );
-                                    let tile = kit::source_tile(
+                                    let label = self
+                                        .editor
+                                        .project
+                                        .generative_config(asset.id)
+                                        .and_then(|config| {
+                                            config
+                                                .versions
+                                                .iter()
+                                                .find(|record| record.version == version)
+                                        })
+                                        .map(|record| record.label.as_str())
+                                        .unwrap_or("");
+                                    let can_compare = self
+                                        .editor
+                                        .project
+                                        .generative_config(asset.id)
+                                        .and_then(|config| config.active_version.as_ref())
+                                        .is_some_and(|active| *active != version);
+                                    let (tile, compare) = kit::source_tile_with_details(
                                         ui,
                                         "result",
                                         &version,
                                         texture,
+                                        self.asset_lab.v4.preview.as_ref() == Some(&version),
                                         false,
-                                        false,
-                                        Vec2::new(90.0, 76.0),
+                                        Vec2::new(104.0, 76.0),
+                                        Some(kit::SourceTileDetails {
+                                            caption: label,
+                                            can_compare,
+                                        }),
                                     );
-                                    if tile.hovered() || tile.has_focus() {
+                                    if tile.hovered()
+                                        || tile.has_focus()
+                                        || compare.as_ref().is_some_and(|response| {
+                                            response.hovered() || response.has_focus()
+                                        })
+                                    {
                                         preview = Some(version.clone());
                                     }
-                                    if tile.clicked() {
+                                    if compare.is_some_and(|response| response.clicked()) {
+                                        self.enter_asset_lab_compare_v4(asset.id, &version);
+                                    } else if tile.clicked() {
                                         self.request_asset_lab_adopt(asset.id, &version);
                                     }
-                                    let response =
-                                        kit::field_button(ui, &format!("Compare {version}"), 90.0);
-                                    if response.has_focus() || response.hovered() {
-                                        preview = Some(version.clone());
-                                    }
-                                    if response.clicked() {
-                                        self.enter_asset_lab_compare_v4(asset.id, &version);
-                                    }
                                 } else {
-                                    kit::readonly_value_box(
-                                        ui,
-                                        format!("{:?}", result.status),
-                                        Vec2::new(90.0, 76.0),
-                                    );
+                                    let status = match result.status {
+                                        GenerationJobStatus::Queued => "Waiting",
+                                        GenerationJobStatus::Running => "Generating…",
+                                        GenerationJobStatus::Canceling => "Stopping…",
+                                        GenerationJobStatus::Succeeded => "Result unavailable",
+                                        GenerationJobStatus::Failed => "Failed",
+                                        GenerationJobStatus::Canceled => "Canceled",
+                                    };
+                                    kit::readonly_value_box(ui, status, Vec2::new(104.0, 76.0));
                                 }
                             });
                         });
@@ -969,19 +1072,22 @@ impl LatentSlateApp {
                                 0.0,
                                 &path,
                             );
-                            let title =
-                                source.source_version.as_deref().unwrap_or("Project source");
-                            let detail = format!("{name} · resolved at submission");
-                            kit::source_row(
-                                ui,
-                                ("submitted_source", &record.version, name),
-                                title,
-                                &detail,
-                                thumbnail,
-                                None,
-                                false,
-                                ui.available_width(),
-                            );
+                            let filename = source.source_path.as_ref()
+                                .and_then(|path| path.file_name()).and_then(|name| name.to_str())
+                                .unwrap_or("Submitted media");
+                            let title = source.source_version.as_ref()
+                                .map(|version| format!("{version} · {filename}"))
+                                .unwrap_or_else(|| filename.to_string());
+                            let slot = provider.as_ref()
+                                .and_then(|provider| provider.inputs.iter().find(|field| field.name == *name))
+                                .map(|field| field.label.as_str()).unwrap_or(name);
+                            let sample = if let Some(seconds) = source.source_frame_time {
+                                format!("frame {}", crate::core::media_binding::format_timecode(seconds))
+                            } else if let Some(range) = &source.source_range {
+                                format!("{}–{}", crate::core::media_binding::format_timecode(range.start_seconds),
+                                    crate::core::media_binding::format_timecode(range.end_seconds))
+                            } else { "submitted media".into() };
+                            kit::media_info_row(ui, &title, &format!("{slot} · {sample}"), thumbnail);
                         }
                         if !settings.is_empty() {
                             ui.add_space(12.0);
@@ -1211,6 +1317,13 @@ impl LatentSlateApp {
                     Color32::TRANSPARENT,
                     Stroke::new(1.0_f32, kit::IMAGE.gamma_multiply(0.5)),
                 ));
+                let arrow = (4.0 * scale).clamp(2.0, 5.0);
+                for side in [-1.0, 1.0] {
+                    painter.line_segment(
+                        [to + Vec2::new(side * arrow, arrow * 1.5), to],
+                        Stroke::new(1.0_f32, kit::IMAGE.gamma_multiply(0.5)),
+                    );
+                }
             }
         }
         for record in &config.versions {
@@ -1228,7 +1341,7 @@ impl LatentSlateApp {
                     .layout(Layout::top_down(Align::Min)),
             );
             child.set_clip_rect(rect.intersect(node_rect));
-            let (response, compare_clicked) = kit::source_tile_with_details(
+            let (response, compare) = kit::source_tile_with_details(
                 &mut child,
                 ("lineage", compact, &record.version),
                 &record.version,
@@ -1237,7 +1350,7 @@ impl LatentSlateApp {
                 config.active_version.as_ref() == Some(&record.version),
                 node_rect.size(),
                 Some(kit::SourceTileDetails {
-                    caption: &record.label,
+                    caption: if compact { "" } else { &record.label },
                     can_compare: !compact
                         && config
                             .active_version
@@ -1245,6 +1358,7 @@ impl LatentSlateApp {
                             .is_some_and(|active| *active != record.version),
                 }),
             );
+            let compare_clicked = compare.is_some_and(|response| response.clicked());
             if compare_clicked {
                 self.enter_asset_lab_compare_v4(asset.id, &record.version);
             } else if response.clicked() {
@@ -1276,6 +1390,15 @@ impl LatentSlateApp {
                     },
                 );
             });
+        }
+        if !compact {
+            painter.text(
+                rect.left_bottom() + Vec2::new(12.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                "Right-drag to pan · Double-click a version to continue",
+                FontId::proportional(11.0),
+                kit::TEXT_MUTED,
+            );
         }
     }
 

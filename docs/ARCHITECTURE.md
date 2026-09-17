@@ -104,6 +104,11 @@ Lineage inspector through `EditorState::set_generation_version_label`. This is m
 presentation metadata, excluded from submitted snapshots and Create-session dirtiness.
 Node captions show it beside the stable version identifier, with the full text on hover.
 The node's contextual Compare action targets that node against the pinned output.
+Create results reuse the same contextual Compare control; its keyboard focus keeps
+the temporary preview active. Result counts and job states remain visible, while
+interaction instructions use hover help. Submitted-input provenance uses compact
+read-only media rows, separate from selectable picker rows. Graph edges have upward
+direction cues, and version identity remains available on hover at small scales.
 Preview, Asset Lab Create/Compare, and lineage share `canvas_wheel_zoom_factor`
 and its sensitivity multiplier. Wheel input respects UI clipping and foreground
 layers, so an open picker or dialog shields the canvas behind it.

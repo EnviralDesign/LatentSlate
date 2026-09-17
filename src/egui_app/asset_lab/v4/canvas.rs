@@ -1229,6 +1229,23 @@ mod tests {
             }
         }
         assert_eq!(app.asset_lab.v4.preview.as_deref(), Some("v2"));
+        // The contextual Compare button is the next tab stop, and must keep audition
+        // alive even after the pointer leaves the tile.
+        press(&mut app, egui::Key::Tab);
+        assert_eq!(app.asset_lab.v4.preview.as_deref(), Some("v2"));
+        press(&mut app, egui::Key::Enter);
+        assert_eq!(app.asset_lab.v4.view, AssetLabView::Compare);
+        assert_eq!(
+            app.editor
+                .project
+                .generative_config(asset.id)
+                .unwrap()
+                .active_version
+                .as_deref(),
+            Some("v1")
+        );
+        app.asset_lab.v4.view = AssetLabView::Create;
+        frame(&mut app, vec![]);
         press(&mut app, egui::Key::E);
         assert_eq!(app.asset_lab.v4.canvas.tool, Tool::Paint);
         frame(&mut app, vec![key(egui::Key::Escape, true)]);

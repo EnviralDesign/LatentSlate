@@ -2952,6 +2952,7 @@ impl EditorState {
                 AutomationResponse::empty_ok()
             }
             AutomationCommand::OpenAssetLab { .. }
+            | AutomationCommand::SetAssetLabReviewResults { .. }
             | AutomationCommand::CloseAssetLab
             | AutomationCommand::SetAssetLabCompareTime { .. } => AutomationResponse::conflict(
                 "Asset Lab automation requires the desktop UI runtime.",

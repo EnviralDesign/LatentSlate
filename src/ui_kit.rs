@@ -2867,7 +2867,7 @@ pub fn source_row(
             rect,
             5,
             if selected {
-                FIELD_BG_ACTIVE
+                Color32::from_rgb(29, 56, 63)
             } else if response.hovered() {
                 PANEL_RAISED
             } else {
@@ -2901,16 +2901,17 @@ pub fn source_row(
             );
         }
         for (text, y, size, color) in [
-            (title, 15.0, 12.0, TEXT),
-            (subtitle, 35.0, 10.5, TEXT_MUTED),
+            (title, 14.0, 12.0, TEXT),
+            (subtitle, 35.0, 11.0, TEXT_MUTED),
         ] {
-            let galley = egui::WidgetText::from(RichText::new(text).size(size).color(color))
-                .into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Truncate),
-                    (rect.width() - 90.0).max(1.0),
-                    FontId::proportional(size),
-                );
+            let text = RichText::new(text).size(size).color(color);
+            let text = if y == 14.0 { text.strong() } else { text };
+            let galley = egui::WidgetText::from(text).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                (rect.width() - 90.0).max(1.0),
+                FontId::proportional(size),
+            );
             painter.galley(rect.min + Vec2::new(66.0, y), galley, color);
         }
         if selected {
@@ -2923,6 +2924,42 @@ pub fn source_row(
             );
         }
     }
+    response
+}
+
+/// Read-only media identity with a small thumbnail and a persistent detail line.
+pub fn media_info_row(
+    ui: &mut Ui,
+    title: &str,
+    detail: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+) -> Response {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 48.0), Sense::hover());
+    paint_contained_thumbnail(
+        ui,
+        Rect::from_min_size(rect.min + Vec2::new(0.0, 6.0), Vec2::splat(36.0)),
+        preview,
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(Rect::from_min_max(
+                rect.min + Vec2::new(46.0, 4.0),
+                rect.max,
+            ))
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.spacing_mut().item_spacing.y = 2.0;
+    child
+        .add(egui::Label::new(body(title)).truncate().selectable(true))
+        .on_hover_text(title);
+    child
+        .add(
+            egui::Label::new(caption(detail))
+                .truncate()
+                .selectable(true),
+        )
+        .on_hover_text(detail);
     response
 }
 
@@ -2952,7 +2989,7 @@ pub fn source_tile_with_details(
     pinned: bool,
     size: Vec2,
     details: Option<SourceTileDetails<'_>>,
-) -> (Response, bool) {
+) -> (Response, Option<Response>) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
     let response = crate::core::automation::instrument_response(
@@ -3005,7 +3042,7 @@ pub fn source_tile_with_details(
             rect.max - Vec2::splat(1.0),
         );
         painter.rect_filled(footer_rect, 3, CHROME);
-        let font = FontId::proportional((footer * 0.45).clamp(6.0, 14.0));
+        let font = FontId::proportional((footer * 0.45).clamp(9.0, 14.0));
         let version = painter.layout_no_wrap(label.into(), font.clone(), TEXT);
         let text_pos = Pos2::new(
             rect.left() + pad + 2.0,
@@ -3044,10 +3081,8 @@ pub fn source_tile_with_details(
             caption,
             TEXT_MUTED,
         );
-        let mut compare_clicked = false;
-        if details.can_compare
-            && (ui.rect_contains_pointer(rect) || selected || response.has_focus())
-        {
+        let mut compare_response = None;
+        if details.can_compare {
             let button_rect = Rect::from_center_size(
                 Pos2::new(
                     rect.right() - pad - button_size * 0.5,
@@ -3061,15 +3096,21 @@ pub fn source_tile_with_details(
                     .max_rect(button_rect)
                     .layout(Layout::top_down(Align::Min)),
             );
-            compare_clicked = tool_button_sized(
+            let visible = ui.rect_contains_pointer(rect)
+                || selected
+                || response.has_focus()
+                || child.memory(|memory| memory.has_focus(child.next_auto_id()));
+            if !visible {
+                child.set_opacity(0.0);
+            }
+            compare_response = Some(tool_button_sized(
                 &mut child,
                 Icon::Compare,
                 Tooltip::new(&format!("Compare {label} with current"))
                     .description("Compare this version with the pinned output."),
                 false,
                 button_size,
-            )
-            .clicked();
+            ));
         }
         if pinned {
             paint_icon(
@@ -3083,11 +3124,11 @@ pub fn source_tile_with_details(
             );
         }
         let response = if details.caption.is_empty() {
-            response
+            response.on_hover_text(label)
         } else {
             response.on_hover_text(format!("{label} · {}", details.caption))
         };
-        return (response, compare_clicked);
+        return (response, compare_response);
     }
     painter.text(
         rect.left_bottom() + Vec2::new(pad, -footer * 0.5),
@@ -3097,15 +3138,17 @@ pub fn source_tile_with_details(
         TEXT,
     );
     if pinned {
-        painter.text(
-            rect.right_bottom() - Vec2::new(pad + 4.0, footer * 0.5),
-            egui::Align2::CENTER_CENTER,
-            "◆",
-            FontId::proportional((footer * 0.5).clamp(5.0, 10.0)),
+        paint_icon(
+            ui,
+            Icon::Pin,
+            Rect::from_center_size(
+                rect.right_bottom() - Vec2::new(pad + 6.0, footer * 0.5),
+                Vec2::splat((footer * 0.6).clamp(8.0, 13.0)),
+            ),
             PRIMARY,
         );
     }
-    (response, false)
+    (response.on_hover_text(label), None)
 }
 
 pub fn paint_contained_thumbnail(ui: &Ui, rect: Rect, preview: Option<(egui::TextureId, Vec2)>) {

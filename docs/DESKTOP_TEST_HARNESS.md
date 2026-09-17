@@ -153,6 +153,11 @@ Current command types include:
 - `export_video`
 - `get_export_status`
 - `get_asset_lab_graph`
+- `set_asset_lab_review_results` displays existing completed `versions` and optional
+  `states` (`queued`, `running`, `canceling`, `failed`, `canceled`) in the open lab's
+  ephemeral result strip for offline interaction checks. It never submits work or
+  creates records, rejects unknown versions and assets with active jobs, and clears
+  when the lab closes. Use a diagnostic project copy for review fixtures.
 - `open_providers`
 - `close_providers`
 - `open_project_settings`

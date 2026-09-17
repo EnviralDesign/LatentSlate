@@ -469,6 +469,13 @@ pub enum AutomationCommand {
     },
     /// Close Asset Lab and clear its ephemeral comparison state.
     CloseAssetLab,
+    /// Populate only the open lab's ephemeral strip for offline native UI review.
+    /// Versions must already exist; this never enqueues work or creates records.
+    SetAssetLabReviewResults {
+        versions: Vec<String>,
+        #[serde(default)]
+        states: Vec<String>,
+    },
     /// Set ephemeral Asset Lab comparison transport state for native UI acceptance.
     SetAssetLabCompareTime {
         seconds: f64,
@@ -2616,6 +2623,7 @@ fn agent_command_names() -> Vec<&'static str> {
         "open_asset_lab",
         "close_asset_lab",
         "set_asset_lab_compare_time",
+        "set_asset_lab_review_results",
         "set_layout",
         "close_all_overlays",
     ]
@@ -2711,6 +2719,7 @@ fn agent_command_schema_json() -> Value {
             { "type": "open_providers|close_providers|open_project_settings|close_project_settings|open_new_project|close_new_project|open_queue|close_queue|open_generative_video|close_generative_video|open_export_video|close_export_video|close_asset_lab|close_all_overlays", "fields": {} },
             { "type": "open_asset_lab", "fields": { "asset_id": "uuid", "version?": "string", "compare_with_active?": "boolean" } },
             { "type": "set_asset_lab_compare_time", "fields": { "seconds": "number", "playing?": "boolean" } },
+            { "type": "set_asset_lab_review_results", "fields": { "versions": "existing completed version strings; ephemeral offline review only", "states?": "queued|running|canceling|failed|canceled placeholders; never enqueues jobs" } },
             { "type": "set_layout", "fields": { "left_collapsed?": "bool", "right_collapsed?": "bool", "timeline_collapsed?": "bool", "preview_stats?": "bool", "hardware_decode?": "bool", "left_width?": "f32", "right_width?": "f32", "timeline_height?": "f32", "timeline_zoom?": "f32", "timeline_scroll_x?": "f32", "timeline_scroll_y?": "f32" } }
         ]
     })

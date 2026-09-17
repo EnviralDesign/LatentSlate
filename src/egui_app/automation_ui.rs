@@ -409,6 +409,16 @@ impl LatentSlateApp {
                     self.close_asset_lab();
                     envelope.respond(crate::core::automation::AutomationResponse::empty_ok());
                 }
+                crate::core::automation::AutomationCommand::SetAssetLabReviewResults {
+                    versions,
+                    states,
+                } => {
+                    envelope.respond(match self.set_asset_lab_review_results(versions, states) {
+                        Ok(()) => crate::core::automation::AutomationResponse::empty_ok(),
+                        Err(error) => crate::core::automation::AutomationResponse::conflict(error),
+                    });
+                    ctx.request_repaint();
+                }
                 crate::core::automation::AutomationCommand::CloseAllOverlays => {
                     self.close_asset_lab();
                     self.source_picker = None;

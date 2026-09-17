@@ -439,7 +439,11 @@ impl LatentSlateApp {
                 preview,
                 source_badge(candidate.as_ref()),
                 selected,
-                (width - 88.0).max(1.0),
+                if candidate.is_some() {
+                    (width - 88.0).max(1.0)
+                } else {
+                    width
+                },
             )
             .on_hover_text(summary)
             .clicked()
@@ -447,7 +451,7 @@ impl LatentSlateApp {
                 state.spec = candidate.clone();
                 *apply = true;
             }
-            ui.add_enabled_ui(candidate.is_some(), |ui| {
+            if candidate.is_some() {
                 if kit::Tooltip::new("Configure source")
                     .description("Review sampling, timeline context, and sizing before applying this source.")
                     .apply(kit::icon_button_sized(ui, "Configure", Vec2::new(80.0, 64.0)))
@@ -457,7 +461,7 @@ impl LatentSlateApp {
                     state.details = true;
                     state.error = None;
                 }
-            });
+            }
         });
     }
 
@@ -510,7 +514,7 @@ impl LatentSlateApp {
                 ui,
                 state,
                 config,
-                &format!("↻ Working output · {working}"),
+                &format!("Working output · {working}"),
                 "Follows the result you continue from in Create.",
                 make(MediaBindingSource::WorkingOutput),
                 apply,
@@ -520,7 +524,7 @@ impl LatentSlateApp {
             ui,
             state,
             config,
-            "↗ Follow timeline · auto",
+            "Follow timeline · auto",
             "Resolves from the timeline when submitted.",
             make(MediaBindingSource::follow_auto()),
             apply,
@@ -541,10 +545,9 @@ impl LatentSlateApp {
             );
         }
         ui.add_space(14.0);
-        kit::field_label(ui, "This asset · fixed version");
-        ui.label(kit::caption(
-            "These stay on the chosen version, even when it is also the working output.",
-        ));
+        kit::Tooltip::new("Fixed versions")
+            .description("These stay on the chosen version, even when it is also the working output. The pin marks this asset’s current output.")
+            .apply(ui.label(kit::body("This asset · fixed versions").strong()));
         let count = ((ui.available_width() + 8.0) / 122.0).floor().max(1.0) as usize;
         let width = ((ui.available_width() - (count - 1) as f32 * 8.0) / count as f32).max(1.0);
         if let Some(asset) = self.editor.project.find_asset(state.asset_id).cloned() {
@@ -587,7 +590,9 @@ impl LatentSlateApp {
             }
         }
         ui.add_space(14.0);
-        kit::field_label(ui, "Project sources");
+        kit::Tooltip::new("Project sources")
+            .description("Choose project media or another asset’s current output. Expand a generated asset to choose one fixed version instead.")
+            .apply(ui.label(kit::body("Project sources").strong()));
         let media_type =
             bound_media_type_for_input(&state.field).unwrap_or(crate::state::BoundMediaType::Image);
         for asset in self.editor.project.assets.clone() {
