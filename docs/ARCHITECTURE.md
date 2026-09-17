@@ -89,6 +89,9 @@ and resize cursors; static border painting must not cover that feedback.
 Source configuration uses `source_field`: a thumbnail, slot label, source value,
 binding badge, and trailing chevron. Asset Lab uses its 48-point compact form in
 a bounded grid; Attributes uses the comfortable form. Both open the same picker.
+Video soundtrack controls and audio status use `source_field_with_details`, contained
+inside their source card. The Create reference shelf uses the same native resizable
+bottom panel as Compare's lineage and the timeline; its height is presentation state.
 Quick choices commit and close; Configure opens a local draft with an anchored
 footer. Cancel discards the draft and returns to the list; Apply and successful
 capture commit and return to the list. Back retains the local draft.

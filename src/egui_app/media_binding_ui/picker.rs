@@ -149,33 +149,75 @@ impl LatentSlateApp {
             }
         }
         let width = ui.available_width();
-        if kit::source_field(
-            ui,
-            ("source_field", asset_id, &field.name),
-            &title,
-            &label,
-            preview,
-            source_badge(spec.as_ref()),
-            compact,
-            width,
-        )
-        .on_hover_text(match field.description.as_deref() {
-            Some(help) => format!("{summary}\n\n{help}"),
-            None => summary,
-        })
-        .clicked()
+        let has_details = field.input_type == ProviderInputType::Audio
+            || provider
+                .inputs
+                .iter()
+                .any(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()));
+        let response = if has_details {
+            kit::source_field_with_details(
+                ui,
+                ("source_field", asset_id, &field.name),
+                &title,
+                &label,
+                preview,
+                source_badge(spec.as_ref()),
+                compact,
+                width,
+                |ui| {
+                    self.media_source_card_details(
+                        ui,
+                        asset_id,
+                        resolved_context,
+                        provider,
+                        field,
+                        &config,
+                        spec.as_ref(),
+                    )
+                },
+            )
+        } else {
+            kit::source_field(
+                ui,
+                ("source_field", asset_id, &field.name),
+                &title,
+                &label,
+                preview,
+                source_badge(spec.as_ref()),
+                compact,
+                width,
+            )
+        };
+        if response
+            .on_hover_text(match field.description.as_deref() {
+                Some(help) => format!("{summary}\n\n{help}"),
+                None => summary,
+            })
+            .clicked()
         {
             self.open_source_picker(asset_id, context, provider, field);
         }
+    }
+
+    fn media_source_card_details(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context: Option<Uuid>,
+        provider: &ProviderEntry,
+        field: &ProviderInputField,
+        config: &GenerativeConfig,
+        spec: Option<&MediaBindingSpec>,
+    ) {
         if field.input_type == ProviderInputType::Audio {
             self.audio_source_status(
                 ui,
                 asset_id,
-                resolved_context,
+                context,
                 provider,
                 &config,
                 field,
-                spec.as_ref(),
+                spec,
                 "Audio file or video soundtrack",
             );
         }
@@ -222,7 +264,7 @@ impl LatentSlateApp {
                     Some(_) => format!("Separate · {}", source_menu_label(soundtrack_spec.as_ref().unwrap(), &self.editor.project)),
                     None => "Video only".into(),
                 };
-                self.audio_source_status(ui, asset_id, resolved_context, provider, &config, soundtrack, soundtrack_spec.as_ref(), &source);
+                self.audio_source_status(ui, asset_id, context, provider, config, soundtrack, soundtrack_spec.as_ref(), &source);
             });
         }
     }
@@ -294,8 +336,10 @@ impl LatentSlateApp {
                 }
             }
         }
-        ui.add_sized([ui.available_width(), 20.0], egui::Label::new(kit::caption(&text).color(color)).truncate())
+        kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
+            ui.add(egui::Label::new(kit::caption(&text).color(color)).truncate())
             .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));
+        });
     }
 
     pub(in crate::egui_app) fn source_choice_preview(

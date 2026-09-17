@@ -1515,7 +1515,9 @@ fn paint_combo_field(
 
 /// Shared checkbox with the same native behavior and automation path as other kit controls.
 pub fn checkbox(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
-    let response = ui.checkbox(value, label);
+    let response = ui
+        .checkbox(value, label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
     let real_clicked = response.clicked();
     let mut response = crate::core::automation::instrument_response(
         response,
@@ -2880,6 +2882,62 @@ pub fn source_field(
     compact: bool,
     width: f32,
 ) -> Response {
+    source_field_header(ui, id, title, value, preview, badge, compact, width, false)
+}
+
+/// Source-owned controls share a card with the source selection entry point.
+pub fn source_field_with_details(
+    ui: &mut Ui,
+    id: impl Hash,
+    title: &str,
+    value: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    badge: Option<&str>,
+    compact: bool,
+    width: f32,
+    details: impl FnOnce(&mut Ui),
+) -> Response {
+    Frame::new()
+        .fill(PANEL_RAISED)
+        .stroke(Stroke::new(1.0_f32, BORDER))
+        .corner_radius(5)
+        .show(ui, |ui| {
+            ui.set_width((width - 2.0).max(1.0));
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let response = source_field_header(
+                ui,
+                id,
+                title,
+                value,
+                preview,
+                badge,
+                compact,
+                ui.available_width(),
+                true,
+            );
+            paint_panel_edge(ui, response.rect, PanelEdge::Bottom);
+            Frame::new()
+                .inner_margin(Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    details(ui);
+                });
+            response
+        })
+        .inner
+}
+
+fn source_field_header(
+    ui: &mut Ui,
+    id: impl Hash,
+    title: &str,
+    value: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    badge: Option<&str>,
+    compact: bool,
+    width: f32,
+    attached: bool,
+) -> Response {
     let height = if compact {
         COMPACT_SOURCE_FIELD_H
     } else {
@@ -2897,19 +2955,30 @@ pub fn source_field(
     let painter = ui.painter_at(rect);
     painter.rect_filled(
         rect,
-        5,
+        if attached {
+            CornerRadius {
+                nw: 5,
+                ne: 5,
+                sw: 0,
+                se: 0,
+            }
+        } else {
+            CornerRadius::same(5)
+        },
         if response.hovered() {
             FIELD_BG_ACTIVE
         } else {
             PANEL_RAISED
         },
     );
-    painter.rect_stroke(
-        rect,
-        5,
-        Stroke::new(1.0_f32, if response.has_focus() { IMAGE } else { BORDER }),
-        StrokeKind::Inside,
-    );
+    if !attached || response.has_focus() {
+        painter.rect_stroke(
+            rect,
+            5,
+            Stroke::new(1.0_f32, if response.has_focus() { IMAGE } else { BORDER }),
+            StrokeKind::Inside,
+        );
+    }
     let thumb_size = if compact { 30.0 } else { 42.0 };
     let thumb = Rect::from_center_size(
         Pos2::new(rect.left() + 10.0 + thumb_size * 0.5, rect.center().y),

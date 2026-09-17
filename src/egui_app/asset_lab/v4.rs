@@ -448,7 +448,7 @@ impl LatentSlateApp {
                     })
                 })
             });
-            kit::COMPACT_SOURCE_FIELD_H + if paired { 68.0 } else if row.iter().any(|field| field.input_type == ProviderInputType::Audio) { 28.0 } else { 0.0 }
+            kit::COMPACT_SOURCE_FIELD_H + if paired { 76.0 } else if row.iter().any(|field| field.input_type == ProviderInputType::Audio) { 36.0 } else { 0.0 }
         };
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         StripBuilder::new(ui)
@@ -464,15 +464,17 @@ impl LatentSlateApp {
                     let results_height = if self.asset_lab.v4.results.is_empty() { 0.0 } else { 126.0 };
                     StripBuilder::new(ui)
                         .size(Size::remainder().at_least(80.0))
-                        .size(Size::exact(inputs_height))
                         .size(Size::exact(results_height))
                         .vertical(|mut strip| {
-                            strip.cell(|ui| self.asset_lab_authoring_canvas(ui, asset, config, provider.as_ref()));
                             strip.cell(|ui| {
                                 if let Some(provider) = provider.as_ref().filter(|_| !media_fields.is_empty()) {
-                                    let rect = ui.max_rect();
-                                    kit::paint_panel_edge(ui, rect, kit::PanelEdge::Top);
-                                    egui::Frame::new().fill(kit::PANEL).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+                                    let maximum = (ui.available_height() - 160.0).max(72.0);
+                                    egui::Panel::bottom(ui.id().with(("asset_lab_references", asset.id, config.provider_id)))
+                                        .resizable(true)
+                                        .default_size(inputs_height)
+                                        .size_range(inputs_height.min(96.0).min(maximum)..=maximum)
+                                        .frame(egui::Frame::new().fill(kit::PANEL).inner_margin(egui::Margin::symmetric(12, 10)))
+                                        .show_inside(ui, |ui| {
                                         ui.spacing_mut().item_spacing = Vec2::splat(8.0);
                                         if reference_workflow {
                                             kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
@@ -503,6 +505,7 @@ impl LatentSlateApp {
                                         });
                                     });
                                 }
+                                self.asset_lab_authoring_canvas(ui, asset, config, provider.as_ref());
                             });
                             strip.cell(|ui| {
                                 ui.spacing_mut().item_spacing = Vec2::splat(8.0);
