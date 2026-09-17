@@ -3983,6 +3983,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -3995,6 +3996,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -4077,6 +4079,7 @@ mod tests {
         provider.inputs = vec![ProviderInputField {
             ordered_collection: false,
             image_dimensions: None,
+            paired_video_input: None,
             name: "duration_seconds".to_string(),
             label: "Duration".to_string(),
             description: None,
@@ -4177,6 +4180,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -4189,6 +4193,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -4201,6 +4206,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "steps".to_string(),
                 label: "Steps".to_string(),
                 description: None,
@@ -4722,6 +4728,7 @@ mod tests {
         provider.inputs = vec![ProviderInputField {
             ordered_collection: false,
             image_dimensions: None,
+            paired_video_input: None,
             name: "duration_seconds".into(),
             label: "Duration".into(),
             description: None,

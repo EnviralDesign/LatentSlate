@@ -12,9 +12,44 @@ use crate::core::media_binding::{frozen_origin_from_plan, MediaBindingError, Med
 use crate::state::{BoundMediaType, MediaBindingSource, MediaBindingSpec, Project};
 
 /// Bump when materializer command/filter behavior changes so cache keys miss.
-pub const MEDIA_MATERIALIZER_REVISION: u32 = 2;
+pub const MEDIA_MATERIALIZER_REVISION: u32 = 3;
 
 pub fn materialize_plan(
+    project: &Project,
+    plan: &MediaResolvePlan,
+) -> Result<PathBuf, MediaBindingError> {
+    if let MediaBindingSource::PairedVideoInput { field } = &plan.spec.source {
+        let mut video_plan = plan.clone();
+        video_plan.field_name = field.clone();
+        video_plan.media_type = BoundMediaType::Video;
+        let path = materialize_source(project, &video_plan)?;
+        require_soundtrack(&path)?;
+        return Ok(path);
+    }
+    materialize_source(project, plan)
+}
+
+pub fn require_soundtrack(path: &Path) -> Result<(), MediaBindingError> {
+    crate::core::ffmpeg_runtime::init_ffmpeg()
+        .map_err(|detail| MediaBindingError::MaterializationFailed { detail })?;
+    let media = ffmpeg_next::format::input(path).map_err(|err| {
+        MediaBindingError::MaterializationFailed {
+            detail: format!("Cannot read the paired video: {err}"),
+        }
+    })?;
+    if media
+        .streams()
+        .best(ffmpeg_next::media::Type::Audio)
+        .is_none()
+    {
+        return Err(MediaBindingError::MaterializationFailed {
+                detail: "The selected video has no soundtrack. Turn off Include soundtrack or choose a video with audio.".into(),
+            });
+    }
+    Ok(())
+}
+
+fn materialize_source(
     project: &Project,
     plan: &MediaResolvePlan,
 ) -> Result<PathBuf, MediaBindingError> {
@@ -182,7 +217,17 @@ fn materialize_video_range(
     fs::create_dir_all(&cache_dir).map_err(|err| MediaBindingError::MaterializationFailed {
         detail: format!("failed to create media input cache: {err}"),
     })?;
-    let output = cache_dir.join(format!("{}.mp4", cache_key(plan, "mp4-range")));
+    let output = cache_dir.join(format!(
+        "{}.mp4",
+        cache_key(
+            plan,
+            if plan.preserve_video_audio {
+                "mp4-av-range"
+            } else {
+                "mp4-range"
+            }
+        )
+    ));
     if output.exists() {
         return Ok(output);
     }
@@ -190,13 +235,14 @@ fn materialize_video_range(
     let speed = (target_duration / duration).max(0.001);
     let filter = if (speed - 1.0).abs() > 0.001 {
         format!(
-            "setpts=PTS*{:.9},scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            1.0 / speed
+            "setpts=(PTS-STARTPTS)*{:.9},scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            speed
         )
     } else {
         "scale=trunc(iw/2)*2:trunc(ih/2)*2".to_string()
     };
-    let status = Command::new("ffmpeg")
+    let mut command = Command::new("ffmpeg");
+    command
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -207,7 +253,15 @@ fn materialize_video_range(
         .arg(format!("{:.6}", duration))
         .arg("-i")
         .arg(source)
-        .arg("-an")
+        .args(["-map", "0:v:0"]);
+    if plan.preserve_video_audio {
+        command
+            .args(["-map", "0:a:0?", "-c:a", "aac", "-af"])
+            .arg(atempo_filter(1.0 / speed)?);
+    } else {
+        command.arg("-an");
+    }
+    let status = command
         .arg("-vf")
         .arg(&filter)
         .arg("-pix_fmt")

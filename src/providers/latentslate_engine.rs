@@ -478,6 +478,20 @@ fn tool_to_provider(
         .iter()
         .map(convert_input)
         .collect::<Result<Vec<_>, _>>()?;
+    for input in &inputs {
+        if let Some(video_key) = &input.paired_video_input {
+            if input.input_type != ProviderInputType::Audio
+                || input.required
+                || !inputs.iter().any(|video| {
+                    video.name == *video_key
+                        && video.input_type == ProviderInputType::Video
+                        && video.paired_video_input.is_none()
+                })
+            {
+                return Err(format!("Invalid soundtrack pairing for {}", input.name));
+            }
+        }
+    }
     let canvas = tool.canvas.clone().or_else(|| {
         let width = inputs
             .iter()
@@ -573,6 +587,7 @@ fn convert_input(input: &EngineInput) -> Result<ProviderInputField, String> {
     Ok(ProviderInputField {
         ordered_collection: input.collection,
         image_dimensions: input.image_dimensions,
+        paired_video_input: input.paired_video_input.clone(),
         name: input.key.clone(),
         label: input.label.clone(),
         description: input.description.clone(),
@@ -610,6 +625,7 @@ fn parse_workflow_kind(value: &str) -> Result<ProviderWorkflowKind, String> {
         "text_to_video" => Ok(ProviderWorkflowKind::TextToVideo),
         "image_to_video" => Ok(ProviderWorkflowKind::ImageToVideo),
         "first_frame_last_frame_video" => Ok(ProviderWorkflowKind::FirstFrameLastFrameVideo),
+        "reference_to_video" => Ok(ProviderWorkflowKind::ReferenceToVideo),
         "video_to_video" => Ok(ProviderWorkflowKind::VideoToVideo),
         "video_to_bridge" => Ok(ProviderWorkflowKind::VideoToBridge),
         "text_to_audio" => Ok(ProviderWorkflowKind::TextToAudio),
@@ -1372,6 +1388,8 @@ struct EngineInput {
     ui: Option<EngineInputUi>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     image_dimensions: Option<crate::state::ImageDimensionsRequirement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    paired_video_input: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1552,6 +1570,52 @@ mod tests {
             "../../tests/fixtures/engine-user-catalog-d8a5979.json"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn h3_reference_catalog_preserves_category_pairing_and_manual_prompt_help() {
+        let tools: Vec<EngineTool> =
+            serde_json::from_str(include_str!("../../tests/fixtures/catalog-h3.json")).unwrap();
+        let tool = tools.iter().find(|tool| tool.key == "h3.r2v").unwrap();
+        let provider = tool_to_provider(tool, &EngineConnectionSettings::default()).unwrap();
+        assert_eq!(
+            provider.workflow_kind,
+            ProviderWorkflowKind::ReferenceToVideo
+        );
+        assert_eq!(
+            provider.resolved_workflow_kind(),
+            ProviderWorkflowKind::ReferenceToVideo
+        );
+        assert_eq!(
+            provider
+                .inputs
+                .iter()
+                .filter(|input| input.paired_video_input.is_some())
+                .count(),
+            3
+        );
+        assert!(provider
+            .inputs
+            .iter()
+            .filter(|input| input.input_type == ProviderInputType::Image)
+            .all(|input| input.image_dimensions.is_none()));
+        assert!(provider
+            .inputs
+            .iter()
+            .find(|input| input.name == "prompt")
+            .unwrap()
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("<Picture"));
+        let mut invalid = tool.clone();
+        invalid
+            .inputs
+            .iter_mut()
+            .find(|input| input.paired_video_input.is_some())
+            .unwrap()
+            .paired_video_input = Some("missing_video".into());
+        assert!(tool_to_provider(&invalid, &EngineConnectionSettings::default()).is_err());
     }
 
     #[test]

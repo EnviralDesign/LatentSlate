@@ -1513,6 +1513,18 @@ fn paint_combo_field(
     ui.painter().galley(text_pos, galley, visuals.text_color());
 }
 
+/// A native combo option exposed to the opt-in desktop harness.
+pub fn combo_option(ui: &mut Ui, selected: bool, label: &str) -> Response {
+    let response = ui.selectable_label(selected, label);
+    crate::core::automation::instrument_response(
+        response,
+        "option",
+        Some(label.into()),
+        ui.is_enabled(),
+        false,
+    )
+}
+
 pub fn labeled_combo_field<R>(
     ui: &mut Ui,
     label: &str,

@@ -176,6 +176,7 @@ fn image_field(role: Option<InputRole>) -> ProviderInputField {
     ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
+        paired_video_input: None,
         name: match role {
             Some(InputRole::EndImage) => "end_image".into(),
             _ => "start_image".into(),
@@ -197,6 +198,7 @@ fn audio_field() -> ProviderInputField {
     ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
+        paired_video_input: None,
         name: "audio".into(),
         label: "Audio".into(),
         description: None,
@@ -212,6 +214,7 @@ fn video_field() -> ProviderInputField {
     ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
+        paired_video_input: None,
         name: "video".into(),
         label: "Video".into(),
         description: None,
@@ -1211,4 +1214,272 @@ fn locked_snapshot_ignores_later_higher_ranked_candidate() {
     assert_eq!(live.relation, Some(MediaBindingRelation::ExactKeyframe));
     assert_eq!(locked.source_clip_id, Some(clip.id));
     assert_eq!(locked.relation, Some(MediaBindingRelation::ExplicitClip));
+}
+
+#[test]
+fn paired_soundtrack_uses_exact_trimmed_retimed_video_and_rejects_silent_media() {
+    use crate::core::generation::resolve_provider_inputs;
+    use std::process::Command;
+    let mut h = Harness::new();
+    let video = video_field();
+    let mut audio = video.clone();
+    audio.name = "soundtrack".into();
+    audio.label = "Soundtrack".into();
+    audio.input_type = ProviderInputType::Audio;
+    audio.required = false;
+    audio.paired_video_input = Some(video.name.clone());
+    h.provider = provider_with(vec![audio.clone(), video.clone()]); // Declaration order must not matter.
+    let asset = h.add_video(9901, "Paired fixture", "media/paired.mp4", 4.0);
+    let root = h.project.project_path.clone().unwrap();
+    let path = root.join("media/paired.mp4");
+    assert!(Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=96x64:rate=24:duration=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-shortest"
+        ])
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    // A four-second source stretched onto two timeline seconds. The output covers only the second half.
+    let clip = h.place(9902, asset.id, 2, 4.0, 2.0);
+    h.project
+        .clips
+        .iter_mut()
+        .find(|stored| stored.id == clip.id)
+        .unwrap()
+        .time_mode = ClipTimeMode::Stretch;
+    let video_spec = MediaBindingSpec {
+        source: MediaBindingSource::TimelineClip {
+            clip_id: clip.id,
+            version: None,
+        },
+        sample: MediaSample::AlignedRange,
+        coverage: Default::default(),
+    };
+    let pair = MediaBindingSpec {
+        source: MediaBindingSource::PairedVideoInput {
+            field: video.name.clone(),
+        },
+        sample: MediaSample::Whole,
+        coverage: Default::default(),
+    };
+    h.config
+        .media_bindings
+        .insert(video.name.clone(), video_spec.clone());
+    h.config
+        .media_bindings
+        .insert(audio.name.clone(), pair.clone());
+    let plan = resolve_media_binding(h.ctx(&video), &video_spec);
+    assert!(plan.is_ok(), "{:?}", plan.errors);
+    assert_eq!(plan.source_range, Some(MediaTimeRange::new(2.0, 4.0)));
+    assert_eq!(plan.retime_to_duration, Some(1.0));
+    // A second occupied video may share the first video's materialization cache entry.
+    let mut duplicate_video = video.clone();
+    duplicate_video.name = "video_copy".into();
+    let mut duplicate_audio = audio.clone();
+    duplicate_audio.name = "soundtrack_copy".into();
+    duplicate_audio.paired_video_input = Some("video_copy".into());
+    h.provider.inputs.extend([duplicate_video, duplicate_audio]);
+    h.config
+        .media_bindings
+        .insert("video_copy".into(), video_spec.clone());
+    h.config.media_bindings.insert(
+        "soundtrack_copy".into(),
+        MediaBindingSpec {
+            source: MediaBindingSource::PairedVideoInput {
+                field: "video_copy".into(),
+            },
+            ..pair.clone()
+        },
+    );
+    let result = resolve_provider_inputs(
+        &h.project,
+        Some(h.target.id),
+        Some(h.context.id),
+        &h.provider,
+        &h.config,
+    );
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    assert_eq!(result.values["video"], result.values["soundtrack"]);
+    assert_eq!(
+        result.values["video_copy"],
+        result.values["soundtrack_copy"]
+    );
+    assert_eq!(result.values["video"], result.values["video_copy"]);
+    let prepared = PathBuf::from(result.values["video"].as_str().unwrap());
+    let measured = crate::core::media::probe_duration_seconds(&prepared).unwrap();
+    assert!((measured - 1.0).abs() < 0.12, "sample duration {measured}");
+    let media = ffmpeg_next::format::input(&prepared).unwrap();
+    for kind in [
+        ffmpeg_next::media::Type::Video,
+        ffmpeg_next::media::Type::Audio,
+    ] {
+        let stream = media.streams().best(kind).unwrap();
+        let duration = stream.duration() as f64 * f64::from(stream.time_base());
+        assert!((duration - 1.0).abs() < 0.12, "{kind:?}: {duration}");
+    }
+    let video_record = &result.resolved_media_inputs["video"];
+    let audio_record = &result.resolved_media_inputs["soundtrack"];
+    assert_eq!(
+        video_record.materialized_path,
+        audio_record.materialized_path
+    );
+    assert_eq!(video_record.source_range, audio_record.source_range);
+    assert_eq!(audio_record.media_type, BoundMediaType::Audio);
+    assert_eq!(audio_record.source_media_type, Some(BoundMediaType::Video));
+    let saved = serde_json::to_string(&h.config).unwrap();
+    let restored: GenerativeConfig = serde_json::from_str(&saved).unwrap();
+    assert_eq!(restored.media_bindings["soundtrack"], pair);
+    h.config.media_bindings.remove("video");
+    assert!(!resolve_media_binding(h.ctx(&audio), &pair).is_ok());
+    assert_eq!(result.media_bindings_snapshot["video"], video_spec);
+    assert_eq!(result.media_bindings_snapshot["soundtrack"], pair);
+    // A silent video remains a valid reference; explicitly enabled soundtrack must fail.
+    let silent = h.add_video(9903, "Silent fixture", "media/silent.mp4", 4.0);
+    assert!(Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&path)
+        .args(["-an", "-c:v", "copy"])
+        .arg(root.join("media/silent.mp4"))
+        .status()
+        .unwrap()
+        .success());
+    h.config.media_bindings.insert(
+        video.name.clone(),
+        MediaBindingSpec {
+            source: MediaBindingSource::ProjectAsset {
+                asset_id: silent.id,
+                version: None,
+            },
+            sample: MediaSample::Whole,
+            coverage: Default::default(),
+        },
+    );
+    let failed = resolve_provider_inputs(
+        &h.project,
+        Some(h.target.id),
+        Some(h.context.id),
+        &h.provider,
+        &h.config,
+    );
+    assert!(
+        failed
+            .media_errors
+            .iter()
+            .any(|error| error.contains("no soundtrack")),
+        "{:?}",
+        failed.media_errors
+    );
+    h.config.media_bindings.remove("soundtrack");
+    assert!(resolve_provider_inputs(
+        &h.project,
+        Some(h.target.id),
+        Some(h.context.id),
+        &h.provider,
+        &h.config
+    )
+    .media_errors
+    .is_empty());
+}
+
+#[test]
+fn reference_timeline_back_to_back_outputs_sample_only_their_overlap() {
+    let mut h = Harness::new();
+    let video = video_field();
+    let mut audio = video.clone();
+    audio.name = "soundtrack".into();
+    audio.input_type = ProviderInputType::Audio;
+    audio.required = false;
+    audio.paired_video_input = Some(video.name.clone());
+    h.provider = provider_with(vec![video.clone(), audio.clone()]);
+    h.provider.workflow_kind = crate::state::ProviderWorkflowKind::ReferenceToVideo;
+    let playblast = h.add_video(9950, "Playblast", "media/playblast.mp4", 62.0);
+    let source = h.place(9951, playblast.id, 2, 0.0, 60.0);
+    h.project
+        .clips
+        .iter_mut()
+        .find(|clip| clip.id == source.id)
+        .unwrap()
+        .trim_in_seconds = 2.0;
+    let spec = MediaBindingSpec {
+        source: MediaBindingSource::FollowTimeline {
+            query: TimelineSourceQuery {
+                scope: TimelineTrackScope::Below,
+                prefer_touching: true,
+            },
+        },
+        sample: MediaSample::AlignedRange,
+        coverage: MediaCoveragePolicy::Strict,
+    };
+    let pair = MediaBindingSpec {
+        source: MediaBindingSource::PairedVideoInput {
+            field: "video".into(),
+        },
+        ..Default::default()
+    };
+    h.config.media_bindings.insert("video".into(), spec.clone());
+    h.config
+        .media_bindings
+        .insert("soundtrack".into(), pair.clone());
+    for index in 0..3 {
+        let id = uid(9960 + index);
+        let mut output = h.context.clone();
+        output.id = id;
+        output.start_time = index as f64 * 5.0;
+        output.duration = 5.0;
+        h.project.clips.push(output);
+        for binding in [
+            spec.clone(),
+            MediaBindingSpec {
+                source: MediaBindingSource::TimelineClip {
+                    clip_id: source.id,
+                    version: None,
+                },
+                ..spec.clone()
+            },
+        ] {
+            h.config
+                .media_bindings
+                .insert("video".into(), binding.clone());
+            let ctx = MediaResolveContext {
+                context_clip_id: Some(id),
+                ..h.ctx(&video)
+            };
+            let plan = resolve_media_binding(ctx, &binding);
+            assert!(plan.is_ok(), "{:?}", plan.errors);
+            assert_eq!(plan.source_clip_id, Some(source.id));
+            assert_eq!(
+                plan.source_range,
+                Some(MediaTimeRange::new(
+                    2.0 + index as f64 * 5.0,
+                    7.0 + index as f64 * 5.0
+                ))
+            );
+            let paired = resolve_media_binding(
+                MediaResolveContext {
+                    field: &audio,
+                    ..ctx
+                },
+                &pair,
+            );
+            assert!(paired.is_ok(), "{:?}", paired.errors);
+            assert_eq!(paired.source_range, plan.source_range);
+            assert_eq!(paired.target_range, plan.target_range);
+        }
+    }
 }

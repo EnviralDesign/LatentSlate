@@ -1,0 +1,437 @@
+[
+  {
+    "id": "6aa8191a-8574-5b20-b7c9-c9086d8830a1",
+    "key": "h3.t2v",
+    "schema_revision": 2,
+    "name": "MiniMax H3 Text to Video",
+    "description": "Generate MiniMax H3 video with synchronized audio.",
+    "workflow_kind": "text_to_video",
+    "output": {
+      "type": "video"
+    },
+    "inputs": [
+      {
+        "key": "prompt",
+        "label": "Prompt",
+        "type": "text",
+        "required": true,
+        "ui": {
+          "multiline": true,
+          "placeholder": "Describe the shot"
+        }
+      },
+      {
+        "key": "turbo",
+        "label": "Turbo",
+        "type": "boolean",
+        "required": false,
+        "default": false
+      },
+      {
+        "key": "width",
+        "label": "Width",
+        "type": "integer",
+        "required": true,
+        "default": 864,
+        "role": "width",
+        "ui": {
+          "min": 32,
+          "step": 32
+        }
+      },
+      {
+        "key": "height",
+        "label": "Height",
+        "type": "integer",
+        "required": true,
+        "default": 480,
+        "role": "height",
+        "ui": {
+          "min": 32,
+          "step": 32
+        }
+      },
+      {
+        "key": "duration_seconds",
+        "label": "Duration",
+        "type": "number",
+        "required": true,
+        "default": 5.166666666666667,
+        "role": "duration_seconds",
+        "ui": {
+          "unit": "seconds",
+          "min": 0.20833333333333334,
+          "max": 15.083333333333334
+        }
+      },
+      {
+        "key": "seed",
+        "label": "Seed",
+        "type": "integer",
+        "required": true,
+        "default": 0,
+        "role": "seed"
+      }
+    ],
+    "canvas": {
+      "alignment": 32,
+      "min_side": 32
+    },
+    "timing": {
+      "fps": {
+        "mode": "fixed",
+        "value": 24
+      },
+      "duration_seconds": {
+        "min": 0.20833333333333334,
+        "max": 15.083333333333334,
+        "step": 0.0,
+        "frame_step": 17,
+        "frame_offset": 5
+      }
+    },
+    "schema_hash": "sha256:e25d24799bbd7efd2bca32ff98788af4144a05a83939b3da7eb61ce949004234"
+  },
+  {
+    "id": "1eab3e0f-487c-5650-a3df-71dccdc097d2",
+    "key": "h3.i2v",
+    "schema_revision": 2,
+    "name": "MiniMax H3 Image to Video",
+    "description": "Generate MiniMax H3 video with synchronized audio.",
+    "workflow_kind": "image_to_video",
+    "output": {
+      "type": "video"
+    },
+    "inputs": [
+      {
+        "key": "prompt",
+        "label": "Prompt",
+        "type": "text",
+        "required": true,
+        "ui": {
+          "multiline": true,
+          "placeholder": "Describe the shot"
+        }
+      },
+      {
+        "key": "turbo",
+        "label": "Turbo",
+        "type": "boolean",
+        "required": false,
+        "default": false
+      },
+      {
+        "key": "width",
+        "label": "Width",
+        "type": "integer",
+        "required": true,
+        "default": 864,
+        "role": "width",
+        "ui": {
+          "min": 32,
+          "step": 32
+        }
+      },
+      {
+        "key": "height",
+        "label": "Height",
+        "type": "integer",
+        "required": true,
+        "default": 480,
+        "role": "height",
+        "ui": {
+          "min": 32,
+          "step": 32
+        }
+      },
+      {
+        "key": "duration_seconds",
+        "label": "Duration",
+        "type": "number",
+        "required": true,
+        "default": 5.166666666666667,
+        "role": "duration_seconds",
+        "ui": {
+          "unit": "seconds",
+          "min": 0.20833333333333334,
+          "max": 15.083333333333334
+        }
+      },
+      {
+        "key": "seed",
+        "label": "Seed",
+        "type": "integer",
+        "required": true,
+        "default": 0,
+        "role": "seed"
+      },
+      {
+        "key": "start_image",
+        "label": "Start Image",
+        "type": "image",
+        "required": true,
+        "role": "start_image",
+        "image_dimensions": "match_output_canvas"
+      }
+    ],
+    "canvas": {
+      "alignment": 32,
+      "min_side": 32
+    },
+    "timing": {
+      "fps": {
+        "mode": "fixed",
+        "value": 24
+      },
+      "duration_seconds": {
+        "min": 0.20833333333333334,
+        "max": 15.083333333333334,
+        "step": 0.0,
+        "frame_step": 17,
+        "frame_offset": 5
+      }
+    },
+    "schema_hash": "sha256:ad19a00d73cc26e9c4cd8b2104eacd38a14524ce15de3083dab9bf14025f11a0"
+  },
+  {
+    "id": "93697824-bf07-52b5-941e-62faba78b7d4",
+    "key": "h3.r2v",
+    "schema_revision": 3,
+    "name": "MiniMax H3 Reference to Video",
+    "description": "Generate MiniMax H3 video with synchronized audio.",
+    "workflow_kind": "reference_to_video",
+    "output": {
+      "type": "video"
+    },
+    "inputs": [
+      {
+        "key": "prompt",
+        "label": "Prompt",
+        "type": "text",
+        "required": true,
+        "ui": {
+          "multiline": true,
+          "placeholder": "Describe the shot"
+        },
+        "description": "Write references manually as <Picture N>, <Video N> or <Audio N>. Pictures and videos each count occupied slots from 1 in slot order. Audio counts enabled video soundtracks first in video-slot order, then occupied standalone audio slots. Clearing an earlier slot or changing soundtrack inclusion can renumber later references. Slot labels are not prompt numbers. Prompts are never rewritten."
+      },
+      {
+        "key": "turbo",
+        "label": "Turbo",
+        "type": "boolean",
+        "required": false,
+        "default": false
+      },
+      {
+        "key": "width",
+        "label": "Width",
+        "type": "integer",
+        "required": true,
+        "default": 864,
+        "role": "width",
+        "ui": {
+          "min": 32,
+          "step": 32
+        }
+      },
+      {
+        "key": "height",
+        "label": "Height",
+        "type": "integer",
+        "required": true,
+        "default": 480,
+        "role": "height",
+        "ui": {
+          "min": 32,
+          "step": 32
+        }
+      },
+      {
+        "key": "duration_seconds",
+        "label": "Duration",
+        "type": "number",
+        "required": true,
+        "default": 5.166666666666667,
+        "role": "duration_seconds",
+        "ui": {
+          "unit": "seconds",
+          "min": 0.20833333333333334,
+          "max": 15.083333333333334
+        }
+      },
+      {
+        "key": "seed",
+        "label": "Seed",
+        "type": "integer",
+        "required": true,
+        "default": 0,
+        "role": "seed"
+      },
+      {
+        "key": "reference_image_1",
+        "label": "Image slot 1",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_2",
+        "label": "Image slot 2",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_3",
+        "label": "Image slot 3",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_4",
+        "label": "Image slot 4",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_5",
+        "label": "Image slot 5",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_6",
+        "label": "Image slot 6",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_7",
+        "label": "Image slot 7",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_8",
+        "label": "Image slot 8",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_image_9",
+        "label": "Image slot 9",
+        "type": "image",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_video_1",
+        "label": "Video slot 1",
+        "type": "video",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_video_2",
+        "label": "Video slot 2",
+        "type": "video",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_video_3",
+        "label": "Video slot 3",
+        "type": "video",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_video_audio_1",
+        "label": "Video slot 1 soundtrack",
+        "type": "audio",
+        "required": false,
+        "nullable": true,
+        "paired_video_input": "reference_video_1",
+        "description": "Optional soundtrack from the paired video. Use the same sampled video source and interval; this is not a separate audio reference."
+      },
+      {
+        "key": "reference_video_audio_2",
+        "label": "Video slot 2 soundtrack",
+        "type": "audio",
+        "required": false,
+        "nullable": true,
+        "paired_video_input": "reference_video_2",
+        "description": "Optional soundtrack from the paired video. Use the same sampled video source and interval; this is not a separate audio reference."
+      },
+      {
+        "key": "reference_video_audio_3",
+        "label": "Video slot 3 soundtrack",
+        "type": "audio",
+        "required": false,
+        "nullable": true,
+        "paired_video_input": "reference_video_3",
+        "description": "Optional soundtrack from the paired video. Use the same sampled video source and interval; this is not a separate audio reference."
+      },
+      {
+        "key": "reference_audio_1",
+        "label": "Audio slot 1",
+        "type": "audio",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_audio_2",
+        "label": "Audio slot 2",
+        "type": "audio",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      },
+      {
+        "key": "reference_audio_3",
+        "label": "Audio slot 3",
+        "type": "audio",
+        "required": false,
+        "nullable": true,
+        "description": "Optional reference for a new video. Slot order determines prompt numbering among occupied references; see the prompt instructions."
+      }
+    ],
+    "canvas": {
+      "alignment": 32,
+      "min_side": 32
+    },
+    "timing": {
+      "fps": {
+        "mode": "fixed",
+        "value": 24
+      },
+      "duration_seconds": {
+        "min": 0.20833333333333334,
+        "max": 15.083333333333334,
+        "step": 0.0,
+        "frame_step": 17,
+        "frame_offset": 5
+      }
+    },
+    "schema_hash": "sha256:b111a5f511ca7ff346931dfa6079810f2daa841a7792c78f44558e9f264e9dbd"
+  }
+]

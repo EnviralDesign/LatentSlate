@@ -339,7 +339,10 @@ impl LatentSlateApp {
             None
         };
         let mut extent = preview.map(|(_, size)| size).unwrap_or(Vec2::splat(1024.0));
-        if profile == AssetLabAuthoringProfile::Regions && audition.is_none() {
+        if (profile == AssetLabAuthoringProfile::Regions
+            || (profile == AssetLabAuthoringProfile::Generic && preview.is_none()))
+            && audition.is_none()
+        {
             if let Some(provider) = provider {
                 let values = config
                     .inputs

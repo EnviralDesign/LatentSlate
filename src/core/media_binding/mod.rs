@@ -8,7 +8,8 @@ mod tests;
 
 #[allow(unused_imports)]
 pub use materialize::{
-    freeze_binding, materialize_plan, prepare_reference_image, MEDIA_MATERIALIZER_REVISION,
+    freeze_binding, materialize_plan, prepare_reference_image, require_soundtrack,
+    MEDIA_MATERIALIZER_REVISION,
 };
 
 use std::collections::HashMap;
@@ -61,6 +62,7 @@ pub struct MediaResolvePlan {
     pub source_frame_time: Option<f64>,
     pub retime_to_duration: Option<f64>,
     pub uses_original_source: bool,
+    pub preserve_video_audio: bool,
     pub candidate_count: usize,
     pub ranking_explanation: Option<String>,
     pub diagnostics: Vec<String>,
@@ -470,6 +472,7 @@ fn placeholder_input(name: &str) -> ProviderInputField {
     ProviderInputField {
         ordered_collection: false,
         image_dimensions: None,
+        paired_video_input: None,
         name: name.to_string(),
         label: name.to_string(),
         description: None,
@@ -498,6 +501,11 @@ pub fn resolve_media_binding(
         });
         return plan;
     };
+    if ctx.field.paired_video_input.is_some()
+        || matches!(binding.source, MediaBindingSource::PairedVideoInput { .. })
+    {
+        return resolve_paired_video(ctx, binding, plan);
+    }
     plan.media_type = media_type;
     plan.normalized_sample = normalize_sample(&binding.sample, ctx.field);
     plan.stability = binding.stability();
@@ -518,6 +526,7 @@ pub fn resolve_media_binding(
     }
 
     match &binding.source {
+        MediaBindingSource::PairedVideoInput { .. } => unreachable!("paired inputs resolve above"),
         MediaBindingSource::WorkingOutput => {
             match (ctx.target_asset_id, ctx.config.and_then(|config| config.lab_authoring.working_version.as_deref())) {
                 (Some(asset_id), Some(version)) => resolve_project_asset(ctx, &mut plan, asset_id, Some(version)),
@@ -538,6 +547,60 @@ pub fn resolve_media_binding(
         MediaBindingSource::FollowTimeline { query } => resolve_follow(ctx, &mut plan, query),
     }
     plan
+}
+
+fn resolve_paired_video(
+    ctx: MediaResolveContext<'_>,
+    binding: &MediaBindingSpec,
+    mut plan: MediaResolvePlan,
+) -> MediaResolvePlan {
+    let resolved = (|| {
+        let MediaBindingSource::PairedVideoInput { field } = &binding.source else {
+            return Err("Use the video's Include soundtrack control to link this input.");
+        };
+        if ctx.field.paired_video_input.as_deref() != Some(field.as_str())
+            || ctx.field.input_type != ProviderInputType::Audio
+        {
+            return Err("The recipe does not declare this soundtrack pairing.");
+        }
+        let video = ctx
+            .provider
+            .and_then(|provider| {
+                provider.inputs.iter().find(|input| {
+                    input.name == *field
+                        && input.input_type == ProviderInputType::Video
+                        && input.paired_video_input.is_none()
+                })
+            })
+            .ok_or("The paired video input is unavailable.")?;
+        let config = ctx.config.ok_or("Generation setup is unavailable.")?;
+        let spec = lookup_media_binding(config, video, ctx.project)
+            .ok_or("Choose a video source or turn off its soundtrack.")?;
+        if matches!(spec.source, MediaBindingSource::PairedVideoInput { .. }) {
+            return Err("A paired video cannot itself follow another input.");
+        }
+        let mut video_plan = resolve_media_binding(
+            MediaResolveContext {
+                field: video,
+                ..ctx
+            },
+            &spec,
+        );
+        video_plan.field_name = ctx.field.name.clone();
+        video_plan.field_label = ctx.field.label.clone();
+        video_plan.spec = binding.clone();
+        video_plan.media_type = BoundMediaType::Audio;
+        Ok(video_plan)
+    })();
+    match resolved {
+        Ok(resolved) => resolved,
+        Err(detail) => {
+            plan.errors.push(MediaBindingError::SourceMissing {
+                detail: detail.into(),
+            });
+            plan
+        }
+    }
 }
 
 fn empty_plan(ctx: MediaResolveContext<'_>, binding: &MediaBindingSpec) -> MediaResolvePlan {
@@ -561,6 +624,12 @@ fn empty_plan(ctx: MediaResolveContext<'_>, binding: &MediaBindingSpec) -> Media
         source_frame_time: None,
         retime_to_duration: None,
         uses_original_source: false,
+        preserve_video_audio: ctx.provider.is_some_and(|provider| {
+            provider
+                .inputs
+                .iter()
+                .any(|input| input.paired_video_input.as_deref() == Some(ctx.field.name.as_str()))
+        }),
         candidate_count: 0,
         ranking_explanation: None,
         diagnostics: Vec::new(),
@@ -2221,6 +2290,7 @@ pub fn default_follow_spec() -> MediaBindingSpec {
 /// Collect Follow/Lock/Freeze labels for inspector menus.
 pub fn source_menu_label(spec: &MediaBindingSpec, project: &Project) -> String {
     match &spec.source {
+        MediaBindingSource::PairedVideoInput { field } => format!("Soundtrack of {field}"),
         MediaBindingSource::WorkingOutput => "Working output".to_string(),
         MediaBindingSource::FollowTimeline { query } => {
             format!("Follow Timeline / {}", query.scope.label())

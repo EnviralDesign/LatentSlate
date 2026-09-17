@@ -189,6 +189,7 @@ pub(super) struct ProviderNodeSelectorDraft {
 
 #[derive(Clone, Debug)]
 pub(super) struct ProviderBuilderInput {
+    paired_video_input: Option<String>,
     image_dimensions: Option<crate::state::ImageDimensionsRequirement>,
     pub(super) name: String,
     pub(super) label: String,
@@ -232,7 +233,7 @@ pub(super) struct ProviderGenerationChoice {
 }
 
 impl ProviderGenerationChoice {
-    pub(super) const ALL: [ProviderGenerationChoice; 12] = [
+    pub(super) const ALL: [ProviderGenerationChoice; 13] = [
         ProviderGenerationChoice::new(ProviderWorkflowKind::TextToImage, ProviderOutputType::Image),
         ProviderGenerationChoice::new(
             ProviderWorkflowKind::ImageToImage,
@@ -245,6 +246,10 @@ impl ProviderGenerationChoice {
         ),
         ProviderGenerationChoice::new(
             ProviderWorkflowKind::FirstFrameLastFrameVideo,
+            ProviderOutputType::Video,
+        ),
+        ProviderGenerationChoice::new(
+            ProviderWorkflowKind::ReferenceToVideo,
             ProviderOutputType::Video,
         ),
         ProviderGenerationChoice::new(
@@ -1091,6 +1096,7 @@ impl ProviderBuilderState {
             let input_ui = build_provider_input_ui(input);
             manifest_inputs.push(ManifestInput {
                 image_dimensions: input.image_dimensions,
+                paired_video_input: input.paired_video_input.clone(),
                 name: input.name.clone(),
                 label: input.label.clone(),
                 description: optional_trimmed_string(&input.description),
@@ -1107,6 +1113,7 @@ impl ProviderBuilderState {
             provider_inputs.push(ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: input.image_dimensions,
+                paired_video_input: input.paired_video_input.clone(),
                 name: input.name.clone(),
                 label: input.label.clone(),
                 description: optional_trimmed_string(&input.description),
@@ -1214,6 +1221,7 @@ impl ProviderBuilderInput {
             schema.map(|schema| schema.multiline).unwrap_or(false) || heuristic_multiline;
         Self {
             image_dimensions: None,
+            paired_video_input: None,
             name,
             label,
             description: String::new(),
@@ -1243,6 +1251,7 @@ impl ProviderBuilderInput {
         let ui_meta = input.ui.as_ref();
         Self {
             image_dimensions: input.image_dimensions,
+            paired_video_input: input.paired_video_input.clone(),
             name: input.name.clone(),
             label: input.label.clone(),
             description: input.description.clone().unwrap_or_default(),
@@ -1281,6 +1290,7 @@ impl ProviderBuilderInput {
         let advanced = input.ui.as_ref().is_some_and(|ui| ui.advanced);
         Self {
             image_dimensions: input.image_dimensions,
+            paired_video_input: input.paired_video_input.clone(),
             name: input.name,
             label: input.label,
             description: input.description.unwrap_or_default(),
@@ -1319,6 +1329,7 @@ impl ProviderBuilderInput {
         let advanced = input.ui.as_ref().is_some_and(|ui| ui.advanced);
         Self {
             image_dimensions: None,
+            paired_video_input: None,
             name: input.name,
             label: input.label,
             description: input.description.unwrap_or_default(),
@@ -1777,12 +1788,13 @@ pub(super) fn provider_workflow_sort_key(workflow_kind: Option<ProviderWorkflowK
         ProviderWorkflowKind::TextToVideo => 2,
         ProviderWorkflowKind::ImageToVideo => 3,
         ProviderWorkflowKind::FirstFrameLastFrameVideo => 4,
-        ProviderWorkflowKind::VideoToVideo => 5,
-        ProviderWorkflowKind::VideoToBridge => 6,
-        ProviderWorkflowKind::TextToAudio => 7,
-        ProviderWorkflowKind::AudioToAudio => 8,
-        ProviderWorkflowKind::Custom => 9,
-        ProviderWorkflowKind::Auto => 10,
+        ProviderWorkflowKind::ReferenceToVideo => 5,
+        ProviderWorkflowKind::VideoToVideo => 6,
+        ProviderWorkflowKind::VideoToBridge => 7,
+        ProviderWorkflowKind::TextToAudio => 8,
+        ProviderWorkflowKind::AudioToAudio => 9,
+        ProviderWorkflowKind::Custom => 10,
+        ProviderWorkflowKind::Auto => 11,
     }
 }
 
@@ -1830,6 +1842,7 @@ pub(super) fn derived_output_type_for_workflow_kind(
         ProviderWorkflowKind::TextToVideo
         | ProviderWorkflowKind::ImageToVideo
         | ProviderWorkflowKind::FirstFrameLastFrameVideo
+        | ProviderWorkflowKind::ReferenceToVideo
         | ProviderWorkflowKind::VideoToVideo
         | ProviderWorkflowKind::VideoToBridge => Some(ProviderOutputType::Video),
         ProviderWorkflowKind::TextToAudio | ProviderWorkflowKind::AudioToAudio => {

@@ -222,6 +222,19 @@ version, project-current-output, or timeline bindings. The shared picker uses ed
 operations for both Attributes and Asset Lab. Quick selections commit directly; Configure
 stages changes for Apply/Cancel. Capture commits only after materialization succeeds.
 
+Reference-to-video uses an explicit workflow category; input media do not imply it.
+Its bounded Create shelf preserves catalog slot identities and shows occupied/required
+slots plus the next empty slot of each media type, with an option to show all slots.
+New direct references default to Whole source; new timeline references retain native
+output-aligned sampling. Back-to-back output clips can follow a longer underlying
+source clip and resolve only their own covered interval, including source trim/retiming.
+Declared optional audio fields with `paired_video_input` use a `PairedVideoInput`
+binding and a shared Include soundtrack control beneath the video picker. They follow
+the video's exact source, sample and retiming, and submit the same prepared video file.
+Absent audio fails explicitly. Clearing a video keeps the enabled pairing unresolved
+until the video is replaced or its soundtrack is disabled. The relationship is authored
+state; completed provenance records the concrete source and sampled interval.
+
 Mask geometry records actual raster dimensions, resolved source/frame/crop, sizing, and
 source identity. Painting uses canvas coordinates under zoom/pan; incompatible geometry
 retains the document and requires matching alignment or explicit clearing. Region bounds

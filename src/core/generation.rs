@@ -445,6 +445,28 @@ pub fn preflight_provider_config(
             input.input_type,
             ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio
         ) {
+            if input.paired_video_input.is_some() {
+                if let Some(spec) = lookup_media_binding(&config, input, project) {
+                    let plan = resolve_media_binding(
+                        MediaResolveContext {
+                            project,
+                            target_asset_id,
+                            context_clip_id,
+                            field: input,
+                            provider: Some(provider),
+                            config: Some(&config),
+                        },
+                        &spec,
+                    );
+                    issues.extend(plan.error_messages().into_iter().map(|message| {
+                        GenerationPreflightIssue {
+                            section: GenerationControlSection::Media,
+                            message,
+                        }
+                    }));
+                }
+                continue;
+            }
             let bridge_role = provider_is_timeline_bridge(provider)
                 && matches!(
                     input.role,
@@ -843,7 +865,18 @@ pub fn resolve_provider_inputs(
     let mut resolved_media_inputs = HashMap::new();
     let mut materialized_by_key: HashMap<String, PathBuf> = HashMap::new();
 
-    for input in provider.inputs.iter() {
+    // Resolve video artifacts before their dependent soundtrack fields, regardless of catalog order.
+    for input in provider
+        .inputs
+        .iter()
+        .filter(|input| input.paired_video_input.is_none())
+        .chain(
+            provider
+                .inputs
+                .iter()
+                .filter(|input| input.paired_video_input.is_some()),
+        )
+    {
         match input.input_type {
             ProviderInputType::Image | ProviderInputType::Video | ProviderInputType::Audio => {
                 let bridge_role = provider_is_timeline_bridge(provider)
@@ -914,13 +947,36 @@ pub fn resolve_provider_inputs(
                     continue;
                 }
                 let cache_identity = format!(
-                    "{:?}:{:?}:{:?}:{:?}",
+                    "{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
                     plan.source_asset_id,
                     plan.source_clip_id,
+                    plan.source_version,
+                    plan.source_path_absolute,
                     plan.source_frame_time,
-                    plan.source_range
+                    plan.source_range,
+                    plan.retime_to_duration,
+                    plan.media_type,
+                    plan.preserve_video_audio
                 );
-                let path = if let Some(existing) = materialized_by_key.get(&cache_identity) {
+                let path = if let Some(video_field) = &input.paired_video_input {
+                    let Some(path) = values
+                        .get(video_field)
+                        .and_then(Value::as_str)
+                        .filter(|path| !path.is_empty())
+                        .map(PathBuf::from)
+                    else {
+                        media_errors.push(format!(
+                            "{}: the paired video could not be prepared.",
+                            input.label
+                        ));
+                        continue;
+                    };
+                    if let Err(error) = crate::core::media_binding::require_soundtrack(&path) {
+                        media_errors.push(error.message(&input.label));
+                        continue;
+                    }
+                    path
+                } else if let Some(existing) = materialized_by_key.get(&cache_identity) {
                     existing.clone()
                 } else {
                     match materialize_plan(project, &plan) {
@@ -2196,6 +2252,7 @@ mod tests {
         ProviderInputField {
             ordered_collection: false,
             image_dimensions: None,
+            paired_video_input: None,
             name: name.to_string(),
             label: name.to_string(),
             description: None,
@@ -2262,6 +2319,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "source_image".to_string(),
                 label: "Source Image".to_string(),
                 description: None,
@@ -2274,6 +2332,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "width".to_string(),
                 label: "Width".to_string(),
                 description: None,
@@ -2286,6 +2345,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "height".to_string(),
                 label: "Height".to_string(),
                 description: None,
@@ -2321,6 +2381,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "steps".to_string(),
                 label: "Steps".to_string(),
                 description: None,
@@ -2602,6 +2663,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "prompt".to_string(),
                 label: "Prompt".to_string(),
                 description: None,
@@ -2616,6 +2678,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "duration_seconds".to_string(),
                 label: "Duration".to_string(),
                 description: None,
@@ -2634,6 +2697,7 @@ mod tests {
             ProviderInputField {
                 ordered_collection: false,
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "seed".to_string(),
                 label: "Seed".to_string(),
                 description: None,
@@ -2753,6 +2817,7 @@ mod tests {
         provider.inputs.push(ProviderInputField {
             ordered_collection: false,
             image_dimensions: None,
+            paired_video_input: None,
             name: "steps".to_string(),
             label: "Steps".to_string(),
             description: None,

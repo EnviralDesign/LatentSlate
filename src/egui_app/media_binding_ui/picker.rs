@@ -73,6 +73,9 @@ impl LatentSlateApp {
         field: &ProviderInputField,
         compact: bool,
     ) {
+        if field.paired_video_input.is_some() {
+            return;
+        }
         let Some(config) = self.editor.project.generative_config(asset_id).cloned() else {
             return;
         };
@@ -122,10 +125,34 @@ impl LatentSlateApp {
             compact,
             width,
         )
-        .on_hover_text(summary)
+        .on_hover_text(match field.description.as_deref() {
+            Some(help) => format!("{summary}\n\n{help}"),
+            None => summary,
+        })
         .clicked()
         {
             self.open_source_picker(asset_id, context, provider, field);
+        }
+        if let Some(soundtrack) = provider
+            .inputs
+            .iter()
+            .find(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()))
+        {
+            let enabled = lookup_media_binding(&config, soundtrack, &self.editor.project).is_some();
+            ui.push_id(("soundtrack", asset_id, &soundtrack.name), |ui| {
+                let hint = format!("Use the audio from this video's exact sampled interval. It follows the video's source, trim and retiming. A video without audio cannot supply a soundtrack.\n\n{}",
+                    soundtrack.description.as_deref().unwrap_or(""));
+                if kit::tool_toggle_button(ui, "Include soundtrack", kit::Tooltip::new("Include soundtrack")
+                    .description(&hint), enabled, width.min(166.0)).clicked() {
+                    let spec = (!enabled).then(|| MediaBindingSpec {
+                        source: MediaBindingSource::PairedVideoInput { field: field.name.clone() },
+                        sample: MediaSample::Whole, coverage: MediaCoveragePolicy::Strict,
+                    });
+                    if let Err(error) = self.editor.set_generation_source(asset_id, soundtrack, spec, None) {
+                        self.editor.status = error;
+                    }
+                }
+            });
         }
     }
 
@@ -472,15 +499,24 @@ impl LatentSlateApp {
         config: &GenerativeConfig,
         apply: &mut bool,
     ) {
-        let sample = state
-            .spec
-            .as_ref()
-            .map(|spec| spec.sample.clone())
-            .unwrap_or_else(|| default_sample_for_field(&state.field));
+        let sample = state.spec.as_ref().map(|spec| spec.sample.clone());
+        let reference_workflow = state.provider.resolved_workflow_kind()
+            == crate::state::ProviderWorkflowKind::ReferenceToVideo;
+        let timeline_sample = default_sample_for_field(&state.field);
         let make = |source| {
+            let default_sample = if reference_workflow
+                && !matches!(
+                    source,
+                    MediaBindingSource::FollowTimeline { .. }
+                        | MediaBindingSource::TimelineClip { .. }
+                ) {
+                MediaSample::Whole
+            } else {
+                timeline_sample.clone()
+            };
             Some(MediaBindingSpec {
                 source,
-                sample: sample.clone(),
+                sample: sample.clone().unwrap_or(default_sample),
                 coverage: MediaCoveragePolicy::Strict,
             })
         };
@@ -798,15 +834,15 @@ impl LatentSlateApp {
                 normalize_sample(&spec.sample, &state.field).label(),
                 |ui| {
                     for sample in options {
-                        if ui
-                            .selectable_label(
-                                sample_matches_option(
-                                    &normalize_sample(&spec.sample, &state.field),
-                                    &sample,
-                                ),
-                                sample.label(),
-                            )
-                            .clicked()
+                        if kit::combo_option(
+                            ui,
+                            sample_matches_option(
+                                &normalize_sample(&spec.sample, &state.field),
+                                &sample,
+                            ),
+                            &sample.label(),
+                        )
+                        .clicked()
                         {
                             spec.sample = sample;
                             ui.close();
@@ -858,10 +894,7 @@ impl LatentSlateApp {
                         ReferenceSizing::Fill,
                         ReferenceSizing::Stretch,
                     ] {
-                        if ui
-                            .selectable_label(state.sizing == sizing, sizing.label())
-                            .clicked()
-                        {
+                        if kit::combo_option(ui, state.sizing == sizing, sizing.label()).clicked() {
                             state.sizing = sizing;
                             ui.close();
                         }

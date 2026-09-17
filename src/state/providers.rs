@@ -26,6 +26,7 @@ pub enum ProviderWorkflowKind {
     TextToVideo,
     ImageToVideo,
     FirstFrameLastFrameVideo,
+    ReferenceToVideo,
     VideoToVideo,
     VideoToBridge,
     TextToAudio,
@@ -40,13 +41,14 @@ impl Default for ProviderWorkflowKind {
 }
 
 impl ProviderWorkflowKind {
-    pub const ALL: [ProviderWorkflowKind; 11] = [
+    pub const ALL: [ProviderWorkflowKind; 12] = [
         ProviderWorkflowKind::Auto,
         ProviderWorkflowKind::TextToImage,
         ProviderWorkflowKind::ImageToImage,
         ProviderWorkflowKind::TextToVideo,
         ProviderWorkflowKind::ImageToVideo,
         ProviderWorkflowKind::FirstFrameLastFrameVideo,
+        ProviderWorkflowKind::ReferenceToVideo,
         ProviderWorkflowKind::VideoToVideo,
         ProviderWorkflowKind::VideoToBridge,
         ProviderWorkflowKind::TextToAudio,
@@ -62,6 +64,7 @@ impl ProviderWorkflowKind {
             Self::TextToVideo => "Text to Video",
             Self::ImageToVideo => "Image to Video",
             Self::FirstFrameLastFrameVideo => "First/Last Frame Video",
+            Self::ReferenceToVideo => "Reference to Video",
             Self::VideoToVideo => "Video to Video",
             Self::VideoToBridge => "Video to Bridge",
             Self::TextToAudio => "Text to Audio",
@@ -78,6 +81,7 @@ impl ProviderWorkflowKind {
             Self::TextToVideo => "T2V",
             Self::ImageToVideo => "I2V",
             Self::FirstFrameLastFrameVideo => "FF2LF",
+            Self::ReferenceToVideo => "R2V",
             Self::VideoToVideo => "V2V",
             Self::VideoToBridge => "Bridge",
             Self::TextToAudio => "T2A",
@@ -228,6 +232,9 @@ pub struct ProviderInputField {
     pub ui: Option<InputUi>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_dimensions: Option<ImageDimensionsRequirement>,
+    /// This optional audio field is the soundtrack of the named video input's exact sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_video_input: Option<String>,
 }
 
 /// Connection configuration for a provider entry.
@@ -501,6 +508,9 @@ pub struct ManifestInput {
     pub ui: Option<InputUi>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_dimensions: Option<ImageDimensionsRequirement>,
+    /// This optional audio field is the soundtrack of the named video input's exact sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_video_input: Option<String>,
     pub bind: InputBinding,
 }
 
@@ -666,6 +676,7 @@ mod tests {
         provider.inputs.push(ProviderInputField {
             ordered_collection: false,
             image_dimensions: None,
+            paired_video_input: None,
             name: "prompt".to_string(),
             label: "Prompt".to_string(),
             description: Some("Describe the image content.".to_string()),
@@ -700,6 +711,7 @@ mod tests {
             },
             inputs: vec![ManifestInput {
                 image_dimensions: None,
+                paired_video_input: None,
                 name: "prompt".to_string(),
                 label: "Prompt".to_string(),
                 description: Some("Positive prompt text.".to_string()),

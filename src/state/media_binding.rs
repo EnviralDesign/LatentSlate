@@ -292,6 +292,10 @@ pub struct FrozenMediaOrigin {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MediaBindingSource {
+    /// Follows the exact sampled artifact of a catalog-declared video input.
+    PairedVideoInput {
+        field: String,
+    },
     WorkingOutput,
     FollowTimeline {
         #[serde(default)]
@@ -326,7 +330,9 @@ impl MediaBindingSource {
 
     pub fn stability(&self) -> MediaBindingStability {
         match self {
-            Self::FollowTimeline { .. } | Self::WorkingOutput => MediaBindingStability::Follow,
+            Self::FollowTimeline { .. } | Self::WorkingOutput | Self::PairedVideoInput { .. } => {
+                MediaBindingStability::Follow
+            }
             Self::TimelineClip { .. } | Self::ProjectAsset { .. } => {
                 MediaBindingStability::LockSource
             }

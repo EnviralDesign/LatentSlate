@@ -314,6 +314,7 @@ impl LatentSlateApp {
                 MediaBindingSource::FollowTimeline { .. } => plan.source_clip_id,
                 MediaBindingSource::ProjectAsset { .. }
                 | MediaBindingSource::WorkingOutput
+                | MediaBindingSource::PairedVideoInput { .. }
                 | MediaBindingSource::FrozenArtifact { .. } => None,
             };
             let Some(source_clip_id) = source_clip_id else {
@@ -981,7 +982,7 @@ impl LatentSlateApp {
         };
         let mut plans = Vec::new();
         for input in provider.inputs.iter() {
-            if bound_media_type_for_input(input).is_none() {
+            if bound_media_type_for_input(input).is_none() || input.paired_video_input.is_some() {
                 continue;
             }
             if let Some(spec) = lookup_media_binding(config, input, &self.editor.project) {
@@ -1023,6 +1024,7 @@ impl LatentSlateApp {
                         source_frame_time: None,
                         retime_to_duration: None,
                         uses_original_source: false,
+                        preserve_video_audio: false,
                         candidate_count: 0,
                         ranking_explanation: None,
                         diagnostics: Vec::new(),

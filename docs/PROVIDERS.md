@@ -118,6 +118,18 @@ checks still-image dimensions during preflight and checks actual materialized im
 choose a matching canvas or prepare a matching source. Missing constraints preserve
 existing behavior for ComfyUI, Klein, and Wan.
 
+`workflow_kind: "reference_to_video"` is distinct from video-to-video and bridge
+workflows. Reference image sizing is independent of the output canvas unless the
+catalog explicitly declares otherwise. An optional audio input may declare
+`paired_video_input: "video_input_key"`; LatentSlate then offers Include soundtrack
+on that video's source control and preserves both streams through sampling.
+
+H3 reference-to-video exposes mixed image/video/audio slots. Its prompt syntax remains
+literal: `<Picture N>` and `<Video N>` count occupied slots in order; `<Audio N>` counts
+enabled video soundtracks in video order, then occupied standalone audio slots.
+Removing earlier references can change these effective numbers. Catalog descriptions
+provide hover help; LatentSlate does not insert or rewrite prompt tokens.
+
 User tools may fix either canvas dimension and the request duration in catalog
 metadata. These values participate in preflight and output prediction without
 creating hidden project inputs. Attributes and Asset Lab support ordered numeric
