@@ -527,6 +527,9 @@ impl LatentSlateApp {
                                 self.asset_lab_authoring_canvas(ui, asset, config, provider.as_ref());
                             });
                             strip.cell(|ui| {
+                                if results_height == 0.0 {
+                                    return;
+                                }
                                 ui.spacing_mut().item_spacing = Vec2::splat(8.0);
                                 ui.painter().rect_filled(ui.max_rect(), 0, kit::PANEL);
                                 egui::Frame::new().fill(kit::PANEL).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
