@@ -69,7 +69,7 @@ fn default_left_width() -> f32 {
 }
 
 fn default_right_width() -> f32 {
-    250.0
+    375.0
 }
 
 fn default_timeline_height() -> f32 {

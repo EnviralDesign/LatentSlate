@@ -238,7 +238,7 @@ pub fn run() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("LatentSlate")
             .with_icon(app_icon())
-            .with_inner_size([1280.0, 800.0])
+            .with_inner_size([1430.0, 800.0])
             .with_min_inner_size([960.0, 620.0]),
         ..Default::default()
     };
