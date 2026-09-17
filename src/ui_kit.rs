@@ -60,7 +60,8 @@ pub const MODAL_BOTTOM_RADIUS: CornerRadius = CornerRadius {
 pub const FIELD_H: f32 = 30.0;
 pub const TEXT_FIELD_H: f32 = FIELD_H;
 pub const VALUE_FIELD_H: f32 = FIELD_H;
-pub const FIELD_LABEL_H: f32 = 12.0;
+// Reserve the rendered line height, not the 12-point label font size.
+pub const FIELD_LABEL_H: f32 = 16.0;
 pub const FIELD_TEXT_SIZE: f32 = 13.0;
 pub const FIELD_INNER_MARGIN_X: i8 = 8;
 pub const FIELD_INNER_MARGIN_Y: i8 = 5;
@@ -2476,6 +2477,62 @@ pub fn tool_button_sized<'a>(
         ui.is_enabled(),
         false,
     );
+    let color = paint_tool_button(ui, rect, &response, selected);
+    paint_icon(
+        ui,
+        icon,
+        Rect::from_center_size(rect.center(), Vec2::splat((size * 0.6).min(19.0))),
+        color,
+    );
+    hint.apply(response)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A labeled toggle with the same selection treatment as icon tool buttons.
+pub fn tool_toggle_button<'a>(
+    ui: &mut Ui,
+    label: &str,
+    hint: impl Into<Tooltip<'a>>,
+    selected: bool,
+    width: f32,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
+    let response = crate::core::automation::instrument_response(
+        response,
+        "tool_toggle",
+        Some(label.into()),
+        ui.is_enabled(),
+        false,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
+    ui.painter().rect_stroke(
+        rect,
+        5,
+        Stroke::new(1.0_f32, BORDER),
+        StrokeKind::Inside,
+    );
+    let color = paint_tool_button(ui, rect, &response, selected);
+    let galley = egui::WidgetText::from(RichText::new(label).size(12.0).color(color)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (width - 20.0).max(0.0),
+        FontId::proportional(12.0),
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() * 0.5, galley, color);
+    hint.into()
+        .apply(response)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn paint_tool_button(ui: &Ui, rect: Rect, response: &Response, selected: bool) -> Color32 {
     let active = selected || response.has_focus();
     let fill = if selected {
         Color32::from_rgb(29, 56, 63)
@@ -2493,7 +2550,7 @@ pub fn tool_button_sized<'a>(
             StrokeKind::Inside,
         );
     }
-    let color = if !ui.is_enabled() {
+    if !ui.is_enabled() {
         TEXT_DIM
     } else if selected {
         IMAGE
@@ -2501,15 +2558,7 @@ pub fn tool_button_sized<'a>(
         TEXT
     } else {
         TEXT_MUTED
-    };
-    paint_icon(
-        ui,
-        icon,
-        Rect::from_center_size(rect.center(), Vec2::splat((size * 0.6).min(19.0))),
-        color,
-    );
-    hint.apply(response)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
 }
 
 pub fn compact_slider<Num: egui::emath::Numeric>(

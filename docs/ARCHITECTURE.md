@@ -95,6 +95,10 @@ tooltip treatment. Keep evaluated source identities, sampled times/ranges, conve
 readiness, and errors persistently visible. The shared source picker applies this rule
 to its configuration controls and selectable resolved-status card; help is per parameter,
 not repeated for every option.
+Labeled effect toggles share the icon tool buttons' height and selection treatment.
+Asset Lab keeps tool selection in the rail, active-tool settings above the canvas,
+and authored Mask/Prompt regions controls in the inspector. Effect enablement and
+overlay visibility remain independent.
 Canvas geometry, tool context, and lineage layout remain owned by Asset Lab.
 Lineage lays out complete branches together: a single continuation stays above its
 parent, while sibling subtrees receive separate space. The inspector uses the shared

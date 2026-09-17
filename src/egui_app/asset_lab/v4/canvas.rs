@@ -377,10 +377,19 @@ impl LatentSlateApp {
                 audition
                     .as_ref()
                     .map(|v| format!("Preview · {v}"))
-                    .unwrap_or_else(|| match profile {
-                        AssetLabAuthoringProfile::Mask => "Image edit".into(),
-                        AssetLabAuthoringProfile::Regions => "Scene composition".into(),
-                        _ => "Create".into(),
+                    .unwrap_or_else(|| {
+                        if profile == AssetLabAuthoringProfile::Generic {
+                            "Create"
+                        } else {
+                            match canvas.tool {
+                                Tool::Paint => "Brush",
+                                Tool::Erase => "Eraser",
+                                Tool::Select => "Select",
+                                Tool::Object => "Object region",
+                                Tool::Text => "Text region",
+                            }
+                        }
+                        .into()
                     }),
             ));
             if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {

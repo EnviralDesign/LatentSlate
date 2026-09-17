@@ -597,22 +597,30 @@ impl LatentSlateApp {
                     match crate::state::asset_lab_authoring_profile(provider) {
                         crate::state::AssetLabAuthoringProfile::Mask => {
                             ui.separator();
-                            kit::bounded_horizontal_row(ui, 32.0, |ui, _| {
-                                ui.checkbox(&mut setup.authoring.mask_enabled, "Use painted mask");
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let visible = self.asset_lab.v4.mask_visible;
-                                    if kit::tool_button(ui, if visible { kit::Icon::Eye } else { kit::Icon::EyeOff },
-                                        "Show mask overlay", visible).clicked() {
-                                        self.asset_lab.v4.mask_visible = !visible;
-                                    }
-                                });
+                            ui.label(kit::body("Mask"));
+                            kit::bounded_horizontal_row(ui, 32.0, |ui, width| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                if kit::tool_toggle_button(ui, "Use mask",
+                                    kit::Tooltip::new("Use mask").description("Include the painted mask in generation. Turning this off keeps the painted content and its visibility unchanged. Mask execution is not connected yet."),
+                                    setup.authoring.mask_enabled, (width - 40.0).max(0.0)).clicked() {
+                                    setup.authoring.mask_enabled = !setup.authoring.mask_enabled;
+                                }
+                                let visible = self.asset_lab.v4.mask_visible;
+                                if kit::tool_button(ui, if visible { kit::Icon::Eye } else { kit::Icon::EyeOff },
+                                    kit::Tooltip::new("Show mask overlay").description("Show or hide the painted mask on the canvas. This does not change whether generation uses it."), visible).clicked() {
+                                    self.asset_lab.v4.mask_visible = !visible;
+                                }
                             });
                             ui.label(kit::caption("Mask authoring · execution not connected"));
                         }
                         crate::state::AssetLabAuthoringProfile::Regions => {
                             ui.separator();
-                            ui.checkbox(&mut setup.authoring.regions_enabled, "Use prompt regions");
                             ui.label(kit::body("Prompt regions"));
+                            if kit::tool_toggle_button(ui, "Use prompt regions",
+                                kit::Tooltip::new("Use prompt regions").description("Include the authored regions in generation. Turning this off keeps the regions available for editing. Region execution is not connected yet."),
+                                setup.authoring.regions_enabled, ui.available_width()).clicked() {
+                                setup.authoring.regions_enabled = !setup.authoring.regions_enabled;
+                            }
                             let selected = &mut self.asset_lab.v4.canvas.selected;
                             if selected.is_some_and(|id| !setup.authoring.regions.iter().any(|r| r.id == id)) {
                                 *selected = None;
