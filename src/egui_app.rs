@@ -1762,7 +1762,14 @@ fn provider_input_text_field(
 ) -> bool {
     provider_input_field_label(ui, label, input);
     let width = ui.available_width();
-    kit::singleline_text_field(ui, value, width).changed()
+    if input.name.to_ascii_lowercase().contains("prompt")
+        || input.label.to_ascii_lowercase().contains("prompt")
+    {
+        kit::multiline_text_field(ui, value, width, kit::MultilineTextFieldOptions::rows(3))
+            .changed()
+    } else {
+        kit::singleline_text_field(ui, value, width).changed()
+    }
 }
 
 fn provider_input_multiline_text_field(
