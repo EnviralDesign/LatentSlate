@@ -445,27 +445,17 @@ impl LatentSlateApp {
                 )));
                 if width > 540.0 {
                     ui.add_space(10.0);
-                    if kit::tool_button(ui, kit::Icon::Plus, "Zoom in", false).clicked() {
-                        self.asset_lab.preview_zoom =
-                            (self.asset_lab.preview_zoom * 1.2).clamp(0.001, 32.0);
-                        self.asset_lab.preview_auto_fit = false;
-                    }
-                    if kit::Tooltip::new("Actual size · 100%")
-                        .description("Click to reset zoom to 100% and center the canvas. Use Fit to show the whole canvas.")
-                        .apply(kit::icon_button_sized(
-                            ui,
-                            &format!("{:.0}%", self.asset_lab.preview_zoom * 100.0),
-                            Vec2::new(52.0, 32.0),
-                        ))
-                        .clicked()
+                    if let Some(action) = kit::canvas_zoom_controls(ui, self.asset_lab.preview_zoom)
                     {
-                        self.asset_lab.preview_zoom = 1.0;
-                        self.asset_lab.preview_pan = Vec2::ZERO;
-                        self.asset_lab.preview_auto_fit = false;
-                    }
-                    if kit::tool_button(ui, kit::Icon::Minus, "Zoom out", false).clicked() {
-                        self.asset_lab.preview_zoom =
-                            (self.asset_lab.preview_zoom / 1.2).clamp(0.001, 32.0);
+                        match action {
+                            kit::CanvasZoomAction::Zoom(zoom) => {
+                                self.asset_lab.preview_zoom = zoom.clamp(0.001, 32.0);
+                            }
+                            kit::CanvasZoomAction::ActualSize => {
+                                self.asset_lab.preview_zoom = 1.0;
+                                self.asset_lab.preview_pan = Vec2::ZERO;
+                            }
+                        }
                         self.asset_lab.preview_auto_fit = false;
                     }
                 }

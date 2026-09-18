@@ -3548,6 +3548,41 @@ pub fn danger_button(ui: &mut Ui, label: &str, width: f32) -> Response {
     )
 }
 
+pub enum CanvasZoomAction {
+    Zoom(f32),
+    ActualSize,
+}
+
+pub fn canvas_zoom_controls(ui: &mut Ui, zoom: f32) -> Option<CanvasZoomAction> {
+    let width = 116.0 + ui.spacing().item_spacing.x * 2.0;
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 32.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            let mut action = None;
+            if tool_button(ui, Icon::Minus, "Zoom out", false).clicked() {
+                action = Some(CanvasZoomAction::Zoom(zoom / 1.2));
+            }
+            if Tooltip::new("Actual size · 100%")
+                .description("Click to reset zoom to 100% and center the canvas.")
+                .apply(icon_button_sized(
+                    ui,
+                    &format!("{:.0}%", zoom * 100.0),
+                    Vec2::new(52.0, 32.0),
+                ))
+                .clicked()
+            {
+                action = Some(CanvasZoomAction::ActualSize);
+            }
+            if tool_button(ui, Icon::Plus, "Zoom in", false).clicked() {
+                action = Some(CanvasZoomAction::Zoom(zoom * 1.2));
+            }
+            action
+        },
+    )
+    .inner
+}
+
 pub fn icon_button(ui: &mut Ui, label: &str) -> Response {
     icon_button_sized(ui, label, Vec2::new(ICON_BUTTON_W, ICON_BUTTON_H))
 }

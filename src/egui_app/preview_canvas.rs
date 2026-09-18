@@ -130,7 +130,7 @@ impl LatentSlateApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(kit::PANEL_SUNKEN))
             .show_inside(root, |ui| {
-                let header_h = 30.0;
+                let header_h = 40.0;
                 let (header_rect, _) = ui
                     .allocate_exact_size(Vec2::new(ui.available_width(), header_h), Sense::hover());
                 ui.painter().rect_filled(header_rect, 0.0, kit::CHROME);
@@ -139,6 +139,20 @@ impl LatentSlateApp {
                     Stroke::new(1.0_f32, kit::BORDER),
                 );
                 let header_inner = header_rect.shrink2(Vec2::new(14.0, 0.0));
+                let available = ui.available_size();
+                let (rect, response) = ui.allocate_exact_size(
+                    Vec2::new(available.x, available.y.max(160.0)),
+                    Sense::click_and_drag(),
+                );
+                let canvas_rect = rect.shrink(8.0);
+                let project_scale = if let Some(layers) = self.preview_layers.clone() {
+                    let fit_scale = preview_fit_scale(canvas_rect, &layers);
+                    self.handle_preview_view_input(ui, &response, canvas_rect, &layers, fit_scale);
+                    self.preview_zoom = self.preview_canvas_screen_scale(fit_scale);
+                    preview_project_scale(&layers, self.editor.project.settings.width)
+                } else {
+                    1.0
+                };
                 let mut controls_ui = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(header_inner)
@@ -160,6 +174,21 @@ impl LatentSlateApp {
                         self.preview_pan = Vec2::ZERO;
                     }
                 }
+                if let Some(action) =
+                    kit::canvas_zoom_controls(&mut controls_ui, self.preview_zoom * project_scale)
+                {
+                    self.preview_auto_fit = false;
+                    match action {
+                        kit::CanvasZoomAction::Zoom(zoom) => {
+                            self.preview_zoom =
+                                (zoom / project_scale).clamp(PREVIEW_ZOOM_MIN, PREVIEW_ZOOM_MAX);
+                        }
+                        kit::CanvasZoomAction::ActualSize => {
+                            self.preview_zoom = 1.0 / project_scale;
+                            self.preview_pan = Vec2::ZERO;
+                        }
+                    }
+                }
                 let pending = self.preview_render_busy_since.is_some();
                 let retained = self.preview_layers.is_some()
                     && self.preview_render_report.rendered_visual_clips > 0;
@@ -170,7 +199,7 @@ impl LatentSlateApp {
                     self.preview_operation_status(
                         &mut controls_ui,
                         operation,
-                        header_inner.width(),
+                        header_inner.width() - 140.0,
                     );
                 }
                 let s = &self.editor.project.settings;
@@ -186,21 +215,14 @@ impl LatentSlateApp {
                     FontId::monospace(11.0),
                     kit::TEXT_DIM,
                 );
-                let available = ui.available_size();
-                let preview_height = available.y.max(160.0);
-                let (rect, response) = ui.allocate_exact_size(
-                    Vec2::new(available.x, preview_height),
-                    Sense::click_and_drag(),
-                );
-                self.paint_preview(ui, rect.shrink(8.0), &response);
+                self.paint_preview(ui, canvas_rect);
             });
     }
 
-    pub(super) fn paint_preview(&mut self, ui: &mut Ui, rect: Rect, response: &egui::Response) {
+    pub(super) fn paint_preview(&mut self, ui: &mut Ui, rect: Rect) {
         let painter = ui.painter().with_clip_rect(rect);
         if let Some(layers) = self.preview_layers.clone() {
             let fit_scale = preview_fit_scale(rect, &layers);
-            self.handle_preview_view_input(ui, response, rect, &layers, fit_scale);
             let scale = self.preview_canvas_screen_scale(fit_scale);
             let canvas_size = Vec2::new(
                 layers.canvas_width as f32 * scale,
