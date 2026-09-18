@@ -122,7 +122,7 @@ impl LatentSlateApp {
                 .layout(Layout::left_to_right(Align::Center)),
         );
         transport_ui.shrink_clip_rect(transport_rect);
-        transport_ui.horizontal(|ui| {
+        transport_ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = transport_gap;
             if kit::timeline_transport_icon_button(ui, kit::TimelineTransportIcon::First, false)
                 .clicked()
