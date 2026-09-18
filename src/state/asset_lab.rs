@@ -137,9 +137,6 @@ pub fn asset_lab_submission_blocker(
         AssetLabAuthoringProfile::Mask if config.lab_authoring.mask_enabled
             && config.lab_authoring.mask.as_ref().is_some_and(|mask| mask.has_content) =>
             Some("Masked generation is not connected yet. Turn off Use mask in Asset Lab to generate a full-image edit."),
-        AssetLabAuthoringProfile::Regions if config.lab_authoring.regions_enabled
-            && !config.lab_authoring.regions.is_empty() =>
-            Some("Prompt-region generation is not connected yet. Turn off Use prompt regions in Asset Lab to generate from the scene prompt."),
         _ => None,
     }
 }
@@ -192,7 +189,7 @@ mod tests {
             text: Some("Hello".into()),
             bounds: [0.0, 0.0, 1.0, 1.0],
         });
-        assert!(asset_lab_submission_blocker(&config, &provider).is_some());
+        assert!(asset_lab_submission_blocker(&config, &provider).is_none());
         config.lab_authoring.regions_enabled = false;
         assert!(asset_lab_submission_blocker(&config, &provider).is_none());
         assert_eq!(config.lab_authoring.regions.len(), 1);

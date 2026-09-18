@@ -2717,10 +2717,27 @@ impl EditorState {
                 let updated = self.project.update_generative_config(*asset_id, |config| {
                     if let Some(inputs) = patch.inputs.clone() {
                         for (name, value) in inputs {
-                            let value = target_provider_id.and_then(|id| self.provider_entries.iter().find(|provider| provider.id == id))
-                                .filter(|provider| provider.inputs.iter().any(|field| field.name == name && field.input_type == ProviderInputType::Text))
-                                .map(|provider| crate::core::prompt_references::upgrade_written_prompt(value.clone(),
-                                    config.inputs.get(&name).filter(|value| matches!(value, InputValue::Prompt { .. })), provider))
+                            let value = target_provider_id
+                                .and_then(|id| {
+                                    self.provider_entries
+                                        .iter()
+                                        .find(|provider| provider.id == id)
+                                })
+                                .filter(|provider| {
+                                    provider.inputs.iter().any(|field| {
+                                        field.name == name
+                                            && field.input_type == ProviderInputType::Text
+                                    })
+                                })
+                                .map(|provider| {
+                                    crate::core::prompt_references::upgrade_written_prompt(
+                                        value.clone(),
+                                        config.inputs.get(&name).filter(|value| {
+                                            matches!(value, InputValue::Prompt { .. })
+                                        }),
+                                        provider,
+                                    )
+                                })
                                 .unwrap_or(value);
                             config.inputs.insert(name, value);
                         }
@@ -2733,6 +2750,9 @@ impl EditorState {
                     }
                     if let Some(batch) = patch.batch.clone() {
                         config.batch = batch;
+                    }
+                    if let Some(lab_authoring) = patch.lab_authoring.clone() {
+                        config.lab_authoring = lab_authoring;
                     }
                     if let Some(active_version) = patch.active_version.clone() {
                         let _ = apply_active_generation_version_to_config(config, &active_version);
@@ -2827,11 +2847,23 @@ impl EditorState {
                 });
                 normalize_media_reference_slots_to_inputs(&mut next, next_provider);
                 if let Some(provider) = next_provider {
-                    for field in provider.inputs.iter().filter(|field| field.input_type == ProviderInputType::Text) {
+                    for field in provider
+                        .inputs
+                        .iter()
+                        .filter(|field| field.input_type == ProviderInputType::Text)
+                    {
                         if let Some(value) = next.inputs.get(&field.name).cloned() {
-                            let previous = self.project.generative_config(*asset_id).and_then(|config| config.inputs.get(&field.name))
+                            let previous = self
+                                .project
+                                .generative_config(*asset_id)
+                                .and_then(|config| config.inputs.get(&field.name))
                                 .filter(|value| matches!(value, InputValue::Prompt { .. }));
-                            next.inputs.insert(field.name.clone(), crate::core::prompt_references::upgrade_written_prompt(value, previous, provider));
+                            next.inputs.insert(
+                                field.name.clone(),
+                                crate::core::prompt_references::upgrade_written_prompt(
+                                    value, previous, provider,
+                                ),
+                            );
                         }
                     }
                 }

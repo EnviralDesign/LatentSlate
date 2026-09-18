@@ -139,7 +139,7 @@ pub fn submitted_prompts(
     let values: HashMap<_, _> = snapshot
         .into_iter()
         .flat_map(|snapshot| snapshot.inputs.iter())
-        .filter(|(_, value)| matches!(value, InputValue::Prompt { .. }))
+        .filter(|(_, value)| authored_text(value).is_some())
         .map(|(name, value)| {
             (
                 name,
@@ -148,6 +148,19 @@ pub fn submitted_prompts(
         })
         .collect();
     serde_json::json!(values)
+}
+
+/// Keep authored prompt text in a submitted input map so continuation does not
+/// replace the scene prompt with a serialized caption or resolved mentions.
+pub fn overlay_authored_text(
+    inputs: &mut HashMap<String, InputValue>,
+    authored: &HashMap<String, InputValue>,
+) {
+    for (name, value) in authored {
+        if authored_text(value).is_some() {
+            inputs.insert(name.clone(), value.clone());
+        }
+    }
 }
 
 /// Retain registrations when text is deleted so the native text editor's undo/redo

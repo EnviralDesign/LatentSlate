@@ -664,10 +664,16 @@ pub fn preflight_provider_config(
     for input in &provider.inputs {
         if let Some(value @ InputValue::Prompt { .. }) = config.inputs.get(&input.name) {
             if let Err(errors) = crate::core::prompt_references::preview_prompt(
-                value, provider, project, &config, target_asset_id, context_clip_id,
+                value,
+                provider,
+                project,
+                &config,
+                target_asset_id,
+                context_clip_id,
             ) {
                 issues.extend(errors.into_iter().map(|message| GenerationPreflightIssue {
-                    section: GenerationControlSection::Inputs, message,
+                    section: GenerationControlSection::Inputs,
+                    message,
                 }));
             }
         }
@@ -1157,9 +1163,17 @@ pub fn resolve_provider_inputs(
     // Resolve explicit mentions only after the concrete media set has been prepared.
     for input in &provider.inputs {
         if let Some(InputValue::Prompt { text, references }) = config.inputs.get(&input.name) {
-            match crate::core::prompt_references::resolve_prompt(text, references, provider, |field| {
-                values.get(&field.name).and_then(Value::as_str).is_some_and(|path| !path.is_empty())
-            }) {
+            match crate::core::prompt_references::resolve_prompt(
+                text,
+                references,
+                provider,
+                |field| {
+                    values
+                        .get(&field.name)
+                        .and_then(Value::as_str)
+                        .is_some_and(|path| !path.is_empty())
+                },
+            ) {
                 Ok(text) => {
                     let value = Value::String(text);
                     values.insert(input.name.clone(), value.clone());
@@ -1169,6 +1183,12 @@ pub fn resolve_provider_inputs(
             }
         }
     }
+    crate::core::ideogram4_caption::apply_submitted_prompt(
+        provider,
+        config,
+        &mut values,
+        &mut snapshot,
+    );
     ResolvedInputs {
         values,
         snapshot,

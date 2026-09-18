@@ -400,7 +400,10 @@ impl LatentSlateApp {
         }
     }
 
-    pub(in crate::egui_app) fn dismiss_asset_lab_on_escape(&mut self, preview_before: Option<String>) {
+    pub(in crate::egui_app) fn dismiss_asset_lab_on_escape(
+        &mut self,
+        preview_before: Option<String>,
+    ) {
         if self.asset_lab.v4.pending_adopt.take().is_some() {
             return;
         }
@@ -422,7 +425,16 @@ impl LatentSlateApp {
         let condensed_shelf = provider.as_ref().is_some_and(|provider| {
             provider.resolved_workflow_kind()
                 == crate::state::ProviderWorkflowKind::ReferenceToVideo
-                || provider.inputs.iter().filter(|field| field.paired_video_input.is_none() && crate::core::media_binding::bound_media_type_for_input(field).is_some()).count() > 1
+                || provider
+                    .inputs
+                    .iter()
+                    .filter(|field| {
+                        field.paired_video_input.is_none()
+                            && crate::core::media_binding::bound_media_type_for_input(field)
+                                .is_some()
+                    })
+                    .count()
+                    > 1
         });
         let expansion_id =
             egui::Id::new(("reference_slots_expanded", asset.id, config.provider_id));
@@ -445,14 +457,42 @@ impl LatentSlateApp {
         let row_height = |row: &[ProviderInputField]| {
             let paired = provider.as_ref().is_some_and(|provider| {
                 row.iter().any(|video| {
-                    if !ctx.data(|data| data.get_temp::<bool>(Self::source_card_details_id(asset.id, provider.id, &video.name)).unwrap_or(false)) { return false; }
+                    if !ctx.data(|data| {
+                        data.get_temp::<bool>(Self::source_card_details_id(
+                            asset.id,
+                            provider.id,
+                            &video.name,
+                        ))
+                        .unwrap_or(false)
+                    }) {
+                        return false;
+                    }
                     provider.inputs.iter().any(|input| {
                         input.paired_video_input.as_deref() == Some(video.name.as_str())
                     })
                 })
             });
-            let audio_open = provider.as_ref().is_some_and(|provider| row.iter().any(|field| field.input_type == ProviderInputType::Audio && ctx.data(|data| data.get_temp::<bool>(Self::source_card_details_id(asset.id, provider.id, &field.name)).unwrap_or(false))));
-            kit::COMPACT_SOURCE_FIELD_H + if paired { 76.0 } else if audio_open { 36.0 } else { 0.0 }
+            let audio_open = provider.as_ref().is_some_and(|provider| {
+                row.iter().any(|field| {
+                    field.input_type == ProviderInputType::Audio
+                        && ctx.data(|data| {
+                            data.get_temp::<bool>(Self::source_card_details_id(
+                                asset.id,
+                                provider.id,
+                                &field.name,
+                            ))
+                            .unwrap_or(false)
+                        })
+                })
+            });
+            kit::COMPACT_SOURCE_FIELD_H
+                + if paired {
+                    76.0
+                } else if audio_open {
+                    36.0
+                } else {
+                    0.0
+                }
         };
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         StripBuilder::new(ui)
@@ -685,7 +725,7 @@ impl LatentSlateApp {
                             ui.separator();
                             ui.label(kit::body("Prompt regions"));
                             if kit::tool_toggle_button(ui, "Use prompt regions",
-                                kit::Tooltip::new("Use prompt regions").description("Include the authored regions in generation. Turning this off keeps the regions available for editing. Region execution is not connected yet."),
+                                kit::Tooltip::new("Use prompt regions").description("Include the authored regions in the submitted Ideogram caption. Turning this off keeps the regions available for editing and generates from the scene prompt only."),
                                 setup.authoring.regions_enabled, ui.available_width()).clicked() {
                                 setup.authoring.regions_enabled = !setup.authoring.regions_enabled;
                             }
@@ -729,7 +769,6 @@ impl LatentSlateApp {
                                 setup.authoring.regions.retain(|r| r.id != id);
                                 *selected = None;
                             }
-                            ui.label(kit::caption("Region authoring · execution not connected"));
                         }
                         _ => {}
                     }
@@ -1106,14 +1145,15 @@ impl LatentSlateApp {
                                 if is_prompt {
                                     ui.add_space(16.0);
                                     let authored = record.authoring_snapshot.as_ref().and_then(|snapshot| snapshot.inputs.get(name));
-                                    let has_references = matches!(authored, Some(InputValue::Prompt { .. }));
-                                    kit::field_label(ui, &if has_references { format!("{label} sent") } else { label.to_string() });
+                                    let authored_text = authored.and_then(crate::core::prompt_references::authored_text);
+                                    let has_distinct_authored = authored_text.is_some_and(|value| value != text);
+                                    kit::field_label(ui, &if has_distinct_authored { format!("{label} sent") } else { label.to_string() });
                                     ui.add(
-                                        egui::Label::new(kit::body(text)).wrap().selectable(true),
+                                        egui::Label::new(kit::body(&text)).wrap().selectable(true),
                                     );
-                                    if let Some(InputValue::Prompt { text, .. }) = authored {
+                                    if let Some(authored_text) = authored_text.filter(|value| *value != text) {
                                         egui::CollapsingHeader::new("Authored prompt").id_salt((record.version.as_str(), name)).show(ui, |ui| {
-                                            ui.add(egui::Label::new(text).wrap().selectable(true));
+                                            ui.add(egui::Label::new(authored_text).wrap().selectable(true));
                                         });
                                     }
                                 } else if !record.resolved_media_inputs.contains_key(name) {
@@ -2155,11 +2195,24 @@ mod reference_shelf_tests {
             ["image_3", "image_6", "video_2", "audio_3"]
         );
         assert_eq!(names(&config, true).len(), 15);
-        let next = |config: &GenerativeConfig| next_reference_slots(&provider, config, &project).iter().map(|field| field.name.clone()).collect::<Vec<_>>();
+        let next = |config: &GenerativeConfig| {
+            next_reference_slots(&provider, config, &project)
+                .iter()
+                .map(|field| field.name.clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(next(&config), ["image_1", "video_1", "audio_1"]);
         for index in 1..=9 {
-            config.media_bindings.insert(format!("image_{index}"), crate::state::MediaBindingSpec { source: crate::state::MediaBindingSource::WorkingOutput, ..Default::default() });
-            if index == 1 { assert_eq!(next(&config)[0], "image_2"); }
+            config.media_bindings.insert(
+                format!("image_{index}"),
+                crate::state::MediaBindingSpec {
+                    source: crate::state::MediaBindingSource::WorkingOutput,
+                    ..Default::default()
+                },
+            );
+            if index == 1 {
+                assert_eq!(next(&config)[0], "image_2");
+            }
         }
         assert_eq!(next(&config), ["video_1", "audio_1"]);
         config.media_bindings.remove("image_3");

@@ -277,9 +277,15 @@ are normalized separately on each axis. Canvas labels select their regions indep
 of box size, using the same label bounds for painting and hit testing.
 Content, effect switches, and visibility are
 independent. Authoring profiles select presentation only: they do not establish execution
-capability. Masked and spatial execution have no supported Engine contract in this phase;
-applicable enabled nonempty effects block submission, while disabled effects allow the
-existing ordinary-generation path.
+capability. Masked execution has no supported Engine contract in this phase and still
+blocks submission when enabled and nonempty. Ideogram v4 prompt regions use the existing
+Engine `prompt` string: enabled regions serialize to the official structured caption
+(`high_level_description` from the scene prompt, required `background` from the same
+scene text, and `elements` from region descriptions, optional text, and independently
+normalized boxes converted to `[y_min, x_min, y_max, x_max]` on the 0–1000 grid). Region
+ids and names stay in the authoring document. Disabled or absent regions leave the scene
+prompt unchanged. Submitted jobs keep the authored scene prompt in `authoring_snapshot`
+and the serialized caption in `inputs_snapshot`.
 
 ## Provider And Tool Model
 

@@ -400,6 +400,12 @@ impl LatentSlateApp {
                             );
                             node.id = node_id;
                             node.inputs = job.inputs_snapshot.clone();
+                            if let Some(snapshot) = &job.authoring_snapshot {
+                                crate::core::prompt_references::overlay_authored_text(
+                                    &mut node.inputs,
+                                    &snapshot.inputs,
+                                );
+                            }
                             node.media_bindings = job.media_bindings_snapshot.clone();
                             node.reference_sizing = job
                                 .authoring_snapshot
@@ -430,11 +436,14 @@ impl LatentSlateApp {
                     config.active_version = Some(version.clone());
                     for (name, value) in &job.inputs_snapshot {
                         if matches!(value, InputValue::Literal { .. }) {
-                            let authored = job.authoring_snapshot.as_ref()
-                                .and_then(|snapshot| snapshot.inputs.get(name))
-                                .filter(|value| matches!(value, InputValue::Prompt { .. }));
-                            config.inputs.insert(name.clone(), authored.unwrap_or(value).clone());
+                            config.inputs.insert(name.clone(), value.clone());
                         }
+                    }
+                    if let Some(snapshot) = &job.authoring_snapshot {
+                        crate::core::prompt_references::overlay_authored_text(
+                            &mut config.inputs,
+                            &snapshot.inputs,
+                        );
                     }
                 }
                 if let Some(existing) = config
@@ -705,6 +714,10 @@ impl LatentSlateApp {
                 let mut node =
                     AssetLabNode::new_with_parent(Some(provider.id), next_parent_node_id);
                 node.inputs = inputs_snapshot.clone();
+                crate::core::prompt_references::overlay_authored_text(
+                    &mut node.inputs,
+                    &authored.inputs,
+                );
                 node.media_bindings = resolved.media_bindings_snapshot.clone();
                 let node_id = node.id;
                 let updated = self
@@ -736,6 +749,10 @@ impl LatentSlateApp {
                                     found = true;
                                     node.provider_id = Some(provider.id);
                                     node.inputs = inputs_snapshot.clone();
+                                    crate::core::prompt_references::overlay_authored_text(
+                                        &mut node.inputs,
+                                        &authored.inputs,
+                                    );
                                     node.media_bindings = resolved.media_bindings_snapshot.clone();
                                     node.output_version = None;
                                     config.lab_graph.selected_node_id = Some(existing_node_id);
@@ -750,6 +767,10 @@ impl LatentSlateApp {
                     let mut node =
                         AssetLabNode::new_with_parent(Some(provider.id), lab_node_parent_id);
                     node.inputs = inputs_snapshot.clone();
+                    crate::core::prompt_references::overlay_authored_text(
+                        &mut node.inputs,
+                        &authored.inputs,
+                    );
                     node.media_bindings = resolved.media_bindings_snapshot.clone();
                     let node_id = node.id;
                     let updated =
@@ -775,11 +796,10 @@ impl LatentSlateApp {
                 .media_bindings
                 .extend(resolved.media_bindings_snapshot.clone());
             authoring_snapshot.inputs = inputs_snapshot.clone();
-            for (name, value) in &authored.inputs {
-                if matches!(value, InputValue::Prompt { .. }) {
-                    authoring_snapshot.inputs.insert(name.clone(), value.clone());
-                }
-            }
+            crate::core::prompt_references::overlay_authored_text(
+                &mut authoring_snapshot.inputs,
+                &authored.inputs,
+            );
             jobs.push(GenerationJob {
                 authoring_snapshot: Some(authoring_snapshot),
                 lab_submission: lab_submission.clone(),
@@ -1127,7 +1147,8 @@ mod cancellation_tests {
 
     #[test]
     fn prompt_references_completion_retains_authoring_and_submitted_text() {
-        let mut app = LatentSlateApp::new(&eframe::CreationContext::_new_kittest(Context::default()));
+        let mut app =
+            LatentSlateApp::new(&eframe::CreationContext::_new_kittest(Context::default()));
         let root = std::env::temp_dir().join(format!("ls-prompt-completion-{}", Uuid::new_v4()));
         let folder = PathBuf::from("generated/image/fixture");
         std::fs::create_dir_all(root.join(&folder)).unwrap();
@@ -1136,21 +1157,113 @@ mod cancellation_tests {
         let asset = Asset::new_generative_image("Synthetic result", folder.clone());
         let mut job = test_generation_job(GenerationJobStatus::Running);
         job.asset_id = asset.id;
-        let authored = InputValue::Prompt { text: "Use @{Image 1}".into(), references: HashMap::from([("Image 1".into(), crate::state::PromptReference {provider_id:job.provider.id,input_name:"image1".into()})]) };
+        let authored = InputValue::Prompt {
+            text: "Use @{Image 1}".into(),
+            references: HashMap::from([(
+                "Image 1".into(),
+                crate::state::PromptReference {
+                    provider_id: job.provider.id,
+                    input_name: "image1".into(),
+                },
+            )]),
+        };
         let mut config = GenerativeConfig::default();
         config.inputs.insert("prompt".into(), authored.clone());
         job.authoring_snapshot = Some(crate::state::AssetLabSnapshot::from_config(&config));
-        job.inputs_snapshot.insert("prompt".into(), InputValue::Literal {value:serde_json::json!("Use <Picture 1>")});
-        app.editor.project.generative_configs.insert(asset.id,config);
+        job.inputs_snapshot.insert(
+            "prompt".into(),
+            InputValue::Literal {
+                value: serde_json::json!("Use <Picture 1>"),
+            },
+        );
+        app.editor
+            .project
+            .generative_configs
+            .insert(asset.id, config);
         app.editor.project.assets.push(asset);
         let path = root.join(folder).join("v1.png");
-        image::RgbImage::new(32,32).save(&path).unwrap();
-        app.finish_generation_success(job.clone(), GenerationOutput {path,version:"v1".into(),engine_execution:None});
+        image::RgbImage::new(32, 32).save(&path).unwrap();
+        app.finish_generation_success(
+            job.clone(),
+            GenerationOutput {
+                path,
+                version: "v1".into(),
+                engine_execution: None,
+            },
+        );
         let config = app.editor.project.generative_config(job.asset_id).unwrap();
-        assert_eq!(config.inputs["prompt"],authored);
+        assert_eq!(config.inputs["prompt"], authored);
         let record = &config.versions[0];
-        assert_eq!(record.inputs_snapshot["prompt"],job.inputs_snapshot["prompt"]);
-        assert_eq!(crate::state::generation_record_source_inputs(config,record)["prompt"],authored);
+        assert_eq!(
+            record.inputs_snapshot["prompt"],
+            job.inputs_snapshot["prompt"]
+        );
+        assert_eq!(
+            crate::state::generation_record_source_inputs(config, record)["prompt"],
+            authored
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ideogram_caption_completion_retains_authored_scene_prompt() {
+        let mut app =
+            LatentSlateApp::new(&eframe::CreationContext::_new_kittest(Context::default()));
+        let root = std::env::temp_dir().join(format!("ls-ideogram-caption-{}", Uuid::new_v4()));
+        let folder = PathBuf::from("generated/image/fixture");
+        std::fs::create_dir_all(root.join(&folder)).unwrap();
+        app.editor.project = crate::state::Project::new("Ideogram caption completion");
+        app.editor.project.project_path = Some(root.clone());
+        let asset = Asset::new_generative_image("Synthetic result", folder.clone());
+        let mut job = test_generation_job(GenerationJobStatus::Running);
+        job.asset_id = asset.id;
+        let authored = InputValue::Literal {
+            value: serde_json::json!("A sunny park with a pond."),
+        };
+        let submitted = InputValue::Literal {
+            value: serde_json::json!(
+                r#"{"high_level_description":"A sunny park with a pond.","compositional_deconstruction":{"background":"A sunny park with a pond.","elements":[]}}"#
+            ),
+        };
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert("prompt".into(), authored.clone());
+        config
+            .lab_authoring
+            .regions
+            .push(crate::state::AssetLabRegion {
+                id: Uuid::new_v4(),
+                name: "Bench".into(),
+                description: "a red bench".into(),
+                text: None,
+                bounds: [0.1, 0.2, 0.3, 0.4],
+            });
+        job.authoring_snapshot = Some(crate::state::AssetLabSnapshot::from_config(&config));
+        job.inputs_snapshot
+            .insert("prompt".into(), submitted.clone());
+        app.editor
+            .project
+            .generative_configs
+            .insert(asset.id, config);
+        app.editor.project.assets.push(asset);
+        let path = root.join(folder).join("v1.png");
+        image::RgbImage::new(32, 32).save(&path).unwrap();
+        app.finish_generation_success(
+            job.clone(),
+            GenerationOutput {
+                path,
+                version: "v1".into(),
+                engine_execution: None,
+            },
+        );
+        let config = app.editor.project.generative_config(job.asset_id).unwrap();
+        assert_eq!(config.inputs["prompt"], authored);
+        assert_eq!(config.lab_authoring.regions.len(), 1);
+        let record = &config.versions[0];
+        assert_eq!(record.inputs_snapshot["prompt"], submitted);
+        assert_eq!(
+            crate::state::generation_record_source_inputs(config, record)["prompt"],
+            authored
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1217,7 +1330,9 @@ mod cancellation_tests {
         assert_eq!(
             config.inputs.get("seed").and_then(|value| match value {
                 InputValue::Literal { value } => input_value_as_u64(value),
-                InputValue::AssetRef { .. } | InputValue::GenerationRef { .. } | InputValue::Prompt { .. } => None,
+                InputValue::AssetRef { .. }
+                | InputValue::GenerationRef { .. }
+                | InputValue::Prompt { .. } => None,
             }),
             Some(u64::MAX)
         );

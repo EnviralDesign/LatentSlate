@@ -25,9 +25,10 @@ use crate::core::export::{
     TimestampOverlayPosition, VideoExportCodec, VideoExportFrameFormat, VideoExportQuality,
 };
 use crate::state::{
-    Asset, AssetKind, AssetLabNode, BatchSettings, ClipBridgeLink, ClipImageMode, ClipTimeMode,
-    ClipTransform, GenerativeConfig, InputValue, Project, ProjectProviderScope, ProjectSettings,
-    ProviderEntry, ProviderOutputType, SelectionState, TrackType,
+    Asset, AssetKind, AssetLabAuthoring, AssetLabNode, BatchSettings, ClipBridgeLink,
+    ClipImageMode, ClipTimeMode, ClipTransform, GenerativeConfig, InputValue, Project,
+    ProjectProviderScope, ProjectSettings, ProviderEntry, ProviderOutputType, SelectionState,
+    TrackType,
 };
 
 const DEFAULT_AUTOMATION_PORT: u16 = 47_890;
@@ -932,6 +933,8 @@ pub struct GenerativeConfigPatch {
     pub batch: Option<BatchSettings>,
     #[serde(default)]
     pub active_version: Option<String>,
+    #[serde(default)]
+    pub lab_authoring: Option<AssetLabAuthoring>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2690,7 +2693,7 @@ fn agent_command_schema_json() -> Value {
         "generation": [
             { "type": "create_generative_asset", "fields": { "output_type": "image|video|audio", "name?": "string", "fps?": "f64", "duration_seconds?": "f64", "frame_count?": "u32" } },
             { "type": "get_generative_config", "fields": { "asset_id": "uuid" } },
-            { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; literal prompt strings accept exact @{input_name} or @{Input label} references discovered via get_generative_config.prompt_references; stored as type:prompt with text/references. Existing bound references retain identity.", "media_bindings?": "map of provider media field name to MediaBindingSpec (source/sample/coverage)", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name, generic media slot, or explicit media role slot are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string" } } },
+            { "type": "set_generative_config", "fields": { "asset_id": "uuid", "patch": { "provider_id?": "uuid", "inputs?": "map of provider field name to InputValue; literal prompt strings accept exact @{input_name} or @{Input label} references discovered via get_generative_config.prompt_references; stored as type:prompt with text/references. Existing bound references retain identity.", "media_bindings?": "map of provider media field name to MediaBindingSpec (source/sample/coverage)", "reference_slots?": "compatibility/timeline-hint map; media slots matching a provider field name, generic media slot, or explicit media role slot are copied into inputs when inputs.<field> is absent", "batch?": "BatchSettings", "active_version?": "string", "lab_authoring?": "AssetLabAuthoring including prompt regions" } } },
             { "type": "replace_generative_config", "fields": { "asset_id": "uuid", "config": "GenerativeConfig" } },
             { "type": "start_generation", "fields": { "asset_id": "uuid", "context_clip_id?": "uuid", "wait?": "bool" } },
             { "type": "list_jobs|get_job|cancel_job", "fields": { "job_id?": "uuid" } },
