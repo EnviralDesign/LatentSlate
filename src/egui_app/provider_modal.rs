@@ -2002,6 +2002,7 @@ mod provider_refresh_tests {
                 base_url: base_url.to_string(),
                 api_key: api_key.map(str::to_string),
                 tool_key: "video.generate".to_string(),
+                operation: None,
                 schema_revision: 1,
                 schema_hash: "sha256:test".to_string(),
                 available: true,

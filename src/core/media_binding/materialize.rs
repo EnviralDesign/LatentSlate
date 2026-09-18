@@ -48,7 +48,10 @@ pub(super) fn audio_stream_count(path: &Path) -> Result<usize, MediaBindingError
             detail: format!("Cannot read the audio source: {err}"),
         }
     })?;
-    Ok(media.streams().filter(|stream| stream.parameters().medium() == ffmpeg_next::media::Type::Audio).count())
+    Ok(media
+        .streams()
+        .filter(|stream| stream.parameters().medium() == ffmpeg_next::media::Type::Audio)
+        .count())
 }
 
 fn materialize_source(

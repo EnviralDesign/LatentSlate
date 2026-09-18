@@ -276,6 +276,8 @@ pub enum ProviderConnection {
         #[serde(default)]
         api_key: Option<String>,
         tool_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation: Option<String>,
         schema_revision: u32,
         schema_hash: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

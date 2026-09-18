@@ -451,6 +451,7 @@ fn catalog_to_provider_entries(
     for tool in catalog.tools.iter() {
         match tool_to_provider(tool, settings) {
             Ok(provider) => providers.push(provider),
+            Err(err) if err.contains("missing operation") => return Err(err),
             Err(err) => println!("Skipping engine tool {}: {err}", tool.key),
         }
     }
@@ -461,6 +462,12 @@ fn tool_to_provider(
     tool: &EngineTool,
     settings: &EngineConnectionSettings,
 ) -> Result<ProviderEntry, String> {
+    if tool.operation.trim().is_empty() {
+        return Err(format!(
+            "Engine catalog tool {} is missing operation",
+            tool.key
+        ));
+    }
     let mut description = tool.description.clone();
     if !tool.available {
         let reason = tool
@@ -519,6 +526,7 @@ fn tool_to_provider(
             base_url: settings.base_url.clone(),
             api_key: settings.api_key.clone(),
             tool_key: tool.key.clone(),
+            operation: Some(tool.operation.clone()),
             schema_revision: tool.schema_revision,
             schema_hash: tool.schema_hash.clone(),
             recipe: tool.recipe.clone(),
@@ -1336,6 +1344,7 @@ struct EngineTool {
     schema_hash: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recipe: Option<crate::state::EngineRecipeIdentity>,
+    operation: String,
     name: String,
     #[serde(default)]
     description: Option<String>,
@@ -1506,12 +1515,85 @@ mod tests {
                 recipe: None,
                 api_key: Some("unit-token".to_string()),
                 tool_key: "unit.test".to_string(),
+                operation: None,
                 schema_revision: 1,
                 schema_hash: "sha256:unit".to_string(),
                 available: true,
                 unavailable_reason: None,
             },
         )
+    }
+
+    #[test]
+    fn user_recipe_catalog_tool_keeps_family_operation_for_authoring() {
+        let tool: EngineTool = serde_json::from_value(json!({
+            "id": "00000000-0000-4000-8000-000000000001",
+            "key": "user_recipe.00000000-0000-4000-8000-000000000002",
+            "operation": "ideogram4.t2i",
+            "schema_revision": 1,
+            "schema_hash": "sha256:test",
+            "name": "Ideogram v4 t2i LWD",
+            "workflow_kind": "text_to_image",
+            "output": { "type": "image" },
+            "inputs": [
+                { "key": "prompt", "type": "text", "required": true, "label": "Prompt" },
+                { "key": "background", "type": "text", "required": false, "label": "Background", "default": "" }
+            ],
+            "available": true
+        }))
+        .unwrap();
+        let provider = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
+        assert!(matches!(
+            &provider.connection,
+            ProviderConnection::LatentSlateEngine {
+                tool_key,
+                operation: Some(operation),
+                ..
+            } if tool_key == "user_recipe.00000000-0000-4000-8000-000000000002"
+                && operation == "ideogram4.t2i"
+        ));
+        assert!(crate::state::is_ideogram4_t2i(&provider));
+        assert_eq!(
+            crate::state::asset_lab_authoring_profile(&provider),
+            crate::state::AssetLabAuthoringProfile::Regions
+        );
+    }
+
+    #[test]
+    fn catalog_tool_without_operation_is_rejected() {
+        let tool: EngineTool = serde_json::from_value(json!({
+            "id": "00000000-0000-4000-8000-000000000001",
+            "key": "user_recipe.00000000-0000-4000-8000-000000000002",
+            "operation": "",
+            "schema_revision": 1,
+            "schema_hash": "sha256:test",
+            "name": "Broken recipe",
+            "workflow_kind": "text_to_image",
+            "output": { "type": "image" },
+            "inputs": [
+                { "key": "prompt", "type": "text", "required": true, "label": "Prompt" }
+            ],
+            "available": true
+        }))
+        .unwrap();
+        let err = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap_err();
+        assert!(err.contains("missing operation"), "{err}");
+        let missing = json!({
+            "protocol_version": "1.0",
+            "engine_version": "0.1.0",
+            "tools": [{
+                "id": "00000000-0000-4000-8000-000000000001",
+                "key": "ideogram4.text_to_image",
+                "schema_revision": 1,
+                "schema_hash": "sha256:test",
+                "name": "Ideogram",
+                "workflow_kind": "text_to_image",
+                "output": { "type": "image" },
+                "inputs": [],
+                "available": true
+            }]
+        });
+        assert!(serde_json::from_value::<EngineCatalog>(missing).is_err());
     }
 
     async fn read_mock_request(stream: &mut TcpStream) -> String {
@@ -1611,7 +1693,16 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("<Picture"));
-        assert_eq!(provider.inputs.iter().find(|input| input.name == "reference_video_audio_2").unwrap().prompt_reference_token.as_deref(), Some("<Audio {index}>"));
+        assert_eq!(
+            provider
+                .inputs
+                .iter()
+                .find(|input| input.name == "reference_video_audio_2")
+                .unwrap()
+                .prompt_reference_token
+                .as_deref(),
+            Some("<Audio {index}>")
+        );
         let mut invalid = tool.clone();
         invalid
             .inputs
@@ -1624,24 +1715,60 @@ mod tests {
 
     #[test]
     fn prompt_references_qwen_catalog_keeps_fixed_slot_notation() {
-        let tool: EngineTool = serde_json::from_str(include_str!("../../tests/fixtures/catalog-qwen2511-edit.json")).unwrap();
+        let tool: EngineTool = serde_json::from_str(include_str!(
+            "../../tests/fixtures/catalog-qwen2511-edit.json"
+        ))
+        .unwrap();
         let provider = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
-        let input = provider.inputs.iter().find(|input| input.prompt_reference_token.as_deref() == Some("Picture 3")).unwrap();
-        let reference = crate::state::PromptReference { provider_id: provider.id, input_name: input.name.clone() };
-        assert_eq!(crate::core::prompt_references::resolve_reference(&reference, &provider, |field| field.name == input.name).unwrap(), "Picture 3");
+        let input = provider
+            .inputs
+            .iter()
+            .find(|input| input.prompt_reference_token.as_deref() == Some("Picture 3"))
+            .unwrap();
+        let reference = crate::state::PromptReference {
+            provider_id: provider.id,
+            input_name: input.name.clone(),
+        };
+        assert_eq!(
+            crate::core::prompt_references::resolve_reference(&reference, &provider, |field| field
+                .name
+                == input.name)
+            .unwrap(),
+            "Picture 3"
+        );
     }
 
     #[test]
     fn prompt_references_klein_catalog_packs_one_to_three_references() {
-        let tool: EngineTool = serde_json::from_str(include_str!("../../tests/fixtures/catalog-klein9b-edit.json")).unwrap();
+        let tool: EngineTool = serde_json::from_str(include_str!(
+            "../../tests/fixtures/catalog-klein9b-edit.json"
+        ))
+        .unwrap();
         let provider = tool_to_provider(&tool, &EngineConnectionSettings::default()).unwrap();
-        let fields: Vec<_> = provider.inputs.iter().filter(|input| input.prompt_reference_token.is_some()).collect();
+        let fields: Vec<_> = provider
+            .inputs
+            .iter()
+            .filter(|input| input.prompt_reference_token.is_some())
+            .collect();
         assert_eq!(fields.len(), 3);
         assert!(fields[0].required);
         assert!(!fields[1].required && !fields[2].required);
-        let reference = crate::state::PromptReference { provider_id: provider.id, input_name: fields[2].name.clone() };
-        assert_eq!(crate::core::prompt_references::resolve_reference(&reference, &provider, |field| field.name != fields[1].name).unwrap(), "image 2");
-        assert_eq!(crate::core::prompt_references::resolve_reference(&reference, &provider, |_| true).unwrap(), "image 3");
+        let reference = crate::state::PromptReference {
+            provider_id: provider.id,
+            input_name: fields[2].name.clone(),
+        };
+        assert_eq!(
+            crate::core::prompt_references::resolve_reference(&reference, &provider, |field| field
+                .name
+                != fields[1].name)
+            .unwrap(),
+            "image 2"
+        );
+        assert_eq!(
+            crate::core::prompt_references::resolve_reference(&reference, &provider, |_| true)
+                .unwrap(),
+            "image 3"
+        );
     }
 
     #[test]
@@ -2005,6 +2132,7 @@ mod tests {
                 resolved_media_inputs: HashMap::new(),
                 lab_node_id: None,
                 engine_execution: Some(provenance.clone()),
+                magic_prompt: None,
             });
         });
         let before_timing =
@@ -2712,6 +2840,7 @@ mod tests {
             "tools": [{
                 "id": "8c038628-e5bd-4954-80e3-32956321089b",
                 "key": "h3.first_last_frame_video",
+                "operation": "h3.i2v",
                 "schema_revision": 2,
                 "schema_hash": "sha256:test",
                 "name": "First/Last Frame Video",
@@ -3393,6 +3522,7 @@ mod tests {
                 {
                     "id": "e329a7d2-c145-4299-96ef-f2b70376d499",
                     "key": "flux2_klein9b.text_to_image",
+                    "operation": "flux2_klein9b.t2i",
                     "schema_revision": 1,
                     "schema_hash": "sha256:t2i",
                     "name": "Text to Image",
@@ -3409,6 +3539,7 @@ mod tests {
                 {
                     "id": "3333a6bd-8e71-4236-9372-bad407161803",
                     "key": "flux2_klein9b.image_to_image",
+                    "operation": "flux2_klein9b.two_image",
                     "schema_revision": 1,
                     "schema_hash": "sha256:i2i",
                     "name": "Image to Image",
@@ -3478,6 +3609,7 @@ mod tests {
             "tools": [{
                 "id": "369a630e-4d64-4e3c-8f15-1809757a10e5",
                 "key": "h3.text_to_video",
+                "operation": "h3.t2v",
                 "schema_revision": 1,
                 "schema_hash": "sha256:test",
                 "name": "Text to Video",

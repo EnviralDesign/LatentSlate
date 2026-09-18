@@ -40,6 +40,13 @@ pub(super) fn queue_job_is_terminal(status: GenerationJobStatus) -> bool {
     )
 }
 
+pub(super) fn queue_job_is_cancellable(status: GenerationJobStatus) -> bool {
+    matches!(
+        status,
+        GenerationJobStatus::Queued | GenerationJobStatus::Running
+    )
+}
+
 pub(super) fn paint_queue_panel_shell(ui: &mut Ui, rect: Rect, attention: bool) {
     let radius = egui::CornerRadius::same(10);
     let shadow_rect = rect.translate(Vec2::new(0.0, 10.0)).expand(10.0);
@@ -76,7 +83,9 @@ pub(super) fn queue_header(
     ui: &mut Ui,
     rect: Rect,
     job_count: usize,
+    has_cancellable: bool,
     has_clearable: bool,
+    cancel_all_clicked: &mut bool,
     clear_clicked: &mut bool,
     close_clicked: &mut bool,
 ) {
@@ -93,27 +102,6 @@ pub(super) fn queue_header(
     } else {
         job_count.to_string()
     };
-    header_ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
-        ui.add_sized(
-            [112.0, 16.0],
-            egui::Label::new(
-                RichText::new("Generation Queue")
-                    .color(kit::TEXT)
-                    .size(12.0),
-            )
-            .truncate(),
-        );
-        ui.add_sized(
-            [112.0, 12.0],
-            egui::Label::new(
-                RichText::new(count_label.to_ascii_uppercase())
-                    .color(kit::TEXT_MUTED)
-                    .size(10.0),
-            )
-            .truncate(),
-        );
-    });
     header_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         if kit::popover_button(ui, "Close", 50.0, true).clicked() {
             *close_clicked = true;
@@ -121,6 +109,32 @@ pub(super) fn queue_header(
         if kit::popover_button(ui, "Clear All", 68.0, has_clearable).clicked() {
             *clear_clicked = true;
         }
+        if kit::popover_button(ui, "Cancel All", 78.0, has_cancellable).clicked() {
+            *cancel_all_clicked = true;
+        }
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.add_sized(
+                    [ui.available_width(), 16.0],
+                    egui::Label::new(
+                        RichText::new("Generation Queue")
+                            .color(kit::TEXT)
+                            .size(12.0),
+                    )
+                    .truncate(),
+                );
+                ui.add_sized(
+                    [ui.available_width(), 12.0],
+                    egui::Label::new(
+                        RichText::new(count_label.to_ascii_uppercase())
+                            .color(kit::TEXT_MUTED)
+                            .size(10.0),
+                    )
+                    .truncate(),
+                );
+            });
+        });
     });
 }
 
@@ -511,6 +525,7 @@ mod operation_mapping_tests {
             seed_advance: None,
             version: None,
             lab_node_id: None,
+            magic_prompt: None,
             activate_on_success: true,
             error: error.map(str::to_string),
         }
@@ -595,6 +610,7 @@ impl LatentSlateApp {
     pub(super) fn queue_panel(&mut self, ctx: &Context) {
         let mut close_clicked = false;
         let mut clear_clicked = false;
+        let mut cancel_all_clicked = false;
         let mut cancel_job_id = None;
         let app_rect = ctx.content_rect();
         let menu_bottom = self
@@ -612,6 +628,7 @@ impl LatentSlateApp {
             )
         });
         let has_clearable = jobs.iter().any(|job| queue_job_is_terminal(job.status));
+        let has_cancellable = jobs.iter().any(|job| queue_job_is_cancellable(job.status));
         let desired_body_h = queue_list_height(&jobs);
         let desired_h =
             QUEUE_PANEL_PAD * 2.0 + QUEUE_PANEL_HEADER_H + QUEUE_PANEL_GAP + desired_body_h;
@@ -657,7 +674,9 @@ impl LatentSlateApp {
                     &mut child,
                     header_rect,
                     jobs.len(),
+                    has_cancellable,
                     has_clearable,
+                    &mut cancel_all_clicked,
                     &mut clear_clicked,
                     &mut close_clicked,
                 );
@@ -666,6 +685,9 @@ impl LatentSlateApp {
 
         if let Some(job_id) = cancel_job_id {
             let _ = self.cancel_generation_job(job_id);
+        }
+        if cancel_all_clicked {
+            self.cancel_all_generation_jobs();
         }
         if clear_clicked {
             let before = self.editor.generation_queue.len();

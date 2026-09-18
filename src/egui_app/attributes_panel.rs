@@ -3301,6 +3301,22 @@ impl LatentSlateApp {
             }
 
             self.media_binding_context_picker(ui, asset_id, context_clip_id);
+            if crate::core::ideogram4_caption::is_ideogram4_text_to_image(&provider) {
+                let mut authoring = config_snapshot.lab_authoring.clone();
+                let before = authoring.caption_mode;
+                self.ideogram_caption_controls(ui, &mut authoring);
+                if authoring.caption_mode != before {
+                    self.editor
+                        .project
+                        .update_generative_config(asset_id, |config| {
+                            config.lab_authoring.caption_mode = authoring.caption_mode;
+                        });
+                    if let Err(err) = self.editor.project.save_generative_config(asset_id) {
+                        self.editor.status = format!("Failed to save generative config: {err}");
+                    }
+                }
+                ui.add_space(kit::FORM_ROW_GAP);
+            }
             if standard_inputs.is_empty() {
                 ui.label(kit::caption("No additional inputs for this provider."));
             }
@@ -3388,6 +3404,11 @@ impl LatentSlateApp {
         let mut visible_index = 0usize;
         let mut current_group: Option<&str> = None;
         for input in inputs.iter().copied() {
+            if crate::state::uses_magic_prompt(provider, &config_snapshot.lab_authoring)
+                && input.name == crate::core::ideogram4_caption::BACKGROUND_FIELD
+            {
+                continue;
+            }
             let group = input
                 .ui
                 .as_ref()
@@ -3445,9 +3466,20 @@ impl LatentSlateApp {
                 }
                 ProviderInputType::Text => {
                     if input.ui.as_ref().is_some_and(|ui| ui.multiline)
-                        || matches!(config_snapshot.inputs.get(&input.name), Some(InputValue::Prompt { .. }))
+                        || matches!(
+                            config_snapshot.inputs.get(&input.name),
+                            Some(InputValue::Prompt { .. })
+                        )
                     {
-                        if let Some(value) = self.prompt_reference_field(ui, asset_id, context_clip_id, provider, config_snapshot, input, &label) {
+                        if let Some(value) = self.prompt_reference_field(
+                            ui,
+                            asset_id,
+                            context_clip_id,
+                            provider,
+                            config_snapshot,
+                            input,
+                            &label,
+                        ) {
                             updates.push((input.name.clone(), value));
                         }
                         continue;
@@ -4451,7 +4483,12 @@ fn clamp_provider_input_number(value: f64, input: &ProviderInputField) -> f64 {
 }
 
 fn retain_literal_inputs(inputs: &mut HashMap<String, InputValue>) {
-    inputs.retain(|_, value| matches!(value, InputValue::Literal { .. } | InputValue::Prompt { .. }));
+    inputs.retain(|_, value| {
+        matches!(
+            value,
+            InputValue::Literal { .. } | InputValue::Prompt { .. }
+        )
+    });
 }
 
 fn provider_choice_menu_row(ui: &mut Ui, provider: &ProviderEntry) -> egui::Response {

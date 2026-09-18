@@ -386,6 +386,7 @@ impl LatentSlateApp {
 
     pub(super) fn poll_chat(&mut self, ctx: &Context) {
         self.poll_agent_settings(ctx);
+        self.poll_magic_prompt(ctx);
         if self.chat.session != self.editor.project_session_revision {
             self.clear_chat();
             self.chat.session = self.editor.project_session_revision;

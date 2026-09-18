@@ -51,5 +51,6 @@
       "role": "seed"
     }
   ],
-  "schema_hash": "sha256:f1056d243a558050ff6e9c541abde426ac527ff1242d48b2c58923a1ce8ec3ba"
+  "schema_hash": "sha256:f1056d243a558050ff6e9c541abde426ac527ff1242d48b2c58923a1ce8ec3ba",
+  "operation": "qwen2511.edit"
 }

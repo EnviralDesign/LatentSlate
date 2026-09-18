@@ -12,6 +12,7 @@ pub mod export;
 pub mod ffmpeg_runtime;
 pub mod generation;
 pub mod ideogram4_caption;
+pub mod ideogram4_magic_prompt;
 pub mod media;
 pub mod media_binding;
 pub mod paths;

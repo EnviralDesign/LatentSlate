@@ -7,12 +7,13 @@
 use serde_json::Value;
 
 use crate::state::{
-    AssetLabAuthoring, AssetLabRegion, GenerativeConfig, InputValue, ProviderConnection,
+    AssetLabAuthoring, AssetLabRegion, GenerativeConfig, InputValue,
     ProviderEntry, ProviderInputType,
 };
 
 const GRID: f32 = 1000.0;
-const PROMPT_FIELD: &str = "prompt";
+pub const PROMPT_FIELD: &str = "prompt";
+pub const BACKGROUND_FIELD: &str = "background";
 
 /// `[y_min, x_min, y_max, x_max]` on the official 0–1000 grid.
 pub fn grid_bbox(bounds: [f32; 4]) -> [i32; 4] {
@@ -31,19 +32,23 @@ pub fn grid_bbox(bounds: [f32; 4]) -> [i32; 4] {
 }
 
 pub fn is_ideogram4_text_to_image(provider: &ProviderEntry) -> bool {
-    matches!(
-        &provider.connection,
-        ProviderConnection::LatentSlateEngine { tool_key, .. }
-            if tool_key == "ideogram4.text_to_image"
-    )
+    crate::state::is_ideogram4_t2i(provider)
 }
 
 /// Serialize enabled regions into an official caption. `None` keeps the ordinary prompt.
-pub fn structured_caption(scene_prompt: &str, authoring: &AssetLabAuthoring) -> Option<String> {
+pub fn structured_caption(
+    scene_prompt: &str,
+    background: &str,
+    authoring: &AssetLabAuthoring,
+) -> Option<String> {
     if !authoring.regions_enabled || authoring.regions.is_empty() {
         return None;
     }
-    Some(serialize_caption(scene_prompt, &authoring.regions))
+    Some(serialize_caption(
+        scene_prompt,
+        background,
+        &authoring.regions,
+    ))
 }
 
 pub fn apply_submitted_prompt(
@@ -62,12 +67,24 @@ pub fn apply_submitted_prompt(
     {
         return;
     }
+    if crate::state::uses_magic_prompt(provider, &config.lab_authoring) {
+        if provider.inputs.iter().any(|input| input.name == BACKGROUND_FIELD) {
+            let value = Value::String(String::new());
+            values.insert(BACKGROUND_FIELD.to_string(), value.clone());
+            snapshot.insert(BACKGROUND_FIELD.to_string(), InputValue::Literal { value });
+        }
+        return;
+    }
     let scene = values
         .get(PROMPT_FIELD)
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let Some(caption) = structured_caption(&scene, &config.lab_authoring) else {
+    let background = values
+        .get(BACKGROUND_FIELD)
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(caption) = structured_caption(&scene, background, &config.lab_authoring) else {
         return;
     };
     let value = Value::String(caption);
@@ -75,8 +92,10 @@ pub fn apply_submitted_prompt(
     snapshot.insert(PROMPT_FIELD.to_string(), InputValue::Literal { value });
 }
 
-fn serialize_caption(scene_prompt: &str, regions: &[AssetLabRegion]) -> String {
+fn serialize_caption(scene_prompt: &str, background: &str, regions: &[AssetLabRegion]) -> String {
     let scene = scene_prompt.trim();
+    let shell = background.trim();
+    let background_text = if shell.is_empty() { scene } else { shell };
     let mut root = Vec::new();
     if !scene.is_empty() {
         root.push(("high_level_description", json_string(scene)));
@@ -87,7 +106,7 @@ fn serialize_caption(scene_prompt: &str, regions: &[AssetLabRegion]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     let deconstruction = json_object(&[
-        ("background", json_string(scene)),
+        ("background", json_string(background_text)),
         ("elements", format!("[{elements}]")),
     ]);
     root.push(("compositional_deconstruction", deconstruction));
@@ -188,6 +207,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8765".into(),
                 api_key: None,
                 tool_key: "ideogram4.text_to_image".into(),
+                operation: Some("ideogram4.t2i".into()),
                 schema_revision: 1,
                 schema_hash: "test".into(),
                 recipe: None,
@@ -215,6 +235,25 @@ mod tests {
                 image_dimensions: None,
                 paired_video_input: None,
                 prompt_reference_token: None,
+                name: "background".into(),
+                label: "Background".into(),
+                description: Some(
+                    "The empty-room shell for Ideogram captions: walls, floor, sky, weather, light, and backdrop. Do not name boxed subjects here.".into(),
+                ),
+                input_type: ProviderInputType::Text,
+                required: false,
+                default: Some(json!("")),
+                role: None,
+                ui: Some(InputUi {
+                    multiline: true,
+                    ..InputUi::default()
+                }),
+            },
+            ProviderInputField {
+                ordered_collection: false,
+                image_dimensions: None,
+                paired_video_input: None,
+                prompt_reference_token: None,
                 name: "width".into(),
                 label: "Width".into(),
                 description: None,
@@ -224,7 +263,7 @@ mod tests {
                 role: Some(InputRole::Width),
                 ui: Some(InputUi {
                     min: Some(256.0),
-                    max: Some(2048.0),
+                    max: Some(4096.0),
                     step: Some(16.0),
                     ..InputUi::default()
                 }),
@@ -243,7 +282,7 @@ mod tests {
                 role: Some(InputRole::Height),
                 ui: Some(InputUi {
                     min: Some(256.0),
-                    max: Some(2048.0),
+                    max: Some(4096.0),
                     step: Some(16.0),
                     ..InputUi::default()
                 }),
@@ -272,7 +311,7 @@ mod tests {
             alignment: 16,
             min_side: 256,
             max_side: None,
-            max_pixels: Some(1376 * 768),
+            max_pixels: Some(2 * 1024 * 1024),
             max_aspect: Some(4.0),
         });
         provider
@@ -308,7 +347,7 @@ mod tests {
             ],
             ..AssetLabAuthoring::default()
         };
-        let caption = structured_caption("A sunny park with a pond.", &authoring).unwrap();
+        let caption = structured_caption("A sunny park with a pond.", "", &authoring).unwrap();
         assert_eq!(
             caption,
             r#"{"high_level_description":"A sunny park with a pond.","compositional_deconstruction":{"background":"A sunny park with a pond.","elements":[{"type":"obj","bbox":[400,50,800,400],"desc":"a red bench on the left"},{"type":"text","bbox":[50,700,200,950],"text":"PARK","desc":"white sans-serif sign in the upper right"}]}}"#
@@ -316,10 +355,10 @@ mod tests {
         assert!(!caption.contains("Bench"));
         assert!(!caption.contains("Sign"));
         authoring.regions_enabled = false;
-        assert!(structured_caption("A sunny park with a pond.", &authoring).is_none());
+        assert!(structured_caption("A sunny park with a pond.", "", &authoring).is_none());
         authoring.regions_enabled = true;
         authoring.regions.clear();
-        assert!(structured_caption("A sunny park with a pond.", &authoring).is_none());
+        assert!(structured_caption("A sunny park with a pond.", "", &authoring).is_none());
     }
 
     #[test]
@@ -334,7 +373,7 @@ mod tests {
             )],
             ..AssetLabAuthoring::default()
         };
-        let caption = structured_caption("Scene \"note\"", &authoring).unwrap();
+        let caption = structured_caption("Scene \"note\"", "", &authoring).unwrap();
         assert!(caption.contains(r#""high_level_description":"Scene \"note\""#));
         assert!(caption.contains("café"));
         assert!(!caption.contains("\\u00e9"));
@@ -383,6 +422,22 @@ mod tests {
             resolved.values["prompt"].as_str().unwrap(),
             r#"{"high_level_description":"A sunny park with a pond.","compositional_deconstruction":{"background":"A sunny park with a pond.","elements":[{"type":"obj","bbox":[400,50,800,400],"desc":"a red bench on the left"},{"type":"text","bbox":[50,700,200,950],"text":"PARK","desc":"white sans-serif sign in the upper right"}]}}"#
         );
+        assert_eq!(resolved.values["background"].as_str().unwrap(), "");
+        config.inputs.insert(
+            "background".into(),
+            InputValue::Literal {
+                value: json!("A sun-drenched suburban sidewalk lined with hedges."),
+            },
+        );
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert_eq!(
+            resolved.values["prompt"].as_str().unwrap(),
+            r#"{"high_level_description":"A sunny park with a pond.","compositional_deconstruction":{"background":"A sun-drenched suburban sidewalk lined with hedges.","elements":[{"type":"obj","bbox":[400,50,800,400],"desc":"a red bench on the left"},{"type":"text","bbox":[50,700,200,950],"text":"PARK","desc":"white sans-serif sign in the upper right"}]}}"#
+        );
+        assert_eq!(
+            resolved.values["background"].as_str().unwrap(),
+            "A sun-drenched suburban sidewalk lined with hedges."
+        );
         config.lab_authoring.regions.push(region(
             "Unused",
             "should stay saved",
@@ -396,5 +451,48 @@ mod tests {
             "A sunny park with a pond."
         );
         assert_eq!(config.lab_authoring.regions.len(), 3);
+    }
+
+    #[test]
+    fn magic_prompt_leaves_plain_prompt_and_clears_submitted_background() {
+        let project = crate::state::Project::new("ideogram-magic-prompt");
+        let provider = ideogram_provider();
+        let mut config = GenerativeConfig::default();
+        config.inputs.insert(
+            "prompt".into(),
+            InputValue::Literal {
+                value: json!("a ginger cat in a wizard hat"),
+            },
+        );
+        config.inputs.insert(
+            "background".into(),
+            InputValue::Literal {
+                value: json!("authored empty-room shell that must not ship"),
+            },
+        );
+        config
+            .inputs
+            .insert("width".into(), InputValue::Literal { value: json!(1024) });
+        config
+            .inputs
+            .insert("height".into(), InputValue::Literal { value: json!(1024) });
+        config.lab_authoring.caption_mode = crate::state::IdeogramCaptionMode::MagicPrompt;
+        config.lab_authoring.regions = vec![region(
+            "Hat",
+            "must stay saved and unused",
+            None,
+            [0.1, 0.1, 0.2, 0.2],
+        )];
+        let resolved = resolve_provider_inputs(&project, None, None, &provider, &config);
+        assert_eq!(
+            resolved.values["prompt"].as_str().unwrap(),
+            "a ginger cat in a wizard hat"
+        );
+        assert_eq!(resolved.values["background"].as_str().unwrap(), "");
+        assert_eq!(config.lab_authoring.regions.len(), 1);
+        assert_eq!(
+            crate::core::prompt_references::authored_text(&config.inputs["background"]).unwrap(),
+            "authored empty-room shell that must not ship"
+        );
     }
 }

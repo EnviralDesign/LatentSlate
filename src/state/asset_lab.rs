@@ -50,6 +50,8 @@ pub struct AssetLabAuthoring {
     pub regions: Vec<AssetLabRegion>,
     #[serde(default = "enabled")]
     pub regions_enabled: bool,
+    #[serde(default)]
+    pub caption_mode: IdeogramCaptionMode,
 }
 
 impl Default for AssetLabAuthoring {
@@ -61,8 +63,17 @@ impl Default for AssetLabAuthoring {
             mask_enabled: true,
             regions: Vec::new(),
             regions_enabled: true,
+            caption_mode: IdeogramCaptionMode::Advanced,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdeogramCaptionMode {
+    #[default]
+    Advanced,
+    MagicPrompt,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,15 +129,39 @@ pub enum AssetLabAuthoringProfile {
     Regions,
 }
 
-pub fn asset_lab_authoring_profile(provider: &super::ProviderEntry) -> AssetLabAuthoringProfile {
+pub fn engine_authoring_operation(provider: &super::ProviderEntry) -> Option<&str> {
     match &provider.connection {
-        super::ProviderConnection::LatentSlateEngine { tool_key, .. } => match tool_key.as_str() {
-            "qwen2511.edit" => AssetLabAuthoringProfile::Mask,
-            "ideogram4.text_to_image" => AssetLabAuthoringProfile::Regions,
-            _ => AssetLabAuthoringProfile::Generic,
-        },
+        super::ProviderConnection::LatentSlateEngine { operation, .. } => operation.as_deref(),
+        _ => None,
+    }
+}
+
+pub fn is_ideogram4_t2i(provider: &super::ProviderEntry) -> bool {
+    matches!(engine_authoring_operation(provider), Some("ideogram4.t2i"))
+}
+
+pub fn asset_lab_authoring_profile(provider: &super::ProviderEntry) -> AssetLabAuthoringProfile {
+    match engine_authoring_operation(provider) {
+        Some("qwen2511.edit") => AssetLabAuthoringProfile::Mask,
+        Some("ideogram4.t2i") => AssetLabAuthoringProfile::Regions,
         _ => AssetLabAuthoringProfile::Generic,
     }
+}
+
+pub fn uses_magic_prompt(
+    provider: &super::ProviderEntry,
+    authoring: &AssetLabAuthoring,
+) -> bool {
+    asset_lab_authoring_profile(provider) == AssetLabAuthoringProfile::Regions
+        && authoring.caption_mode == IdeogramCaptionMode::MagicPrompt
+}
+
+pub fn ideogram_regions_active(
+    provider: &super::ProviderEntry,
+    authoring: &AssetLabAuthoring,
+) -> bool {
+    asset_lab_authoring_profile(provider) == AssetLabAuthoringProfile::Regions
+        && authoring.caption_mode != IdeogramCaptionMode::MagicPrompt
 }
 
 pub fn asset_lab_submission_blocker(
@@ -174,6 +209,7 @@ mod tests {
                 base_url: "http://unused".into(),
                 api_key: None,
                 tool_key: "ideogram4.text_to_image".into(),
+                operation: Some("ideogram4.t2i".into()),
                 schema_revision: 1,
                 schema_hash: "test".into(),
                 recipe: None,
@@ -193,5 +229,29 @@ mod tests {
         config.lab_authoring.regions_enabled = false;
         assert!(asset_lab_submission_blocker(&config, &provider).is_none());
         assert_eq!(config.lab_authoring.regions.len(), 1);
+    }
+
+    #[test]
+    fn user_ideogram_recipe_keeps_region_authoring() {
+        let provider = super::super::ProviderEntry::new(
+            "Ideogram v4 t2i LWD",
+            super::super::ProviderOutputType::Image,
+            super::super::ProviderConnection::LatentSlateEngine {
+                base_url: "http://unused".into(),
+                api_key: None,
+                tool_key: "user_recipe.00000000-0000-4000-8000-000000000001".into(),
+                operation: Some("ideogram4.t2i".into()),
+                schema_revision: 1,
+                schema_hash: "test".into(),
+                recipe: None,
+                available: true,
+                unavailable_reason: None,
+            },
+        );
+        assert_eq!(
+            asset_lab_authoring_profile(&provider),
+            AssetLabAuthoringProfile::Regions
+        );
+        assert!(is_ideogram4_t2i(&provider));
     }
 }

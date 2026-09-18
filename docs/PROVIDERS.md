@@ -90,6 +90,13 @@ the request without undoing completed edits. Project-document changes are saved
 only by `save_project`; generation configuration/version sidecars retain their
 normal immediate persistence. Chat history is cleared on New Chat or project change.
 
+Agents can opt into **Magic Prompt** with a checkbox. Eligibility is independent of
+Chat selection. Ideogram casual mode lists enabled Magic Prompt agents and stores the
+chosen agent on the project workspace layout (`magic_prompt_agent`), so save/reopen
+keeps it. A stale or unchecked selection is cleared rather than replaced. Casual
+generate expands the scene prompt through that agent with the pinned Ideogram OSS v1
+captioner, then submits the JSON through the existing Engine `prompt` field.
+
 ## Releasing Provider Resources
 
 The top-right `DUMP` action asks every configured backend that supports resource

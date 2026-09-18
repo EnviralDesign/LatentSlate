@@ -155,6 +155,16 @@ pub struct GenerationRecord {
     pub resolved_media_inputs: HashMap<String, ResolvedMediaInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lab_node_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magic_prompt: Option<MagicPromptProvenance>,
+}
+
+/// Agent that expanded an Ideogram casual prompt. Separate from Chat selection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MagicPromptProvenance {
+    pub agent_id: Uuid,
+    pub agent_name: String,
+    pub model: String,
 }
 
 /// A provider node inside a generative asset's Asset Lab graph.
@@ -607,6 +617,8 @@ pub struct GenerationJob {
     pub seed_advance: Option<GenerationSeedAdvance>,
     pub version: Option<String>,
     pub lab_node_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magic_prompt: Option<MagicPromptProvenance>,
     pub activate_on_success: bool,
     pub error: Option<String>,
 }

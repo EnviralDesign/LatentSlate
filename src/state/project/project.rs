@@ -25,6 +25,8 @@ pub struct ProjectWorkspaceLayout {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_provider: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magic_prompt_agent: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_window: Option<ChatWindowPlacement>,
     #[serde(default)]
     pub left_collapsed: bool,
@@ -51,6 +53,7 @@ impl Default for ProjectWorkspaceLayout {
         Self {
             chat_window: None,
             agent_provider: None,
+            magic_prompt_agent: None,
             left_collapsed: false,
             right_collapsed: false,
             timeline_collapsed: false,

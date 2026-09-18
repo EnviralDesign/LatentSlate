@@ -13,7 +13,7 @@ pub fn load() -> Vec<AgentProviderEntry> {
     load_from(&root())
 }
 
-fn load_from(root: &Path) -> Vec<AgentProviderEntry> {
+pub(crate) fn load_from(root: &Path) -> Vec<AgentProviderEntry> {
     let mut providers = Vec::new();
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {

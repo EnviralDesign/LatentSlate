@@ -72,6 +72,20 @@ impl Drop for ChatRequest {
 }
 
 pub fn start(provider: AgentProviderEntry, messages: Vec<Value>, tools: Vec<Value>) -> ChatRequest {
+    spawn(provider, messages, tools, true)
+}
+
+/// One completion with no tools. Used by Magic Prompt and other non-Chat callers.
+pub fn complete(provider: AgentProviderEntry, messages: Vec<Value>) -> ChatRequest {
+    spawn(provider, messages, Vec::new(), false)
+}
+
+fn spawn(
+    provider: AgentProviderEntry,
+    messages: Vec<Value>,
+    tools: Vec<Value>,
+    allow_tools: bool,
+) -> ChatRequest {
     let (events_tx, events) = mpsc::channel();
     let (cancel, mut cancellation) = tokio::sync::watch::channel(false);
     std::thread::spawn(move || {
@@ -81,7 +95,7 @@ pub fn start(provider: AgentProviderEntry, messages: Vec<Value>, tools: Vec<Valu
                 tokio::select! {
                     biased;
                     _ = cancellation.changed() => Err("Stopped. Completed project changes are retained.".into()),
-                    result = conversation(&provider, &mut messages, &tools, &events_tx) => result,
+                    result = conversation(&provider, &mut messages, &tools, &events_tx, allow_tools) => result,
                 }
             }),
             Err(_) => Err("Unable to start Chat worker.".into()),
@@ -100,6 +114,7 @@ async fn conversation(
     messages: &mut Vec<Value>,
     tools: &[Value],
     events: &mpsc::Sender<ChatEvent>,
+    allow_tools: bool,
 ) -> Result<(), String> {
     if !provider.enabled {
         return Err("Agent provider is disabled.".into());
@@ -136,6 +151,21 @@ async fn conversation(
         };
         compact_media(messages);
         let (text, calls, output) = result?;
+        if !allow_tools {
+            if !calls.is_empty() {
+                return Err("Agent returned a tool call instead of text.".into());
+            }
+            if text.trim().is_empty() {
+                return Err("Agent returned an empty reply.".into());
+            }
+            let mut assistant = json!({"role":"assistant", "content":text});
+            if let Some(output) = output {
+                assistant["responses_output"] = json!(output);
+                assistant["responses_owner"] = json!(super::agent_responses::history_owner(provider));
+            }
+            messages.push(assistant);
+            return Ok(());
+        }
         let mut assistant = json!({"role":"assistant", "content":text});
         if let Some(output) = output {
             assistant["responses_output"] = json!(output);

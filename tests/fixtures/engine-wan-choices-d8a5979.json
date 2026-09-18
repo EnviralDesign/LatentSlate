@@ -139,5 +139,6 @@
     "definition_hash": "51b96d3cabd74fe52ee3de76c2ec44d689ff6d07060b5dd50734d87bb73a570b"
   },
   "available": false,
-  "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+  "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+  "operation": "wan2214b.t2v"
 }

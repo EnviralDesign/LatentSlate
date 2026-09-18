@@ -73,11 +73,11 @@ mod export_modal;
 mod export_modal_ui;
 mod generation_runtime;
 mod media_binding_ui;
-mod prompt_reference_ui;
 mod preview_canvas;
 mod preview_runtime;
 mod preview_transform;
 mod project_modals;
+mod prompt_reference_ui;
 mod provider_builder;
 mod provider_identity;
 mod provider_modal;
@@ -379,6 +379,7 @@ pub struct LatentSlateApp {
     agent_api_port: u16,
     pending_automation_ui_actions: Vec<PendingAutomationUiAction>,
     pending_automation_screenshot: Option<PendingAutomationScreenshot>,
+    magic_prompt: Option<generation_runtime::PendingMagicPrompt>,
     generation_context_by_asset: HashMap<Uuid, Uuid>,
 }
 
@@ -860,6 +861,7 @@ impl LatentSlateApp {
             agent_api_port,
             pending_automation_ui_actions: Vec::new(),
             pending_automation_screenshot: None,
+            magic_prompt: None,
             generation_context_by_asset: HashMap::new(),
         }
     }
@@ -1739,19 +1741,13 @@ fn provider_input_description(input: &ProviderInputField) -> Option<&str> {
 }
 
 fn provider_input_field_label(ui: &mut Ui, label: &str, input: &ProviderInputField) {
-    let Some(description) = provider_input_description(input) else {
-        kit::field_label(ui, label);
-        return;
-    };
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        kit::field_label(ui, label);
-        ui.add(
-            egui::Label::new(RichText::new("?").size(10.5).strong().color(kit::TEXT_DIM))
-                .sense(Sense::hover()),
-        )
-        .on_hover_text(description);
-    });
+    let help = provider_input_description(input);
+    kit::field_label_with_help(
+        ui,
+        label,
+        help.is_some(),
+        help.map(|description| kit::Tooltip::new(label).description(description)),
+    );
 }
 
 fn provider_input_text_field(

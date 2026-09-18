@@ -248,6 +248,9 @@ impl LatentSlateApp {
             .draft
             .clone()
             .unwrap_or_else(|| AssetLabSnapshot::from_config(config));
+        let regions_ui = provider.is_some_and(|provider| {
+            crate::state::ideogram_regions_active(provider, &setup.authoring)
+        });
         if profile == AssetLabAuthoringProfile::Mask && audition.is_none() {
             if let Some(provider) = provider {
                 self.prepare_lab_mask_canvas(config, provider, asset, ui.ctx(), &mut canvas);
@@ -329,7 +332,7 @@ impl LatentSlateApp {
                 .base
                 .as_ref()
                 .map(|(texture, size)| (texture.id(), *size))
-        } else if profile != AssetLabAuthoringProfile::Regions || self.asset_lab.v4.guide_visible {
+        } else if !regions_ui || self.asset_lab.v4.guide_visible {
             self.asset_lab_preview_texture(
                 ui.ctx(),
                 asset,
@@ -381,7 +384,7 @@ impl LatentSlateApp {
                     .as_ref()
                     .map(|v| format!("Preview · {v}"))
                     .unwrap_or_else(|| {
-                        if profile == AssetLabAuthoringProfile::Generic {
+                        if profile == AssetLabAuthoringProfile::Generic || !regions_ui {
                             "Create"
                         } else {
                             match canvas.tool {
@@ -422,7 +425,7 @@ impl LatentSlateApp {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
-                if profile == AssetLabAuthoringProfile::Regions && audition.is_none() {
+                if regions_ui && audition.is_none() {
                     let visible = self.asset_lab.v4.guide_visible;
                     if kit::tool_button(
                         ui,
@@ -480,7 +483,7 @@ impl LatentSlateApp {
                             (Tool::Paint, kit::Icon::Brush, "Brush"),
                             (Tool::Erase, kit::Icon::Erase, "Erase"),
                         ],
-                        AssetLabAuthoringProfile::Regions => &[
+                        AssetLabAuthoringProfile::Regions if regions_ui => &[
                             (Tool::Select, kit::Icon::Select, "Select"),
                             (Tool::Object, kit::Icon::Object, "Object"),
                             (Tool::Text, kit::Icon::Text, "Text"),
@@ -513,7 +516,9 @@ impl LatentSlateApp {
                             undo |= kit::tool_button(ui, kit::Icon::Undo, hint, false).clicked();
                         },
                     );
-                    if profile != AssetLabAuthoringProfile::Generic {
+                    if profile != AssetLabAuthoringProfile::Generic && regions_ui
+                        || profile == AssetLabAuthoringProfile::Mask
+                    {
                         ui.add_enabled_ui(audition.is_none(), |ui| {
                             let hint = kit::Tooltip::new("Clear").description(
                                 if profile == AssetLabAuthoringProfile::Mask { "Clear the entire painted mask. You can undo this in the current Create session." }
@@ -616,7 +621,9 @@ impl LatentSlateApp {
                 response.request_focus();
                 let label_hit = pointer
                     .filter(|point| {
-                        profile == AssetLabAuthoringProfile::Regions && rect.contains(*point)
+                        profile == AssetLabAuthoringProfile::Regions
+                            && regions_ui
+                            && rect.contains(*point)
                     })
                     .and_then(|point| {
                         setup
@@ -646,7 +653,7 @@ impl LatentSlateApp {
                             canvas.pixels = Some(GrayImage::new(extent.x as u32, extent.y as u32));
                         }
                         canvas.gesture = Some(Gesture::Stroke { last: point });
-                    } else if profile == AssetLabAuthoringProfile::Regions {
+                    } else if regions_ui {
                         let normalized = Pos2::new(point.x / extent.x, point.y / extent.y);
                         let hit = setup
                             .authoring
@@ -811,7 +818,7 @@ impl LatentSlateApp {
                     );
                 }
             }
-            if profile == AssetLabAuthoringProfile::Regions {
+            if regions_ui {
                 for region in &setup.authoring.regions {
                     let bounds = region_rect(region.bounds, image_rect);
                     let color = if setup.authoring.regions_enabled {
@@ -1060,7 +1067,7 @@ mod tests {
                 .unwrap();
         }
         let asset = Asset::new_generative_image("Egui fixture", folder);
-        let provider:ProviderEntry=serde_json::from_value(serde_json::json!({"id":Uuid::new_v4(),"name":"Offline authoring","output_type":"image","inputs":[{"name":"image","label":"Image","input_type":{"type":"image"},"required":true}],"connection":{"type":"latent_slate_engine","base_url":"http://127.0.0.1:9","tool_key":"qwen2511.edit","schema_revision":1,"schema_hash":"offline","available":false}})).unwrap();
+        let provider:ProviderEntry=serde_json::from_value(serde_json::json!({"id":Uuid::new_v4(),"name":"Offline authoring","output_type":"image","inputs":[{"name":"image","label":"Image","input_type":{"type":"image"},"required":true}],"connection":{"type":"latent_slate_engine","base_url":"http://127.0.0.1:9","tool_key":"qwen2511.edit","operation":"qwen2511.edit","schema_revision":1,"schema_hash":"offline","available":false}})).unwrap();
         let mut config = GenerativeConfig::default();
         config.provider_id = Some(provider.id);
         config.active_version = Some("v1".into());
@@ -1084,6 +1091,7 @@ mod tests {
                 media_bindings_snapshot: Default::default(),
                 resolved_media_inputs: Default::default(),
                 lab_node_id: None,
+                magic_prompt: None,
                 authoring_snapshot: None,
                 engine_execution: None,
             });

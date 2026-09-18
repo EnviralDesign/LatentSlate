@@ -36,6 +36,22 @@ pub(super) enum CancelGenerationJobResult {
     NotCancellable { status: GenerationJobStatus },
 }
 
+pub(super) struct PendingMagicPrompt {
+    pub(super) request: crate::core::agent_chat::ChatRequest,
+    pub(super) session: u64,
+    pub(super) asset_id: Uuid,
+    context_clip_id: Option<Uuid>,
+    lab_node_id: Option<Uuid>,
+    provider: ProviderEntry,
+    config: GenerativeConfig,
+    folder_path: PathBuf,
+    asset_label: String,
+    lab_submission: Option<crate::state::AssetLabSubmission>,
+    provenance: crate::state::MagicPromptProvenance,
+    attach_lab_v4: bool,
+    overlapping: bool,
+}
+
 impl LatentSlateApp {
     pub(super) fn cancel_generation_job(&mut self, job_id: Uuid) -> CancelGenerationJobResult {
         let cancellation_token = self.generation_cancel_tokens.get(&job_id).cloned();
@@ -69,6 +85,40 @@ impl LatentSlateApp {
         }
         self.editor.status = format!("Removed queued generation for {label}.");
         CancelGenerationJobResult::Cancelled { label, was_running }
+    }
+
+    pub(super) fn cancel_all_generation_jobs(&mut self) {
+        let job_ids: Vec<Uuid> = self
+            .editor
+            .generation_queue
+            .iter()
+            .filter(|job| {
+                matches!(
+                    job.status,
+                    GenerationJobStatus::Queued | GenerationJobStatus::Running
+                )
+            })
+            .map(|job| job.id)
+            .collect();
+
+        let mut queued = 0usize;
+        let mut running_label = None;
+        for job_id in job_ids {
+            match self.cancel_generation_job(job_id) {
+                CancelGenerationJobResult::Cancelled {
+                    was_running: false, ..
+                } => queued += 1,
+                CancelGenerationJobResult::Canceling { label }
+                | CancelGenerationJobResult::Cancelled {
+                    was_running: true,
+                    label,
+                } => running_label = Some(label),
+                CancelGenerationJobResult::NotFound
+                | CancelGenerationJobResult::NotCancellable { .. } => {}
+            }
+        }
+
+        self.editor.status = cancel_all_status(queued, running_label.as_deref());
     }
 
     pub(super) fn service_generation_queue(&mut self, ctx: &Context) {
@@ -387,6 +437,7 @@ impl LatentSlateApp {
             media_bindings_snapshot: job.media_bindings_snapshot.clone(),
             resolved_media_inputs: job.resolved_media_inputs.clone(),
             lab_node_id: job.lab_node_id,
+            magic_prompt: job.magic_prompt.clone(),
         };
         self.editor
             .project
@@ -525,6 +576,13 @@ impl LatentSlateApp {
     }
 
     pub(super) fn generation_status_for_asset(&self, asset_id: Uuid) -> Option<String> {
+        if self
+            .magic_prompt
+            .as_ref()
+            .is_some_and(|pending| pending.asset_id == asset_id)
+        {
+            return Some("Expanding prompt".to_string());
+        }
         self.editor
             .generation_queue
             .iter()
@@ -568,6 +626,31 @@ impl LatentSlateApp {
         asset_label: String,
         lab_submission: Option<crate::state::AssetLabSubmission>,
     ) -> Result<String, String> {
+        self.enqueue_generation_jobs_expanded(
+            asset_id,
+            context_clip_id,
+            lab_node_id,
+            provider,
+            config_snapshot,
+            folder_path,
+            asset_label,
+            lab_submission,
+            None,
+        )
+    }
+
+    fn enqueue_generation_jobs_expanded(
+        &mut self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        lab_node_id: Option<Uuid>,
+        provider: ProviderEntry,
+        config_snapshot: GenerativeConfig,
+        folder_path: PathBuf,
+        asset_label: String,
+        lab_submission: Option<crate::state::AssetLabSubmission>,
+        expansion: Option<(String, crate::state::MagicPromptProvenance)>,
+    ) -> Result<String, String> {
         if self.provider_resource_release_in_flight {
             return Err(
                 "Wait for provider resource release to finish before starting generation."
@@ -598,7 +681,22 @@ impl LatentSlateApp {
                 .join("\n"));
         }
 
-        let resolved = resolve_provider_inputs(
+        if crate::state::uses_magic_prompt(&provider, &config_snapshot.lab_authoring)
+            && expansion.is_none()
+        {
+            return self.start_magic_prompt_expansion(
+                asset_id,
+                context_clip_id,
+                lab_node_id,
+                provider,
+                config_snapshot,
+                folder_path,
+                asset_label,
+                lab_submission,
+            );
+        }
+
+        let mut resolved = resolve_provider_inputs(
             &self.editor.project,
             Some(asset_id),
             context_clip_id,
@@ -617,6 +715,21 @@ impl LatentSlateApp {
                 &resolved.missing_required,
             ));
         }
+        let magic_prompt = if let Some((caption, provenance)) = expansion {
+            resolved.values.insert(
+                crate::core::ideogram4_caption::PROMPT_FIELD.into(),
+                serde_json::Value::String(caption.clone()),
+            );
+            resolved.snapshot.insert(
+                crate::core::ideogram4_caption::PROMPT_FIELD.into(),
+                InputValue::Literal {
+                    value: serde_json::Value::String(caption),
+                },
+            );
+            Some(provenance)
+        } else {
+            None
+        };
 
         let batch = config_snapshot.batch.clone();
         let batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT);
@@ -823,6 +936,7 @@ impl LatentSlateApp {
                 seed_advance,
                 version: None,
                 lab_node_id: job_lab_node_id,
+                magic_prompt: magic_prompt.clone(),
                 activate_on_success,
                 error: None,
             });
@@ -852,6 +966,217 @@ impl LatentSlateApp {
             }
         }
         Ok(status)
+    }
+
+    fn start_magic_prompt_expansion(
+        &mut self,
+        asset_id: Uuid,
+        context_clip_id: Option<Uuid>,
+        lab_node_id: Option<Uuid>,
+        provider: ProviderEntry,
+        config: GenerativeConfig,
+        folder_path: PathBuf,
+        asset_label: String,
+        lab_submission: Option<crate::state::AssetLabSubmission>,
+    ) -> Result<String, String> {
+        let idea = crate::core::ideogram4_magic_prompt::authored_prompt(&config);
+        if idea.is_empty() {
+            return Err("Enter a prompt before using Magic Prompt.".into());
+        }
+        crate::core::ideogram4_magic_prompt::sync_selected_agent(
+            &mut self.editor.layout.magic_prompt_agent,
+            &self.chat.providers,
+        );
+        let Some(agent) = crate::core::ideogram4_magic_prompt::resolve_selected_agent(
+            self.editor.layout.magic_prompt_agent,
+            &self.chat.providers,
+        )
+        .cloned() else {
+            return Err(
+                "Select a Magic Prompt agent. Enable Magic Prompt on an agent in AI Providers."
+                    .into(),
+            );
+        };
+        self.editor.layout.magic_prompt_agent = Some(agent.id);
+        let overlapping = self.editor.generation_queue.iter().any(|job| {
+            job.asset_id == asset_id
+                && matches!(
+                    job.status,
+                    GenerationJobStatus::Queued
+                        | GenerationJobStatus::Running
+                        | GenerationJobStatus::Canceling
+                )
+        });
+        let aspect = crate::core::ideogram4_magic_prompt::aspect_ratio_for_config(&provider, &config);
+        let attach_lab_v4 =
+            lab_submission.is_some() && self.asset_lab.asset_id == Some(asset_id);
+        self.magic_prompt = Some(PendingMagicPrompt {
+            request: crate::core::ideogram4_magic_prompt::start_expansion(agent.clone(), &idea, &aspect),
+            session: self.editor.project_session_revision,
+            asset_id,
+            context_clip_id,
+            lab_node_id,
+            provider,
+            config,
+            folder_path,
+            asset_label,
+            lab_submission,
+            provenance: crate::core::ideogram4_magic_prompt::provenance(&agent),
+            attach_lab_v4,
+            overlapping,
+        });
+        Ok("Expanding prompt…".into())
+    }
+
+    pub(super) fn poll_magic_prompt(&mut self, ctx: &Context) {
+        crate::core::ideogram4_magic_prompt::sync_selected_agent(
+            &mut self.editor.layout.magic_prompt_agent,
+            &self.chat.providers,
+        );
+        if self
+            .magic_prompt
+            .as_ref()
+            .is_some_and(|pending| pending.session != self.editor.project_session_revision)
+        {
+            self.magic_prompt = None;
+            return;
+        }
+        loop {
+            let event = match self.magic_prompt.as_ref() {
+                Some(pending) => pending.request.events.try_recv().ok(),
+                None => break,
+            };
+            match event {
+                Some(crate::core::agent_chat::ChatEvent::Finished { messages, error }) => {
+                    let pending = self.magic_prompt.take().unwrap();
+                    let result = match error {
+                        Some(error) => Err(error),
+                        None => crate::core::ideogram4_magic_prompt::caption_from_completion(
+                            &messages,
+                        ),
+                    };
+                    match result {
+                        Ok(caption) => {
+                            match self.enqueue_generation_jobs_expanded(
+                                pending.asset_id,
+                                pending.context_clip_id,
+                                pending.lab_node_id,
+                                pending.provider,
+                                pending.config,
+                                pending.folder_path,
+                                pending.asset_label,
+                                pending.lab_submission,
+                                Some((caption, pending.provenance)),
+                            ) {
+                                Ok(status) => {
+                                    self.editor.status = if pending.attach_lab_v4 {
+                                        self.finish_asset_lab_v4_enqueue(
+                                            pending.asset_id,
+                                            pending.overlapping,
+                                            status,
+                                        )
+                                    } else {
+                                        status
+                                    };
+                                }
+                                Err(error) => self.editor.status = error,
+                            }
+                        }
+                        Err(error) => self.editor.status = error,
+                    }
+                    break;
+                }
+                Some(crate::core::agent_chat::ChatEvent::Text(_)) => {
+                    self.editor.status = "Expanding prompt…".into();
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        if self.magic_prompt.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
+    pub(super) fn ideogram_caption_controls(
+        &mut self,
+        ui: &mut Ui,
+        authoring: &mut crate::state::AssetLabAuthoring,
+    ) {
+        let selected = match authoring.caption_mode {
+            crate::state::IdeogramCaptionMode::MagicPrompt => "Casual — Magic Prompt",
+            crate::state::IdeogramCaptionMode::Advanced => "Advanced — authored regions",
+        };
+        kit::labeled_combo_field_with_help(
+            ui,
+            "Caption",
+            "ideogram_caption_mode",
+            selected,
+            Some(kit::Tooltip::new("Caption").description(
+                "Casual expands a plain prompt through a Magic Prompt agent. Advanced submits the authored background and regions. Hidden authoring is kept but not sent.",
+            )),
+            |ui| {
+                super::automation_selectable_value(
+                    ui,
+                    &mut authoring.caption_mode,
+                    crate::state::IdeogramCaptionMode::MagicPrompt,
+                    "Casual — Magic Prompt",
+                );
+                super::automation_selectable_value(
+                    ui,
+                    &mut authoring.caption_mode,
+                    crate::state::IdeogramCaptionMode::Advanced,
+                    "Advanced — authored regions",
+                );
+            },
+        );
+        if authoring.caption_mode != crate::state::IdeogramCaptionMode::MagicPrompt {
+            return;
+        }
+        crate::core::ideogram4_magic_prompt::sync_selected_agent(
+            &mut self.editor.layout.magic_prompt_agent,
+            &self.chat.providers,
+        );
+        let eligible = crate::core::ideogram4_magic_prompt::eligible_agents(&self.chat.providers);
+        let selected_id = self.editor.layout.magic_prompt_agent;
+        let selected_label = eligible
+            .iter()
+            .find(|agent| Some(agent.id) == selected_id)
+            .map(|agent| agent.name.clone())
+            .unwrap_or_else(|| "Select a Magic Prompt agent".into());
+        let choices: Vec<(Uuid, String)> = eligible
+            .iter()
+            .map(|agent| (agent.id, agent.name.clone()))
+            .collect();
+        let eligible_empty = choices.is_empty();
+        kit::labeled_combo_field(
+            ui,
+            "Magic Prompt agent",
+            "magic_prompt_agent",
+            selected_label,
+            |ui| {
+                for (id, name) in &choices {
+                    super::automation_selectable_value(
+                        ui,
+                        &mut self.editor.layout.magic_prompt_agent,
+                        Some(*id),
+                        name,
+                    );
+                }
+            },
+        );
+        if eligible_empty {
+            ui.label(kit::caption(
+                "Enable Magic Prompt on an agent in AI Providers. This picker is independent of Chat.",
+            ));
+        } else if selected_id.is_none() {
+            ui.label(kit::caption(
+                "Choose which eligible agent expands this project's casual Ideogram prompts.",
+            ));
+        }
+        if self.magic_prompt.is_some() {
+            ui.label(kit::caption("Expanding prompt…"));
+        }
     }
 
     pub(super) fn reserved_seed_base(
@@ -913,6 +1238,23 @@ fn apply_generation_seed_advance(
 
 fn generation_queue_slot_available(generation_active: Option<Uuid>) -> bool {
     generation_active.is_none()
+}
+
+fn cancel_all_status(queued: usize, running_label: Option<&str>) -> String {
+    match (queued, running_label) {
+        (0, None) => "No generation jobs to cancel.".to_string(),
+        (0, Some(label)) => {
+            format!("Canceling generation for {label}; waiting for provider to stop or finish.")
+        }
+        (1, None) => "Removed 1 queued generation.".to_string(),
+        (count, None) => format!("Removed {count} queued generations."),
+        (1, Some(label)) => {
+            format!("Removed 1 queued generation and canceling the active job for {label}.")
+        }
+        (count, Some(label)) => {
+            format!("Removed {count} queued generations and canceling the active job for {label}.")
+        }
+    }
 }
 
 fn request_generation_cancellation(
@@ -1028,6 +1370,7 @@ mod cancellation_tests {
             seed_advance: None,
             version: None,
             lab_node_id: None,
+            magic_prompt: None,
             activate_on_success: true,
             error: None,
         }
@@ -1281,6 +1624,78 @@ mod cancellation_tests {
         assert!(!generation_queue_slot_available(Some(running.id)));
         assert_eq!(queued.status, GenerationJobStatus::Queued);
         assert!(generation_queue_slot_available(None));
+    }
+
+    #[test]
+    fn cancel_all_cancels_queued_jobs_and_requests_stop_on_the_running_job() {
+        let mut app =
+            LatentSlateApp::new(&eframe::CreationContext::_new_kittest(Context::default()));
+        let running = test_generation_job(GenerationJobStatus::Running);
+        let queued_a = test_generation_job(GenerationJobStatus::Queued);
+        let queued_b = test_generation_job(GenerationJobStatus::Queued);
+        let succeeded = test_generation_job(GenerationJobStatus::Succeeded);
+        let failed = test_generation_job(GenerationJobStatus::Failed);
+        let already_canceled = test_generation_job(GenerationJobStatus::Canceled);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let running_id = running.id;
+        let queued_a_id = queued_a.id;
+        let queued_b_id = queued_b.id;
+        let succeeded_id = succeeded.id;
+        let failed_id = failed.id;
+        let already_canceled_id = already_canceled.id;
+        app.generation_active = Some(running_id);
+        app.generation_cancel_tokens
+            .insert(running_id, Arc::clone(&cancel));
+        app.editor.generation_queue = vec![
+            running,
+            queued_a,
+            queued_b,
+            succeeded,
+            failed,
+            already_canceled,
+        ];
+
+        app.cancel_all_generation_jobs();
+
+        let status_of = |id: Uuid| {
+            app.editor
+                .generation_queue
+                .iter()
+                .find(|job| job.id == id)
+                .map(|job| job.status)
+                .expect("job remains in queue")
+        };
+        assert_eq!(status_of(running_id), GenerationJobStatus::Canceling);
+        assert_eq!(status_of(queued_a_id), GenerationJobStatus::Canceled);
+        assert_eq!(status_of(queued_b_id), GenerationJobStatus::Canceled);
+        assert_eq!(status_of(succeeded_id), GenerationJobStatus::Succeeded);
+        assert_eq!(status_of(failed_id), GenerationJobStatus::Failed);
+        assert_eq!(
+            status_of(already_canceled_id),
+            GenerationJobStatus::Canceled
+        );
+        assert!(cancel.load(Ordering::Relaxed));
+        assert_eq!(app.generation_active, Some(running_id));
+        assert!(app.editor.status.contains("Removed 2 queued generations"));
+        assert!(app.editor.status.contains("canceling the active job"));
+    }
+
+    #[test]
+    fn cancel_all_with_only_queued_jobs_does_not_touch_a_provider() {
+        let mut app =
+            LatentSlateApp::new(&eframe::CreationContext::_new_kittest(Context::default()));
+        let queued = test_generation_job(GenerationJobStatus::Queued);
+        app.editor.generation_queue = vec![queued];
+
+        app.cancel_all_generation_jobs();
+
+        assert_eq!(
+            app.editor.generation_queue[0].status,
+            GenerationJobStatus::Canceled
+        );
+        assert!(app.generation_cancel_tokens.is_empty());
+        assert_eq!(app.generation_active, None);
+        assert_eq!(app.editor.status, "Removed 1 queued generation.");
     }
 
     #[test]

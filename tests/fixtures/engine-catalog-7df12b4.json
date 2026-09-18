@@ -91,7 +91,8 @@
           "step": 0.5
         }
       },
-      "available": true
+      "available": true,
+      "operation": "ltx23.t2v"
     },
     {
       "id": "5d6e2d6f-216c-5f35-a4ec-1565d6e56ee7",
@@ -185,7 +186,8 @@
           "step": 0.5
         }
       },
-      "available": true
+      "available": true,
+      "operation": "ltx23.i2v"
     },
     {
       "id": "1a8f9c0b-410e-56e4-90de-23bcb9d644ca",
@@ -286,7 +288,8 @@
           "step": 0.5
         }
       },
-      "available": true
+      "available": true,
+      "operation": "ltx23.flf"
     },
     {
       "id": "e7dcbbde-d58f-4354-ad36-b684b5c236f3",
@@ -349,7 +352,8 @@
         "max_aspect": 4.0
       },
       "schema_hash": "sha256:2e94d609c2db43e883da19fb0c73faa1bef7f3459c916760079f7cedd212c6b3",
-      "available": true
+      "available": true,
+      "operation": "flux2_klein9b.t2i"
     },
     {
       "id": "a7489e73-3bb9-4bb9-888f-fa592c8f4430",
@@ -426,7 +430,8 @@
         "max_aspect": 4.0
       },
       "schema_hash": "sha256:d756bc62e593edd29f3c2c909f3c92fd22d10cb2fb44a2b51bdd93afdb605ed8",
-      "available": true
+      "available": true,
+      "operation": "flux2_klein9b.two_image"
     },
     {
       "id": "34e57585-95a3-4bb6-b3de-fca5dd924ba6",
@@ -514,7 +519,8 @@
           "step": 0.25
         }
       },
-      "available": true
+      "available": true,
+      "operation": "wan2214b.t2v"
     },
     {
       "id": "aac35e26-08e7-400b-bf9b-dc389809ddd5",
@@ -609,7 +615,8 @@
           "step": 0.25
         }
       },
-      "available": true
+      "available": true,
+      "operation": "wan2214b.i2v"
     },
     {
       "id": "d0c202bf-7dd5-4df8-b116-f7633dc94cfe",
@@ -711,7 +718,8 @@
           "step": 0.25
         }
       },
-      "available": true
+      "available": true,
+      "operation": "wan2214b.flf"
     }
   ]
 }

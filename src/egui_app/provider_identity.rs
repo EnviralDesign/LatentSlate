@@ -737,6 +737,7 @@ mod provider_identity_tests {
                 base_url: "http://127.0.0.1:8765".to_string(),
                 api_key: None,
                 tool_key: "video.text_to_video".to_string(),
+                operation: None,
                 schema_revision: 1,
                 schema_hash: "hash".to_string(),
                 available,

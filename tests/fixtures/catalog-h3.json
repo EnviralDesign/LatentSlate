@@ -90,7 +90,8 @@
         "frame_offset": 5
       }
     },
-    "schema_hash": "sha256:e25d24799bbd7efd2bca32ff98788af4144a05a83939b3da7eb61ce949004234"
+    "schema_hash": "sha256:e25d24799bbd7efd2bca32ff98788af4144a05a83939b3da7eb61ce949004234",
+    "operation": "h3.t2v"
   },
   {
     "id": "1eab3e0f-487c-5650-a3df-71dccdc097d2",
@@ -191,7 +192,8 @@
         "frame_offset": 5
       }
     },
-    "schema_hash": "sha256:ad19a00d73cc26e9c4cd8b2104eacd38a14524ce15de3083dab9bf14025f11a0"
+    "schema_hash": "sha256:ad19a00d73cc26e9c4cd8b2104eacd38a14524ce15de3083dab9bf14025f11a0",
+    "operation": "h3.i2v"
   },
   {
     "id": "93697824-bf07-52b5-941e-62faba78b7d4",
@@ -450,6 +452,7 @@
         "frame_offset": 5
       }
     },
-    "schema_hash": "sha256:920eda5791e7047be8110774d0a29257ac3d4d12b9fb5da486fe5e1f6cd50bb2"
+    "schema_hash": "sha256:920eda5791e7047be8110774d0a29257ac3d4d12b9fb5da486fe5e1f6cd50bb2",
+    "operation": "h3.r2v"
   }
 ]

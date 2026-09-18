@@ -29,7 +29,8 @@ loop and `core/agent_tools.rs` for a curated vocabulary with session-local short
 handles. Tools call the shared editor and capture/generation helpers directly;
 the loopback Agent API need not be enabled. Agent providers are a separate typed
 model stored under `providers/agents/`, outside generation provider discovery.
-Conversation history stays in memory. Binary media is sent on the next continuation
+An agent may opt into Magic Prompt independently of Chat. The selected expander is
+a project workspace field, not the Chat agent. Conversation history stays in memory. Binary media is sent on the next continuation
 only, then replaced by text while preserving tool-call references, including after
 failure or cancellation. Project document saves are explicit;
 existing generation sidecar persistence is preserved.
@@ -278,14 +279,24 @@ of box size, using the same label bounds for painting and hit testing.
 Content, effect switches, and visibility are
 independent. Authoring profiles select presentation only: they do not establish execution
 capability. Masked execution has no supported Engine contract in this phase and still
-blocks submission when enabled and nonempty. Ideogram v4 prompt regions use the existing
-Engine `prompt` string: enabled regions serialize to the official structured caption
-(`high_level_description` from the scene prompt, required `background` from the same
-scene text, and `elements` from region descriptions, optional text, and independently
+blocks submission when enabled and nonempty. Ideogram v4 prompt regions, Casual/Advanced
+caption controls, and Magic Prompt follow the family operation `ideogram4.t2i`, including
+duplicated user recipes whose catalog `key` is `user_recipe.<id>`. Ideogram v4 prompt regions use the existing
+Engine `prompt` string. Casual (Magic Prompt) mode asks a project-selected agent to
+expand the scene prompt into official caption JSON and submits that string; authored
+regions and background stay in the document but are not sent, and the submitted
+`background` field is emptied so Engine encoding cannot splice hidden authoring into
+the expander JSON. Advanced mode keeps the previous writer: enabled regions serialize
+to the official structured caption
+(`high_level_description` from the scene prompt, `background` from the authored
+background field or the scene prompt when that field is empty, and `elements` from
+region descriptions, optional text, and independently
 normalized boxes converted to `[y_min, x_min, y_max, x_max]` on the 0–1000 grid). Region
 ids and names stay in the authoring document. Disabled or absent regions leave the scene
 prompt unchanged. Submitted jobs keep the authored scene prompt in `authoring_snapshot`
-and the serialized caption in `inputs_snapshot`.
+and the serialized or expanded caption in `inputs_snapshot`, and record which Magic
+Prompt agent expanded a casual job. The Engine `background` input is sent
+separately so encoding can replace that caption slot without a second spatial field.
 
 ## Provider And Tool Model
 
@@ -329,7 +340,8 @@ Current runtime adapters:
 Local provider files are loaded first. LatentSlate then requests
 `GET /v1/catalog` from the configured Engine and merges the resulting tools by
 stable UUID. A live catalog replaces a local entry with the same UUID, preserving
-the Engine as source of truth.
+the Engine as source of truth. Catalog tools include family `operation`; LatentSlate
+rejects a tool that omits it rather than inferring authoring from `key` or inputs.
 
 The last successful Engine catalog is cached. If the Engine is offline at app
 startup, cached tools remain inspectable and selectable, but execution still

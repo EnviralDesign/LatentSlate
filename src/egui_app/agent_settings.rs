@@ -243,6 +243,8 @@ impl LatentSlateApp {
                 ui.add_enabled_ui(draft.connection.supports_native_video() && model.is_none_or(|m| m.video.is_none()), |ui| {
                     automation_checkbox(ui, &mut draft.capabilities.video_input, "Video understanding");
                 });
+                automation_checkbox(ui, &mut draft.capabilities.magic_prompt, "Magic Prompt");
+                ui.label(kit::caption("Eligible to expand Ideogram casual prompts into JSON captions. Independent of the Chat agent."));
                 if !draft.connection.supports_native_video() {
                     ui.label(kit::caption(if matches!(draft.connection, AgentConnection::OpenAi { .. }) {
                         "OpenAI agents do not accept native video. Image understanding can inspect frames and contact sheets."
@@ -299,10 +301,15 @@ impl LatentSlateApp {
             ));
         }
         if save {
+            let selected = Some(draft.id);
+            let eligible = draft.enabled && draft.capabilities.magic_prompt;
             self.chat.provider_status =
                 Some(match crate::core::agent_provider_store::save(draft) {
                     Ok(()) => {
                         self.chat.providers = crate::core::agent_provider_store::load();
+                        if !eligible && self.editor.layout.magic_prompt_agent == selected {
+                            self.editor.layout.magic_prompt_agent = None;
+                        }
                         status(true, "Agent saved")
                     }
                     Err(_) => status(
@@ -335,6 +342,9 @@ impl LatentSlateApp {
                         .map_err(|_| "Unable to delete agent provider.".into())
                 }) {
                     Ok(()) => {
+                        if self.editor.layout.magic_prompt_agent == Some(id) {
+                            self.editor.layout.magic_prompt_agent = None;
+                        }
                         self.chat.providers.retain(|p| p.id != id);
                         self.selected_provider = None;
                         status(true, "Agent deleted")

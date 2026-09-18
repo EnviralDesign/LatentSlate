@@ -93,6 +93,9 @@ impl AgentConnection {
 pub struct AgentCapabilities {
     pub image_input: bool,
     pub video_input: bool,
+    /// Eligible to expand Ideogram casual prompts. Independent of Chat selection.
+    #[serde(default)]
+    pub magic_prompt: bool,
 }
 
 impl Default for AgentProviderEntry {
@@ -133,5 +136,9 @@ mod tests {
             api_key: None,
         };
         assert!(!connection.supports_native_video());
+        let json = serde_json::json!({"image_input":true,"video_input":false});
+        let capabilities: AgentCapabilities = serde_json::from_value(json).unwrap();
+        assert!(capabilities.image_input);
+        assert!(!capabilities.magic_prompt);
     }
 }

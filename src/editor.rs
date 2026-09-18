@@ -50,6 +50,7 @@ fn persisted_creative_duration_for_wan_migration(asset: &Asset) -> Option<f64> {
 #[derive(Clone, Debug)]
 pub struct EditorLayout {
     pub agent_provider: Option<Uuid>,
+    pub magic_prompt_agent: Option<Uuid>,
     pub chat_window: Option<ChatWindowPlacement>,
     pub left_collapsed: bool,
     pub right_collapsed: bool,
@@ -69,6 +70,7 @@ impl Default for EditorLayout {
         Self {
             chat_window: None,
             agent_provider: None,
+            magic_prompt_agent: None,
             left_collapsed: false,
             right_collapsed: false,
             timeline_collapsed: false,
@@ -87,6 +89,7 @@ impl Default for EditorLayout {
 impl EditorLayout {
     pub fn apply_workspace_layout(&mut self, layout: &ProjectWorkspaceLayout) {
         self.agent_provider = layout.agent_provider;
+        self.magic_prompt_agent = layout.magic_prompt_agent;
         let defaults = ProjectWorkspaceLayout::default();
         self.chat_window = layout.chat_window.filter(|placement| {
             placement
@@ -114,6 +117,7 @@ impl EditorLayout {
     pub fn workspace_layout(&self) -> ProjectWorkspaceLayout {
         ProjectWorkspaceLayout {
             agent_provider: self.agent_provider,
+            magic_prompt_agent: self.magic_prompt_agent,
             chat_window: self.chat_window,
             left_collapsed: self.left_collapsed,
             right_collapsed: self.right_collapsed,
@@ -4024,6 +4028,7 @@ mod tests {
                 base_url: "http://localhost:8765".to_string(),
                 api_key: None,
                 tool_key: "flux2_klein9b.text_to_image".to_string(),
+                operation: None,
                 schema_revision: 1,
                 schema_hash: "sha256:test".to_string(),
                 available: true,
@@ -4086,6 +4091,7 @@ mod tests {
                 media_bindings_snapshot: Default::default(),
                 resolved_media_inputs: Default::default(),
                 lab_node_id: None,
+                magic_prompt: None,
             });
         });
 
@@ -4120,6 +4126,7 @@ mod tests {
                 base_url: "http://localhost:8765".to_string(),
                 api_key: None,
                 tool_key: "wan2214b_turbo.text_to_video".to_string(),
+                operation: None,
                 schema_revision: 2,
                 schema_hash:
                     "sha256:4556b1e1b1ae9483ce25f2a90b45f0a3b709bff6e46b34b0b835507f81ef4f8e"
@@ -4224,6 +4231,7 @@ mod tests {
                 base_url: "http://localhost:8765".to_string(),
                 api_key: None,
                 tool_key: "h3.first_last_frame_video".to_string(),
+                operation: None,
                 schema_revision: 2,
                 schema_hash: "sha256:test".to_string(),
                 available: true,
@@ -4300,6 +4308,7 @@ mod tests {
                 media_bindings_snapshot: Default::default(),
                 resolved_media_inputs: Default::default(),
                 lab_node_id: None,
+                magic_prompt: None,
             });
         });
 

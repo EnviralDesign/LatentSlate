@@ -173,7 +173,8 @@
         "definition_hash": "677d1aa6c5f5e28b6e62066ac414a8a35cc13d97871ebf5c69bf4ea6166cbfb8"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "ltx23.t2v"
     },
     {
       "id": "2b35a38f-f1f1-550e-8e80-ae48efbcd994",
@@ -353,7 +354,8 @@
         "definition_hash": "312ea818c891ff8fdc37da06dc78791629ce6c1e38a5c073c778787c79114c78"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "ltx23.i2v"
     },
     {
       "id": "c9cc1cca-6c34-537e-ba8a-f72317efdc6f",
@@ -541,7 +543,8 @@
         "definition_hash": "53f6b4dd1042c078e8dd69f90b65b92112e1e8da9ecf2bfb3d02cf90b0d52505"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "ltx23.flf"
     },
     {
       "id": "26418d18-3046-5c01-a519-39950d97358c",
@@ -612,7 +615,8 @@
         "definition_hash": "9eb3a84c98e4bbf61c861a53fa01e5e648f395b03a373b53b9e52b627b4c7bf2"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "flux2_klein9b.t2i"
     },
     {
       "id": "bc06c029-5551-509f-8ed1-74a66cd1c42a",
@@ -697,7 +701,8 @@
         "definition_hash": "ae03b1757ef1d8150a33d9daba96ae006dd324808776bdc5db622ebfdf192c91"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "flux2_klein9b.two_image"
     },
     {
       "id": "2436b845-9a11-5d64-aa00-11aca7d373d9",
@@ -792,7 +797,8 @@
         "definition_hash": "e76a3838bbf062408554938458e74abd6c796f13f0080f73025500492458c7c6"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "wan2214b.t2v"
     },
     {
       "id": "605f0897-65a7-5487-9393-cb0928f08285",
@@ -894,7 +900,8 @@
         "definition_hash": "da7dac47b0d1f89c0b17c20c55c077b396ef83d87afa739f64b141593f866664"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "wan2214b.i2v"
     },
     {
       "id": "7e9862c2-43f8-5835-a45c-474dc0cbbf7a",
@@ -1003,7 +1010,8 @@
         "definition_hash": "bbeb484c395a9fb6e4830665d52e6e31b198198102d53a64d60c8455819c7870"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "wan2214b.flf"
     },
     {
       "id": "f7f9f814-3268-5622-ac4b-a4830f507aa7",
@@ -1076,7 +1084,8 @@
         "definition_hash": "875167258e2b80d5166509559a76bb771ebab75b9a0027bd71f2c27c23d45419"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "ltx23.i2v"
     },
     {
       "id": "d41a8e82-163b-5b5b-aeb7-f90deae69be6",
@@ -1264,7 +1273,8 @@
         "definition_hash": "724a0e6a29d73d9675ce5b53b3ed8de3ac82e6fa1a7ec9c7836a3413b1d0254e"
       },
       "available": false,
-      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host"
+      "unavailable_reason": "Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host; Artifact path must be absolute to resolve on this host",
+      "operation": "ltx23.t2v"
     }
   ]
 }

@@ -525,7 +525,7 @@ impl LatentSlateApp {
                                                 ui.label(kit::body("References"));
                                                 let help = provider.inputs.iter().find(|input| input.name == "prompt")
                                                     .and_then(|input| input.description.as_deref()).unwrap_or("Choose reference sources for this recipe. Add opens the lowest unused slot of that type.");
-                                                ui.label(kit::caption("(?)")).on_hover_text(help).on_hover_cursor(egui::CursorIcon::Help);
+                                                kit::help_mark(ui, kit::Tooltip::new("References").description(help));
                                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                                 if kit::secondary_button(ui, if expanded { "Show used slots" } else { "Show all slots" }, 120.0).clicked() {
                                                     expanded = !expanded;
@@ -601,9 +601,25 @@ impl LatentSlateApp {
         let mut setup = AssetLabSnapshot::from_config(config);
         let mut action = None;
         let mut generate = false;
+        let expanding = self
+            .magic_prompt
+            .as_ref()
+            .is_some_and(|pending| pending.asset_id == asset.id);
         let blocker = provider.and_then(|provider| {
             crate::state::asset_lab_submission_blocker(config, provider)
                 .map(str::to_string)
+                .or_else(|| {
+                    (crate::state::uses_magic_prompt(provider, &setup.authoring)
+                        && crate::core::ideogram4_magic_prompt::resolve_selected_agent(
+                            self.editor.layout.magic_prompt_agent,
+                            &self.chat.providers,
+                        )
+                        .is_none())
+                    .then(|| {
+                        "Select a Magic Prompt agent. Enable Magic Prompt on an agent in AI Providers."
+                            .to_string()
+                    })
+                })
                 .or_else(|| {
                     (!provider_is_available_for_generation(provider)).then(|| {
                         provider_unavailable_reason(provider)
@@ -683,12 +699,20 @@ impl LatentSlateApp {
                         reference_sizing: config.reference_sizing.clone(),
                         output_version: None,
                     };
+                    if crate::state::asset_lab_authoring_profile(provider)
+                        == crate::state::AssetLabAuthoringProfile::Regions
+                    {
+                        self.ideogram_caption_controls(ui, &mut setup.authoring);
+                    }
                     let prompt_fields: Vec<_> = provider
                         .inputs
                         .iter()
                         .filter(|field| {
                             field.input_type == ProviderInputType::Text
                                 && !field.ui.as_ref().is_some_and(|ui| ui.advanced)
+                                && !(crate::state::uses_magic_prompt(provider, &setup.authoring)
+                                    && field.name
+                                        == crate::core::ideogram4_caption::BACKGROUND_FIELD)
                         })
                         .collect();
                     for field in &prompt_fields {
@@ -722,7 +746,9 @@ impl LatentSlateApp {
                             ui.label(kit::caption("Mask authoring · execution not connected"));
                         }
                         crate::state::AssetLabAuthoringProfile::Regions => {
-                            ui.separator();
+                            if setup.authoring.caption_mode
+                                != crate::state::IdeogramCaptionMode::MagicPrompt
+                            {
                             ui.label(kit::body("Prompt regions"));
                             if kit::tool_toggle_button(ui, "Use prompt regions",
                                 kit::Tooltip::new("Use prompt regions").description("Include the authored regions in the submitted Ideogram caption. Turning this off keeps the regions available for editing and generates from the scene prompt only."),
@@ -769,6 +795,7 @@ impl LatentSlateApp {
                                 setup.authoring.regions.retain(|r| r.id != id);
                                 *selected = None;
                             }
+                            }
                         }
                         _ => {}
                     }
@@ -803,6 +830,9 @@ impl LatentSlateApp {
                                         field.role,
                                         Some(InputRole::Width | InputRole::Height)
                                     )
+                                    || (crate::state::uses_magic_prompt(provider, &setup.authoring)
+                                        && field.name
+                                            == crate::core::ideogram4_caption::BACKGROUND_FIELD)
                                 {
                                     continue;
                                 }
@@ -859,7 +889,9 @@ impl LatentSlateApp {
                 Some(crate::egui_app::MAX_GENERATION_BATCH_COUNT as i64),
             );
             setup.batch.count = count.max(1) as u32;
-            ui.add_enabled_ui(provider.is_some() && blocker.is_none(), |ui| {
+            ui.add_enabled_ui(
+                provider.is_some() && blocker.is_none() && !expanding,
+                |ui| {
                 generate =
                     kit::primary_button_sized(ui, "Generate", (width - 60.0).max(60.0), 36.0)
                         .clicked();
@@ -1744,7 +1776,7 @@ impl LatentSlateApp {
                 self.generation_context_by_asset.get(&asset_id).copied(),
             )
             .map_err(|error| error.message("Input"))?;
-            let mut status = self.enqueue_generation_jobs(
+            let status = self.enqueue_generation_jobs(
                 asset_id,
                 context,
                 None,
@@ -1754,73 +1786,86 @@ impl LatentSlateApp {
                 asset.name.clone(),
                 Some(submission),
             )?;
-            if overlapping {
-                for job in &mut self.editor.generation_queue {
-                    if job.asset_id == asset_id {
-                        if let Some(submission) = &mut job.lab_submission {
-                            submission.allow_advance = false;
-                        }
+            Ok::<_, String>(if self.magic_prompt.is_some() {
+                status
+            } else {
+                self.finish_asset_lab_v4_enqueue(asset_id, overlapping, status)
+            })
+        })();
+        self.editor.status = result.unwrap_or_else(|error| error);
+    }
+
+    pub(in crate::egui_app) fn finish_asset_lab_v4_enqueue(
+        &mut self,
+        asset_id: Uuid,
+        overlapping: bool,
+        mut status: String,
+    ) -> String {
+        if overlapping {
+            for job in &mut self.editor.generation_queue {
+                if job.asset_id == asset_id {
+                    if let Some(submission) = &mut job.lab_submission {
+                        submission.allow_advance = false;
                     }
                 }
             }
-            for job in &self.editor.generation_queue {
-                if job
-                    .lab_submission
-                    .as_ref()
-                    .is_some_and(|submission| submission.session_id == self.asset_lab.v4.session_id)
-                    && !self
-                        .asset_lab
-                        .v4
-                        .results
-                        .iter()
-                        .any(|result| result.job_id == job.id)
-                {
-                    self.asset_lab.v4.results.push(LabResult {
-                        job_id: job.id,
-                        version: None,
-                        status: job.status,
-                    });
-                }
-            }
-            if let Some(advance) = self
-                .editor
-                .generation_queue
-                .iter()
-                .rev()
-                .find(|job| {
-                    job.asset_id == asset_id
-                        && job.lab_submission.as_ref().is_some_and(|submission| {
-                            submission.session_id == self.asset_lab.v4.session_id
-                        })
-                })
-                .and_then(|job| job.seed_advance.clone())
+        }
+        for job in &self.editor.generation_queue {
+            if job
+                .lab_submission
+                .as_ref()
+                .is_some_and(|submission| submission.session_id == self.asset_lab.v4.session_id)
+                && !self
+                    .asset_lab
+                    .v4
+                    .results
+                    .iter()
+                    .any(|result| result.job_id == job.id)
             {
-                self.editor
-                    .project
-                    .update_generative_config(asset_id, |config| {
-                        config.inputs.insert(
-                            advance.field,
-                            InputValue::Literal {
-                                value: crate::core::generation::seed_input_value(advance.next_seed),
-                            },
-                        );
-                    });
-                if let Err(error) = self.editor.project.save_generative_config(asset_id) {
-                    status = format!("{status}; queued, but saving the next seed failed: {error}");
-                }
+                self.asset_lab.v4.results.push(LabResult {
+                    job_id: job.id,
+                    version: None,
+                    status: job.status,
+                });
             }
-            self.asset_lab.v4.undo.clear();
-            self.asset_lab.v4.edit_group = None;
-            let setup = self
-                .editor
+        }
+        if let Some(advance) = self
+            .editor
+            .generation_queue
+            .iter()
+            .rev()
+            .find(|job| {
+                job.asset_id == asset_id
+                    && job.lab_submission.as_ref().is_some_and(|submission| {
+                        submission.session_id == self.asset_lab.v4.session_id
+                    })
+            })
+            .and_then(|job| job.seed_advance.clone())
+        {
+            self.editor
                 .project
-                .generative_config(asset_id)
-                .map(AssetLabSnapshot::from_config);
-            self.asset_lab.v4.baseline = setup.clone();
-            self.asset_lab.v4.observed = setup;
-            Ok::<_, String>(status)
-        })();
-        self.editor.status = result.unwrap_or_else(|error| error);
+                .update_generative_config(asset_id, |config| {
+                    config.inputs.insert(
+                        advance.field,
+                        InputValue::Literal {
+                            value: crate::core::generation::seed_input_value(advance.next_seed),
+                        },
+                    );
+                });
+            if let Err(error) = self.editor.project.save_generative_config(asset_id) {
+                status = format!("{status}; queued, but saving the next seed failed: {error}");
+            }
+        }
+        self.asset_lab.v4.undo.clear();
+        self.asset_lab.v4.edit_group = None;
+        let setup = self
+            .editor
+            .project
+            .generative_config(asset_id)
+            .map(AssetLabSnapshot::from_config);
+        self.asset_lab.v4.baseline = setup.clone();
+        self.asset_lab.v4.observed = setup;
+        status
     }
 
     pub(in crate::egui_app) fn asset_lab_v4_completed(

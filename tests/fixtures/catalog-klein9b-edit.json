@@ -82,5 +82,6 @@
     "max_aspect": 4.0
   },
   "schema_hash": "sha256:3e7dc45793550975bc2743fbb36b4a3f432c0bc172a542fbea112771f7ac47b8",
-  "available": true
+  "available": true,
+  "operation": "flux2_klein9b.two_image"
 }

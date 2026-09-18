@@ -330,7 +330,9 @@ impl LatentSlateApp {
         spec: Option<&MediaBindingSpec>,
         fallback: &str,
     ) {
-        let (text, color) = self.audio_source_status_text(ui, asset_id, context, provider, config, field, spec, fallback);
+        let (text, color) = self.audio_source_status_text(
+            ui, asset_id, context, provider, config, field, spec, fallback,
+        );
         kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
             ui.add(egui::Label::new(kit::caption(&text).color(color)).truncate())
                 .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));

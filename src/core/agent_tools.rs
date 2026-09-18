@@ -79,8 +79,20 @@ impl Handles {
         let id = self.id(v, "handle", "")?;
         let result = if let Some(a) = e.project.assets.iter().find(|a| a.id == id) {
             let explicit_clip = v.get("clip").map(|_| self.id(v, "clip", "c")).transpose()?;
-            let selected_clip = e.selected_clip_id().filter(|clip_id| e.project.clips.iter().any(|clip| clip.id == *clip_id && clip.asset_id == id));
-            let context_clip = crate::core::media_binding::resolve_generation_context(&e.project, id, explicit_clip.or(selected_clip), None).ok().flatten();
+            let selected_clip = e.selected_clip_id().filter(|clip_id| {
+                e.project
+                    .clips
+                    .iter()
+                    .any(|clip| clip.id == *clip_id && clip.asset_id == id)
+            });
+            let context_clip = crate::core::media_binding::resolve_generation_context(
+                &e.project,
+                id,
+                explicit_clip.or(selected_clip),
+                None,
+            )
+            .ok()
+            .flatten();
             json!({"asset":asset(a),"generation":e.project.generative_configs.get(&id).map(|g|json!({"provider":g.provider_id,"inputs":g.inputs,"prompt_references":g.provider_id.and_then(|id| e.provider_entries.iter().find(|p|p.id==id)).map(|p|crate::core::prompt_references::inspect_references(&e.project,g,p,id,context_clip)),"media_bindings":g.media_bindings,"reference_slots":g.reference_slots,"batch":g.batch,"active_version":g.active_version,"versions":g.versions.iter().rev().take(20).map(|r|json!({"version":r.version,"prompts":crate::core::prompt_references::submitted_prompts(r.authoring_snapshot.as_ref(),&r.inputs_snapshot)})).collect::<Vec<_>>(),"version_count":g.versions.len()}))})
         } else if let Some(c) = e.project.clips.iter().find(|c| c.id == id) {
             json!(c)
@@ -282,29 +294,68 @@ mod tests {
 
     #[test]
     fn prompt_references_chat_writes_and_api_discovery_share_stable_bindings() {
-        let root=std::env::temp_dir().join(format!("prompt-agent-{}",Uuid::new_v4()));
-        let mut e=EditorState::new();e.project=Project::new("Prompt references");e.project.project_path=Some(root.clone());e.save().unwrap();
-        let mut provider=crate::core::provider_store::default_openai_image_edit_provider_entry();
-        provider.inputs.iter_mut().find(|field|field.name=="image").unwrap().prompt_reference_token=Some("the reference image".into());
-        let provider_id=provider.id;e.provider_entries=vec![provider];
-        let create:AutomationCommand=serde_json::from_value(json!({"type":"create_generative_asset","output_type":"image","name":"Mention test"})).unwrap();
+        let root = std::env::temp_dir().join(format!("prompt-agent-{}", Uuid::new_v4()));
+        let mut e = EditorState::new();
+        e.project = Project::new("Prompt references");
+        e.project.project_path = Some(root.clone());
+        e.save().unwrap();
+        let mut provider = crate::core::provider_store::default_openai_image_edit_provider_entry();
+        provider
+            .inputs
+            .iter_mut()
+            .find(|field| field.name == "image")
+            .unwrap()
+            .prompt_reference_token = Some("the reference image".into());
+        let provider_id = provider.id;
+        e.provider_entries = vec![provider];
+        let create: AutomationCommand = serde_json::from_value(
+            json!({"type":"create_generative_asset","output_type":"image","name":"Mention test"}),
+        )
+        .unwrap();
         assert!(e.apply_automation_command(&create).ok);
-        let asset_id=e.project.assets[0].id;
-        let mut handles=Handles::default();handles.sync(&e);
+        let asset_id = e.project.assets[0].id;
+        let mut handles = Handles::default();
+        handles.sync(&e);
         let write=handles.command("generation",&json!({"action":"configure","asset":"a1","provider":"p1","inputs":{"prompt":"Edit @{image}"}})).unwrap();
         assert!(e.apply_automation_command(&write).ok);
-        let config=e.project.generative_config(asset_id).unwrap();
-        let crate::state::InputValue::Prompt {references,..}=&config.inputs["prompt"] else {panic!("chat must bind references")};
-        assert_eq!(references["image"].provider_id,provider_id);
-        let discovery=handles.inspect(&e,&json!({"handle":"a1"})).unwrap();
-        assert_eq!(discovery["generation"]["prompt_references"]["inputs"][0]["syntax"],"@{image}");
-        assert!(!discovery["generation"]["prompt_references"]["prompts"]["prompt"]["errors"].as_array().unwrap().is_empty());
-        let api=e.apply_automation_command(&AutomationCommand::GetGenerativeConfig{asset_id});assert!(api.ok);
-        assert_eq!(api.data["prompt_references"]["inputs"][0]["input_name"],"image");
-        let folder=root.join("generated");
-        let mut saved=crate::state::GenerativeConfig::default();saved.inputs=e.project.generative_config(asset_id).unwrap().inputs.clone();
-        std::fs::create_dir_all(&folder).unwrap();saved.save(&folder).unwrap();
-        assert_eq!(crate::state::GenerativeConfig::load(&folder).unwrap().inputs,saved.inputs);
+        let config = e.project.generative_config(asset_id).unwrap();
+        let crate::state::InputValue::Prompt { references, .. } = &config.inputs["prompt"] else {
+            panic!("chat must bind references")
+        };
+        assert_eq!(references["image"].provider_id, provider_id);
+        let discovery = handles.inspect(&e, &json!({"handle":"a1"})).unwrap();
+        assert_eq!(
+            discovery["generation"]["prompt_references"]["inputs"][0]["syntax"],
+            "@{image}"
+        );
+        assert!(
+            !discovery["generation"]["prompt_references"]["prompts"]["prompt"]["errors"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        let api = e.apply_automation_command(&AutomationCommand::GetGenerativeConfig { asset_id });
+        assert!(api.ok);
+        assert_eq!(
+            api.data["prompt_references"]["inputs"][0]["input_name"],
+            "image"
+        );
+        let folder = root.join("generated");
+        let mut saved = crate::state::GenerativeConfig::default();
+        saved.inputs = e
+            .project
+            .generative_config(asset_id)
+            .unwrap()
+            .inputs
+            .clone();
+        std::fs::create_dir_all(&folder).unwrap();
+        saved.save(&folder).unwrap();
+        assert_eq!(
+            crate::state::GenerativeConfig::load(&folder)
+                .unwrap()
+                .inputs,
+            saved.inputs
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -349,6 +400,7 @@ mod tests {
             seed_advance: None,
             version: Some("v1".into()),
             lab_node_id: None,
+            magic_prompt: None,
             activate_on_success: true,
             error: None,
         };
@@ -579,6 +631,7 @@ mod tests {
                     media_bindings_snapshot: Default::default(),
                     resolved_media_inputs: Default::default(),
                     lab_node_id: None,
+                    magic_prompt: None,
                 });
         }
         e.project

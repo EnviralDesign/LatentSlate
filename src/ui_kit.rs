@@ -1552,9 +1552,20 @@ pub fn labeled_combo_field<R>(
     selected_text: impl Into<String>,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> Response {
+    labeled_combo_field_with_help(ui, label, id_salt, selected_text, None, add_contents)
+}
+
+pub fn labeled_combo_field_with_help<'a, R>(
+    ui: &mut Ui,
+    label: &str,
+    id_salt: impl Hash,
+    selected_text: impl Into<String>,
+    help: Option<Tooltip<'a>>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Response {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
-        field_label(ui, label);
+        field_label_with_help(ui, label, help.is_some(), help);
         combo_field(
             ui,
             id_salt,
@@ -2078,15 +2089,29 @@ pub fn multiline_text_field_highlighted(
                 job.wrap.max_width = wrap_width;
                 let mut offset = 0;
                 for (range, color) in highlights {
-                    if range.start < offset || range.end > text.len()
-                        || !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) { continue; }
-                    job.append(&text[offset..range.start], 0.0, egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), TEXT));
-                    let mut format = egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), *color);
+                    if range.start < offset
+                        || range.end > text.len()
+                        || !text.is_char_boundary(range.start)
+                        || !text.is_char_boundary(range.end)
+                    {
+                        continue;
+                    }
+                    job.append(
+                        &text[offset..range.start],
+                        0.0,
+                        egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), TEXT),
+                    );
+                    let mut format =
+                        egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), *color);
                     format.background = color.gamma_multiply(0.12);
                     job.append(&text[range.clone()], 0.0, format);
                     offset = range.end;
                 }
-                job.append(&text[offset..], 0.0, egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), TEXT));
+                job.append(
+                    &text[offset..],
+                    0.0,
+                    egui::TextFormat::simple(FontId::proportional(FIELD_TEXT_SIZE), TEXT),
+                );
                 ui.fonts_mut(|fonts| fonts.layout_job(job))
             };
             let output = egui::TextEdit::multiline(value)
@@ -2120,7 +2145,16 @@ pub fn multiline_text_field_highlighted(
     };
     ui.painter()
         .rect_stroke(rect, field_radius(), stroke, StrokeKind::Inside);
-    (crate::core::automation::instrument_response(response, "multiline_text_field", None, true, true), cursor)
+    (
+        crate::core::automation::instrument_response(
+            response,
+            "multiline_text_field",
+            None,
+            true,
+            true,
+        ),
+        cursor,
+    )
 }
 
 pub fn multiline_text_field_height(rows: usize) -> f32 {
@@ -2576,12 +2610,8 @@ pub fn tool_toggle_button<'a>(
             label,
         )
     });
-    ui.painter().rect_stroke(
-        rect,
-        5,
-        Stroke::new(1.0_f32, BORDER),
-        StrokeKind::Inside,
-    );
+    ui.painter()
+        .rect_stroke(rect, 5, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
     let color = paint_tool_button(ui, rect, &response, selected);
     let galley = egui::WidgetText::from(RichText::new(label).size(12.0).color(color)).into_galley(
         ui,
@@ -2831,12 +2861,10 @@ pub fn modal_body(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
 
 /// Full-width modal viewport: padding belongs to its content, not its scrollbar.
 pub fn modal_scroll_body(ui: &mut Ui, id_salt: impl Hash, add_contents: impl FnOnce(&mut Ui)) {
-    Frame::new()
-        .fill(PANEL)
-        .show(ui, |ui| {
-            ui.spacing_mut().scroll.content_margin = Margin::symmetric(18, 16);
-            clipped_scroll_body(ui, id_salt, add_contents);
-        });
+    Frame::new().fill(PANEL).show(ui, |ui| {
+        ui.spacing_mut().scroll.content_margin = Margin::symmetric(18, 16);
+        clipped_scroll_body(ui, id_salt, add_contents);
+    });
 }
 
 /// Renders a panel title with compact, right-aligned panel-level actions.
@@ -2865,7 +2893,57 @@ pub fn property_row(ui: &mut Ui, label: &str, value: &str) {
 }
 
 pub fn field_label(ui: &mut Ui, label: &str) {
-    ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
+    field_label_with_help(ui, label, false, None);
+}
+
+/// Field label with an optional info mark. `show_help` is off in [`field_label`].
+pub fn field_label_with_help<'a>(
+    ui: &mut Ui,
+    label: &str,
+    show_help: bool,
+    help: Option<Tooltip<'a>>,
+) {
+    if !show_help {
+        ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(RichText::new(label).size(12.0).color(TEXT_MUTED));
+        match help {
+            Some(hint) => help_mark(ui, hint),
+            None => help_mark(ui, Tooltip::new(label)),
+        };
+    });
+}
+
+/// Circled-i affordance for field copy and section help. Hover uses [`Tooltip`].
+pub fn help_mark<'a>(ui: &mut Ui, hint: impl Into<Tooltip<'a>>) -> Response {
+    let size = 14.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let color = if response.hovered() {
+        TEXT_MUTED
+    } else {
+        TEXT_DIM
+    };
+    paint_info_mark(ui, rect, color);
+    hint.into().apply(response)
+}
+
+fn paint_info_mark(ui: &Ui, rect: Rect, color: Color32) {
+    let center = rect.center();
+    let radius = (rect.width() * 0.42).max(5.0);
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(1.15_f32, color));
+    ui.painter()
+        .circle_filled(Pos2::new(center.x, center.y - radius * 0.36), 0.85, color);
+    ui.painter().line_segment(
+        [
+            Pos2::new(center.x, center.y - radius * 0.06),
+            Pos2::new(center.x, center.y + radius * 0.40),
+        ],
+        Stroke::new(1.35_f32, color),
+    );
 }
 
 /// Compact source fields retain a two-line label and a contained thumbnail.
