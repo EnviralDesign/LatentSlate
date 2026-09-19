@@ -138,6 +138,7 @@ impl LatentSlateApp {
                     ui.add_space(kit::FORM_ROW_GAP);
                     self.clip_attributes(ui, clip_id, false);
                 }
+                ui.add_space(kit::PANEL_PAD as f32);
             });
         } else {
             kit::clipped_scroll_body(ui, self.project_panel_id("attributes_body"), |ui| {

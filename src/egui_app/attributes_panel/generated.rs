@@ -152,7 +152,8 @@ impl LatentSlateApp {
         ui.add_space(kit::FORM_ROW_GAP);
         kit::bounded_horizontal_row(ui, kit::SECONDARY_BUTTON_H, |ui, row_w| {
             ui.spacing_mut().item_spacing.x = kit::FIELD_COMPOUND_GAP;
-            let lab_w = (row_w - kit::ICON_BUTTON_W - kit::FIELD_COMPOUND_GAP).max(80.0);
+            let more_w = kit::SECONDARY_BUTTON_H;
+            let lab_w = (row_w - more_w - kit::FIELD_COMPOUND_GAP).max(80.0);
             if kit::secondary_button(ui, "Open Asset Lab", lab_w)
                 .on_hover_text("Open Asset Lab for focused creating, lineage, and comparison.")
                 .clicked()
@@ -167,7 +168,7 @@ impl LatentSlateApp {
                 });
                 self.open_asset_lab_at_time(asset_id, local_time);
             }
-            let more = kit::icon_button(ui, "···").on_hover_text("More asset actions");
+            let more = kit::secondary_button(ui, "···", more_w).on_hover_text("More asset actions");
             egui::Popup::menu(&more)
                 .id(ui.id().with(("attr_more", asset_id)))
                 .show(|ui| {
