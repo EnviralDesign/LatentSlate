@@ -105,6 +105,10 @@ impl MediaResolvePlan {
             .map(|error| error.message(&self.field_label))
     }
 
+    pub fn primary_error_detail(&self) -> Option<String> {
+        self.errors.first().map(MediaBindingError::detail)
+    }
+
     pub fn error_messages(&self) -> Vec<String> {
         self.errors
             .iter()
@@ -136,8 +140,8 @@ pub enum MediaBindingError {
 }
 
 impl MediaBindingError {
-    pub fn message(&self, field_label: &str) -> String {
-        let detail = match self {
+    pub fn detail(&self) -> String {
+        match self {
             Self::ContextRequired => {
                 "timeline context required. Select a timeline clip or choose an explicit asset."
                     .to_string()
@@ -174,8 +178,236 @@ impl MediaBindingError {
             Self::UnfreezeRequiresNewSource => {
                 "this frozen input has no original binding. Choose a new source.".to_string()
             }
-        };
-        format!("{field_label}: {detail}")
+        }
+    }
+
+    pub fn message(&self, field_label: &str) -> String {
+        format!("{field_label}: {}", self.detail())
+    }
+
+    /// Short, wrap-friendly remediation for inspector cards.
+    /// Keep `detail()` / `message()` for tooltips and diagnostics.
+    pub fn user_guidance(&self) -> String {
+        match self {
+            Self::ContextRequired => {
+                "Select a timeline clip or choose an explicit asset.".to_string()
+            }
+            Self::InvalidContext { .. } => {
+                "This timeline context cannot be used. Select another clip or choose an explicit asset."
+                    .to_string()
+            }
+            Self::MultiplePlacementsRequireContext { .. } => {
+                "Select a timeline clip as generation context.".to_string()
+            }
+            Self::SourceMissing { detail } => {
+                if detail.contains("was not found") {
+                    "Referenced asset is missing. Choose another source.".to_string()
+                } else if detail.contains("no generated version") {
+                    "That asset has no generated version yet. Choose another source.".to_string()
+                } else if detail.contains("no readable source") {
+                    "This source file is unavailable. Choose another source.".to_string()
+                } else {
+                    "This source cannot be used. Choose another source.".to_string()
+                }
+            }
+            Self::SourceVersionMissing { .. } => {
+                "That version's file is missing. Choose another source.".to_string()
+            }
+            Self::IncompatibleMedia { expected, actual } => {
+                format!("Expected {expected}, found {actual}. Choose another source.")
+            }
+            Self::SelfReferenceExcluded => {
+                "Automatic timeline follow cannot use this asset. Choose another source."
+                    .to_string()
+            }
+            Self::NoTimelineCandidate { .. } => {
+                "No compatible timeline source was found. Choose an explicit asset.".to_string()
+            }
+            Self::FrameOutsideCoverage { .. } | Self::StrictRangeIncomplete { .. } => {
+                "The selected range is not fully covered. Adjust the range or choose another source."
+                    .to_string()
+            }
+            Self::UnsupportedCoveragePolicy(_) => {
+                "This coverage policy is not supported. Choose another source.".to_string()
+            }
+            Self::UnsupportedSample { .. } => {
+                "This sample cannot be used. Choose another source.".to_string()
+            }
+            Self::FrozenFileMissing { .. } => {
+                "The frozen input file is missing. Choose another source.".to_string()
+            }
+            Self::OutputSampleOutOfRange { .. } => {
+                "The sample is outside the available range. Adjust the sample or choose another source."
+                    .to_string()
+            }
+            Self::MaterializationFailed { .. } | Self::FfmpegFailed { .. } => {
+                "This source could not be prepared. Choose another source.".to_string()
+            }
+            Self::UnfreezeRequiresNewSource => {
+                "This frozen input has no original binding. Choose a new source.".to_string()
+            }
+        }
+    }
+}
+
+/// Inspector card copy. Display only — does not change mention IDs or packing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectorReferenceCopy {
+    pub title: String,
+    pub value: String,
+    pub detail: Option<String>,
+    pub hover: Option<String>,
+    pub required_empty: bool,
+    pub unresolved: bool,
+}
+
+pub fn inspector_stability_title(spec: &MediaBindingSpec) -> &'static str {
+    match spec.stability() {
+        MediaBindingStability::Follow => "Follow timeline",
+        MediaBindingStability::LockSource => "Fixed version",
+        MediaBindingStability::FreezeInput => "Frozen input",
+    }
+}
+
+fn inspector_binding_identity(spec: &MediaBindingSpec, project: &Project) -> String {
+    match &spec.source {
+        MediaBindingSource::WorkingOutput => "Working output".to_string(),
+        MediaBindingSource::PairedVideoInput { field } => format!("Soundtrack of {field}"),
+        MediaBindingSource::FollowTimeline { query } => {
+            format!("Follow Timeline / {}", query.scope.label())
+        }
+        MediaBindingSource::TimelineClip { clip_id, version } => {
+            let clip = project.clips.iter().find(|clip| clip.id == *clip_id);
+            let name = clip
+                .and_then(|clip| project.find_asset(clip.asset_id))
+                .map(|asset| asset.name.clone())
+                .unwrap_or_else(|| "Missing clip".to_string());
+            let version = version
+                .as_deref()
+                .map(|version| format!(" · {version}"))
+                .unwrap_or_default();
+            format!("{name}{version}")
+        }
+        MediaBindingSource::ProjectAsset {
+            asset_id, version, ..
+        } => {
+            let asset = project.find_asset(*asset_id);
+            let name = asset
+                .map(|asset| asset.name.clone())
+                .unwrap_or_else(|| "Missing asset".to_string());
+            let version = version
+                .as_deref()
+                .map(|version| format!(" · {version}"))
+                .or_else(|| {
+                    asset.and_then(|asset| {
+                        asset
+                            .active_version()
+                            .map(|version| format!(" · {version}"))
+                    })
+                })
+                .unwrap_or_default();
+            format!("{name}{version}")
+        }
+        MediaBindingSource::FrozenArtifact { path, .. } => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("frozen")
+            .to_string(),
+    }
+}
+
+fn inspector_extra_detail(plan: &MediaResolvePlan) -> Option<String> {
+    if let Some(time) = plan.source_frame_time {
+        return Some(format!("Frame at {}", format_timecode(time)));
+    }
+    if let Some(range) = &plan.source_range {
+        return Some(format!(
+            "{}–{}",
+            format_timecode(range.start_seconds),
+            format_timecode(range.end_seconds)
+        ));
+    }
+    None
+}
+
+/// Card title / value / wrapping explanation for the generated-asset inspector.
+pub fn inspector_reference_copy(
+    field: &ProviderInputField,
+    spec: Option<&MediaBindingSpec>,
+    project: &Project,
+    plan: Option<&MediaResolvePlan>,
+) -> InspectorReferenceCopy {
+    let kind = bound_media_type_for_input(field)
+        .unwrap_or(BoundMediaType::Image)
+        .as_str();
+    match (spec, plan) {
+        (None, _) => {
+            if field.required {
+                InspectorReferenceCopy {
+                    title: format!("{} · Required", field.label),
+                    value: format!("Choose an {kind}"),
+                    detail: None,
+                    hover: None,
+                    required_empty: true,
+                    unresolved: false,
+                }
+            } else {
+                InspectorReferenceCopy {
+                    title: format!("{} · Optional", field.label),
+                    value: "No source selected".to_string(),
+                    detail: None,
+                    hover: None,
+                    required_empty: false,
+                    unresolved: false,
+                }
+            }
+        }
+        (Some(spec), Some(plan)) if !plan.is_ok() => {
+            let error = plan.errors.first();
+            let guidance = error
+                .map(MediaBindingError::user_guidance)
+                .unwrap_or_else(|| "This source cannot be used. Choose another source.".to_string());
+            let diagnostic = error.map(|error| error.detail());
+            InspectorReferenceCopy {
+                title: format!("{} · {}", field.label, inspector_stability_title(spec)),
+                value: inspector_binding_identity(spec, project),
+                detail: Some(guidance),
+                hover: diagnostic,
+                required_empty: false,
+                unresolved: true,
+            }
+        }
+        (Some(spec), Some(plan)) => {
+            let identity = inspector_binding_identity(spec, project);
+            let follow = matches!(spec.source, MediaBindingSource::FollowTimeline { .. });
+            let extra = inspector_extra_detail(plan);
+            let detail = if follow {
+                let evaluated = resolved_identity_caption(project, plan);
+                if evaluated == identity {
+                    extra
+                } else {
+                    Some(evaluated)
+                }
+            } else {
+                extra.filter(|line| !identity.contains(line.as_str()))
+            };
+            InspectorReferenceCopy {
+                title: format!("{} · {}", field.label, inspector_stability_title(spec)),
+                value: identity,
+                detail,
+                hover: None,
+                required_empty: false,
+                unresolved: false,
+            }
+        }
+        (Some(spec), None) => InspectorReferenceCopy {
+            title: format!("{} · {}", field.label, inspector_stability_title(spec)),
+            value: inspector_binding_identity(spec, project),
+            detail: None,
+            hover: None,
+            required_empty: false,
+            unresolved: false,
+        },
     }
 }
 
@@ -295,6 +527,101 @@ pub fn normalize_sample(sample: &MediaSample, input: &ProviderInputField) -> Med
         MediaSample::Auto => default_sample_for_field(input),
         other => other.clone(),
     }
+}
+
+/// Which media-reference slots to show in a recipe's reference list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MediaReferenceVisibility {
+    /// Reveal unused optional capacity without changing bindings.
+    pub show_all: bool,
+    /// Keep contract-required slots visible even when empty.
+    pub include_required_empty: bool,
+}
+
+impl MediaReferenceVisibility {
+    pub fn occupied_only() -> Self {
+        Self {
+            show_all: false,
+            include_required_empty: false,
+        }
+    }
+
+    pub fn inspector() -> Self {
+        Self {
+            show_all: false,
+            include_required_empty: true,
+        }
+    }
+}
+
+pub fn media_reference_slot_occupied(
+    provider: &ProviderEntry,
+    config: &GenerativeConfig,
+    project: &Project,
+    field: &ProviderInputField,
+) -> bool {
+    lookup_media_binding(config, field, project).is_some()
+        || provider.inputs.iter().any(|paired| {
+            paired.paired_video_input.as_deref() == Some(field.name.as_str())
+                && lookup_media_binding(config, paired, project).is_some()
+        })
+}
+
+/// Catalog-order media slots for a reference list. Hiding is presentation-only.
+pub fn visible_media_reference_fields<'a>(
+    provider: &'a ProviderEntry,
+    config: &GenerativeConfig,
+    project: &Project,
+    visibility: MediaReferenceVisibility,
+) -> Vec<&'a ProviderInputField> {
+    provider
+        .inputs
+        .iter()
+        .filter(|field| {
+            if bound_media_type_for_input(field).is_none() || field.paired_video_input.is_some() {
+                return false;
+            }
+            visibility.show_all
+                || media_reference_slot_occupied(provider, config, project, field)
+                || (visibility.include_required_empty && field.required)
+        })
+        .collect()
+}
+
+/// Lowest unused optional slot of each media type, preserving catalog identities.
+pub fn next_media_reference_slots<'a>(
+    provider: &'a ProviderEntry,
+    config: &GenerativeConfig,
+    project: &Project,
+) -> Vec<&'a ProviderInputField> {
+    let used = visible_media_reference_fields(
+        provider,
+        config,
+        project,
+        MediaReferenceVisibility::occupied_only(),
+    );
+    let mut kinds = Vec::new();
+    visible_media_reference_fields(
+        provider,
+        config,
+        project,
+        MediaReferenceVisibility {
+            show_all: true,
+            include_required_empty: true,
+        },
+    )
+    .into_iter()
+    .filter(|field| {
+        let Some(kind) = bound_media_type_for_input(field) else {
+            return false;
+        };
+        if used.iter().any(|used| used.name == field.name) || kinds.contains(&kind) {
+            return false;
+        }
+        kinds.push(kind);
+        true
+    })
+    .collect()
 }
 
 pub fn lookup_media_binding(
@@ -2090,6 +2417,36 @@ pub fn resolved_now_summary(project: &Project, plan: &MediaResolvePlan) -> Strin
     lines.join("\n")
 }
 
+/// Compact evaluated identity for a reference card, distinct from the binding label.
+pub fn resolved_identity_caption(project: &Project, plan: &MediaResolvePlan) -> String {
+    if let Some(detail) = plan.primary_error_detail() {
+        return detail;
+    }
+    let mut identity = String::new();
+    if let Some(asset_id) = plan.source_asset_id {
+        if let Some(asset) = project.find_asset(asset_id) {
+            identity.push_str(&asset.name);
+        }
+    }
+    if let Some(version) = &plan.source_version {
+        if !identity.is_empty() {
+            identity.push_str(" · ");
+        }
+        identity.push_str(version);
+    }
+    if let Some(relation) = plan.relation {
+        if !identity.is_empty() {
+            identity.push_str(" · ");
+        }
+        identity.push_str(relation.label());
+    }
+    if identity.is_empty() {
+        "Resolved now".to_string()
+    } else {
+        identity
+    }
+}
+
 /// Hover copy for timeline connectors and inspector ranking details.
 pub fn binding_hover_text(project: &Project, plan: &MediaResolvePlan) -> String {
     let mut lines = vec![plan.field_label.clone()];
@@ -2099,9 +2456,11 @@ pub fn binding_hover_text(project: &Project, plan: &MediaResolvePlan) -> String 
     lines.push(plan.spec.stability().label().to_string());
     if let Some(asset_id) = plan.source_asset_id {
         if let Some(asset) = project.find_asset(asset_id) {
-            let mut line = crate::state::asset_display_name(asset);
+            let mut line = asset.name.clone();
             if let Some(version) = &plan.source_version {
                 line.push_str(&format!(" ({version})"));
+            } else if let Some(active) = asset.active_version() {
+                line.push_str(&format!(" ({active})"));
             }
             lines.push(line);
         }
@@ -2313,7 +2672,7 @@ pub fn source_menu_label(spec: &MediaBindingSpec, project: &Project) -> String {
             let clip = project.clips.iter().find(|clip| clip.id == *clip_id);
             let name = clip
                 .and_then(|clip| project.find_asset(clip.asset_id))
-                .map(crate::state::asset_display_name)
+                .map(|asset| asset.name.clone())
                 .unwrap_or_else(|| "Missing clip".to_string());
             let span = clip
                 .map(|clip| {
@@ -2336,7 +2695,7 @@ pub fn source_menu_label(spec: &MediaBindingSpec, project: &Project) -> String {
         } => {
             let name = project
                 .find_asset(*asset_id)
-                .map(crate::state::asset_display_name)
+                .map(|asset| asset.name.clone())
                 .unwrap_or_else(|| "Missing asset".to_string());
             format!("Version · {name} ({version})")
         }

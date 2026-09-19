@@ -182,7 +182,7 @@ impl LatentSlateApp {
             } else {
                 "No audio"
             };
-            let (status, color) = self.audio_source_status_text(
+            let (status, color, _) = self.audio_source_status_text(
                 ui,
                 asset_id,
                 resolved_context,
@@ -220,6 +220,7 @@ impl LatentSlateApp {
                         field,
                         &config,
                         spec.as_ref(),
+                        false,
                     )
                 },
             )
@@ -249,6 +250,218 @@ impl LatentSlateApp {
         }
     }
 
+    pub(in crate::egui_app) fn media_source_picker_field_inspector(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        context: Option<Uuid>,
+        provider: &ProviderEntry,
+        field: &ProviderInputField,
+    ) {
+        if field.paired_video_input.is_some() {
+            return;
+        }
+        let Some(config) = self.editor.project.generative_config(asset_id).cloned() else {
+            return;
+        };
+        let spec = lookup_media_binding(&config, field, &self.editor.project);
+        let resolved_context = resolve_generation_context(
+            &self.editor.project,
+            asset_id,
+            context,
+            self.generation_context_by_asset.get(&asset_id).copied(),
+        )
+        .ok()
+        .flatten();
+        let plan = spec.as_ref().map(|spec| {
+            resolve_media_binding(
+                MediaResolveContext {
+                    project: &self.editor.project,
+                    target_asset_id: Some(asset_id),
+                    context_clip_id: resolved_context,
+                    field,
+                    provider: Some(provider),
+                    config: Some(&config),
+                },
+                spec,
+            )
+        });
+        let (preview, summary) = self.source_choice_preview(
+            ui,
+            asset_id,
+            provider,
+            field,
+            resolved_context,
+            &config,
+            spec.as_ref(),
+        );
+        let preview = if plan.as_ref().is_some_and(|plan| !plan.is_ok()) {
+            None
+        } else {
+            preview
+        };
+        let copy = crate::core::media_binding::inspector_reference_copy(
+            field,
+            spec.as_ref(),
+            &self.editor.project,
+            plan.as_ref(),
+        );
+        let style = kit::SourceFieldStyle {
+            compact: false,
+            tone: if copy.required_empty {
+                kit::SourceFieldTone::RequiredEmpty
+            } else if copy.unresolved {
+                kit::SourceFieldTone::Unresolved
+            } else {
+                kit::SourceFieldTone::Default
+            },
+            detail: copy.detail.as_deref(),
+            required_tag: false,
+            wrap_detail: copy.detail.is_some(),
+        };
+        let width = ui.available_width();
+        let has_soundtrack = provider
+            .inputs
+            .iter()
+            .any(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()));
+        let response = if has_soundtrack {
+            let details_id = Self::source_card_details_id(asset_id, provider.id, &field.name);
+            let mut open = ui.data(|data| data.get_temp::<bool>(details_id).unwrap_or(false));
+            let audio = provider
+                .inputs
+                .iter()
+                .find(|input| input.paired_video_input.as_deref() == Some(field.name.as_str()))
+                .unwrap_or(field);
+            let audio_spec = lookup_media_binding(&config, audio, &self.editor.project);
+            let fallback = if audio_spec.is_some() {
+                "Soundtrack on"
+            } else {
+                "Video only"
+            };
+            let (status, color, _) = self.audio_source_status_text(
+                ui,
+                asset_id,
+                resolved_context,
+                provider,
+                &config,
+                audio,
+                audio_spec.as_ref(),
+                fallback,
+            );
+            let short_status = if status.starts_with("Checking audio") {
+                "Checking audio"
+            } else if color == kit::DANGER {
+                "Audio error"
+            } else if color != kit::TEXT_MUTED {
+                "Check audio"
+            } else {
+                fallback
+            };
+            let response = kit::source_field_with_details_styled(
+                ui,
+                ("source_field", asset_id, &field.name),
+                &copy.title,
+                &copy.value,
+                preview,
+                source_badge(spec.as_ref()),
+                width,
+                Some((&mut open, short_status, color)),
+                style,
+                |ui| {
+                    self.media_source_card_details(
+                        ui,
+                        asset_id,
+                        resolved_context,
+                        provider,
+                        field,
+                        &config,
+                        spec.as_ref(),
+                        true,
+                    );
+                },
+            );
+            ui.data_mut(|data| data.insert_temp(details_id, open));
+            response
+        } else {
+            kit::source_field_styled(
+                ui,
+                ("source_field", asset_id, &field.name),
+                &copy.title,
+                &copy.value,
+                preview,
+                source_badge(spec.as_ref()),
+                width,
+                style,
+            )
+        };
+        if field.input_type == ProviderInputType::Audio && !copy.unresolved {
+            self.audio_source_status(
+                ui,
+                asset_id,
+                resolved_context,
+                provider,
+                &config,
+                field,
+                spec.as_ref(),
+                "Audio file or video soundtrack",
+                true,
+            );
+        }
+        self.reveal_inspector_field(ui, asset_id, &field.name, &response);
+        let mut hover = match field.description.as_deref() {
+            Some(help) => format!("{summary}\n\n{help}"),
+            None => summary,
+        };
+        if let Some(diagnostic) = copy.hover.as_deref() {
+            hover = format!(
+                "{}\n\n{diagnostic}",
+                copy.detail.as_deref().unwrap_or(diagnostic)
+            );
+        }
+        if response.on_hover_text(hover).clicked() {
+            self.open_source_picker(asset_id, context, provider, field);
+        }
+    }
+
+    pub(in crate::egui_app) fn reveal_inspector_field(
+        &self,
+        ui: &Ui,
+        asset_id: Uuid,
+        field_name: &str,
+        response: &egui::Response,
+    ) {
+        let field_id = egui::Id::new(("attr_ref_rect", asset_id, field_name));
+        ui.data_mut(|data| data.insert_temp(field_id, response.rect));
+        let scroll_id = egui::Id::new(("attr_scroll_field", asset_id));
+        let highlight_id = egui::Id::new(("attr_highlight_field", asset_id));
+        let now = ui.input(|input| input.time);
+        if ui.data(|data| {
+            data.get_temp::<String>(scroll_id)
+                .is_some_and(|name| name == field_name)
+        }) {
+            response.scroll_to_me(Some(egui::Align::Center));
+            ui.memory_mut(|memory| memory.request_focus(response.id));
+            ui.data_mut(|data| {
+                data.remove_temp::<String>(scroll_id);
+                data.insert_temp(highlight_id, (field_name.to_string(), now + 1.25));
+            });
+            ui.ctx().request_repaint();
+        }
+        if let Some((name, until)) = ui.data(|data| data.get_temp::<(String, f64)>(highlight_id)) {
+            if name == field_name && until > now {
+                ui.painter().rect_stroke(
+                    response.rect.expand(3.0),
+                    6.0,
+                    egui::Stroke::new(1.6_f32, kit::IMAGE),
+                    egui::StrokeKind::Outside,
+                );
+                ui.ctx().request_repaint();
+            } else if name == field_name {
+                ui.data_mut(|data| data.remove_temp::<(String, f64)>(highlight_id));
+            }
+        }
+    }
+
     fn media_source_card_details(
         &mut self,
         ui: &mut Ui,
@@ -258,6 +471,7 @@ impl LatentSlateApp {
         field: &ProviderInputField,
         config: &GenerativeConfig,
         spec: Option<&MediaBindingSpec>,
+        wrap_status: bool,
     ) {
         if field.input_type == ProviderInputType::Audio {
             self.audio_source_status(
@@ -269,6 +483,7 @@ impl LatentSlateApp {
                 field,
                 spec,
                 "Audio file or video soundtrack",
+                wrap_status,
             );
         }
         if let Some(soundtrack) = provider
@@ -314,7 +529,17 @@ impl LatentSlateApp {
                     Some(_) => format!("Separate · {}", source_menu_label(soundtrack_spec.as_ref().unwrap(), &self.editor.project)),
                     None => "Video only".into(),
                 };
-                self.audio_source_status(ui, asset_id, context, provider, config, soundtrack, soundtrack_spec.as_ref(), &source);
+                self.audio_source_status(
+                    ui,
+                    asset_id,
+                    context,
+                    provider,
+                    config,
+                    soundtrack,
+                    soundtrack_spec.as_ref(),
+                    &source,
+                    wrap_status,
+                );
             });
         }
     }
@@ -329,13 +554,23 @@ impl LatentSlateApp {
         field: &ProviderInputField,
         spec: Option<&MediaBindingSpec>,
         fallback: &str,
+        wrap: bool,
     ) {
-        let (text, color) = self.audio_source_status_text(
+        let (text, color, diagnostic) = self.audio_source_status_text(
             ui, asset_id, context, provider, config, field, spec, fallback,
         );
-        kit::bounded_horizontal_row(ui, 20.0, |ui, _| {
-            ui.add(egui::Label::new(kit::caption(&text).color(color)).truncate())
-                .on_hover_text(format!("{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."));
+        let hover = match diagnostic.as_deref() {
+            Some(detail) => format!(
+                "{text}\n\n{detail}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."
+            ),
+            None => format!(
+                "{text}\n\nAudio is read from source media, not the timeline mix. Level checks cover the selected interval before retiming; very quiet audio is advisory and does not block generation."
+            ),
+        };
+        kit::bounded_horizontal_row(ui, if wrap { 36.0 } else { 20.0 }, |ui, _| {
+            let label = egui::Label::new(kit::caption(&text).color(color));
+            let label = if wrap { label.wrap() } else { label.truncate() };
+            ui.add(label).on_hover_text(hover);
         });
     }
 
@@ -349,9 +584,10 @@ impl LatentSlateApp {
         field: &ProviderInputField,
         spec: Option<&MediaBindingSpec>,
         fallback: &str,
-    ) -> (String, egui::Color32) {
+    ) -> (String, egui::Color32, Option<String>) {
         let mut text = fallback.to_string();
         let mut color = kit::TEXT_MUTED;
+        let mut diagnostic = None;
         if let Some(spec) = spec {
             let plan = resolve_media_binding(
                 MediaResolveContext {
@@ -364,8 +600,9 @@ impl LatentSlateApp {
                 },
                 spec,
             );
-            if let Some(error) = plan.error_messages().first() {
-                text = error.clone();
+            if let Some(error) = plan.errors.first() {
+                text = error.user_guidance();
+                diagnostic = Some(error.detail());
                 color = kit::DANGER;
             } else if let Some(status) =
                 crate::core::media_binding::audio_reference_inspection(&plan)
@@ -406,7 +643,7 @@ impl LatentSlateApp {
                 }
             }
         }
-        (text, color)
+        (text, color, diagnostic)
     }
 
     pub(in crate::egui_app) fn source_choice_preview(
@@ -796,7 +1033,8 @@ impl LatentSlateApp {
             .working_version
             .as_deref()
             .unwrap_or("unavailable");
-        if self
+        if self.asset_lab.asset_id == Some(state.asset_id)
+            && self
             .editor
             .project
             .find_asset(state.asset_id)
@@ -1199,6 +1437,7 @@ impl LatentSlateApp {
                 &state.field,
                 Some(spec),
                 "Audio file or video soundtrack",
+                true,
             );
         }
         if matches!(spec.source, MediaBindingSource::FrozenArtifact { .. }) {

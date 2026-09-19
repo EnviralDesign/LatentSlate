@@ -1264,6 +1264,54 @@ fn labeled_text_field_mode(
     .inner
 }
 
+const COMBO_TEXT_INSET_LEFT: f32 = 10.0;
+const COMBO_ACCESSORY_GAP: f32 = 6.0;
+const COMBO_TEXT_ARROW_GAP: f32 = 8.0;
+const COMBO_ARROW_CENTER_FROM_RIGHT: f32 = 13.0;
+const COMBO_ARROW_SIZE: f32 = 8.0;
+
+fn combo_accessory_extra(width: f32) -> f32 {
+    if width > 0.0 {
+        width + COMBO_ACCESSORY_GAP
+    } else {
+        0.0
+    }
+}
+
+fn combo_field_text_max_width(field_width: f32, leading_width: f32, trailing_width: f32) -> f32 {
+    let text_left = COMBO_TEXT_INSET_LEFT + combo_accessory_extra(leading_width);
+    let text_right_inset = COMBO_ARROW_CENTER_FROM_RIGHT
+        + COMBO_ARROW_SIZE * 0.5
+        + COMBO_TEXT_ARROW_GAP
+        + combo_accessory_extra(trailing_width);
+    (field_width - text_left - text_right_inset).max(0.0)
+}
+
+/// Closed-field width that keeps `sample` untruncated, including accessories.
+pub fn combo_field_width_for_text(
+    ui: &Ui,
+    sample: &str,
+    leading_width: f32,
+    trailing_width: f32,
+) -> f32 {
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(
+            sample.to_string(),
+            FontId::proportional(FIELD_TEXT_SIZE),
+            TEXT,
+        )
+        .size()
+        .x;
+    let chrome = COMBO_TEXT_INSET_LEFT
+        + combo_accessory_extra(leading_width)
+        + COMBO_TEXT_ARROW_GAP
+        + COMBO_ARROW_CENTER_FROM_RIGHT
+        + COMBO_ARROW_SIZE * 0.5
+        + combo_accessory_extra(trailing_width);
+    (chrome + text_width.ceil()).max(FIELD_H)
+}
+
 pub fn combo_field<R>(
     ui: &mut Ui,
     id_salt: impl Hash,
@@ -1464,9 +1512,11 @@ fn paint_combo_field(
         StrokeKind::Inside,
     );
 
-    let arrow_size = 8.0;
-    let arrow_center = Pos2::new(rect.right() - 13.0, rect.center().y);
-    let arrow_rect = Rect::from_center_size(arrow_center, Vec2::new(arrow_size, arrow_size * 0.55));
+    let arrow_center = Pos2::new(rect.right() - COMBO_ARROW_CENTER_FROM_RIGHT, rect.center().y);
+    let arrow_rect = Rect::from_center_size(
+        arrow_center,
+        Vec2::new(COMBO_ARROW_SIZE, COMBO_ARROW_SIZE * 0.55),
+    );
     ui.painter().add(egui::Shape::convex_polygon(
         vec![
             arrow_rect.left_top(),
@@ -1477,21 +1527,8 @@ fn paint_combo_field(
         Stroke::NONE,
     ));
 
-    let text_left = rect.left()
-        + 10.0
-        + if leading_width > 0.0 {
-            leading_width + 6.0
-        } else {
-            0.0
-        };
-    let text_right = arrow_rect.left()
-        - 8.0
-        - if trailing_width > 0.0 {
-            trailing_width + 6.0
-        } else {
-            0.0
-        };
-    let text_width = (text_right - text_left).max(0.0);
+    let text_left = rect.left() + COMBO_TEXT_INSET_LEFT + combo_accessory_extra(leading_width);
+    let text_width = combo_field_text_max_width(rect.width(), leading_width, trailing_width);
     let text = egui::WidgetText::from(
         RichText::new(selected_text)
             .color(TEXT)
@@ -2948,6 +2985,36 @@ fn paint_info_mark(ui: &Ui, rect: Rect, color: Color32) {
 
 /// Compact source fields retain a two-line label and a contained thumbnail.
 pub const COMPACT_SOURCE_FIELD_H: f32 = 48.0;
+pub const INSPECTOR_SOURCE_FIELD_H: f32 = 68.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceFieldTone {
+    #[default]
+    Default,
+    RequiredEmpty,
+    Unresolved,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SourceFieldStyle<'a> {
+    pub compact: bool,
+    pub tone: SourceFieldTone,
+    pub detail: Option<&'a str>,
+    pub required_tag: bool,
+    pub wrap_detail: bool,
+}
+
+impl Default for SourceFieldStyle<'static> {
+    fn default() -> Self {
+        Self {
+            compact: false,
+            tone: SourceFieldTone::Default,
+            detail: None,
+            required_tag: false,
+            wrap_detail: false,
+        }
+    }
+}
 
 /// A source configuration entry point, distinct from a selectable picker row.
 pub fn source_field(
@@ -2960,7 +3027,42 @@ pub fn source_field(
     compact: bool,
     width: f32,
 ) -> Response {
-    source_field_header(ui, id, title, value, preview, badge, compact, width, false)
+    source_field_styled(
+        ui,
+        id,
+        title,
+        value,
+        preview,
+        badge,
+        width,
+        SourceFieldStyle {
+            compact,
+            ..SourceFieldStyle::default()
+        },
+    )
+}
+
+pub fn source_field_styled(
+    ui: &mut Ui,
+    id: impl Hash,
+    title: &str,
+    value: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    badge: Option<&str>,
+    width: f32,
+    style: SourceFieldStyle<'_>,
+) -> Response {
+    source_field_header(
+        ui,
+        id,
+        title,
+        value,
+        preview,
+        badge,
+        width,
+        false,
+        style,
+    )
 }
 
 /// Source-owned controls share a card with the source selection entry point.
@@ -2976,6 +3078,35 @@ pub fn source_field_with_details(
     disclosure: Option<(&mut bool, &str, Color32)>,
     details: impl FnOnce(&mut Ui),
 ) -> Response {
+    source_field_with_details_styled(
+        ui,
+        id,
+        title,
+        value,
+        preview,
+        badge,
+        width,
+        disclosure,
+        SourceFieldStyle {
+            compact,
+            ..SourceFieldStyle::default()
+        },
+        details,
+    )
+}
+
+pub fn source_field_with_details_styled(
+    ui: &mut Ui,
+    id: impl Hash,
+    title: &str,
+    value: &str,
+    preview: Option<(egui::TextureId, Vec2)>,
+    badge: Option<&str>,
+    width: f32,
+    disclosure: Option<(&mut bool, &str, Color32)>,
+    style: SourceFieldStyle<'_>,
+    details: impl FnOnce(&mut Ui),
+) -> Response {
     Frame::new()
         .fill(PANEL_RAISED)
         .stroke(Stroke::new(1.0_f32, BORDER))
@@ -2987,7 +3118,8 @@ pub fn source_field_with_details(
             let header_width = ui.available_width();
             let response = if let Some((open, status, color)) = disclosure {
                 show_details = *open;
-                let response = bounded_horizontal_row(ui, COMPACT_SOURCE_FIELD_H - 2.0, |ui, _| {
+                let header_h = source_field_header_height(ui, (header_width - 116.0).max(1.0), true, style);
+                let response = bounded_horizontal_row(ui, header_h, |ui, _| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let response = source_field_header(
                         ui,
@@ -2996,9 +3128,9 @@ pub fn source_field_with_details(
                         value,
                         preview,
                         badge,
-                        compact,
                         (header_width - 116.0).max(1.0),
                         true,
+                        style,
                     );
                     let label = format!("{} {}", status, if *open { "▴" } else { "▾" });
                     let trigger = popover_button(ui, &label, 104.0, true).on_hover_text(format!(
@@ -3024,9 +3156,9 @@ pub fn source_field_with_details(
                     value,
                     preview,
                     badge,
-                    compact,
                     ui.available_width(),
                     true,
+                    style,
                 )
             };
             if show_details {
@@ -3050,6 +3182,55 @@ pub fn source_field_with_details(
         .inner
 }
 
+fn source_field_thumb_size(style: SourceFieldStyle<'_>, detailed: bool) -> f32 {
+    if style.compact && !detailed {
+        30.0
+    } else {
+        42.0
+    }
+}
+
+fn source_field_wrap_width(width: f32, thumb_size: f32, required_tag: bool) -> f32 {
+    let right_reserve = if required_tag { 64.0 } else { 26.0 };
+    (width - 10.0 - thumb_size - 9.0 - right_reserve).max(1.0)
+}
+
+fn source_field_is_detailed(style: SourceFieldStyle<'_>) -> bool {
+    style.detail.is_some() || style.required_tag || style.tone != SourceFieldTone::Default
+}
+
+fn source_field_header_height(
+    ui: &Ui,
+    width: f32,
+    attached: bool,
+    style: SourceFieldStyle<'_>,
+) -> f32 {
+    let detailed = source_field_is_detailed(style);
+    let base = if style.compact && !detailed {
+        COMPACT_SOURCE_FIELD_H
+    } else if style.wrap_detail && style.detail.is_some() {
+        let thumb = source_field_thumb_size(style, true);
+        let wrap_width = source_field_wrap_width(width, thumb, style.required_tag);
+        let galley = egui::WidgetText::from(
+            RichText::new(style.detail.unwrap_or_default())
+                .size(11.0)
+                .color(TEXT_MUTED),
+        )
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Wrap),
+            wrap_width,
+            FontId::proportional(11.0),
+        );
+        50.0 + galley.size().y
+    } else if detailed {
+        INSPECTOR_SOURCE_FIELD_H
+    } else {
+        64.0
+    };
+    base - if attached { 2.0 } else { 0.0 }
+}
+
 fn source_field_header(
     ui: &mut Ui,
     id: impl Hash,
@@ -3057,15 +3238,12 @@ fn source_field_header(
     value: &str,
     preview: Option<(egui::TextureId, Vec2)>,
     badge: Option<&str>,
-    compact: bool,
     width: f32,
     attached: bool,
+    style: SourceFieldStyle<'_>,
 ) -> Response {
-    let height = (if compact {
-        COMPACT_SOURCE_FIELD_H
-    } else {
-        64.0
-    }) - if attached { 2.0 } else { 0.0 };
+    let detailed = source_field_is_detailed(style);
+    let height = source_field_header_height(ui, width, attached, style);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width.max(1.0), height), Sense::hover());
     let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
     let response = crate::core::automation::instrument_response(
@@ -3076,33 +3254,46 @@ fn source_field_header(
         false,
     );
     let painter = ui.painter_at(rect);
-    painter.rect_filled(
-        rect,
-        if attached {
-            CornerRadius {
-                nw: 5,
-                ne: 5,
-                sw: 0,
-                se: 0,
-            }
-        } else {
-            CornerRadius::same(5)
-        },
-        if response.hovered() {
-            FIELD_BG_ACTIVE
-        } else {
-            PANEL_RAISED
-        },
-    );
-    if !attached || response.has_focus() {
+    let radius = if attached {
+        CornerRadius {
+            nw: 5,
+            ne: 5,
+            sw: 0,
+            se: 0,
+        }
+    } else {
+        CornerRadius::same(5)
+    };
+    let fill = match style.tone {
+        SourceFieldTone::RequiredEmpty => {
+            Color32::from_rgba_unmultiplied(MARKER.r(), MARKER.g(), MARKER.b(), 16)
+        }
+        SourceFieldTone::Unresolved => {
+            Color32::from_rgba_unmultiplied(MARKER.r(), MARKER.g(), MARKER.b(), 22)
+        }
+        SourceFieldTone::Default if response.hovered() => FIELD_BG_ACTIVE,
+        SourceFieldTone::Default => PANEL_RAISED,
+    };
+    painter.rect_filled(rect, radius, fill);
+    let stroke_color = if response.has_focus() {
+        IMAGE
+    } else {
+        match style.tone {
+            SourceFieldTone::RequiredEmpty | SourceFieldTone::Unresolved => MARKER,
+            SourceFieldTone::Default => BORDER,
+        }
+    };
+    if style.tone == SourceFieldTone::RequiredEmpty && !attached {
+        paint_dashed_rect(ui, rect, 5.0, Stroke::new(1.15_f32, stroke_color));
+    } else if !attached || response.has_focus() || style.tone != SourceFieldTone::Default {
         painter.rect_stroke(
             rect,
             5,
-            Stroke::new(1.0_f32, if response.has_focus() { IMAGE } else { BORDER }),
+            Stroke::new(1.0_f32, stroke_color),
             StrokeKind::Inside,
         );
     }
-    let thumb_size = if compact { 30.0 } else { 42.0 };
+    let thumb_size = source_field_thumb_size(style, detailed);
     let thumb = Rect::from_center_size(
         Pos2::new(rect.left() + 10.0 + thumb_size * 0.5, rect.center().y),
         Vec2::splat(thumb_size),
@@ -3120,18 +3311,58 @@ fn source_field_header(
         );
     }
     let left = thumb.right() + 9.0;
+    let wrap_width = source_field_wrap_width(rect.width(), thumb_size, style.required_tag);
+    let title_y = if detailed {
+        rect.top() + 8.0
+    } else {
+        rect.center().y - 16.0
+    };
+    let value_y = if detailed {
+        rect.top() + 24.0
+    } else {
+        rect.center().y
+    };
     for (text, y, font, color) in [
-        (title, rect.center().y - 16.0, 10.5, TEXT_MUTED),
-        (value, rect.center().y, 12.0, TEXT),
+        (title, title_y, 10.5, TEXT_MUTED),
+        (value, value_y, 12.0, TEXT),
     ] {
         let galley = egui::WidgetText::from(RichText::new(text).size(font).color(color))
             .into_galley(
                 ui,
                 Some(egui::TextWrapMode::Truncate),
-                (rect.right() - left - 26.0).max(1.0),
+                wrap_width,
                 FontId::proportional(font),
             );
         painter.galley(Pos2::new(left, y), galley, color);
+    }
+    if let Some(detail) = style.detail {
+        let color = if style.tone == SourceFieldTone::Unresolved {
+            MARKER
+        } else {
+            TEXT_MUTED
+        };
+        let wrap_mode = if style.wrap_detail {
+            egui::TextWrapMode::Wrap
+        } else {
+            egui::TextWrapMode::Truncate
+        };
+        let galley = egui::WidgetText::from(RichText::new(detail).size(11.0).color(color))
+            .into_galley(
+                ui,
+                Some(wrap_mode),
+                wrap_width,
+                FontId::proportional(11.0),
+            );
+        painter.galley(Pos2::new(left, rect.top() + 42.0), galley, color);
+    }
+    if style.required_tag {
+        painter.text(
+            Pos2::new(rect.right() - 14.0, rect.top() + 12.0),
+            egui::Align2::RIGHT_CENTER,
+            "Required",
+            FontId::proportional(10.0),
+            MARKER,
+        );
     }
     paint_icon(
         ui,
@@ -3143,6 +3374,45 @@ fn source_field_header(
         TEXT_MUTED,
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn paint_dashed_rect(ui: &Ui, rect: Rect, radius: f32, stroke: Stroke) {
+    let inset = rect.shrink(stroke.width * 0.5);
+    let painter = ui.painter();
+    let dash = 3.5;
+    let gap = 2.5;
+    let segments = [
+        (Pos2::new(inset.left() + radius, inset.top()), Pos2::new(inset.right() - radius, inset.top())),
+        (Pos2::new(inset.right(), inset.top() + radius), Pos2::new(inset.right(), inset.bottom() - radius)),
+        (Pos2::new(inset.right() - radius, inset.bottom()), Pos2::new(inset.left() + radius, inset.bottom())),
+        (Pos2::new(inset.left(), inset.bottom() - radius), Pos2::new(inset.left(), inset.top() + radius)),
+    ];
+    for (start, end) in segments {
+        paint_dashed_segment(painter, start, end, dash, gap, stroke);
+    }
+}
+
+fn paint_dashed_segment(
+    painter: &egui::Painter,
+    start: Pos2,
+    end: Pos2,
+    dash: f32,
+    gap: f32,
+    stroke: Stroke,
+) {
+    let delta = end - start;
+    let length = delta.length();
+    if length <= 0.5 {
+        return;
+    }
+    let dir = delta / length;
+    let mut offset = 0.0;
+    while offset < length {
+        let a = start + dir * offset;
+        let b = start + dir * (offset + dash).min(length);
+        painter.line_segment([a, b], stroke);
+        offset += dash + gap;
+    }
 }
 
 pub fn source_row(
@@ -5020,21 +5290,171 @@ pub fn canvas_picker(
     width: &mut i64,
     height: &mut i64,
 ) -> bool {
+    canvas_picker_with_chrome(
+        ui,
+        id_salt,
+        canvas,
+        reference,
+        width,
+        height,
+        CanvasPickerChrome::Full,
+    )
+}
+
+/// Inspector canvas body: size controls, then resolved pixels. Mode lives in the heading.
+pub fn canvas_picker_compact(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    canvas: &crate::state::CanvasContract,
+    reference: Option<CanvasSizeReference<'_>>,
+    width: &mut i64,
+    height: &mut i64,
+) -> bool {
+    canvas_picker_with_chrome(
+        ui,
+        id_salt,
+        canvas,
+        reference,
+        width,
+        height,
+        CanvasPickerChrome::Compact,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CanvasPickerChrome {
+    Full,
+    Compact,
+}
+
+fn canvas_picker_state_id(control_salt: egui::Id) -> egui::Id {
+    egui::Id::new(("canvas_picker_state", control_salt))
+}
+
+fn load_canvas_picker_state(
+    ui: &Ui,
+    state_id: egui::Id,
+    width: i64,
+    height: i64,
+) -> CanvasPickerState {
+    let current_output = (width, height);
+    let mut state = ui
+        .ctx()
+        .data(|data| data.get_temp::<CanvasPickerState>(state_id))
+        .unwrap_or_else(|| CanvasPickerState::from_output(width, height));
+    if state.last_output != current_output {
+        state = CanvasPickerState::from_output(width, height);
+    }
+    state
+}
+
+/// Sizing-mode selector that shares state with [`canvas_picker_compact`].
+pub fn canvas_sizing_mode_combo(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    canvas: &crate::state::CanvasContract,
+    reference: Option<CanvasSizeReference<'_>>,
+    width: &mut i64,
+    height: &mut i64,
+) -> bool {
+    let control_salt = egui::Id::new(id_salt);
+    let state_id = canvas_picker_state_id(control_salt);
+    let mut state = load_canvas_picker_state(ui, state_id, *width, *height);
+    let changed = paint_canvas_mode_combo(
+        ui,
+        control_salt,
+        canvas,
+        reference,
+        &mut state,
+        width,
+        height,
+        ui.available_width().clamp(108.0, 168.0),
+    );
+    state.last_output = (*width, *height);
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(state_id, state));
+    changed
+}
+
+fn paint_canvas_mode_combo(
+    ui: &mut Ui,
+    control_salt: egui::Id,
+    canvas: &crate::state::CanvasContract,
+    reference: Option<CanvasSizeReference<'_>>,
+    state: &mut CanvasPickerState,
+    width: &mut i64,
+    height: &mut i64,
+    combo_width: f32,
+) -> bool {
+    let mut next_mode = state.mode;
+    combo_field(
+        ui,
+        ("canvas_mode", control_salt),
+        canvas_mode_label(state.mode, reference),
+        combo_width,
+        |ui| {
+            for candidate in [
+                CanvasSizingMode::AspectAndMegapixels,
+                CanvasSizingMode::ExactDimensions,
+            ] {
+                if ui
+                    .selectable_label(
+                        state.mode == candidate,
+                        canvas_mode_label(candidate, reference),
+                    )
+                    .clicked()
+                {
+                    next_mode = candidate;
+                }
+            }
+            if reference.is_some()
+                && ui
+                    .selectable_label(
+                        state.mode == CanvasSizingMode::ReferenceScale,
+                        canvas_mode_label(CanvasSizingMode::ReferenceScale, reference),
+                    )
+                    .clicked()
+            {
+                next_mode = CanvasSizingMode::ReferenceScale;
+            }
+        },
+    );
+    if next_mode == state.mode {
+        return false;
+    }
+    state.mode = next_mode;
+    if state.mode == CanvasSizingMode::ReferenceScale {
+        if let Some(reference) = reference {
+            state.reference_scale =
+                nearest_supported_reference_scale(canvas, reference, state.reference_scale);
+        }
+    }
+    if let Some((next_width, next_height)) = resolve_canvas_intent(state, canvas, reference) {
+        *width = next_width as i64;
+        *height = next_height as i64;
+        true
+    } else {
+        false
+    }
+}
+
+fn canvas_picker_with_chrome(
+    ui: &mut Ui,
+    id_salt: impl Hash,
+    canvas: &crate::state::CanvasContract,
+    reference: Option<CanvasSizeReference<'_>>,
+    width: &mut i64,
+    height: &mut i64,
+    chrome: CanvasPickerChrome,
+) -> bool {
     use crate::core::canvas::{
         canvas_is_valid, canvas_readout, megapixels, validate_canvas, ASPECT_PRESETS,
     };
 
     let mut changed = false;
     let control_salt = egui::Id::new(id_salt);
-    let state_id = ui.id().with(("canvas_picker_state", control_salt));
-    let current_output = (*width, *height);
-    let mut state = ui
-        .ctx()
-        .data(|data| data.get_temp::<CanvasPickerState>(state_id))
-        .unwrap_or_else(|| CanvasPickerState::from_output(*width, *height));
-    if state.last_output != current_output {
-        state = CanvasPickerState::from_output(*width, *height);
-    }
+    let state_id = canvas_picker_state_id(control_salt);
+    let mut state = load_canvas_picker_state(ui, state_id, *width, *height);
     if state.mode == CanvasSizingMode::ReferenceScale {
         if let Some(reference) = reference {
             let supported_scale =
@@ -5085,86 +5505,48 @@ pub fn canvas_picker(
 
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
-        field_label(ui, "Canvas");
-        let output_prefix = if is_valid { "Output" } else { "Requested" };
-        let output_color = if status_warning.is_some() {
-            MARKER
-        } else {
-            TEXT_MUTED
-        };
-        let status_response = ui.add_sized(
-            [ui.available_width(), 16.0],
-            egui::Label::new(
-                RichText::new(format!(
-                    "{output_prefix} {}",
-                    canvas_readout(canvas, current_w, current_h)
-                ))
-                .color(output_color)
-                .size(11.0),
-            )
-            .truncate(),
-        );
-        if let Some(message) = status_warning.as_deref() {
-            status_response.on_hover_text(message);
-        }
-        ui.add_space(FORM_ROW_GAP);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
-            field_label(ui, "Size by");
-            let mut next_mode = state.mode;
-            combo_field(
-                ui,
-                ("canvas_mode", control_salt),
-                canvas_mode_label(state.mode, reference),
-                ui.available_width(),
-                |ui| {
-                    for candidate in [
-                        CanvasSizingMode::AspectAndMegapixels,
-                        CanvasSizingMode::ExactDimensions,
-                    ] {
-                        if ui
-                            .selectable_label(
-                                state.mode == candidate,
-                                canvas_mode_label(candidate, reference),
-                            )
-                            .clicked()
-                        {
-                            next_mode = candidate;
-                        }
-                    }
-                    if reference.is_some()
-                        && ui
-                            .selectable_label(
-                                state.mode == CanvasSizingMode::ReferenceScale,
-                                canvas_mode_label(CanvasSizingMode::ReferenceScale, reference),
-                            )
-                            .clicked()
-                    {
-                        next_mode = CanvasSizingMode::ReferenceScale;
-                    }
-                },
+        if chrome == CanvasPickerChrome::Full {
+            field_label(ui, "Canvas");
+            let output_prefix = if is_valid { "Output" } else { "Requested" };
+            let output_color = if status_warning.is_some() {
+                MARKER
+            } else {
+                TEXT_MUTED
+            };
+            let status_response = ui.add_sized(
+                [ui.available_width(), 16.0],
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{output_prefix} {}",
+                        canvas_readout(canvas, current_w, current_h)
+                    ))
+                    .color(output_color)
+                    .size(11.0),
+                )
+                .truncate(),
             );
-            if next_mode != state.mode {
-                state.mode = next_mode;
-                if state.mode == CanvasSizingMode::ReferenceScale {
-                    if let Some(reference) = reference {
-                        state.reference_scale = nearest_supported_reference_scale(
-                            canvas,
-                            reference,
-                            state.reference_scale,
-                        );
-                    }
-                }
-                if let Some((next_width, next_height)) =
-                    resolve_canvas_intent(&state, canvas, reference)
-                {
-                    *width = next_width as i64;
-                    *height = next_height as i64;
+            if let Some(message) = status_warning.as_deref() {
+                status_response.on_hover_text(message);
+            }
+            ui.add_space(FORM_ROW_GAP);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = FIELD_LABEL_GAP;
+                field_label(ui, "Size by");
+                if paint_canvas_mode_combo(
+                    ui,
+                    control_salt,
+                    canvas,
+                    reference,
+                    &mut state,
+                    width,
+                    height,
+                    ui.available_width(),
+                ) {
                     changed = true;
                 }
-            }
-        });
-        ui.add_space(FORM_ROW_GAP);
+            });
+            ui.add_space(FORM_ROW_GAP);
+        }
         field_grid_row(ui, &[1.0, 1.0], |ui, index| {
             let min_side = canvas.min_side.max(1) as i64;
             let max_side = canvas.max_side.map(|value| value as i64);
@@ -5332,6 +5714,22 @@ pub fn canvas_picker(
                 }
             }
         });
+        if chrome == CanvasPickerChrome::Compact {
+            let current_w = (*width).max(1) as u32;
+            let current_h = (*height).max(1) as u32;
+            ui.add_space(FIELD_LABEL_GAP);
+            let output_color = if status_warning.is_some() {
+                MARKER
+            } else {
+                TEXT
+            };
+            let readout = format!("{current_w} × {current_h} px");
+            let hover = status_warning
+                .clone()
+                .unwrap_or_else(|| canvas_readout(canvas, current_w, current_h));
+            ui.add(egui::Label::new(body(&readout).size(12.0).color(output_color)).truncate())
+                .on_hover_text(hover);
+        }
     });
     state.last_output = (*width, *height);
     ui.ctx().data_mut(|data| data.insert_temp(state_id, state));
@@ -5363,6 +5761,32 @@ mod tests {
 
             assert_eq!(inner.response.id, predicted_button_id);
             assert!(inner.inner.is_some(), "the requested popup should render");
+        });
+    }
+
+    #[test]
+    fn combo_field_width_keeps_three_digit_version_uncut() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let sample = "V123";
+            let leading = 14.0;
+            let width = combo_field_width_for_text(ui, sample, leading, 0.0);
+            let text_width = combo_field_text_max_width(width, leading, 0.0);
+            let galley = ui.painter().layout_no_wrap(
+                sample.to_string(),
+                FontId::proportional(FIELD_TEXT_SIZE),
+                TEXT,
+            );
+            assert!(
+                galley.size().x <= text_width + f32::EPSILON,
+                "V123 is {}px wide but the combo text region is {}px",
+                galley.size().x,
+                text_width
+            );
+            assert!(
+                width > 72.0,
+                "three-digit pin combos must outgrow the previous 72px trigger"
+            );
         });
     }
 

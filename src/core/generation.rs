@@ -505,11 +505,27 @@ pub fn preflight_provider_config(
                         message: format!("{}: {message}", input.label),
                     });
                 }
+                if !plan.is_ok() {
+                    let messages = plan.error_messages();
+                    if messages.is_empty() {
+                        issues.push(GenerationPreflightIssue {
+                            section: GenerationControlSection::Media,
+                            message: format!("{} cannot resolve.", input.label),
+                        });
+                    } else {
+                        issues.extend(messages.into_iter().map(|message| {
+                            GenerationPreflightIssue {
+                                section: GenerationControlSection::Media,
+                                message,
+                            }
+                        }));
+                    }
+                }
                 plan.is_ok()
             } else {
                 false
             };
-            if input.required && !valid {
+            if input.required && !valid && lookup_media_binding(&config, input, project).is_none() {
                 issues.push(GenerationPreflightIssue {
                     section: GenerationControlSection::Media,
                     message: format!("{}: choose a source.", input.label),

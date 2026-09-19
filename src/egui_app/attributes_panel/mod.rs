@@ -5,6 +5,8 @@ use crate::state::{
     DEFAULT_GENERATIVE_VIDEO_DURATION_SECONDS,
 };
 
+mod generated;
+
 const ATTRIBUTES_PANEL_MIN_WIDTH: f32 = 200.0;
 const ATTRIBUTES_PANEL_MAX_WIDTH: f32 = 550.0;
 
@@ -26,6 +28,7 @@ impl LatentSlateApp {
         let response = egui::Panel::right(self.project_panel_id("attributes"))
             .resizable(true)
             .default_size(self.editor.layout.right_width)
+            .exact_size(self.editor.layout.right_width)
             .size_range(ATTRIBUTES_PANEL_MIN_WIDTH..=ATTRIBUTES_PANEL_MAX_WIDTH)
             .frame(kit::dock_frame())
             .show_inside(root, |ui| {
@@ -41,28 +44,9 @@ impl LatentSlateApp {
 
     pub(super) fn attributes_panel(&mut self, ui: &mut Ui) {
         let inspector_rect = ui.clip_rect();
-        let header_generate_target = if self.editor.selection.clip_ids.len() == 1 {
-            self.editor.selected_clip_id().and_then(|clip_id| {
-                let asset_id = self
-                    .editor
-                    .project
-                    .clips
-                    .iter()
-                    .find(|clip| clip.id == clip_id)
-                    .map(|clip| clip.asset_id)?;
-                generative_output_for_asset(&self.editor.project, asset_id)
-                    .map(|_| (asset_id, Some(clip_id)))
-            })
-        } else if self.editor.selection.asset_ids.len() == 1 {
-            self.editor.selected_asset_id().and_then(|asset_id| {
-                generative_output_for_asset(&self.editor.project, asset_id)
-                    .map(|_| (asset_id, None))
-            })
-        } else {
-            None
-        };
+        let generate_target = self.generative_inspector_target();
         let header_preflight_error =
-            header_generate_target
+            generate_target
                 .as_ref()
                 .and_then(|(asset_id, context_clip_id)| {
                     let config = self.editor.project.generative_config(*asset_id)?;
@@ -85,30 +69,28 @@ impl LatentSlateApp {
                 });
         let header_can_generate = !self.provider_resource_release_in_flight
             && header_preflight_error.is_none()
-            && header_generate_target
-                .as_ref()
-                .is_some_and(|(asset_id, _)| {
-                    self.editor
-                        .project
-                        .generative_config(*asset_id)
-                        .and_then(|config| config.provider_id)
-                        .and_then(|provider_id| {
-                            self.editor
-                                .provider_entries
-                                .iter()
-                                .find(|provider| provider.id == provider_id)
-                        })
-                        .is_some_and(|provider| {
-                            self.editor.provider_in_project_scope(provider.id)
-                                && provider_is_available_for_generation(provider)
-                                && !provider_refresh_blocks_provider(
-                                    self.provider_refresh_state,
-                                    provider,
-                                )
-                        })
-                });
+            && generate_target.as_ref().is_some_and(|(asset_id, _)| {
+                self.editor
+                    .project
+                    .generative_config(*asset_id)
+                    .and_then(|config| config.provider_id)
+                    .and_then(|provider_id| {
+                        self.editor
+                            .provider_entries
+                            .iter()
+                            .find(|provider| provider.id == provider_id)
+                    })
+                    .is_some_and(|provider| {
+                        self.editor.provider_in_project_scope(provider.id)
+                            && provider_is_available_for_generation(provider)
+                            && !provider_refresh_blocks_provider(
+                                self.provider_refresh_state,
+                                provider,
+                            )
+                    })
+            });
 
-        let mut header_generate_clicked = false;
+        let mut generate_clicked = false;
         ui.horizontal(|ui| {
             ui.label(kit::section_label("ATTRIBUTES"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -116,50 +98,73 @@ impl LatentSlateApp {
                 if kit::icon_button(ui, "▶").clicked() {
                     self.editor.layout.right_collapsed = true;
                 }
-                if header_generate_target.is_some() {
-                    ui.add_enabled_ui(header_can_generate, |ui| {
-                        if kit::primary_button_sized(ui, "Generate", 86.0, kit::ICON_BUTTON_H)
-                            .on_hover_text(header_preflight_error.as_deref().unwrap_or(
-                                "Generate with the current settings. Ctrl+Enter works while editing Attributes.",
-                            ))
-                            .clicked()
-                        {
-                            header_generate_clicked = true;
-                        }
-                    });
+                if generate_target.is_some() {
+                    ui.label(kit::caption("Asset"));
                 }
             });
         });
-        if let Some(message) = header_preflight_error.as_deref() {
-            ui.add_space(kit::FIELD_LABEL_GAP);
-            ui.label(RichText::new(message).color(kit::MARKER).size(11.0));
-        }
         ui.add_space(8.0);
 
-        kit::clipped_scroll_body(ui, self.project_panel_id("attributes_body"), |ui| {
-            ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
-            if self.editor.selection.clip_ids.len() > 1 {
-                self.multi_clip_attributes(ui);
-            } else if let Some(clip_id) = self.editor.selected_clip_id() {
-                self.clip_attributes(ui, clip_id);
-            } else if self.editor.selection.asset_ids.len() > 1 {
-                self.multi_asset_attributes(ui);
-            } else if let Some(asset_id) = self.editor.selected_asset_id() {
-                self.asset_attributes(ui, asset_id);
-            } else if let Some(marker_id) = self.editor.selected_marker_id() {
-                self.marker_attributes(ui, marker_id);
-            } else if let Some(track_id) = self.editor.selected_track_id() {
-                self.track_attributes(ui, track_id);
-            } else {
-                kit::sunken_frame().show(ui, |ui| {
-                    kit::empty_state(
+        if let Some((asset_id, context_clip_id)) = generate_target {
+            egui::Panel::top(ui.id().with("generated_header"))
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(egui::Frame::new().inner_margin(egui::Margin::ZERO))
+                .show_inside(ui, |ui| {
+                    self.generated_inspector_header(ui, asset_id, context_clip_id);
+                });
+            egui::Panel::bottom(ui.id().with("generated_footer"))
+                .resizable(false)
+                .show_separator_line(true)
+                .frame(
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(0, 8))
+                        .stroke(egui::Stroke::NONE),
+                )
+                .show_inside(ui, |ui| {
+                    generate_clicked = self.generated_inspector_footer(
                         ui,
-                        "Nothing selected",
-                        "Select a clip, asset, marker, or track.",
+                        asset_id,
+                        context_clip_id,
+                        header_can_generate,
                     );
                 });
-            }
-        });
+            kit::clipped_scroll_body(ui, self.project_panel_id("attributes_body"), |ui| {
+                ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                self.generative_asset_attributes(ui, asset_id, context_clip_id);
+                if let Some(clip_id) = context_clip_id {
+                    ui.add_space(kit::ACTION_GAP);
+                    ui.separator();
+                    ui.add_space(kit::FORM_ROW_GAP);
+                    self.clip_attributes(ui, clip_id, false);
+                }
+            });
+        } else {
+            kit::clipped_scroll_body(ui, self.project_panel_id("attributes_body"), |ui| {
+                ui.spacing_mut().item_spacing.y = kit::FORM_ROW_GAP;
+                if self.editor.selection.clip_ids.len() > 1 {
+                    self.multi_clip_attributes(ui);
+                } else if let Some(clip_id) = self.editor.selected_clip_id() {
+                    self.clip_attributes(ui, clip_id, true);
+                } else if self.editor.selection.asset_ids.len() > 1 {
+                    self.multi_asset_attributes(ui);
+                } else if let Some(asset_id) = self.editor.selected_asset_id() {
+                    self.asset_attributes(ui, asset_id);
+                } else if let Some(marker_id) = self.editor.selected_marker_id() {
+                    self.marker_attributes(ui, marker_id);
+                } else if let Some(track_id) = self.editor.selected_track_id() {
+                    self.track_attributes(ui, track_id);
+                } else {
+                    kit::sunken_frame().show(ui, |ui| {
+                        kit::empty_state(
+                            ui,
+                            "Nothing selected",
+                            "Select a clip, asset, marker, or track.",
+                        );
+                    });
+                }
+            });
+        }
 
         let focused_inside_inspector = ui
             .ctx()
@@ -167,7 +172,7 @@ impl LatentSlateApp {
             .and_then(|focus_id| ui.ctx().read_response(focus_id))
             .is_some_and(|response| inspector_rect.intersects(response.rect));
         let generate_shortcut_requested = header_can_generate
-            && header_generate_target.is_some()
+            && generate_target.is_some()
             && focused_inside_inspector
             && !ui.ctx().any_popup_open()
             && !self.modal_background_input_blocked()
@@ -178,10 +183,33 @@ impl LatentSlateApp {
                 .ctx()
                 .input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
 
-        if header_generate_clicked || generate_shortcut_requested {
-            if let Some((asset_id, context_clip_id)) = header_generate_target {
+        if generate_clicked || generate_shortcut_requested {
+            if let Some((asset_id, context_clip_id)) = generate_target {
                 self.start_generative_generation(asset_id, context_clip_id);
             }
+        }
+    }
+
+    fn generative_inspector_target(&self) -> Option<(Uuid, Option<Uuid>)> {
+        if self.editor.selection.clip_ids.len() == 1 {
+            self.editor.selected_clip_id().and_then(|clip_id| {
+                let asset_id = self
+                    .editor
+                    .project
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == clip_id)
+                    .map(|clip| clip.asset_id)?;
+                generative_output_for_asset(&self.editor.project, asset_id)
+                    .map(|_| (asset_id, Some(clip_id)))
+            })
+        } else if self.editor.selection.asset_ids.len() == 1 {
+            self.editor.selected_asset_id().and_then(|asset_id| {
+                generative_output_for_asset(&self.editor.project, asset_id)
+                    .map(|_| (asset_id, None))
+            })
+        } else {
+            None
         }
     }
 
@@ -1549,7 +1577,7 @@ impl LatentSlateApp {
             });
     }
 
-    pub(super) fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid) {
+    pub(super) fn clip_attributes(&mut self, ui: &mut Ui, clip_id: Uuid, include_generative: bool) {
         let Some(clip_snapshot) = self
             .editor
             .project
@@ -1645,7 +1673,7 @@ impl LatentSlateApp {
         let is_generative = clip_asset_id.is_some_and(|asset_id| {
             generative_output_for_asset(&self.editor.project, asset_id).is_some()
         });
-        if is_generative {
+        if include_generative && is_generative {
             if let Some(asset_id) = clip_asset_id {
                 self.generative_asset_attributes(ui, asset_id, Some(clip_id));
                 ui.add_space(kit::FORM_ROW_GAP);
@@ -2076,27 +2104,6 @@ impl LatentSlateApp {
             .as_ref()
             .is_some_and(|provider| !self.editor.provider_in_project_scope(provider.id));
 
-        let mut version_options: Vec<String> = config_snapshot
-            .versions
-            .iter()
-            .map(|record| record.version.clone())
-            .collect();
-        if let Some(active) = config_snapshot.active_version.as_ref() {
-            if !active.trim().is_empty() && !version_options.contains(active) {
-                version_options.push(active.clone());
-            }
-        }
-        version_options.sort_by(
-            |a, b| match (parse_version_index(a), parse_version_index(b)) {
-                (Some(a_num), Some(b_num)) => b_num.cmp(&a_num),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => b.cmp(a),
-            },
-        );
-        version_options.dedup();
-
-        let selected_version_value = config_snapshot.active_version.clone().unwrap_or_default();
         let batch = config_snapshot.batch.clone();
         let resolved_seed_field = selected_provider
             .as_ref()
@@ -2115,265 +2122,58 @@ impl LatentSlateApp {
             None
         };
 
-        let mut next_version = selected_version_value.clone();
         let mut next_provider_id = selected_provider_id;
-        let mut next_batch_count = batch.count.max(1).min(MAX_GENERATION_BATCH_COUNT) as i64;
         let mut next_seed_strategy = batch.seed_strategy;
-        let mut open_asset_lab = false;
 
-        inspector_card(ui, "Generation", |ui| {
-            kit::field_label(ui, "Version");
-            let row_w = ui.available_width();
-            let (row_rect, _) =
-                ui.allocate_exact_size(Vec2::new(row_w, kit::FIELD_H), Sense::hover());
-            let mut row_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(row_rect)
-                    .layout(Layout::left_to_right(Align::Center)),
-            );
-            row_ui.shrink_clip_rect(row_rect);
-            row_ui.spacing_mut().item_spacing.x = kit::FIELD_COMPOUND_GAP;
-            StripBuilder::new(&mut row_ui)
-                .clip(true)
-                .size(Size::remainder().at_least(86.0))
-                .size(Size::exact(kit::BROWSE_BUTTON_W))
-                .horizontal(|mut strip| {
-                    strip.cell(|ui| {
-                        let selected_text = if next_version.trim().is_empty() {
-                            "No versions yet".to_string()
-                        } else {
-                            next_version.clone()
-                        };
-                        kit::combo_field(
-                            ui,
-                            ("gen_version", asset_id),
-                            selected_text,
-                            ui.available_width(),
-                            |ui| {
-                                if version_options.is_empty() {
-                                    ui.label(kit::caption("No versions yet"));
-                                } else {
-                                    for version in version_options.iter() {
-                                        automation_selectable_value(
-                                            ui,
-                                            &mut next_version,
-                                            version.clone(),
-                                            version,
-                                        );
-                                    }
-                                }
-                            },
-                        );
-                    });
-                    strip.cell(|ui| {
-                        let button_w = ui.available_width();
-                        if kit::field_button(ui, "Manage", button_w).clicked() {
-                            open_asset_lab = true;
-                        }
-                    });
-                });
-
-            ui.add_space(kit::FORM_ROW_GAP);
-            kit::field_label(ui, "Provider");
-            provider_combo_field(
-                ui,
-                ("gen_provider", asset_id),
-                selected_provider.as_ref(),
-                "None selected",
-                ui.available_width(),
-                |ui| {
-                    automation_selectable_value(ui, &mut next_provider_id, None, "None selected");
-                    for provider in compatible_providers.iter() {
-                        provider_selectable_value(
-                            ui,
-                            &mut next_provider_id,
-                            Some(provider.id),
-                            provider,
-                        );
-                    }
-                },
-            );
-
-            if show_missing_provider {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(
-                    RichText::new("Selected provider is missing from local providers.")
-                        .color(kit::MARKER)
-                        .size(11.0),
-                );
-            } else if selected_provider_out_of_scope {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(
-                    RichText::new("Selected provider is outside this project's provider scope.")
-                        .color(kit::MARKER)
-                        .size(11.0),
-                );
-            } else if let Some(provider) = selected_provider
-                .as_ref()
-                .filter(|provider| !provider_is_available_for_generation(provider))
-            {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(
-                    RichText::new(
-                        provider_unavailable_reason(provider)
-                            .unwrap_or("Selected provider is unavailable for new generation."),
-                    )
+        if show_missing_provider {
+            ui.label(
+                RichText::new("Selected provider is missing from local providers.")
                     .color(kit::MARKER)
                     .size(11.0),
-                );
-            } else if compatible_providers.is_empty() {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(kit::caption(format!(
-                    "No {:?} providers configured.",
-                    output_type
-                )));
-            }
-
-            ui.add_space(kit::ACTION_GAP);
-            kit::field_label(ui, "Batch");
-            ui.add_space(kit::FORM_ROW_GAP);
-            if inspector_drag_i64(
-                ui,
-                "Output count",
-                &mut next_batch_count,
-                1.0,
-                ui.available_width(),
-            ) {
-                next_batch_count = next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64);
-            }
-            if next_batch_count > 1 {
-                ui.add_space(kit::FORM_ROW_GAP);
-                kit::labeled_combo_field(
-                    ui,
-                    "Seed behavior",
-                    ("seed_strategy", asset_id),
-                    seed_strategy_label(next_seed_strategy),
-                    |ui| {
-                        automation_selectable_value(
-                            ui,
-                            &mut next_seed_strategy,
-                            SeedStrategy::Increment,
-                            "Increment",
-                        );
-                        automation_selectable_value(
-                            ui,
-                            &mut next_seed_strategy,
-                            SeedStrategy::Random,
-                            "Random",
-                        );
-                        automation_selectable_value(
-                            ui,
-                            &mut next_seed_strategy,
-                            SeedStrategy::Keep,
-                            "Keep",
-                        );
-                    },
-                );
-                if let Some(hint) = batch_hint.as_deref() {
-                    ui.add_space(kit::FORM_ROW_GAP);
-                    ui.label(RichText::new(hint).color(kit::MARKER).size(11.0));
-                }
-            }
-
-            if let Some(status) = self.generation_status_for_asset(asset_id) {
-                ui.add_space(kit::FORM_ROW_GAP);
-                ui.label(kit::caption(status));
-            }
-        });
-
-        ui.add_space(kit::FORM_ROW_GAP);
-        let mut input_updates = self.provider_inputs_card(
-            ui,
-            asset_id,
-            context_clip_id,
-            selected_provider.clone(),
-            &config_snapshot,
-        );
-        if self.should_show_provider_output_card(output_type, selected_provider.as_ref()) {
-            ui.add_space(kit::FORM_ROW_GAP);
-        }
-        input_updates.extend(self.provider_output_card(
-            ui,
-            asset_id,
-            context_clip_id,
-            output_type,
-            selected_provider.clone(),
-            &config_snapshot,
-        ));
-        input_updates.extend(self.provider_variation_card(
-            ui,
-            asset_id,
-            context_clip_id,
-            selected_provider.clone(),
-            &config_snapshot,
-        ));
-        if let Some(provider) = selected_provider.as_ref() {
-            let issues = crate::core::generation::preflight_provider_config(
-                &self.editor.project,
-                Some(asset_id),
-                context_clip_id,
-                provider,
-                &config_snapshot,
             );
-            if !issues.is_empty() {
-                ui.add_space(kit::FORM_ROW_GAP);
-                inspector_card(ui, "Needs Attention", |ui| {
-                    for (index, issue) in issues.iter().enumerate() {
-                        if index > 0 {
-                            ui.add_space(kit::FIELD_LABEL_GAP);
-                        }
-                        ui.label(RichText::new(&issue.message).color(kit::MARKER).size(11.0));
-                    }
-                });
-            }
+            ui.add_space(kit::FORM_ROW_GAP);
+        } else if selected_provider_out_of_scope {
+            ui.label(
+                RichText::new("Selected provider is outside this project's provider scope.")
+                    .color(kit::MARKER)
+                    .size(11.0),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+        } else if let Some(provider) = selected_provider
+            .as_ref()
+            .filter(|provider| !provider_is_available_for_generation(provider))
+        {
+            ui.label(
+                RichText::new(
+                    provider_unavailable_reason(provider)
+                        .unwrap_or("Selected provider is unavailable for new generation."),
+                )
+                .color(kit::MARKER)
+                .size(11.0),
+            );
+            ui.add_space(kit::FORM_ROW_GAP);
+        } else if compatible_providers.is_empty() {
+            ui.label(kit::caption(format!(
+                "No {:?} providers configured.",
+                output_type
+            )));
+            ui.add_space(kit::FORM_ROW_GAP);
         }
+
+        let input_updates = self.generated_next_form(
+            ui,
+            asset_id,
+            context_clip_id,
+            selected_provider.as_ref(),
+            &config_snapshot,
+            output_type,
+            &compatible_providers,
+            &mut next_provider_id,
+            &mut next_seed_strategy,
+            batch_hint.as_deref(),
+        );
 
         let mut config_dirty = false;
-        let mut preview_dirty = false;
-        if next_version != selected_version_value {
-            let next_active = if next_version.trim().is_empty() {
-                None
-            } else {
-                Some(next_version.trim().to_string())
-            };
-            let restored_provider = next_active.as_ref().and_then(|version| {
-                config_snapshot
-                    .versions
-                    .iter()
-                    .find(|record| record.version == *version)
-                    .and_then(|record| {
-                        self.editor
-                            .provider_entries
-                            .iter()
-                            .find(|provider| provider.id == record.provider_id)
-                    })
-                    .cloned()
-            });
-            self.editor
-                .project
-                .update_generative_config(asset_id, |config| {
-                    config.active_version = next_active.clone();
-                    if let Some(version) = next_active.as_ref() {
-                        if let Some(record) = config
-                            .versions
-                            .iter()
-                            .find(|record| record.version == *version)
-                        {
-                            config.inputs = generation_record_source_inputs(config, record);
-                            config.provider_id = Some(record.provider_id);
-                        }
-                    }
-                });
-            if let Some(provider) = restored_provider.as_ref() {
-                self.editor
-                    .project
-                    .update_generative_config(asset_id, |config| {
-                        migrate_legacy_size_input(config, provider);
-                    });
-            }
-            config_dirty = true;
-            preview_dirty = true;
-        }
         if next_provider_id != selected_provider_id {
             let next_provider = next_provider_id.and_then(|provider_id| {
                 compatible_providers
@@ -2389,13 +2189,10 @@ impl LatentSlateApp {
             self.apply_timeline_bridge_provider_change(asset_id, context_clip_id, next_provider);
             config_dirty = true;
         }
-        let clamped_batch_count =
-            next_batch_count.clamp(1, MAX_GENERATION_BATCH_COUNT as i64) as u32;
-        if clamped_batch_count != batch.count || next_seed_strategy != batch.seed_strategy {
+        if next_seed_strategy != batch.seed_strategy {
             self.editor
                 .project
                 .update_generative_config(asset_id, |config| {
-                    config.batch.count = clamped_batch_count;
                     config.batch.seed_strategy = next_seed_strategy;
                 });
             config_dirty = true;
@@ -2438,20 +2235,6 @@ impl LatentSlateApp {
                 self.editor.status = format!("Failed to save generative config: {err}");
             }
         }
-        if preview_dirty {
-            self.invalidate_generative_asset_runtime(asset_id);
-        }
-
-        if open_asset_lab {
-            let local_time = context_clip_id.and_then(|clip_id| {
-                self.editor.project.clips.iter().find_map(|clip| {
-                    (clip.id == clip_id).then(|| {
-                        (self.editor.current_time - clip.start_time + clip.trim_in_seconds).max(0.0)
-                    })
-                })
-            });
-            self.open_asset_lab_at_time(asset_id, local_time);
-        }
     }
 
     fn should_show_provider_output_card(
@@ -2469,6 +2252,7 @@ impl LatentSlateApp {
         has_canvas || has_timing
     }
 
+    #[allow(dead_code)]
     fn provider_output_card(
         &mut self,
         ui: &mut Ui,
@@ -2485,7 +2269,14 @@ impl LatentSlateApp {
 
         inspector_card(ui, "Output", |ui| {
             let drew_canvas = selected_provider.as_ref().is_some_and(|provider| {
-                self.provider_canvas_controls(ui, asset_id, provider, config_snapshot, &mut updates)
+                self.provider_canvas_controls(
+                    ui,
+                    asset_id,
+                    provider,
+                    config_snapshot,
+                    &mut updates,
+                    false,
+                )
             });
             let draw_timing = output_type == ProviderOutputType::Video
                 && selected_provider.as_ref().is_none_or(|provider| {
@@ -2517,6 +2308,7 @@ impl LatentSlateApp {
         provider: &ProviderEntry,
         config_snapshot: &GenerativeConfig,
         updates: &mut Vec<(String, InputValue)>,
+        inspector: bool,
     ) -> bool {
         let Some((width_input, height_input)) = crate::core::canvas::dimension_pair(provider)
         else {
@@ -2574,18 +2366,54 @@ impl LatentSlateApp {
             max_pixels: None,
             max_aspect: None,
         });
-        if kit::canvas_picker(
-            ui,
-            ("provider_canvas", asset_id, &width_input.name),
-            &canvas,
-            Some(kit::CanvasSizeReference::new(
-                "Project",
-                self.editor.project.settings.width,
-                self.editor.project.settings.height,
-            )),
-            &mut width,
-            &mut height,
-        ) {
+        let reference = Some(kit::CanvasSizeReference::new(
+            "Project",
+            self.editor.project.settings.width,
+            self.editor.project.settings.height,
+        ));
+        let salt = ("provider_canvas", asset_id, width_input.name.as_str());
+        let mut changed = false;
+        if inspector {
+            kit::bounded_horizontal_row(ui, kit::SECONDARY_BUTTON_H, |ui, _row_w| {
+                ui.label(kit::body("Output settings").size(13.0));
+                ui.add_space(6.0);
+                kit::help_mark(
+                    ui,
+                    kit::Tooltip::new("Canvas grid").description(
+                        "Outputs snap to this recipe's pixel alignment. Hover the resolved size for the full technical readout.",
+                    ),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    changed |= kit::canvas_sizing_mode_combo(
+                        ui,
+                        salt,
+                        &canvas,
+                        reference,
+                        &mut width,
+                        &mut height,
+                    );
+                });
+            });
+            ui.add_space(kit::FIELD_LABEL_GAP);
+            changed |= kit::canvas_picker_compact(
+                ui,
+                salt,
+                &canvas,
+                reference,
+                &mut width,
+                &mut height,
+            );
+        } else {
+            changed |= kit::canvas_picker(
+                ui,
+                salt,
+                &canvas,
+                reference,
+                &mut width,
+                &mut height,
+            );
+        }
+        if changed {
             updates.push((
                 width_input.name.clone(),
                 InputValue::Literal {
@@ -2679,12 +2507,7 @@ impl LatentSlateApp {
             let before_fps = next_fps;
             let mut fps_changed = false;
             if let Some(fixed) = fixed_fps {
-                kit::field_label(ui, "FPS");
-                kit::readonly_value_box(
-                    ui,
-                    format!("{fixed} (fixed by recipe)"),
-                    Vec2::new(ui.available_width(), kit::FIELD_H),
-                );
+                kit::property_row(ui, "FPS", &format!("{fixed}"));
             } else if let Some(input) = provider
                 .inputs
                 .iter()
@@ -2912,12 +2735,7 @@ impl LatentSlateApp {
         }
         ui.add_space(kit::FORM_ROW_GAP);
         if let Some(fixed_fps) = fixed_fps {
-            kit::field_label(ui, "FPS");
-            kit::readonly_value_box(
-                ui,
-                format!("{fixed_fps} (fixed)"),
-                Vec2::new(ui.available_width(), kit::FIELD_H),
-            );
+            kit::property_row(ui, "FPS", &format!("{fixed_fps}"));
             ui.add_space(kit::FORM_ROW_GAP);
             kit::field_label(ui, "Output Frames");
             let predicted = selected_provider.and_then(|provider| {
@@ -3270,6 +3088,7 @@ impl LatentSlateApp {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn provider_inputs_card(
         &mut self,
         ui: &mut Ui,
@@ -3340,6 +3159,7 @@ impl LatentSlateApp {
         updates
     }
 
+    #[allow(dead_code)]
     fn provider_variation_card(
         &mut self,
         ui: &mut Ui,

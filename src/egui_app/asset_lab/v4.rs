@@ -2126,19 +2126,7 @@ fn next_reference_slots<'a>(
     config: &GenerativeConfig,
     project: &crate::state::Project,
 ) -> Vec<&'a ProviderInputField> {
-    let used = reference_shelf_fields(provider, config, project, false);
-    let mut kinds = Vec::new();
-    reference_shelf_fields(provider, config, project, true)
-        .into_iter()
-        .filter(|field| {
-            let kind = crate::core::media_binding::bound_media_type_for_input(field).unwrap();
-            if used.iter().any(|used| used.name == field.name) || kinds.contains(&kind) {
-                return false;
-            }
-            kinds.push(kind);
-            true
-        })
-        .collect()
+    crate::core::media_binding::next_media_reference_slots(provider, config, project)
 }
 
 fn reference_shelf_fields<'a>(
@@ -2147,26 +2135,15 @@ fn reference_shelf_fields<'a>(
     project: &crate::state::Project,
     expanded: bool,
 ) -> Vec<&'a ProviderInputField> {
-    provider
-        .inputs
-        .iter()
-        .filter(|field| {
-            let Some(_) = crate::core::media_binding::bound_media_type_for_input(field) else {
-                return false;
-            };
-            if field.paired_video_input.is_some() {
-                return false;
-            }
-            let occupied = crate::core::media_binding::lookup_media_binding(config, field, project)
-                .is_some()
-                || provider.inputs.iter().any(|paired| {
-                    paired.paired_video_input.as_deref() == Some(field.name.as_str())
-                        && crate::core::media_binding::lookup_media_binding(config, paired, project)
-                            .is_some()
-                });
-            expanded || occupied
-        })
-        .collect()
+    crate::core::media_binding::visible_media_reference_fields(
+        provider,
+        config,
+        project,
+        crate::core::media_binding::MediaReferenceVisibility {
+            show_all: expanded,
+            include_required_empty: false,
+        },
+    )
 }
 
 #[cfg(test)]

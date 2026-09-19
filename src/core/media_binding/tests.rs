@@ -1,7 +1,7 @@
 use super::*;
 use crate::state::{
     Asset, AssetKind, Clip, ClipImageMode, ClipTimeMode, GenerativeConfig, InputRole, InputValue,
-    MediaBindingSource, MediaFramePoint, MediaSample, Project, ProviderConnection, ProviderEntry,
+    MediaBindingSource, MediaBindingSpec, MediaFramePoint, MediaSample, Project, ProviderConnection, ProviderEntry,
     ProviderInputField, ProviderInputType, ProviderOutputType, SourceFrameReference,
     TimelineTrackScope,
 };
@@ -1783,4 +1783,167 @@ fn prompt_references_submission_uses_prepared_media_and_keeps_authored_snapshot(
     let missing =
         resolve_provider_inputs(&h.project, Some(h.target.id), None, &h.provider, &h.config);
     assert!(!missing.input_errors.is_empty());
+}
+
+#[test]
+fn inspector_reference_visibility_keeps_required_empty_and_occupied_slots() {
+    let mut start = image_field(Some(InputRole::StartImage));
+    start.required = true;
+    let mut last = image_field(Some(InputRole::EndImage));
+    last.required = true;
+    let mut optional = image_field(None);
+    optional.name = "image_2".into();
+    optional.label = "Image 2".into();
+    optional.required = false;
+    optional.role = None;
+    let mut extra = optional.clone();
+    extra.name = "image_3".into();
+    extra.label = "Image 3".into();
+    let provider = provider_with(vec![start.clone(), last.clone(), optional.clone(), extra]);
+    let project = Project::new("Refs");
+    let mut config = GenerativeConfig::default();
+    let names = |config: &GenerativeConfig, visibility: MediaReferenceVisibility| {
+        visible_media_reference_fields(&provider, config, &project, visibility)
+            .into_iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&config, MediaReferenceVisibility::inspector()),
+        ["start_image", "end_image"]
+    );
+    assert!(names(&config, MediaReferenceVisibility::occupied_only()).is_empty());
+    config.media_bindings.insert(
+        "image_3".into(),
+        MediaBindingSpec {
+            source: MediaBindingSource::WorkingOutput,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        names(&config, MediaReferenceVisibility::inspector()),
+        ["start_image", "end_image", "image_3"]
+    );
+    let next = next_media_reference_slots(&provider, &config, &project)
+        .into_iter()
+        .map(|field| field.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(next, ["start_image"]);
+    let all = names(
+        &config,
+        MediaReferenceVisibility {
+            show_all: true,
+            include_required_empty: true,
+        },
+    );
+    assert_eq!(all, ["start_image", "end_image", "image_2", "image_3"]);
+}
+
+#[test]
+fn source_labels_do_not_repeat_active_version_suffix() {
+    let mut harness = Harness::new();
+    let asset = harness.add_gen_video(501, "Gen Video 1", "v5", 16.0, 80);
+    let pinned = MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: asset.id,
+            version: Some("v5".into()),
+        },
+        ..Default::default()
+    };
+    let label = source_menu_label(&pinned, &harness.project);
+    assert_eq!(label, "Version · Gen Video 1 (v5)");
+    assert_eq!(label.matches("(v5)").count(), 1);
+}
+
+#[test]
+fn inspector_copy_distinguishes_required_and_optional_empty() {
+    let mut required = image_field(Some(InputRole::StartImage));
+    required.label = "First frame".into();
+    required.required = true;
+    let project = Project::new("copy");
+    let copy = inspector_reference_copy(&required, None, &project, None);
+    assert_eq!(copy.title, "First frame · Required");
+    assert_eq!(copy.value, "Choose an image");
+    assert_eq!(copy.detail, None);
+    assert!(copy.required_empty);
+
+    let mut optional = image_field(None);
+    optional.name = "image_2".into();
+    optional.label = "Image slot 2".into();
+    optional.required = false;
+    let copy = inspector_reference_copy(&optional, None, &project, None);
+    assert_eq!(copy.title, "Image slot 2 · Optional");
+    assert_eq!(copy.value, "No source selected");
+    assert_eq!(copy.detail, None);
+    assert!(!copy.required_empty);
+}
+
+#[test]
+fn inspector_copy_fixed_source_does_not_restate_identity() {
+    let mut harness = Harness::new();
+    let asset = harness.add_gen_video(501, "Gen Video 1", "v5", 16.0, 80);
+    let mut field = image_field(None);
+    field.label = "Image slot 1".into();
+    field.required = false;
+    let spec = MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: asset.id,
+            version: Some("v5".into()),
+        },
+        ..Default::default()
+    };
+    let plan = resolve_media_binding(harness.ctx(&field), &spec);
+    let copy = inspector_reference_copy(&field, Some(&spec), &harness.project, Some(&plan));
+    assert_eq!(copy.title, "Image slot 1 · Fixed version");
+    assert_eq!(copy.value, "Gen Video 1 · v5");
+    assert!(
+        copy.detail
+            .as_deref()
+            .is_none_or(|detail| !detail.contains("Gen Video 1"))
+    );
+}
+
+#[test]
+fn inspector_copy_missing_asset_shows_guidance_not_uuid() {
+    let field = image_field(Some(InputRole::StartImage));
+    let project = Project::new("copy");
+    let spec = MediaBindingSpec {
+        source: MediaBindingSource::ProjectAsset {
+            asset_id: uid(1),
+            version: Some("v3".into()),
+        },
+        ..Default::default()
+    };
+    let plan = resolve_media_binding(
+        MediaResolveContext {
+            project: &project,
+            target_asset_id: None,
+            context_clip_id: None,
+            field: &field,
+            provider: None,
+            config: None,
+        },
+        &spec,
+    );
+    let copy = inspector_reference_copy(&field, Some(&spec), &project, Some(&plan));
+    assert!(copy.unresolved);
+    let detail = copy.detail.expect("guidance");
+    assert!(detail.contains("Choose another source"));
+    assert!(!detail.contains("00000000"));
+    assert!(copy
+        .hover
+        .as_ref()
+        .is_some_and(|hover| hover.contains("was not found")));
+}
+
+#[test]
+fn user_guidance_does_not_echo_asset_uuid() {
+    let error = MediaBindingError::SourceMissing {
+        detail: "project asset 00000000-0000-4000-8000-000000000001 was not found.".into(),
+    };
+    assert_eq!(
+        error.user_guidance(),
+        "Referenced asset is missing. Choose another source."
+    );
+    assert!(error.detail().contains("00000000"));
 }

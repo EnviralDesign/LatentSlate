@@ -62,6 +62,7 @@ This file is the living project status page. Keep it current, concise, and factu
 - `cargo clippy --all-targets -- -D warnings` is not clean yet and is not a CI gate.
 - The Agent API is localhost-only development/control infrastructure, not a network-exposed remote-control service or MCP server yet.
 - macOS and Linux are future work, not supported release targets.
+- Provider input metadata can mark individual fields required or optional, but it cannot express one-of / minimum-count groups. MiniMax H3 reference-to-video slots are all individually optional; the inspector therefore cannot require “at least one” reference from catalog data. Do not infer that constraint from the recipe name.
 
 ## Roadmap
 

@@ -16,6 +16,7 @@ impl LatentSlateApp {
         let response = egui::Panel::bottom(self.project_panel_id("timeline"))
             .resizable(true)
             .default_size(self.editor.layout.timeline_height)
+            .exact_size(self.editor.layout.timeline_height)
             .size_range(150.0..=420.0)
             .frame(kit::timeline_frame())
             .show_inside(root, |ui| {

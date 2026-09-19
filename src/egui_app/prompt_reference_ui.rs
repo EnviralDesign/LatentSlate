@@ -60,6 +60,33 @@ impl LatentSlateApp {
         input: &ProviderInputField,
         label: &str,
     ) -> Option<InputValue> {
+        self.prompt_reference_field_inner(ui, asset_id, clip_id, provider, config, input, label, false)
+    }
+
+    pub(super) fn prompt_reference_field_inspector(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        clip_id: Option<Uuid>,
+        provider: &ProviderEntry,
+        config: &GenerativeConfig,
+        input: &ProviderInputField,
+        label: &str,
+    ) -> Option<InputValue> {
+        self.prompt_reference_field_inner(ui, asset_id, clip_id, provider, config, input, label, true)
+    }
+
+    fn prompt_reference_field_inner(
+        &mut self,
+        ui: &mut Ui,
+        asset_id: Uuid,
+        clip_id: Option<Uuid>,
+        provider: &ProviderEntry,
+        config: &GenerativeConfig,
+        input: &ProviderInputField,
+        label: &str,
+        inspector_chrome: bool,
+    ) -> Option<InputValue> {
         ui.push_id(("prompt_mentions", asset_id, &input.name), |ui| {
             let original = config.inputs.get(&input.name).cloned().unwrap_or_else(|| InputValue::Literal {
                 value: input.default.clone().unwrap_or_else(|| serde_json::json!("")),
@@ -104,8 +131,51 @@ impl LatentSlateApp {
             let hover = active.iter().map(|(_, name, reference)| {
                 format!("{} → {}", mentions::marker(name), mentions::resolve_reference(reference, provider, &occupied).unwrap_or_else(|error| error))
             }).collect::<Vec<_>>().join("\n");
-            provider_input_field_label(ui, label, input);
-            let (response, cursor) = kit::multiline_text_field_highlighted(ui, &mut text, ui.available_width(), kit::MultilineTextFieldOptions::rows(3), &highlights);
+            let expand_id = ui.make_persistent_id("prompt_expanded");
+            let mut expanded = inspector_chrome
+                && ui.data(|data| data.get_temp::<bool>(expand_id).unwrap_or(false));
+            let supports = provider.inputs.iter().any(|field| field.prompt_reference_token.is_some());
+            if inspector_chrome {
+                kit::bounded_horizontal_row(ui, kit::ICON_BUTTON_H, |ui, _| {
+                    provider_input_field_label(ui, label, input);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        if kit::icon_button(ui, if expanded { "↘" } else { "↗" })
+                            .on_hover_text(if expanded {
+                                "Show the compact prompt field."
+                            } else {
+                                "Expand the prompt field."
+                            })
+                            .clicked()
+                        {
+                            expanded = !expanded;
+                        }
+                        if supports || !references.is_empty() {
+                            if kit::secondary_button(ui, "@ Reference", 92.0)
+                                .on_hover_text("Reference a generation input. Type @ to search by input or source; use ↑/↓ and Enter to choose. References follow the input when its source changes.")
+                                .clicked()
+                            {
+                                picker.open = true;
+                                picker.query.clear();
+                                let index = byte_index(&text, picker.cursor);
+                                picker.replace = index..index;
+                                picker.reassign = None;
+                            }
+                        }
+                    });
+                });
+            } else {
+                provider_input_field_label(ui, label, input);
+            }
+            let rows = if inspector_chrome {
+                if expanded { 10 } else { 4 }
+            } else {
+                3
+            };
+            let (response, cursor) = kit::multiline_text_field_highlighted(ui, &mut text, ui.available_width(), kit::MultilineTextFieldOptions::rows(rows), &highlights);
+            if inspector_chrome {
+                self.reveal_inspector_field(ui, asset_id, &input.name, &response);
+            }
             if response.has_focus() {
                 if let Some(cursor) = cursor { picker.cursor = cursor.primary.index; }
             }
@@ -125,14 +195,18 @@ impl LatentSlateApp {
                 }
             }
             if !hover.is_empty() { response.clone().on_hover_text(hover); }
-            let supports = provider.inputs.iter().any(|field| field.prompt_reference_token.is_some());
+            if inspector_chrome {
+                ui.data_mut(|data| data.insert_temp(expand_id, expanded));
+            }
             if supports || !references.is_empty() {
+                if !inspector_chrome {
                 if kit::secondary_button(ui, "@ Input", 76.0).on_hover_text("Reference a generation input. Type @ to search by input or source; use ↑/↓ and Enter to choose. References follow the input when its source changes.").clicked() {
                     picker.open = true;
                     picker.query.clear();
                     let index = byte_index(&text, picker.cursor);
                     picker.replace = index..index;
                     picker.reassign = None;
+                }
                 }
                 let preview = mentions::preview_prompt(&InputValue::Prompt { text: text.clone(), references: references.clone() }, provider, &self.editor.project, config, Some(asset_id), context);
                 if let Err(errors) = &preview {
